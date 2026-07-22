@@ -176,10 +176,17 @@ forbidden.
 Registry entries retain every lifecycle transition in `Feature.History`; the
 current `Level` and `SinceVersion` must match the final transition. Use
 `vMAJOR.MINOR.PATCH` release versions (`dev` is reserved for the initial
-pre-release baseline). Registry validation and
-`TestCurrentFeatureRegistrySatisfiesCompatibilityPolicy` reject skipped,
-out-of-order, or too-early transitions. When changing the current feature
-matrix, regenerate it with `make docs`.
+pre-release baseline). The compatibility guard compares the current registry
+with `latestReleasedFeatureRegistry`, the immutable feature snapshot from the
+latest tagged release. A removal is valid only when that snapshot already marks
+the feature deprecated; adding deprecated and removed history in one change
+does not satisfy the release window. Never advance the release snapshot in a
+feature-change PR; the release process records it from the matrix that actually
+shipped. Before the first tagged release, the snapshot is empty and no feature
+may enter `removed`. Registry validation and
+`TestCurrentFeatureRegistrySatisfiesCompatibilityPolicy` reject rewritten,
+skipped, out-of-order, or too-early transitions. When changing the current
+feature matrix, regenerate it with `make docs`.
 
 ## Commit messages
 

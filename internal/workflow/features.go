@@ -109,6 +109,44 @@ func cloneFeature(feature Feature) Feature {
 	return feature
 }
 
+func newFeatureRegistryAgainstReleased(released FeatureRegistry, features []Feature) (FeatureRegistry, error) {
+	current, err := NewFeatureRegistry(features)
+	if err != nil {
+		return FeatureRegistry{}, err
+	}
+	if err := validateFeatureRegistryEvolution(released, current); err != nil {
+		return FeatureRegistry{}, err
+	}
+	return current, nil
+}
+
+func validateFeatureRegistryEvolution(released, current FeatureRegistry) error {
+	for _, previous := range released.All() {
+		candidate, ok := current.Lookup(previous.ID)
+		if !ok {
+			return fmt.Errorf("released DSL feature %q must remain in the registry", previous.ID)
+		}
+		if len(candidate.History) < len(previous.History) ||
+			!slices.Equal(candidate.History[:len(previous.History)], previous.History) {
+			return fmt.Errorf("released DSL feature %q lifecycle history must not change", previous.ID)
+		}
+	}
+
+	for _, candidate := range current.All() {
+		if candidate.Level != SupportRemoved {
+			continue
+		}
+		previous, ok := released.Lookup(candidate.ID)
+		if !ok || (previous.Level != SupportDeprecated && previous.Level != SupportRemoved) {
+			return fmt.Errorf(
+				"DSL feature %q must be deprecated in the latest released registry before removal",
+				candidate.ID,
+			)
+		}
+	}
+	return nil
+}
+
 func validateFeatureHistory(feature Feature) error {
 	if len(feature.History) == 0 {
 		return fmt.Errorf("lifecycle history must not be empty")
@@ -387,10 +425,23 @@ const (
 // since-version must not.
 const initialFeatureSinceVersion = "dev"
 
-var currentFeatureRegistry = mustFeatureRegistry(currentFeatures(initialFeatureSinceVersion))
+// This registry is the immutable compatibility record from the latest tagged
+// release. It is empty until the first release and advances only when a release
+// records the feature matrix it shipped.
+var latestReleasedFeatureRegistry = mustFeatureRegistry(nil)
+
+var currentFeatureRegistry = mustCurrentFeatureRegistry(currentFeatures(initialFeatureSinceVersion))
 
 func mustFeatureRegistry(features []Feature) FeatureRegistry {
 	registry, err := NewFeatureRegistry(features)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+func mustCurrentFeatureRegistry(features []Feature) FeatureRegistry {
+	registry, err := newFeatureRegistryAgainstReleased(latestReleasedFeatureRegistry, features)
 	if err != nil {
 		panic(err)
 	}

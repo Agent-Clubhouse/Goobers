@@ -131,8 +131,116 @@ func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 }
 
 func TestCurrentFeatureRegistrySatisfiesCompatibilityPolicy(t *testing.T) {
-	if _, err := NewFeatureRegistry(currentFeatures(initialFeatureSinceVersion)); err != nil {
+	if _, err := newFeatureRegistryAgainstReleased(
+		latestReleasedFeatureRegistry,
+		currentFeatures(initialFeatureSinceVersion),
+	); err != nil {
 		t.Fatalf("current feature registry violates compatibility policy: %v", err)
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicyUsesReleasedSnapshot(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	feature := func(level SupportLevel, version string, history ...SupportTransition) Feature {
+		return Feature{
+			ID:           "example.feature",
+			Level:        level,
+			SinceVersion: version,
+			History:      history,
+		}
+	}
+	registry := func(features ...Feature) FeatureRegistry {
+		t.Helper()
+		result, err := NewFeatureRegistry(features)
+		if err != nil {
+			t.Fatalf("NewFeatureRegistry: %v", err)
+		}
+		return result
+	}
+
+	releasedGA := registry(feature(
+		SupportGA,
+		"v1.1.0",
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+	))
+	deprecatedAndRemoved := feature(
+		SupportRemoved,
+		"v1.3.0",
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+		transition(SupportDeprecated, "v1.2.0"),
+		transition(SupportRemoved, "v1.3.0"),
+	)
+	if _, err := newFeatureRegistryAgainstReleased(registry(), []Feature{deprecatedAndRemoved}); err == nil ||
+		!strings.Contains(err.Error(), "must be deprecated in the latest released registry") {
+		t.Fatalf("unreleased removal error = %v, want released-deprecation failure", err)
+	}
+	if _, err := newFeatureRegistryAgainstReleased(releasedGA, []Feature{deprecatedAndRemoved}); err == nil ||
+		!strings.Contains(err.Error(), "must be deprecated in the latest released registry") {
+		t.Fatalf("same-change deprecation and removal error = %v, want released-deprecation failure", err)
+	}
+
+	releasedDeprecated := registry(feature(
+		SupportDeprecated,
+		"v1.2.0",
+		deprecatedAndRemoved.History[:3]...,
+	))
+	if _, err := newFeatureRegistryAgainstReleased(releasedDeprecated, []Feature{deprecatedAndRemoved}); err != nil {
+		t.Fatalf("removal after a released deprecated minor was rejected: %v", err)
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicyPreservesReleasedSnapshot(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	releasedFeature := Feature{
+		ID:           "example.feature",
+		Level:        SupportGA,
+		SinceVersion: "v1.1.0",
+		History: []SupportTransition{
+			transition(SupportPreview, "dev"),
+			transition(SupportGA, "v1.1.0"),
+		},
+	}
+	released, err := NewFeatureRegistry([]Feature{releasedFeature})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		candidates []Feature
+		want       string
+	}{
+		{
+			name: "released feature omitted",
+			want: "must remain in the registry",
+		},
+		{
+			name: "released history rewritten",
+			candidates: []Feature{{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.2.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "dev"),
+					transition(SupportGA, "v1.2.0"),
+				},
+			}},
+			want: "lifecycle history must not change",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newFeatureRegistryAgainstReleased(released, test.candidates)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("newFeatureRegistryAgainstReleased() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 

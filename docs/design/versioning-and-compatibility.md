@@ -65,8 +65,12 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
   - A feature must live ≥1 released minor in `deprecated` before it may become `removed`: a feature
     deprecated in `v1.2.x` may be removed no earlier than `v1.3.0`. Registry history must use
     `vMAJOR.MINOR.PATCH` releases (`dev` is only the initial pre-release baseline); CI rejects
-    skipped transitions such as `ga→removed`, out-of-order versions, and removal within the
-    deprecation minor.
+    skipped transitions such as `ga→removed`, out-of-order versions, removal within the
+    deprecation minor, and lifecycle history that rewrites the latest tagged release's immutable
+    feature snapshot. Removal is allowed only when that snapshot already records the feature as
+    deprecated, so adding `deprecated` and `removed` entries together cannot manufacture the
+    required release window. Until the first tagged release, the snapshot is empty and no feature
+    may enter `removed`.
 
 ### 3.2 Release process (REL)
 
@@ -77,7 +81,9 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
 - **Consumable without cloning**: publish binaries (and optionally a container image + Homebrew tap —
   ties to #33) so a consumer runs `goobers` from a downloaded artifact.
 - **Version ↔ DSL linkage**: each release records the DSL feature-registry snapshot it ships;
-  the release notes include the feature-matrix delta (newly GA, newly deprecated, removed).
+  the release notes include the feature-matrix delta (newly GA, newly deprecated, removed). That
+  snapshot advances only from the feature matrix that actually shipped, never in the feature-change
+  PR that will be checked against it.
 
 ### 3.3 Feature-support matrix (VER/REL)
 
