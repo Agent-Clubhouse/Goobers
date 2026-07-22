@@ -182,10 +182,14 @@ GIT_TEST_FSYNC_OFF := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_
 # nothing observable changes; production leaves the env unset and keeps fsync on.
 JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 
+# Prevent the outer `go run` that compiles the hermetic wrapper from resolving
+# modules or a newer Go toolchain before the wrapper applies the same guards.
+GO_TEST_NETWORK_OFF := GOENV=off GOFLAGS=-mod=readonly GONOPROXY=none GONOSUMDB=none GOPRIVATE= GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOVCS=*:off
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test:
-	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
 .PHONY: portal-install portal-typecheck portal-build portal-test portal-contract portal-ci

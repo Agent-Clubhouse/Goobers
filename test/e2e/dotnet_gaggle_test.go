@@ -1,3 +1,5 @@
+//go:build integration
+
 // PLY-4 (#1093): the reference C#/.NET gaggle's shipped-workflow contract test.
 // It drives the REAL runner with a fake agent harness (no live LLM) over the
 // ACTUAL shipped config-examples/gaggles/dotnet-service workflow, and proves the
