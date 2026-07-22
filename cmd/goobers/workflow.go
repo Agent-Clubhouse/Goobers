@@ -78,7 +78,9 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 			if *dot {
 				machine, err := workflow.Compile(workflow.Definition{
 					Name: wf.Name, Version: 1, Spec: wf.Spec,
-				})
+				}, workflow.WithPreviewFeatures(
+					set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations),
+				))
 				if err != nil {
 					pf(stderr, "error: compile workflow %q: %v\n", wf.Name, err)
 					return 1

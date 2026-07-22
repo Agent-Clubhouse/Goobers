@@ -169,7 +169,7 @@ func TestEvaluatorAppliesInvocationTimeout(t *testing.T) {
 // shows every verdict and the loop count.
 func TestFullRepassFixture(t *testing.T) {
 	spec := fixtureSpec()
-	if _, err := wf.Compile(wf.Definition{Name: "wf", Version: 1, Spec: spec}); err != nil {
+	if _, err := wf.Compile(wf.Definition{Name: "wf", Version: 1, Spec: spec}, wf.WithPreviewFeatures(true)); err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 

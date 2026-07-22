@@ -57,6 +57,10 @@ type InvocationEnvelope struct {
 	BranchNamespace string `json:"branchNamespace,omitempty"`
 	// Goal is the intended outcome of this stage (from the stage definition).
 	Goal string `json:"goal"`
+	// InstructionAddendum is an operator-supplied, one-off addition to the
+	// agent's instructions for this invocation. It is never part of the workflow
+	// definition and is empty for ordinary invocations.
+	InstructionAddendum string `json:"instructionAddendum,omitempty"`
 	// Workspace is the absolute path to the fresh, isolated, disposable working
 	// copy (§5) this stage runs in. The runner guarantees it exists.
 	Workspace string `json:"workspace"`

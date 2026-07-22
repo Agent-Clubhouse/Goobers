@@ -213,7 +213,7 @@ var providerStageResultFiles = map[string]string{
 	"apply-verdict":          "verdict-result.json",
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
-	"gather-pr-context":      "pr-context.json",
+	"gather-pr-context":      "remediation-brief.json",
 	"gather-sibling-context": "sibling-context.json",
 	"issue-close-out":        "issue-close-out-result.json",
 	"merge-pr":               "merge-result.json",
@@ -221,9 +221,11 @@ var providerStageResultFiles = map[string]string{
 	"open-pr":                "pr-result.json",
 	"post-merge":             "post-merge-result.json",
 	"pr-select":              "selected-pr.json",
+	"push-remediated":        "push-remediated-result.json",
 	"rebase-pr":              "rebase-result.json",
 	"reconcile-post-merge":   "reconcile-post-merge-result.json",
 	"remediation-checkpoint": "checkpoint-result.json",
+	"respond-to-findings":    "remediation-response.json",
 	"update-behind-pr":       "update-behind-result.json",
 }
 

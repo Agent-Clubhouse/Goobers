@@ -39,9 +39,14 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 			t.Fatalf("status stdout = %q, want it to contain %q", statusStdout, want)
 		}
 	}
-	runTableAt := strings.Index(statusStdout, "RUN ID")
-	if runTableAt == -1 || runsStdout != statusStdout[runTableAt:] {
+	statusRunTableAt := strings.LastIndex(statusStdout, "\nRUN ID")
+	runsRunTableAt := strings.LastIndex(runsStdout, "\nRUN ID")
+	if statusRunTableAt == -1 || runsRunTableAt == -1 ||
+		runsStdout[runsRunTableAt+1:] != statusStdout[statusRunTableAt+1:] {
 		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
+	}
+	if !reflect.DeepEqual(warningLines(runsStdout), warningLines(statusStdout)) {
+		t.Fatalf("runs list warnings = %#v, want status warnings %#v", warningLines(runsStdout), warningLines(statusStdout))
 	}
 	newIndex := strings.Index(statusStdout, "new-run")
 	middleIndex := strings.Index(statusStdout, "middle-run")

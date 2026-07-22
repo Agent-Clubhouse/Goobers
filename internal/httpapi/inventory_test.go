@@ -133,25 +133,48 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 		beta.Identity != (readservice.WorkflowReference{Gaggle: "beta", Name: "deploy"}) {
 		t.Fatalf("workflow identities = %+v / %+v", alpha.Identity, beta.Identity)
 	}
-	if len(alpha.Warnings) != 2 {
-		t.Fatalf("alpha warnings = %+v", alpha.Warnings)
+	var compatibilityWarnings []validate.CodedWarning
+	previewWarnings := 0
+	for _, warning := range alpha.Warnings {
+		switch warning.Code {
+		case validate.WarningCompatibility:
+			compatibilityWarnings = append(compatibilityWarnings, warning)
+		case validate.WarningPreviewFeature:
+			previewWarnings++
+		}
 	}
-	claimWarning := alpha.Warnings[0]
+	if previewWarnings == 0 {
+		t.Fatalf("alpha warnings contain no preview-feature notices: %+v", alpha.Warnings)
+	}
+	if len(compatibilityWarnings) != 2 {
+		t.Fatalf("alpha compatibility warnings = %+v", compatibilityWarnings)
+	}
+	claimWarning := compatibilityWarnings[0]
 	if claimWarning.Code != validate.WarningCompatibility || claimWarning.Severity != validate.Warning ||
 		claimWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
 		!strings.Contains(claimWarning.Explanation, "inputs.resultFile") {
 		t.Fatalf("alpha claim warning = %+v", claimWarning)
 	}
-	triggerWarning := alpha.Warnings[1]
+	triggerWarning := compatibilityWarnings[1]
 	if triggerWarning.Code != validate.WarningCompatibility || triggerWarning.Severity != validate.Warning ||
 		triggerWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
 		!strings.Contains(triggerWarning.Explanation, "has no schedule trigger") {
 		t.Fatalf("alpha trigger warning = %+v", triggerWarning)
 	}
-	if len(beta.Warnings) != 1 {
+	var betaCompatibilityWarnings []validate.CodedWarning
+	betaPreviewWarnings := 0
+	for _, warning := range beta.Warnings {
+		switch warning.Code {
+		case validate.WarningCompatibility:
+			betaCompatibilityWarnings = append(betaCompatibilityWarnings, warning)
+		case validate.WarningPreviewFeature:
+			betaPreviewWarnings++
+		}
+	}
+	if betaPreviewWarnings == 0 || len(betaCompatibilityWarnings) != 1 {
 		t.Fatalf("beta warnings = %+v", beta.Warnings)
 	}
-	betaTriggerWarning := beta.Warnings[0]
+	betaTriggerWarning := betaCompatibilityWarnings[0]
 	if betaTriggerWarning.Code != validate.WarningCompatibility || betaTriggerWarning.Severity != validate.Warning ||
 		betaTriggerWarning.Scope != "gaggles/beta/workflows/deploy.yaml Gaggle/beta Workflow/deploy" ||
 		!strings.Contains(betaTriggerWarning.Explanation, "has no schedule trigger") {
@@ -167,9 +190,13 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Items) != 1 || len(page.Items[0].Warnings) != 2 ||
-		page.Items[0].Warnings[0] != claimWarning || page.Items[0].Warnings[1] != triggerWarning {
+	if len(page.Items) != 1 || len(page.Items[0].Warnings) != len(alpha.Warnings) {
 		t.Fatalf("alpha list warnings = %+v", page.Items)
+	}
+	for i := range alpha.Warnings {
+		if page.Items[0].Warnings[i] != alpha.Warnings[i] {
+			t.Fatalf("alpha list warning %d = %+v, want %+v", i, page.Items[0].Warnings[i], alpha.Warnings[i])
+		}
 	}
 }
 

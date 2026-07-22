@@ -377,6 +377,10 @@ func init() {
 			withSynopsis(synopsisByID["push-remediated"]).
 			withHelp("force-push the remediated branch and clear needs-remediation (a workflow stage)", pushRemediatedHelp).
 			withExamples("goobers push-remediated"),
+		command("respond-to-findings", apicontract.ActionWorkflowExecution, runRespondToFindings).
+			withSynopsis(synopsisByID["respond-to-findings"]).
+			withHelp("post a validated per-finding remediation response to the claimed PR (a workflow stage)", respondToFindingsHelp).
+			withExamples("goobers respond-to-findings"),
 		aliasCommand(
 			"help",
 			[]string{"-h", "--help", "help"},

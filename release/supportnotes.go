@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/goobers/goobers/internal/supportmatrix"
@@ -13,7 +12,6 @@ import (
 const (
 	supportSnapshotSchemaVersion = 1
 	supportSnapshotFile          = "dsl-support-matrix.json"
-	releaseNotesFile             = "RELEASE_NOTES.md"
 )
 
 type supportSnapshot struct {
@@ -27,40 +25,31 @@ type supportDelta struct {
 	NewlyUnsupported []supportmatrix.Version
 }
 
-func writeSupportReleaseMetadata(version, previousPath, outDir string) (string, string, error) {
+func supportReleaseMetadata(version, previousPath string) (string, []byte, error) {
 	current, err := newSupportSnapshot(version, supportmatrix.GetDSL())
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 
 	var previous *supportSnapshot
 	if previousPath != "" {
 		snapshot, err := readSupportSnapshot(previousPath)
 		if err != nil {
-			return "", "", fmt.Errorf("read previous support matrix: %w", err)
+			return "", nil, fmt.Errorf("read previous support matrix: %w", err)
 		}
 		previous = &snapshot
 	}
 
 	notes, err := renderSupportDelta(current, previous)
 	if err != nil {
-		return "", "", fmt.Errorf("render support-matrix delta: %w", err)
+		return "", nil, fmt.Errorf("render support-matrix delta: %w", err)
 	}
 	snapshotJSON, err := json.MarshalIndent(current, "", "  ")
 	if err != nil {
-		return "", "", fmt.Errorf("encode support matrix: %w", err)
+		return "", nil, fmt.Errorf("encode support matrix: %w", err)
 	}
 	snapshotJSON = append(snapshotJSON, '\n')
-
-	snapshotPath := filepath.Join(outDir, supportSnapshotFile)
-	if err := os.WriteFile(snapshotPath, snapshotJSON, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", snapshotPath, err)
-	}
-	notesPath := filepath.Join(outDir, releaseNotesFile)
-	if err := os.WriteFile(notesPath, []byte(notes), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", notesPath, err)
-	}
-	return notesPath, snapshotPath, nil
+	return notes, snapshotJSON, nil
 }
 
 func newSupportSnapshot(release string, matrix supportmatrix.SupportMatrix) (supportSnapshot, error) {

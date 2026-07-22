@@ -244,6 +244,9 @@ func newInventoryProjection(definitions *instance.ConfigSet, report *validate.Re
 		machine, err := workflow.Compile(
 			workflow.Definition{Name: def.Name, Version: currentWorkflowVersion, Spec: def.Spec},
 			workflow.WithGoobers(goobers[def.Spec.Gaggle]),
+			workflow.WithPreviewFeatures(
+				definitions.Manifest != nil && workflow.PreviewFeaturesEnabled(definitions.Manifest.Annotations),
+			),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("read service: compile workflow %q in gaggle %q: %w", def.Name, def.Spec.Gaggle, err)

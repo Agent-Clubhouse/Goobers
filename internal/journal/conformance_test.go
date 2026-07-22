@@ -13,25 +13,27 @@ import (
 // exactly one field off of this baseline.
 func baseNormativeEvent() Event {
 	return Event{
-		Schema:       "v1",
-		Seq:          3,
-		Type:         EventStageFinished,
-		Branch:       0,
-		Time:         time.Date(2026, 7, 13, 5, 0, 0, 0, time.UTC),
-		Stage:        "implement",
-		Attempt:      1,
-		AttemptClass: AttemptPolicy,
-		Gate:         "review",
-		Verdict:      "pass",
-		Target:       "local-ci",
-		Escalated:    true,
-		Status:       "success",
-		Ref:          &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain"},
-		Name:         "plan.txt",
-		ExternalRef:  &ExternalRef{Provider: "github", Kind: "issue", ID: "101", URL: "https://x/101"},
-		Error:        &ErrorDetail{Code: "executor_error", Message: "human-facing detail"},
-		Redaction:    &RedactionInfo{Target: "artifacts/x", OldDigest: "sha256:old", NewDigest: "sha256:new", Reason: "leaked token"},
-		Runner:       map[string]any{"repassAttempt": 2},
+		Schema:              "v1",
+		Seq:                 3,
+		Type:                EventStageFinished,
+		Branch:              0,
+		Time:                time.Date(2026, 7, 13, 5, 0, 0, 0, time.UTC),
+		Stage:               "implement",
+		Attempt:             1,
+		AttemptClass:        AttemptPolicy,
+		Actor:               "maintainer@example.com",
+		InstructionAddendum: "Reuse the existing parser.",
+		Gate:                "review",
+		Verdict:             "pass",
+		Target:              "local-ci",
+		Escalated:           true,
+		Status:              "success",
+		Ref:                 &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain"},
+		Name:                "plan.txt",
+		ExternalRef:         &ExternalRef{Provider: "github", Kind: "issue", ID: "101", URL: "https://x/101"},
+		Error:               &ErrorDetail{Code: "executor_error", Message: "human-facing detail"},
+		Redaction:           &RedactionInfo{Target: "artifacts/x", OldDigest: "sha256:old", NewDigest: "sha256:new", Reason: "leaked token"},
+		Runner:              map[string]any{"repassAttempt": 2},
 	}
 }
 
@@ -59,6 +61,8 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"Stage", func(e Event) Event { e.Stage = "local-ci"; return e }},
 		{"Attempt", func(e Event) Event { e.Attempt = 2; return e }},
 		{"AttemptClass", func(e Event) Event { e.AttemptClass = ""; return e }},
+		{"Actor", func(e Event) Event { e.Actor = "other@example.com"; return e }},
+		{"InstructionAddendum", func(e Event) Event { e.InstructionAddendum = "Use another approach."; return e }},
 		{"Gate", func(e Event) Event { e.Gate = "other-gate"; return e }},
 		{"Verdict", func(e Event) Event { e.Verdict = "needs-changes"; return e }},
 		{"Target", func(e Event) Event { e.Target = "implement"; return e }},
@@ -173,6 +177,7 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		{Type: EventStageFinished, Stage: "implement", Attempt: 1, AttemptClass: AttemptInfra, Status: "failure"},
 		{Type: EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: AttemptPolicy},
 		{Type: EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: AttemptPolicy, Status: "success"},
+		{Type: EventStageRerunRequested, Stage: "implement", Attempt: 3, AttemptClass: AttemptHuman, Actor: "maintainer", InstructionAddendum: "Try another approach."},
 		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
 		{Type: EventGatePaused, Gate: "approval"},
 		{Type: EventSpanRecorded, Ref: &Ref{Digest: "sha256:span"}},
@@ -180,8 +185,8 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		{Type: EventRunnerAnnotation, Runner: map[string]any{"worktreeStatus": "kept"}},
 	}
 	view := ConformanceView(events)
-	if len(view) != 3 {
-		t.Fatalf("ConformanceView returned %d events, want 3 (heartbeat, infra attempt, gate markers, span, repaired, runner annotation excluded): %+v", len(view), view)
+	if len(view) != 4 {
+		t.Fatalf("ConformanceView returned %d events, want 4 (human rerun included; heartbeat, infra attempt, gate markers, span, repaired, runner annotation excluded): %+v", len(view), view)
 	}
 	for _, ne := range view {
 		if ne.AttemptClass == AttemptInfra {

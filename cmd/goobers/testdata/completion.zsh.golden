@@ -57,6 +57,7 @@ _goobers_completion()
             'rebase-pr:rebase-first, finding-driven remediation routing (a workflow stage)'
             'remediation-checkpoint:durable per-PR repass budget + same-diff escalation (a workflow stage)'
             'push-remediated:force-push the remediated branch and clear needs-remediation (a workflow stage)'
+            'respond-to-findings:post a validated per-finding remediation response to the claimed PR (a workflow stage)'
             'help'
             '--version:print the version'
             '-h:show help'

@@ -49,6 +49,7 @@
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
@@ -520,7 +521,8 @@ or reporting failing CI, falling back to a PR behind its base only when
 neither stronger signal is present. Check out its branch into this
 stage's worktree and load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
-them to the declared result file. [path] is the instance root (matching
+the versioned remediation-brief artifact to the declared result file.
+[path] is the instance root (matching
 pr-select/apply-verdict), defaulting to GOOBERS_INSTANCE_ROOT; git
 operations run against the stage's actual worktree (the process's
 current directory), not path — same split push-branch already relies
@@ -714,12 +716,12 @@ evicts it, or this stage's own poll times out. Declared inputs:
 pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/
 pollTimeoutSeconds (time.ParseDuration strings, default to
 internal/executor's ci-poll defaults), resultFile (default
-queue-result.json). An eviction applies goobers:needs-remediation plus
-an explanatory comment before reporting queueOutcome=evicted — that
-labeling is the acceptance criterion, so a failure to apply it is a
-stage failure, not a swallowed warning. Exit codes: 0 = evaluated
-(merged, evicted, or still-pending-timeout — see the result file's
-queueOutcome field), 1 = business error (missing capability/config,
+queue-result.json). An eviction or timeout applies
+goobers:needs-remediation plus an explanatory comment before reporting
+its queueOutcome — a failure to apply that trail is a stage failure,
+not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
+or still-pending-timeout — see the result file's queueOutcome field),
+1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 ~~~
 
@@ -758,7 +760,8 @@ Usage: goobers post-merge [path]
 
 Run the two actions that follow a successful merge: triage every
 other open PR targeting the same base branch and label ONLY the
-conflicted or file-overlapping ones goobers:needs-remediation (issue
+conflicted or file-overlapping ones goobers:needs-remediation, recording
+the merged PR and overlapping paths on each affected PR (issue
 #715 — a clean disjoint sibling is left untouched), and mark each
 issue the merged PR's body references (Fixes/Closes/Resolves #N)
 done. Declared input: pullNumber (required — the just-merged PR).
@@ -978,6 +981,31 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 
 ~~~console
 $ goobers reset-rate-limit
+~~~
+
+## `goobers respond-to-findings`
+
+post a validated per-finding remediation response to the claimed PR (a workflow stage)
+
+~~~text
+Usage: goobers respond-to-findings [path]
+
+Read the claimed PR's original remediation verdict and the latest
+implement stage's findingResponses output from this run's journal.
+Require exactly one addressed/declined disposition with a non-empty
+detail for every finding, post the resulting changelog to the PR, and
+write the complete structured response to the declared result file.
+Retries reconcile one run-scoped comment instead of appending duplicates.
+If push-remediated skipped a closed PR, records the unposted account
+without claiming those local changes landed.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response
+processed, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers respond-to-findings
 ~~~
 
 ## `goobers run`

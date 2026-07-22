@@ -81,11 +81,21 @@ manifests:
 docs:
 	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate'
 
+## test-integration: Run declared-dependency integration tests (missing tools skip locally).
+.PHONY: test-integration
+test-integration:
+	$(GO) run ./test/integration -go $(GO)
+
+## test-integration-strict: Run integration tests with missing-tool skips forbidden.
+.PHONY: test-integration-strict
+test-integration-strict:
+	TESTDEP_STRICT=1 $(GO) run ./test/integration -go $(GO)
+
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest
 test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
-		$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+		$(GO) test -tags=integration -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## test-e2e: Run the walking-skeleton E2E harness scaffold.
 .PHONY: test-e2e
@@ -172,10 +182,14 @@ GIT_TEST_FSYNC_OFF := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_
 # nothing observable changes; production leaves the env unset and keeps fsync on.
 JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 
+# Prevent the outer `go run` that compiles the hermetic wrapper from resolving
+# modules or a newer Go toolchain before the wrapper applies the same guards.
+GO_TEST_NETWORK_OFF := GOENV=off GOFLAGS=-mod=readonly GONOPROXY=none GONOSUMDB=none GOPRIVATE= GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOVCS=*:off
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test:
-	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
 .PHONY: portal-install portal-typecheck portal-build portal-test portal-contract portal-ci
@@ -227,7 +241,7 @@ ci:
 ## verify-full: Run all merge, integration, platform, and coverage gates.
 .PHONY: verify-full
 .NOTPARALLEL: verify-full
-verify-full: ci test-e2e test-envtest cover-check sandbox-check linux-node-validation
+verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation
 
 ## clean: Remove build artifacts.
 .PHONY: clean

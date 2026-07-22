@@ -72,7 +72,8 @@ func TestRunnerSyncsConfiguredStageWithLatestBase(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}

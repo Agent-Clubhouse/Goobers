@@ -21,6 +21,9 @@ const (
 	EventStageHeartbeat EventType = "stage.heartbeat"
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"
+	// EventStageRerunRequested records an operator-requested rerun of one
+	// agentic task or gate with a one-off instruction addendum.
+	EventStageRerunRequested EventType = "stage.rerun.requested"
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
 	// bookkeeping, excluded from cross-runner conformance.
 	EventGateStarted EventType = "gate.started"
@@ -85,10 +88,10 @@ const (
 	EventConfigReloadRejected EventType = "config.reload.rejected"
 )
 
-// AttemptClass tags why a stage attempt exists. Only policy attempts are
-// conformance-normative; infra attempts (an infrastructure failure retried by
-// the runner) are excluded from the conformance set (§3.3). The initial attempt
-// carries no class and is always included.
+// AttemptClass tags why a non-initial stage attempt exists. Policy and human
+// attempts are conformance-normative; infra attempts (an infrastructure
+// failure retried by the runner) are excluded from the conformance set
+// (§3.3). The initial attempt carries no class and is always included.
 type AttemptClass string
 
 const (
@@ -96,6 +99,8 @@ const (
 	AttemptPolicy AttemptClass = "policy"
 	// AttemptInfra is a retry driven by infrastructure failure. Excluded.
 	AttemptInfra AttemptClass = "infra"
+	// AttemptHuman is an explicit operator-requested rerun. Normative.
+	AttemptHuman AttemptClass = "human"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
@@ -128,9 +133,14 @@ type Event struct {
 	// Attempt is the 1-based attempt number for stage.* events and
 	// stage-scoped artifacts. Normative except on stage.heartbeat.
 	Attempt int `json:"attempt,omitempty"`
-	// AttemptClass tags a retry attempt. Normative iff the event is not a
-	// heartbeat and the class is not "infra".
+	// AttemptClass tags why a non-initial attempt exists. Normative iff the
+	// event is not a heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
+	// Actor identifies the operator who requested an intervention. Normative.
+	Actor string `json:"actor,omitempty"`
+	// InstructionAddendum is the one-off instruction text supplied for a
+	// stage.rerun.requested event. Normative.
+	InstructionAddendum string `json:"instructionAddendum,omitempty"`
 	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
 	// gate.started and gate.paused are excluded as operational state.
 	Gate string `json:"gate,omitempty"`

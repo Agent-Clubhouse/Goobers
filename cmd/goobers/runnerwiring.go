@@ -1356,6 +1356,7 @@ func knownAutomatedCheckNames() []string {
 func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
+	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 	adapterRegistry, err := buildHarnessRegistry(nil, nil)
 	if err != nil {
 		return nil, err
@@ -1383,6 +1384,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
+			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)

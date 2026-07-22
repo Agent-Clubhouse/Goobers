@@ -34,13 +34,27 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
 | `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
-| `make verify-full` | `ci` plus walking-skeleton e2e, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
+| `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 The subset relationship is executable rather than documentary:
 `verify-fast` selects checks from the same Go check list as `ci`, while
 `verify-full` has `ci` and the additional gates as serialized Make
 prerequisites. Tests in `test/ci` compare the complete tier recipes and
 prerequisite graph, so extra or missing commands fail the contract check.
+
+Tests that intentionally execute tools outside the Go test process belong in
+`//go:build integration` files and must declare each executable with
+`testdep.Require`; their names use the `TestIntegration*` prefix so the tier
+runs no ordinary package tests. `make test-integration` is the
+developer-friendly entrypoint: a missing tool produces a visible, uniform skip
+with an install hint.
+`make test-integration-strict` sets `TESTDEP_STRICT=1`, so the same absence is a
+test failure; `verify-full` and CI always use this strict target. The integration
+runner prints the dependency inventory, runs only packages containing tagged
+tests, and rejects direct `exec.LookPath`, raw skips, or inventory drift.
+Ordinary unit tests should use in-process fakes; integration tests are for real
+local executables, not network services, cloud credentials, or heavyweight
+infrastructure.
 
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
 gate, and `verify-full` on a Unix-like host with the pinned envtest and native
@@ -56,11 +70,12 @@ command instead. **CI:** each validation job maps to the same contract:
 | `platform gate` (Ubuntu/macOS) | `make ci` (`go run ./test/ci` is its portable implementation) |
 | `windows compile smoke` | The Windows `go vet` + build slice of `verify-fast` |
 | `make ci` aggregate | Required status for the merge tier and Windows compile slice; it runs no additional validation |
+| `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned |
 | `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
 | `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 
-The dedicated sandbox and Linux-node CI jobs invoke their corresponding Make
-targets. E2e, envtest, and coverage are local `verify-full` gates pending CI
+The dedicated integration, sandbox, and Linux-node CI jobs invoke their
+corresponding Make targets. E2e, envtest, and coverage are local `verify-full` gates pending CI
 promotion in [#628](https://github.com/Agent-Clubhouse/Goobers/issues/628);
 future conformance or stress jobs follow the same one-target-per-job pattern.
 Focused targets such as
@@ -92,6 +107,9 @@ exercise Unix process and shell semantics are platform-gated on Windows.
 `verify-full` is Unix-hosted because its envtest, native-sandbox, and node
 validation targets use POSIX host facilities; Linux additionally requires
 `bubblewrap` with unprivileged user namespaces available.
+The strict integration target additionally provisions the executable inventory
+reported by `make test-integration`; when adding a dependency, update
+`internal/testdep` and the integration CI provisioning step together.
 
 ### CI platform matrix
 

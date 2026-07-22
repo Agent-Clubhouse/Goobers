@@ -55,7 +55,7 @@ func (f *fakeStarter) count(runID string) int {
 
 func testRegistry(t *testing.T) *engine.Registry {
 	t.Helper()
-	r := engine.NewRegistry()
+	r := engine.NewRegistryWithPreviewFeatures(true)
 	if _, err := r.Register("flow", flowSpec()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -104,6 +104,9 @@ func TestTriggerFiresStartsRun(t *testing.T) {
 	}
 	if st.lastInput.WorkflowDigest == "" {
 		t.Error("started input missing pinned workflow digest")
+	}
+	if st.lastInput.PreviewFeaturesEnabled == nil || !*st.lastInput.PreviewFeaturesEnabled {
+		t.Error("started input missing explicit preview-feature policy")
 	}
 	if st.lastInput.Item == nil || st.lastInput.Item.ID != "42" {
 		t.Errorf("started input missing the backlog item: %+v", st.lastInput.Item)

@@ -229,13 +229,18 @@ func (r *Run) Append(ev Event) error {
 	// Track terminal phase so Close/Checkpoint reflect the last run.finished.
 	// Reason mirrors the terminal event's own Error.Message, if any (#520) —
 	// empty for an ordinary business-outcome terminal that carries no error.
-	if ev.Type == EventRunFinished {
+	switch ev.Type {
+	case EventRunFinished:
 		r.phase = phaseFromStatus(ev.Status)
 		r.machineState = ""
 		r.reason = ""
 		if ev.Error != nil {
 			r.reason = ev.Error.Message
 		}
+	case EventStageRerunRequested:
+		r.phase = PhaseRunning
+		r.machineState = ev.Stage
+		r.reason = ""
 	}
 	return r.checkpoint()
 }

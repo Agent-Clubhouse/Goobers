@@ -39,7 +39,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{curator.Name: curator.Spec}
 	def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
 
-	m, err := Compile(def, WithGoobers(goobers))
+	m, err := compileAcknowledged(def, WithGoobers(goobers))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Deterministic: recompiling yields the same digest.
-	m2, err := Compile(def, WithGoobers(goobers))
+	m2, err := compileAcknowledged(def, WithGoobers(goobers))
 	if err != nil {
 		t.Fatalf("recompile: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBacklogCurationRejectsUngrantedCapability(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"curator": {Role: "curator", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write"}},
 	}
-	_, err := Compile(Definition{Name: "backlog-curation", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := compileAcknowledged(Definition{Name: "backlog-curation", Version: 1, Spec: spec}, WithGoobers(goobers))
 	if err == nil {
 		t.Fatal("expected compile to reject an ungranted repo:push capability, got nil error")
 	}

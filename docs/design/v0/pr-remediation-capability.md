@@ -98,6 +98,42 @@ non-scalar values, so structured evidence **cannot** travel that way. It travels
 artifact pointer, which is how the agentic stage already receives context. Gatherers
 therefore write files; only scalars used for *gate routing* go through `inputsFrom`.
 
+#### D1.1 — `remediation-brief.json` v1 contract
+
+The closed schema is
+`api/schemas/remediation-brief-v1.schema.json`; its wire identifier is
+`goobers.dev/remediation-brief/v1`. Unknown fields are rejected. Any shape
+change, including an additive field, publishes a new schema version rather than
+silently widening v1. Writers emit one version and readers select support by the
+wire identifier.
+
+`gather-pr-context` owns the required top-level routing fields and the required
+`gatherPrContext` section (SHA pins, full verdict or `null`, and the full
+issue-level PR comment thread). Optional gatherers exclusively own their
+namesake sections:
+
+| Section | Owner |
+|---|---|
+| `gatherCIFailures` | `gather-ci-failures` |
+| `gatherReviewThreads` | `gather-review-threads` |
+| `gatherSiblingContext` | `gather-sibling-context` |
+| `gatherIssueContext` | `gather-issue-context` |
+
+Assembly is a replace-one-section merge. Each configured optional gatherer reads
+the latest brief artifact, preserves the version, routing fields, required
+section, and every section it does not own, replaces only its own section, and
+emits the next complete brief artifact. The agentic stage consumes the artifact
+from the last configured gatherer; when none are configured, it consumes
+`gather-pr-context`'s brief directly. An absent gatherer means its property is
+omitted — that is a valid v1 brief and never a stage failure. A gatherer that ran
+and found no evidence emits its section with empty arrays, distinguishing
+"checked and empty" from "not gathered."
+
+Only `selectedNumber`, `head`, `base`, `hasSubstantiveFindings`, and
+`hasFailingCI` continue through `inputsFrom`. `workspaceBranch` remains the
+runner-interpreted branch-rebinding output. The full verdict, comments, and every
+optional section travel only in the journal-lifted brief artifact.
+
 ### D2 — Remediation policy declared in the DSL, not compiled into Go
 
 Today the scope of remediation is a hardcoded disjunction:
@@ -224,6 +260,7 @@ re-litigated. Each was settled by the maintainer.
 | Question | Decision |
 |---|---|
 | §6 Q1 — CI log volume | **Annotations + check summary, no raw log tails.** Highest signal per token, bounded by construction, no truncation heuristics to maintain. Accepted cost: an unannotated panic or build error gives less. Revisit only if that gap shows up in practice. |
+| §6 Q3 — response ordering | **After `push-remediated`.** The response must describe work that actually landed. `respond-to-findings` is independently retryable and reconciles one run-scoped comment to keep the post-push visibility window bounded without duplicating replies. |
 | Default remediation scope | **Maximally liberal** — conflicts, substantive findings, failing CI, stale base, sibling overlap, all on by default. Safe because the stuck-loop detector still bounds effort per cause. Scope down per-workflow if a category proves noisy. |
 | Sibling overlap behavior | **Wait** — park `blocked-on-sibling` and let the existing self-heal unpark it. Do not rewrite a diff that would have been fine once the sibling landed. |
 | Cycle budget shape | **Per cause, not flat** (issue #953). 2 per cause, ~6 total. A flat counter cannot distinguish three pointless rebases from three distinct problems solved in sequence. DSL-declared, not compiled in. |

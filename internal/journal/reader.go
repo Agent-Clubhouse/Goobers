@@ -302,7 +302,10 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 // truth — rather than trusting the derived state.json checkpoint.
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == EventRunFinished {
+		switch events[i].Type {
+		case EventStageRerunRequested:
+			return PhaseRunning
+		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
 		}
 	}
@@ -316,7 +319,10 @@ func reconstructPhase(events []Event) RunPhase {
 // mirroring Run.Append's own reason tracking.
 func reconstructReason(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == EventRunFinished {
+		switch events[i].Type {
+		case EventStageRerunRequested:
+			return ""
+		case EventRunFinished:
 			if events[i].Error != nil {
 				return events[i].Error.Message
 			}

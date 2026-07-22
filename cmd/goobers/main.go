@@ -74,9 +74,9 @@ modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
-rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
+rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic
+#359/#360/#361/#362/#363/#364/#392/#942): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*

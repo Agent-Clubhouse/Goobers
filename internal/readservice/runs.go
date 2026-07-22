@@ -797,6 +797,9 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 			case journal.AttemptInfra:
 				retries++
 				infraRetries++
+			case journal.AttemptHuman:
+				// An explicit operator rerun is neither a policy/infra retry
+				// nor an automatic gate repass.
 			default:
 				if seenInitial[event.Stage] {
 					repasses++
@@ -813,6 +816,10 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 			if currentStage == event.Gate {
 				currentStage = ""
 			}
+		case journal.EventStageRerunRequested:
+			phase = journal.PhaseRunning
+			finishedAt = nil
+			currentStage = event.Stage
 		case journal.EventRunFinished:
 			if !canonicalPhase(journal.RunPhase(event.Status)) || event.Status == string(journal.PhaseRunning) {
 				return RunSummary{}, fmt.Errorf("unsupported terminal phase %q", event.Status)

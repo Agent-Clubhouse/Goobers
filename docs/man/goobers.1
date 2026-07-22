@@ -13,9 +13,9 @@ modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
-rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
+rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic
+#359/#360/#361/#362/#363/#364/#392/#942): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
@@ -148,6 +148,9 @@ durable per-PR repass budget + same-diff escalation (a workflow stage)
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
 .TP
+\fBgoobers respond-to-findings\fR
+post a validated per-finding remediation response to the claimed PR (a workflow stage)
+.TP
 \fBgoobers run\fR
 trigger a run manually (still honors run conditions)
 .TP
@@ -264,6 +267,7 @@ show a workflow as a text DAG
 \fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
+\fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
 \fBgoobers-run-cancel\fR(1),

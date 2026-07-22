@@ -29,10 +29,13 @@ const (
 // Feature records a DSL feature's current support level and the app version in
 // which it entered that level.
 type Feature struct {
-	ID           FeatureID           `json:"id"`
-	Level        SupportLevel        `json:"level"`
-	SinceVersion string              `json:"sinceVersion"`
-	DSLVersions  []DSLFeatureSupport `json:"dslVersions,omitempty"`
+	ID                    FeatureID           `json:"id"`
+	Level                 SupportLevel        `json:"level"`
+	SinceVersion          string              `json:"sinceVersion"`
+	Replacement           FeatureID           `json:"replacement,omitempty"`
+	RemovalTargetVersion  string              `json:"removalTargetVersion,omitempty"`
+	LastSupportingVersion string              `json:"lastSupportingVersion,omitempty"`
+	DSLVersions           []DSLFeatureSupport `json:"dslVersions,omitempty"`
 }
 
 // DSLFeatureSupport records a feature's support level in one DSL version.
@@ -76,6 +79,19 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 				return FeatureRegistry{}, fmt.Errorf("DSL feature %q has duplicate DSL version %q", feature.ID, version.Version)
 			}
 			seenVersions[version.Version] = struct{}{}
+		}
+		switch feature.Level {
+		case SupportDeprecated:
+			if strings.TrimSpace(string(feature.Replacement)) == "" {
+				return FeatureRegistry{}, fmt.Errorf("deprecated DSL feature %q has no replacement", feature.ID)
+			}
+			if strings.TrimSpace(feature.RemovalTargetVersion) == "" {
+				return FeatureRegistry{}, fmt.Errorf("deprecated DSL feature %q has no removal-target version", feature.ID)
+			}
+		case SupportRemoved:
+			if strings.TrimSpace(feature.LastSupportingVersion) == "" {
+				return FeatureRegistry{}, fmt.Errorf("removed DSL feature %q has no last-supporting version", feature.ID)
+			}
 		}
 		if _, exists := entries[feature.ID]; exists {
 			return FeatureRegistry{}, fmt.Errorf("duplicate DSL feature %q", feature.ID)
@@ -507,25 +523,6 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 		used.add(featureGooberWorkflows)
 	}
 	return currentFeatureRegistry.resolve(used.ids())
-}
-
-// CheckWorkflowFeatures lets config validation share the compiler's registry
-// resolution path. VER-2 extends this seam with level-specific diagnostics.
-func CheckWorkflowFeatures(def Definition) []string {
-	_, err := FeaturesForWorkflow(def)
-	if err == nil {
-		return nil
-	}
-	return []string{err.Error()}
-}
-
-// CheckGooberFeatures resolves a goober against the same feature registry.
-func CheckGooberFeatures(spec apiv1.GooberSpec) []string {
-	_, err := FeaturesForGoober(spec)
-	if err == nil {
-		return nil
-	}
-	return []string{err.Error()}
 }
 
 func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {

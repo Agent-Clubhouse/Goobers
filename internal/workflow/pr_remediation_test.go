@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -51,11 +52,11 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 		goobers[g.Name] = g.Spec
 	}
 
-	m, err := Compile(
+	m, err := compileAcknowledged(
 		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		WithGoobers(goobers),
-		WithKnownChecks([]string{"output-equals", "status-equals"}),
-	)
+		WithKnownChecks([]string{"output-equals", "status-equals"}))
+
 	if err != nil {
 		t.Fatalf("compile pr-remediation against selfhost's real goobers: %v", err)
 	}
@@ -96,11 +97,25 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "implement" {
-		t.Errorf("checkpoint-gate pass -> %q, want implement (the whole point of #392)", got)
+	if got := checkpointGate.Branches["pass"]; got != "gather-sibling-context" {
+		t.Errorf("checkpoint-gate pass -> %q, want gather-sibling-context", got)
 	}
 	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
 		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
+	}
+
+	siblings, ok := m.Task("gather-sibling-context")
+	if !ok {
+		t.Fatal("gather-sibling-context stage not found")
+	}
+	if got := siblings.InputsFrom["selectedNumber"]; got != "selectedNumber" {
+		t.Errorf("gather-sibling-context selectedNumber input = %q, want checkpoint's selectedNumber output", got)
+	}
+	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
+		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
+	}
+	if got := siblings.Next; got != "implement" {
+		t.Errorf("gather-sibling-context next = %q, want implement", got)
 	}
 
 	implement, ok := m.Task("implement")
@@ -115,6 +130,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if got := implement.Next; got != "review" {
 		t.Errorf("implement next = %q, want the review gate", got)
+	}
+	if !containsString(implement.ExpectedOutputs, "findingResponses") {
+		t.Errorf("implement expectedOutputs = %v, missing findingResponses account", implement.ExpectedOutputs)
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
@@ -191,19 +209,59 @@ func TestPRRemediationRebindsTheWorkspaceBranch(t *testing.T) {
 	}
 }
 
-// TestPRRemediationPublishesAndClearsTheLabel pins the cycle's terminal step.
+func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
+	_, m := loadPRRemediation(t)
+
+	gather, ok := m.Task("gather-pr-context")
+	if !ok {
+		t.Fatal("gather-pr-context not found")
+	}
+	if got := gather.Inputs["resultFile"]; got != "remediation-brief.json" {
+		t.Fatalf("gather-pr-context resultFile = %q, want remediation-brief.json", got)
+	}
+
+	rebase, ok := m.Task("rebase-pr")
+	if !ok {
+		t.Fatal("rebase-pr not found")
+	}
+	wantRouting := map[string]string{
+		"selectedNumber":         "selectedNumber",
+		"head":                   "head",
+		"base":                   "base",
+		"hasSubstantiveFindings": "hasSubstantiveFindings",
+		"hasFailingCI":           "hasFailingCI",
+	}
+	if len(rebase.InputsFrom) != len(wantRouting) {
+		t.Fatalf("rebase-pr inputsFrom = %v, want routing-only subset %v", rebase.InputsFrom, wantRouting)
+	}
+	for key, want := range wantRouting {
+		if got := rebase.InputsFrom[key]; got != want {
+			t.Errorf("rebase-pr inputsFrom[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	implement, ok := m.Task("implement")
+	if !ok {
+		t.Fatal("implement not found")
+	}
+	if !strings.Contains(implement.Goal, "remediation-brief.json") {
+		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
+	}
+}
+
+// TestPRRemediationPublishesAndResponds pins the cycle's terminal steps.
 // Without a publish stage the agentic chain's work stays local to the run's
 // worktree and is discarded at teardown — the run would report success having
 // changed nothing on the PR, the most expensive possible no-op.
-func TestPRRemediationPublishesAndClearsTheLabel(t *testing.T) {
+func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	_, m := loadPRRemediation(t)
 
 	push, ok := m.Task("push-remediated")
 	if !ok {
 		t.Fatal("push-remediated not found — the remediation would never reach the PR")
 	}
-	if push.Next != "" {
-		t.Errorf("push-remediated next = %q, want terminal", push.Next)
+	if push.Next != "respond-to-findings" {
+		t.Errorf("push-remediated next = %q, want respond-to-findings after the branch is published", push.Next)
 	}
 	wantCaps := map[string]bool{"repo:push": false, "github:pr:write": false, "github:issues:write": false}
 	for _, c := range push.Capabilities {
@@ -211,10 +269,44 @@ func TestPRRemediationPublishesAndClearsTheLabel(t *testing.T) {
 			wantCaps[c] = true
 		}
 	}
+
+	respond, ok := m.Task("respond-to-findings")
+	if !ok {
+		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
+	}
+	if respond.Next != "" {
+		t.Errorf("respond-to-findings next = %q, want terminal", respond.Next)
+	}
+	if respond.Run == nil {
+		t.Fatal("respond-to-findings has no deterministic run command")
+	}
+	if len(respond.Run.Command) != 2 ||
+		respond.Run.Command[0] != "goobers" || respond.Run.Command[1] != "respond-to-findings" {
+		t.Errorf("respond-to-findings command = %v, want [goobers respond-to-findings]", respond.Run.Command)
+	}
+	if respond.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("respond-to-findings workspace = %q, want scratch: it reads declared journal inputs, not repository state", respond.Run.Workspace)
+	}
+	if len(respond.Capabilities) != 1 || respond.Capabilities[0] != "github:issues:write" {
+		t.Errorf("respond-to-findings capabilities = %v, want only github:issues:write", respond.Capabilities)
+	}
+	if respond.Inputs["resultFile"] != "remediation-response.json" {
+		t.Errorf("respond-to-findings resultFile = %q, want durable remediation-response.json", respond.Inputs["resultFile"])
+	}
+	if len(respond.InputsFrom) != 0 {
+		t.Errorf("respond-to-findings inputsFrom = %v, want none so omitting the stage only removes legibility", respond.InputsFrom)
+	}
+	if !containsString(respond.ExpectedOutputs, "posted") {
+		t.Errorf("respond-to-findings outputs = %v, missing posted status", respond.ExpectedOutputs)
+	}
 	for c, granted := range wantCaps {
 		if !granted {
 			t.Errorf("push-remediated is missing capability %q", c)
 		}
+	}
+	if push.Inputs["resultFile"] != "push-remediated-result.json" ||
+		!containsString(push.ExpectedOutputs, "published") {
+		t.Errorf("push-remediated result contract = inputs %v outputs %v, want durable published status", push.Inputs, push.ExpectedOutputs)
 	}
 
 	// pr-remediation is the ONLY workflow that pushes to existing PR

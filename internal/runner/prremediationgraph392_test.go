@@ -28,10 +28,11 @@ import (
 // that committed nothing would make this test pass through a path the live
 // workflow never takes.
 type remediationGoober struct {
-	t        *testing.T
-	mu       sync.Mutex
-	verdicts []apiv1.VerdictDecision
-	reviewed int
+	t                 *testing.T
+	mu                sync.Mutex
+	verdicts          []apiv1.VerdictDecision
+	reviewed          int
+	sawSiblingContext bool
 	// visitMu/visited are the SHARED dispatch log the deterministic stub also
 	// appends to — an agentic stage goes through a different executor, so
 	// recording only deterministic dispatches would silently omit `implement`,
@@ -48,6 +49,11 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	g.visitMu.Unlock()
 	g.mu.Lock()
 	n := g.reviewed
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name == "gather-sibling-context.artifact[0]" && pointer.Artifact != nil {
+			g.sawSiblingContext = true
+		}
+	}
 	g.mu.Unlock()
 	// A distinct change per pass, so a repass produces a genuinely different
 	// diff (#316's same-diff short-circuit would otherwise escalate).
@@ -58,7 +64,11 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	}
 	runGit(g.t, env.Workspace, "add", "-A")
 	runGit(g.t, env.Workspace, "commit", "-m", "address merge-review findings")
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "remediated"}, nil
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: "remediated",
+		Outputs: map[string]interface{}{"findingResponses": "[]"},
+	}, nil
 }
 
 func (g *remediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -105,6 +115,7 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
 		workflow.WithKnownChecks([]string{"output-equals", "status-equals"}),
+		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
 		t.Fatalf("compile shipped pr-remediation: %v", err)
@@ -114,8 +125,8 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 
 // visitRecordingDeterministic records the order stages were dispatched in and
 // serves each one canned outputs, standing in for the provider-chain CLIs
-// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated) and
-// for `make ci`.
+// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated,
+// respond-to-findings) and for `make ci`.
 type visitRecordingDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
@@ -170,9 +181,20 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
 		}},
-		runID + ":local-ci":        {status: apiv1.ResultSuccess},
-		runID + ":push-remediated": {status: apiv1.ResultSuccess},
-		runID + ":park-escalated":  {status: apiv1.ResultSuccess},
+		runID + ":gather-sibling-context": {
+			status:       apiv1.ResultSuccess,
+			outputs:      map[string]interface{}{"selectedNumber": "77"},
+			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
+			artifactMediaType: "application/json",
+		},
+		runID + ":local-ci": {status: apiv1.ResultSuccess},
+		runID + ":push-remediated": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
+		},
+		runID + ":respond-to-findings": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
+		},
+		runID + ":park-escalated": {status: apiv1.ResultSuccess},
 	}
 
 	r, err := New(Config{
@@ -214,9 +236,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → implement → [review pass] → local-ci → [ci pass] →
-// push-remediated, and complete. Before #392 this run dead-ended at
-// remediation-checkpoint.
+// [continue] → gather-sibling-context → implement → [review pass] → local-ci
+// → [ci pass] → push-remediated → respond-to-findings, and complete. Before
+// #392 this run dead-ended at remediation-checkpoint.
 func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	goober := &remediationGoober{t: t}
 	res, visited, _ := walkShippedPRRemediation(t, "prr-full", goober)
@@ -229,15 +251,20 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"gather-pr-context",
 		"rebase-pr",
 		"remediation-checkpoint",
+		"gather-sibling-context",
 		"implement",
 		"local-ci",
 		"push-remediated",
+		"respond-to-findings",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
 	if goober.reviewed != 1 {
 		t.Errorf("reviewer invoked %d times, want 1 — the agentic review gate must actually run", goober.reviewed)
+	}
+	if !goober.sawSiblingContext {
+		t.Error("implementer context is missing gather-sibling-context.artifact[0]")
 	}
 }
 
@@ -335,8 +362,8 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	if implements != 2 {
 		t.Errorf("implement dispatched %d times, want 2 (visited: %v)", implements, visited)
 	}
-	if visited[len(visited)-1] != "push-remediated" {
-		t.Errorf("last stage = %q, want push-remediated after the repass passed review", visited[len(visited)-1])
+	if visited[len(visited)-1] != "respond-to-findings" {
+		t.Errorf("last stage = %q, want respond-to-findings after the remediated branch was published", visited[len(visited)-1])
 	}
 }
 
@@ -402,6 +429,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		// #947: open-pr-gate uses output-equals(opened) to abort on a
 		// mid-flight-closed issue.
 		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
 		t.Fatalf("compile shipped implementation: %v", err)

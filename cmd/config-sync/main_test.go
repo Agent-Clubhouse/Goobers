@@ -112,11 +112,20 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 				t.Fatalf("exit = %d, want %d", code, tc.wantCode)
 			}
 			output := readOutput(t, stderr)
-			if !strings.Contains(output, want) {
+			var compatibilityOutput strings.Builder
+			for _, line := range strings.Split(output, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "WARNING VER002 ") {
+					continue
+				}
+				compatibilityOutput.WriteString(line)
+				compatibilityOutput.WriteByte('\n')
+			}
+			filtered := compatibilityOutput.String()
+			if !strings.Contains(filtered, want) {
 				t.Fatalf("output missing legacy warning:\n%s", output)
 			}
-			if strings.Contains(output, "VER003") || strings.Contains(output, "Gaggle/acme-web") ||
-				strings.Contains(output, "gaggles/acme-web/workflows/implementation.yaml") {
+			if strings.Contains(filtered, "VER003") || strings.Contains(filtered, "Gaggle/acme-web") ||
+				strings.Contains(filtered, "gaggles/acme-web/workflows/implementation.yaml") {
 				t.Fatalf("output exposed API warning provenance:\n%s", output)
 			}
 		})

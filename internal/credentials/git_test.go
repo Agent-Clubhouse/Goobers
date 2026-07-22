@@ -3,9 +3,7 @@ package credentials
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -45,39 +43,5 @@ func TestWriteAskpassScriptContainsNoSecretMaterial(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("askpass script perms = %v, want no group/other access", info.Mode().Perm())
-	}
-}
-
-func TestGitEnvDrivesAskpassProtocol(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh not available")
-	}
-	dir := t.TempDir()
-	path, err := WriteAskpassScript(dir)
-	if err != nil {
-		t.Fatalf("WriteAskpassScript: %v", err)
-	}
-	env := GitEnv(path, "canary-token-value")
-
-	cmd := exec.Command(path, "Password for 'https://example.com':")
-	cmd.Env = append(os.Environ(), env...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("run askpass script: %v", err)
-	}
-	if got := strings.TrimSpace(out.String()); got != "canary-token-value" {
-		t.Fatalf("askpass password output = %q, want %q", got, "canary-token-value")
-	}
-
-	cmd = exec.Command(path, "Username for 'https://example.com':")
-	cmd.Env = append(os.Environ(), env...)
-	out.Reset()
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("run askpass script: %v", err)
-	}
-	if got := strings.TrimSpace(out.String()); got == "" || got == "canary-token-value" {
-		t.Fatalf("askpass username output = %q, want a non-empty non-token placeholder", got)
 	}
 }

@@ -56,11 +56,11 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Error("reviewer is not registered for merge-review")
 			}
 
-			m, err := Compile(
+			m, err := compileAcknowledged(
 				Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 				WithGoobers(map[string]apiv1.GooberSpec{"reviewer": reviewer.Spec}),
-				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}),
-			)
+				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}))
+
 			if err != nil {
 				t.Fatalf("compile workflow: %v", err)
 			}
@@ -250,6 +250,14 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			wantRefusalCaps := []string{"github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(recordRefusal.Capabilities, wantRefusalCaps) {
 				t.Errorf("record-merge-refusal capabilities = %v, want %v", recordRefusal.Capabilities, wantRefusalCaps)
+			}
+			wantRefusalInputs := map[string]string{
+				"selectedNumber":  "selectedNumber",
+				"reason":          "reason",
+				"selectedHeadSha": "selectedHeadSha",
+			}
+			if !reflect.DeepEqual(recordRefusal.InputsFrom, wantRefusalInputs) {
+				t.Errorf("record-merge-refusal inputsFrom = %v, want %v", recordRefusal.InputsFrom, wantRefusalInputs)
 			}
 
 			queueWatch, ok := m.Task("queue-watch")

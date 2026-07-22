@@ -454,7 +454,7 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(wt2.Path)
-	resultFile := filepath.Join(wt2.Path, "pr-context.json")
+	resultFile := filepath.Join(wt2.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)

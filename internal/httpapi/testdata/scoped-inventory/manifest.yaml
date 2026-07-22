@@ -2,6 +2,8 @@ apiVersion: goobers.dev/v1alpha1
 kind: Manifest
 metadata:
   name: scoped-inventory
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: scoped-inventory

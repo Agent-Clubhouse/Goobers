@@ -25,6 +25,14 @@
     "baseSha": {
       "type": "string",
       "description": "PR-lifecycle only (#358): the base branch commit this verdict was computed against — pins together with headSha."
+    },
+    "digest": {
+      "type": "string",
+      "description": "PR-lifecycle review digest used for cross-run verdict caching."
+    },
+    "sourceRunId": {
+      "type": "string",
+      "description": "The run whose reviewer evaluation originally produced this verdict."
     }
   },
   "$defs": {

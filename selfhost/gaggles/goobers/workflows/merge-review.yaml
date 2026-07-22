@@ -272,7 +272,7 @@ spec:
 
     - name: queue-watch
       type: deterministic
-      goal: Watch a merge-queue-enqueued PR until the queue merges or evicts it.
+      goal: Watch a merge-queue-enqueued PR until it merges, is evicted, or needs timeout remediation.
       run:
         command: ["goobers", "merge-queue-poll"]
       inputsFrom:
@@ -468,12 +468,10 @@ spec:
     - name: queue-gate
       # Issue #758: the merge queue's own eventual verdict on an already-
       # enqueued PR — merged (proceed to the same post-merge fan-out a
-      # direct merge gets), evicted (an explicit, first-class outcome —
-      # queue-watch has already labeled the PR goobers:needs-remediation by
-      # the time this gate evaluates, so no further routing happens here),
-      # or timeout (still pending past queue-watch's own bounded poll; a
-      # conjunct that changed after review leaves the PR as-is, same as
-      # merge-gate's fail branch, for a later run to reconsider).
+      # direct merge gets), or evicted/timeout (queue-watch has already
+      # labeled the PR goobers:needs-remediation with an explanatory comment,
+      # so no further routing happens here). A timeout also remains in the
+      # post-merge reconciliation ledger in case the queue lands it later.
       evaluator: automated
       automated:
         check: queue-outcome

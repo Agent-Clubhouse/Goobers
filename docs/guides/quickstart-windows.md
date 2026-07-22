@@ -122,5 +122,9 @@ Node/npm step is needed for the CLI build.) This is also how you cross-compile a
 Windows binary from another platform once the Windows compile is green:
 
 ```sh
-GOOS=windows GOARCH=amd64 go run ./release -targets windows/amd64
+GOOS=windows GOARCH=amd64 go run ./release -targets windows/amd64 -first-feature-snapshot
 ```
+
+`-first-feature-snapshot` selects the empty baseline for this first/local
+package. For later releases, use `-previous-features` as described in
+[Releases & packaging](releases.md).
