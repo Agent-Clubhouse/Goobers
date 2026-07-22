@@ -242,6 +242,11 @@ spec:
       evaluator: agentic
       agentic:
         goober: reviewer
+        # #765: retry a transient reviewer-harness failure (a copilot session
+        # that wrote no verdict file) within this bound instead of failing the
+        # run on the first occurrence. Non-transient errors still fail fast.
+        retry:
+          maxAttempts: 2
       branches:
         # #825: a pass enters apply-verdict too (every verdict is published
         # as a native GitHub review before any merge decision) —
