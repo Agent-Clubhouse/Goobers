@@ -100,6 +100,7 @@ github.com/goobers/goobers/internal/sandbox.resolveDirectory # Sandbox directory
 github.com/goobers/goobers/internal/bootstrap.RegisterEngine # Quarantined Temporal V2 worker seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
+github.com/goobers/goobers/internal/engine.Registry.Register # Name+spec registration convenience wrapper over RegisterDefinition (#1251 moved production callers to RegisterDefinition for DSL-version plumbing), retained for tier 3 and exercised by registry package tests.
 github.com/goobers/goobers/internal/engine.Registry.Get # Version-pinned Temporal engine registry seam retained for tier 3.
 github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine run-start seam retained for tier 3.
 github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
