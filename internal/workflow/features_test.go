@@ -141,12 +141,20 @@ func TestFeatureRegistryCompatibilityPolicyUsesReleasedSnapshot(t *testing.T) {
 		return SupportTransition{Level: level, SinceVersion: version}
 	}
 	feature := func(level SupportLevel, version string, history ...SupportTransition) Feature {
-		return Feature{
+		result := Feature{
 			ID:           "example.feature",
 			Level:        level,
 			SinceVersion: version,
 			History:      history,
 		}
+		switch level {
+		case SupportDeprecated:
+			result.Replacement = "replacement.feature"
+			result.RemovalTargetVersion = "v1.3.0"
+		case SupportRemoved:
+			result.LastSupportingVersion = "v1.2.0"
+		}
+		return result
 	}
 	registry := func(features ...Feature) FeatureRegistry {
 		t.Helper()
@@ -246,9 +254,10 @@ func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
 		return SupportTransition{Level: level, SinceVersion: version}
 	}
 	valid := Feature{
-		ID:           "example.feature",
-		Level:        SupportRemoved,
-		SinceVersion: "v1.3.0",
+		ID:                    "example.feature",
+		Level:                 SupportRemoved,
+		SinceVersion:          "v1.3.0",
+		LastSupportingVersion: "v1.2.0",
 		History: []SupportTransition{
 			transition(SupportPreview, "dev"),
 			transition(SupportGA, "v1.1.0"),
