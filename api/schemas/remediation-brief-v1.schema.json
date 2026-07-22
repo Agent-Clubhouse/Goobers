@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/remediation-brief-v1.schema.json",
+  "title": "RemediationBriefV1",
+  "description": "Version 1 of the PR-remediation evidence artifact. gather-pr-context owns the required routing scalars and gatherPrContext section. Each optional gatherer owns exactly its namesake section; omitted sections mean that gatherer was absent or supplied no artifact and do not invalidate the brief.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "selectedNumber",
+    "head",
+    "base",
+    "workspaceBranch",
+    "isBehindBase",
+    "hasSubstantiveFindings",
+    "hasFailingCI",
+    "gatherPrContext"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/remediation-brief/v1",
+      "description": "Immutable wire-version identifier. Any additive or breaking shape change requires a new schema version."
+    },
+    "selectedNumber": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Routing scalar emitted by gather-pr-context and eligible for inputsFrom."
+    },
+    "head": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Routing scalar emitted by gather-pr-context and eligible for inputsFrom."
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Routing scalar emitted by gather-pr-context and eligible for inputsFrom."
+    },
+    "workspaceBranch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Runner routing scalar that rebinds later worktrees to the selected PR head."
+    },
+    "isBehindBase": {
+      "type": "boolean",
+      "description": "Base-state evidence owned by gather-pr-context; not an inputsFrom value."
+    },
+    "hasSubstantiveFindings": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Gate-routing scalar derived from the full verdict. The verdict itself remains in gatherPrContext."
+    },
+    "hasFailingCI": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Gate-routing scalar derived from provider check state. Detailed failures belong to gatherCIFailures."
+    },
+    "gatherPrContext": {
+      "$ref": "#/$defs/gatherPrContext"
+    },
+    "gatherCIFailures": {
+      "$ref": "#/$defs/gatherCIFailures"
+    },
+    "gatherReviewThreads": {
+      "$ref": "#/$defs/gatherReviewThreads"
+    },
+    "gatherSiblingContext": {
+      "$ref": "#/$defs/gatherSiblingContext"
+    },
+    "gatherIssueContext": {
+      "$ref": "#/$defs/gatherIssueContext"
+    }
+  },
+  "$defs": {
+    "gatherPrContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headSha", "baseSha", "verdict", "comments"],
+      "properties": {
+        "headSha": { "type": "string", "minLength": 1 },
+        "baseSha": { "type": "string", "minLength": 1 },
+        "verdict": {
+          "oneOf": [
+            { "$ref": "verdict.schema.json" },
+            { "type": "null" }
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/threadComment" }
+        }
+      }
+    },
+    "threadComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body"],
+      "properties": {
+        "author": { "type": "string" },
+        "body": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "gatherCIFailures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ciFailure" }
+        }
+      }
+    },
+    "ciFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "conclusion", "annotations"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "conclusion": { "type": "string", "minLength": 1 },
+        "url": { "type": "string" },
+        "summary": { "type": "string" },
+        "annotations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ciAnnotation" }
+        }
+      }
+    },
+    "ciAnnotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "path": { "type": "string" },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "level": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "gatherReviewThreads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviews", "inlineComments"],
+      "properties": {
+        "reviews": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nativeReview" }
+        },
+        "inlineComments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inlineComment" }
+        }
+      }
+    },
+    "nativeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "author": { "type": "string" },
+        "state": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" },
+        "commitSha": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "inlineComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body", "path"],
+      "properties": {
+        "author": { "type": "string" },
+        "body": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "side": { "type": "string" },
+        "inReplyTo": { "type": "integer", "minimum": 1 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "gatherSiblingContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pullRequests"],
+      "properties": {
+        "pullRequests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sibling" }
+        }
+      }
+    },
+    "sibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "blocking", "overlappingFiles"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "head": { "type": "string" },
+        "headSha": { "type": "string" },
+        "blocking": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "overlappingFiles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "gatherIssueContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issues"],
+      "properties": {
+        "issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "body"],
+      "properties": {
+        "number": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    }
+  }
+}

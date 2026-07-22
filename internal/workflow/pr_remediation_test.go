@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -188,6 +189,46 @@ func TestPRRemediationRebindsTheWorkspaceBranch(t *testing.T) {
 	if !found {
 		t.Errorf("gather-pr-context expectedOutputs = %v, missing workspaceBranch — "+
 			"every later stage would be provisioned on a fresh branch off main instead of the PR's", gather.ExpectedOutputs)
+	}
+}
+
+func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
+	_, m := loadPRRemediation(t)
+
+	gather, ok := m.Task("gather-pr-context")
+	if !ok {
+		t.Fatal("gather-pr-context not found")
+	}
+	if got := gather.Inputs["resultFile"]; got != "remediation-brief.json" {
+		t.Fatalf("gather-pr-context resultFile = %q, want remediation-brief.json", got)
+	}
+
+	rebase, ok := m.Task("rebase-pr")
+	if !ok {
+		t.Fatal("rebase-pr not found")
+	}
+	wantRouting := map[string]string{
+		"selectedNumber":         "selectedNumber",
+		"head":                   "head",
+		"base":                   "base",
+		"hasSubstantiveFindings": "hasSubstantiveFindings",
+		"hasFailingCI":           "hasFailingCI",
+	}
+	if len(rebase.InputsFrom) != len(wantRouting) {
+		t.Fatalf("rebase-pr inputsFrom = %v, want routing-only subset %v", rebase.InputsFrom, wantRouting)
+	}
+	for key, want := range wantRouting {
+		if got := rebase.InputsFrom[key]; got != want {
+			t.Errorf("rebase-pr inputsFrom[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	implement, ok := m.Task("implement")
+	if !ok {
+		t.Fatal("implement not found")
+	}
+	if !strings.Contains(implement.Goal, "remediation-brief.json") {
+		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
 	}
 }
 

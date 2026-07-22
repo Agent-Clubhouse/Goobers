@@ -79,13 +79,13 @@ func TestGatherPRContextEmitsWorkspaceBranch(t *testing.T) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	raw, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, raw)
+		t.Fatalf("unmarshal %s: %v (data=%s)", remediationBriefResultFile, err, raw)
 	}
 
 	branch, ok := result["workspaceBranch"].(string)

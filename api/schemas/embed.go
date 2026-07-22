@@ -16,6 +16,9 @@ const BaseURI = "https://goobers.dev/schemas/"
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
+// RemediationBrief is the versioned PR-remediation evidence artifact schema.
+const RemediationBrief = "remediation-brief-v1.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",
@@ -54,6 +57,7 @@ func Files() []string {
 		"verdict.schema.json",
 		"artifact-pointer.schema.json",
 		CandidateFindings,
+		RemediationBrief,
 		"journal-event.schema.json",
 		"journal-run.schema.json",
 	}

@@ -13,7 +13,8 @@ or reporting failing CI, falling back to a PR behind its base only when
 neither stronger signal is present. Check out its branch into this
 stage's worktree and load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
-them to the declared result file. [path] is the instance root (matching
+the versioned remediation-brief artifact to the declared result file.
+[path] is the instance root (matching
 pr-select/apply-verdict), defaulting to GOOBERS_INSTANCE_ROOT; git
 operations run against the stage's actual worktree (the process's
 current directory), not path — same split push-branch already relies
