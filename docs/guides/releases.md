@@ -19,15 +19,17 @@ shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
 packages each target into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest into `dist/` (override with `-output`). It is a standalone
-Go tool — matching `test/ci` and `test/coveragegate` — so it runs identically on
-any release runner without a shell dependency.
+`SHA256SUMS` manifest, generated release notes, and the shipped DSL feature
+snapshot into `dist/` (override with `-output`). It is a standalone Go tool —
+matching `test/ci` and `test/coveragegate` — so it runs identically on any
+release runner without a shell dependency.
 
 ```sh
-go run ./release                              # full matrix into ./dist
-go run ./release -targets windows/amd64       # just the Windows artifact
-go run ./release -version v1.2.3 -output dist # explicit version + output dir
-go run ./release -skip-unbuildable            # package what compiles, skip the rest
+go run ./release -first-feature-snapshot      # first recorded snapshot only
+go run ./release -previous-features previous-feature-registry.json
+go run ./release -previous-features previous-feature-registry.json -targets windows/amd64
+go run ./release -previous-features previous-feature-registry.json -version v1.2.3 -output dist
+go run ./release -previous-features previous-feature-registry.json -skip-unbuildable
 ```
 
 Build metadata (`version`/`commit`/`date`) is injected via the same
@@ -36,6 +38,36 @@ released binary's `goobers --version` is byte-for-byte consistent with a local
 `make build`. Version defaults to `git describe --tags --always --dirty`; the
 build date defaults to the commit's committer date, so re-running the engine on
 the same commit is reproducible (`-trimpath` is always on).
+
+### Release notes and DSL feature snapshot
+
+Every non-empty release build writes two metadata assets alongside the binaries:
+
+- `feature-registry.json` is the complete, schema-versioned snapshot returned by
+  the same registry that powers `goobers features` and
+  [`docs/feature-matrix.md`](../feature-matrix.md).
+- `RELEASE_NOTES.md` is rendered from
+  [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
+  includes newly GA, newly deprecated, and removed features plus the external
+  consumer support policy. Replace the generated highlight placeholder with the
+  curated release summary before publishing.
+
+For every release after the first, download `feature-registry.json` from the
+previous GitHub Release and pass it with `-previous-features`. The generator
+validates the snapshot and compares support levels by stable feature ID. A
+feature must remain in the registry at level `removed`, not disappear. For the
+first recorded snapshot, pass `-first-feature-snapshot` to explicitly select an
+empty baseline; exactly one baseline option is required. The
+[illustrative generated note](../releases/sample-release-notes.md) shows all
+three transition categories.
+
+External consumers should pin both the Goobers binary version and its attached
+snapshot. Preview features are unstable; GA features carry the compatibility
+contract; deprecated features continue to validate with warnings for at least
+one released minor before removal; removed features fail validation. Within an
+`apiVersion`, optional additions and `preview` to `ga` promotions are
+non-breaking. Field removal or renaming, tighter constraints, changed defaults,
+and semantic changes require the deprecation window or an `apiVersion` bump.
 
 ### Artifact shape
 
@@ -52,8 +84,10 @@ the binary under its natural name.
 ### Checksums
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
-`<hex>  <filename>` line per artifact, sorted by filename. The same file verifies
-on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+`<hex>  <filename>` line per binary archive and the authoritative
+`feature-registry.json`, sorted by filename. The generated release note remains
+editable for curation and is not checksummed. The same file verifies on every
+platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
 **primary integrity mechanism** for the initially-unsigned Windows artifacts.
