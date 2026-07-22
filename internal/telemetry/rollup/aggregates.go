@@ -28,16 +28,19 @@ const (
 	stageStatusFailure = "failure"
 )
 
-// StatsRequest filters the aggregate views Stats returns. Zero-value fields
-// are unfiltered: empty Workflow/Gaggle matches every workflow/gaggle, zero
-// Since/Until leaves that bound open. Gaggle exists because runs.gaggle does
-// (TEL-Q4 per-gaggle partitioning) — issue #129: it was queryable in the
-// schema but had no request field to filter on it.
+// StatsRequest filters the aggregate views Stats returns. Model and
+// HarnessVersion restrict results to agentic invocations; their GroupBy flags
+// split run and stage rows into provenance cohorts. Run cohorts are
+// participatory: a run using multiple grouped cohorts appears in each.
 type StatsRequest struct {
-	Workflow string
-	Gaggle   string
-	Since    time.Time
-	Until    time.Time
+	Workflow              string
+	Gaggle                string
+	Model                 string
+	HarnessVersion        string
+	GroupByModel          bool
+	GroupByHarnessVersion bool
+	Since                 time.Time
+	Until                 time.Time
 }
 
 // GaggleStats is the success/failure/duration aggregate for one gaggle.
@@ -56,12 +59,14 @@ type GaggleStats struct {
 
 // RunStats is the success/failure/duration aggregate for one workflow.
 type RunStats struct {
-	Gaggle        string `json:"gaggle"`
-	Workflow      string `json:"workflow"`
-	TotalRuns     int    `json:"totalRuns"`
-	CompletedRuns int    `json:"completedRuns"`
-	FailedRuns    int    `json:"failedRuns"`
-	OtherRuns     int    `json:"otherRuns"` // aborted, escalated, or still running
+	Gaggle         string `json:"gaggle"`
+	Workflow       string `json:"workflow"`
+	Model          string `json:"model,omitempty"`
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+	TotalRuns      int    `json:"totalRuns"`
+	CompletedRuns  int    `json:"completedRuns"`
+	FailedRuns     int    `json:"failedRuns"`
+	OtherRuns      int    `json:"otherRuns"` // aborted, escalated, or still running
 	// SuccessRate is CompletedRuns / (CompletedRuns + FailedRuns), the rate
 	// over runs that have reached a success/failure verdict. 0 when neither
 	// has occurred yet (avoids a divide-by-zero, not a claim of 0% success).
@@ -77,6 +82,8 @@ type StageStats struct {
 	Gaggle            string `json:"gaggle"`
 	Workflow          string `json:"workflow"`
 	Stage             string `json:"stage"`
+	Model             string `json:"model,omitempty"`
+	HarnessVersion    string `json:"harnessVersion,omitempty"`
 	TotalAttempts     int    `json:"totalAttempts"`
 	SucceededAttempts int    `json:"succeededAttempts"`
 	FailedAttempts    int    `json:"failedAttempts"`
@@ -322,17 +329,24 @@ func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {
 }
 
 func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
-	where, args := statsWhere("workflow", "gaggle", "started_at", req)
+	where, whereArgs := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
+	join, joinArgs := runAgentJoin(req)
+	dimensions := agentDimensionColumns(req, "ai")
+	selectDimensions := prefixedColumns(dimensions)
+	groupDimensions := groupedColumns(dimensions)
 	query := fmt.Sprintf(`
-		SELECT gaggle, workflow,
+		SELECT r.gaggle, r.workflow%s,
 			COUNT(*) AS total,
-			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed,
-			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed,
-			AVG(duration_ms), MIN(duration_ms), MAX(duration_ms)
-		FROM runs
+			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS completed,
+			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS failed,
+			AVG(r.duration_ms), MIN(r.duration_ms), MAX(r.duration_ms)
+		FROM runs r
 		%s
-		GROUP BY gaggle, workflow ORDER BY gaggle, workflow`, where)
-	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
+		%s
+		GROUP BY r.gaggle, r.workflow%s ORDER BY r.gaggle, r.workflow%s`,
+		selectDimensions, join, where, groupDimensions, groupDimensions)
+	args := append([]any{runStatusCompleted, runStatusFailed}, joinArgs...)
+	args = append(args, whereArgs...)
 
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
@@ -345,7 +359,10 @@ func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
 		var s RunStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
-		if err := rows.Scan(&s.Gaggle, &s.Workflow, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
+		scan := []any{&s.Gaggle, &s.Workflow}
+		scan = appendAgentDimensionScan(scan, req, &s.Model, &s.HarnessVersion)
+		scan = append(scan, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
+		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan run stats: %w", err)
 		}
 		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
@@ -364,9 +381,22 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 	// the workflow filter (and to keep the time window anchored on run start,
 	// consistent with runStats — a stage's own started_at can be null for an
 	// attempt that never started).
-	joinWhere, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
+	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
+	join := ""
+	if agentStatsActive(req) {
+		join = `JOIN agent_invocations ai
+			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
+			AND ai.kind = 'task'`
+		agentClauses, agentArgs := agentFilterClauses("ai", req)
+		clauses = append(clauses, agentClauses...)
+		args = append(args, agentArgs...)
+	}
+	joinWhere := whereClause(clauses)
+	dimensions := agentDimensionColumns(req, "ai")
+	selectDimensions := prefixedColumns(dimensions)
+	groupDimensions := groupedColumns(dimensions)
 	query := fmt.Sprintf(`
-		SELECT r.gaggle, r.workflow, sa.stage,
+		SELECT r.gaggle, r.workflow, sa.stage%s,
 			COUNT(*) AS total,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS failed,
@@ -374,8 +404,9 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		%s
-		GROUP BY r.gaggle, r.workflow, sa.stage
-		ORDER BY r.gaggle, r.workflow, sa.stage`, joinWhere)
+		%s
+		GROUP BY r.gaggle, r.workflow, sa.stage%s
+		ORDER BY r.gaggle, r.workflow, sa.stage%s`, selectDimensions, join, joinWhere, groupDimensions, groupDimensions)
 	args = append([]any{stageStatusSuccess, stageStatusFailure}, args...)
 
 	rows, err := db.sql.Query(query, args...)
@@ -389,7 +420,10 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		var s StageStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
-		if err := rows.Scan(&s.Gaggle, &s.Workflow, &s.Stage, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max); err != nil {
+		scan := []any{&s.Gaggle, &s.Workflow, &s.Stage}
+		scan = appendAgentDimensionScan(scan, req, &s.Model, &s.HarnessVersion)
+		scan = append(scan, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max)
+		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage stats: %w", err)
 		}
 		if terminal := s.SucceededAttempts + s.FailedAttempts; terminal > 0 {
@@ -405,6 +439,11 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 // statsWhere builds a "WHERE ..." clause (or "" if unfiltered) plus its bind
 // args for the given workflow/gaggle/time columns and request filters.
 func statsWhere(workflowCol, gaggleCol, timeCol string, req StatsRequest) (string, []any) {
+	clauses, args := statsClauses(workflowCol, gaggleCol, timeCol, req)
+	return whereClause(clauses), args
+}
+
+func statsClauses(workflowCol, gaggleCol, timeCol string, req StatsRequest) ([]string, []any) {
 	var clauses []string
 	var args []any
 	if req.Workflow != "" {
@@ -423,10 +462,80 @@ func statsWhere(workflowCol, gaggleCol, timeCol string, req StatsRequest) (strin
 		clauses = append(clauses, timeCol+" <= ?")
 		args = append(args, formatTime(req.Until).String)
 	}
+	return clauses, args
+}
+
+func whereClause(clauses []string) string {
 	if len(clauses) == 0 {
+		return ""
+	}
+	return "WHERE " + strings.Join(clauses, " AND ")
+}
+
+func agentStatsActive(req StatsRequest) bool {
+	return req.Model != "" || req.HarnessVersion != "" || req.GroupByModel || req.GroupByHarnessVersion
+}
+
+func agentFilterClauses(alias string, req StatsRequest) ([]string, []any) {
+	var clauses []string
+	var args []any
+	if req.Model != "" {
+		clauses = append(clauses, alias+".model = ?")
+		args = append(args, req.Model)
+	}
+	if req.HarnessVersion != "" {
+		clauses = append(clauses, alias+".harness_version = ?")
+		args = append(args, req.HarnessVersion)
+	}
+	return clauses, args
+}
+
+func agentDimensionColumns(req StatsRequest, alias string) []string {
+	var columns []string
+	if req.GroupByModel {
+		columns = append(columns, alias+".model")
+	}
+	if req.GroupByHarnessVersion {
+		columns = append(columns, alias+".harness_version")
+	}
+	return columns
+}
+
+func prefixedColumns(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	return ", " + strings.Join(columns, ", ")
+}
+
+func groupedColumns(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	return ", " + strings.Join(columns, ", ")
+}
+
+func appendAgentDimensionScan(scan []any, req StatsRequest, model, harnessVersion *string) []any {
+	if req.GroupByModel {
+		scan = append(scan, model)
+	}
+	if req.GroupByHarnessVersion {
+		scan = append(scan, harnessVersion)
+	}
+	return scan
+}
+
+func runAgentJoin(req StatsRequest) (string, []any) {
+	if !agentStatsActive(req) {
 		return "", nil
 	}
-	return "WHERE " + strings.Join(clauses, " AND "), args
+	columns := []string{"ai_source.run_id"}
+	columns = append(columns, agentDimensionColumns(req, "ai_source")...)
+	clauses, args := agentFilterClauses("ai_source", req)
+	return fmt.Sprintf(
+		"JOIN (SELECT DISTINCT %s FROM agent_invocations ai_source %s) ai ON ai.run_id = r.run_id",
+		strings.Join(columns, ", "), whereClause(clauses),
+	), args
 }
 
 // ErrorEvent is one run_errors row joined with its run's workflow, for the

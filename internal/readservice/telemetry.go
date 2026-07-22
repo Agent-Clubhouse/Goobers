@@ -26,12 +26,17 @@ type TelemetryReader interface {
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 }
 
-// TelemetryStatsRequest filters workflow and stage aggregates.
+// TelemetryStatsRequest filters workflow/stage aggregates and selects optional
+// model and harness-version cohort dimensions.
 type TelemetryStatsRequest struct {
-	Workflow string
-	Gaggle   string
-	Since    time.Time
-	Until    time.Time
+	Workflow              string
+	Gaggle                string
+	Model                 string
+	HarnessVersion        string
+	GroupByModel          bool
+	GroupByHarnessVersion bool
+	Since                 time.Time
+	Until                 time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
@@ -57,16 +62,18 @@ type TelemetryGaggleStats struct {
 // TelemetryRunStats is the run aggregate for one workflow. Optional metrics
 // are absent when no matching run has produced the underlying measurement.
 type TelemetryRunStats struct {
-	Gaggle        string   `json:"gaggle"`
-	Workflow      string   `json:"workflow"`
-	TotalRuns     int      `json:"totalRuns"`
-	CompletedRuns int      `json:"completedRuns"`
-	FailedRuns    int      `json:"failedRuns"`
-	OtherRuns     int      `json:"otherRuns"`
-	SuccessRate   *float64 `json:"successRate,omitempty"`
-	AvgDurationMs *float64 `json:"avgDurationMs,omitempty"`
-	MinDurationMs *int64   `json:"minDurationMs,omitempty"`
-	MaxDurationMs *int64   `json:"maxDurationMs,omitempty"`
+	Gaggle         string   `json:"gaggle"`
+	Workflow       string   `json:"workflow"`
+	Model          string   `json:"model,omitempty"`
+	HarnessVersion string   `json:"harnessVersion,omitempty"`
+	TotalRuns      int      `json:"totalRuns"`
+	CompletedRuns  int      `json:"completedRuns"`
+	FailedRuns     int      `json:"failedRuns"`
+	OtherRuns      int      `json:"otherRuns"`
+	SuccessRate    *float64 `json:"successRate,omitempty"`
+	AvgDurationMs  *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs  *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs  *int64   `json:"maxDurationMs,omitempty"`
 }
 
 // TelemetryStageStats is the attempt aggregate for one stage.
@@ -74,6 +81,8 @@ type TelemetryStageStats struct {
 	Gaggle               string   `json:"gaggle"`
 	Workflow             string   `json:"workflow"`
 	Stage                string   `json:"stage"`
+	Model                string   `json:"model,omitempty"`
+	HarnessVersion       string   `json:"harnessVersion,omitempty"`
 	TotalAttempts        int      `json:"totalAttempts"`
 	SucceededAttempts    int      `json:"succeededAttempts"`
 	FailedAttempts       int      `json:"failedAttempts"`
@@ -152,10 +161,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		return TelemetryStatsResult{}, err
 	}
 	stats, err := s.store.Stats(rollup.StatsRequest{
-		Workflow: req.Workflow,
-		Gaggle:   req.Gaggle,
-		Since:    req.Since,
-		Until:    req.Until,
+		Workflow:              req.Workflow,
+		Gaggle:                req.Gaggle,
+		Model:                 req.Model,
+		HarnessVersion:        req.HarnessVersion,
+		GroupByModel:          req.GroupByModel,
+		GroupByHarnessVersion: req.GroupByHarnessVersion,
+		Since:                 req.Since,
+		Until:                 req.Until,
 	})
 	if err != nil {
 		return TelemetryStatsResult{}, err
@@ -189,12 +202,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Runs {
 		item := TelemetryRunStats{
-			Gaggle:        stat.Gaggle,
-			Workflow:      stat.Workflow,
-			TotalRuns:     stat.TotalRuns,
-			CompletedRuns: stat.CompletedRuns,
-			FailedRuns:    stat.FailedRuns,
-			OtherRuns:     stat.OtherRuns,
+			Gaggle:         stat.Gaggle,
+			Workflow:       stat.Workflow,
+			Model:          stat.Model,
+			HarnessVersion: stat.HarnessVersion,
+			TotalRuns:      stat.TotalRuns,
+			CompletedRuns:  stat.CompletedRuns,
+			FailedRuns:     stat.FailedRuns,
+			OtherRuns:      stat.OtherRuns,
 		}
 		if stat.CompletedRuns+stat.FailedRuns > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
@@ -211,6 +226,8 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			Gaggle:             stat.Gaggle,
 			Workflow:           stat.Workflow,
 			Stage:              stat.Stage,
+			Model:              stat.Model,
+			HarnessVersion:     stat.HarnessVersion,
 			TotalAttempts:      stat.TotalAttempts,
 			SucceededAttempts:  stat.SucceededAttempts,
 			FailedAttempts:     stat.FailedAttempts,

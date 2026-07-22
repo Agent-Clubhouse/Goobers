@@ -84,6 +84,7 @@ type Executor struct {
 	instructions    string
 	assets          *gooberassets.Bundle
 	model           string
+	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
 	resultPath      string
 	verdictPath     string
@@ -122,6 +123,11 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 			}
 		}
 	}
+}
+
+// WithHarnessVersion supplies the version captured by startup preflight.
+func WithHarnessVersion(version string) Option {
+	return func(e *Executor) { e.harnessVersion = version }
 }
 
 // WithAssetBundle supplies the goober's optional static assets.
@@ -295,6 +301,7 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, error) {
+	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}

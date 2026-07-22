@@ -139,7 +139,7 @@ func (r *authProbeFakeRunner) Run(_ context.Context, req harness.ProcessRequest)
 			return harness.ProcessResult{ExitCode: r.authExit}, nil
 		}
 	}
-	return harness.ProcessResult{ExitCode: r.versionExit}, nil // the --version check
+	return harness.ProcessResult{ExitCode: r.versionExit, Transcript: []byte("copilot version 1.2.3\n")}, nil // the --version check
 }
 
 // TestCheckHarnessesRunsAuthProbe is the #284/#271 control: --check-harness

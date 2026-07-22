@@ -13,6 +13,8 @@ const (
 	AttrWorkflowVersion        = "goobers.workflow.version"
 	AttrWorkflowDigest         = "goobers.workflow.digest"
 	AttrGoober                 = "goobers.goober"
+	AttrModel                  = "goobers.model"
+	AttrHarnessVersion         = "goobers.harness.version"
 	AttrStage                  = "goobers.stage"
 	AttrStageType              = "goobers.stage.type"
 	AttrAttemptNumber          = "goobers.attempt.n"
@@ -43,6 +45,8 @@ func AllAttributes() []Attribute {
 		AttrWorkflowVersion,
 		AttrWorkflowDigest,
 		AttrGoober,
+		AttrModel,
+		AttrHarnessVersion,
 		AttrStage,
 		AttrStageType,
 		AttrAttemptNumber,

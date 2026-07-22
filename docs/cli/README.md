@@ -1313,10 +1313,12 @@ $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00
 success rate and duration aggregates per workflow and stage
 
 ~~~text
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and per stage,
-across every run (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+across every run (default path "."). Agent filters retain matching agentic
+stage attempts; a run that used multiple grouped cohorts appears in each.
+Exit codes: 0 = OK, 2 = usage/IO error.
 ~~~
 
 **Examples**

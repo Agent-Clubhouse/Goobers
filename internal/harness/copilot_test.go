@@ -608,7 +608,7 @@ func TestCopilotAdapterEmptyWorkspaceIsConfigError(t *testing.T) {
 
 func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 	adapter := &CopilotAdapter{}
-	if err := adapter.Preflight(context.Background()); err == nil {
+	if _, err := adapter.Preflight(context.Background()); err == nil {
 		t.Fatal("expected Preflight to fail with no command configured")
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{Workspace: t.TempDir(), CompletionPath: DefaultResultPath})
@@ -619,7 +619,7 @@ func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 
 func TestCopilotAdapterPreflightMissingBinary(t *testing.T) {
 	adapter := &CopilotAdapter{Command: []string{"definitely-not-a-real-copilot-cli-binary"}}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected Preflight to fail for a binary not on PATH")
 	}
@@ -629,17 +629,31 @@ func TestCopilotAdapterPreflightMissingBinary(t *testing.T) {
 }
 
 func TestCopilotAdapterPreflightSucceeds(t *testing.T) {
-	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner}
-	if err := adapter.Preflight(context.Background()); err != nil {
+	info, err := adapter.Preflight(context.Background())
+	if err != nil {
 		t.Fatalf("Preflight: %v", err)
+	}
+	if info.Version != "copilot version 1.2.3" {
+		t.Fatalf("Preflight version = %q", info.Version)
+	}
+}
+
+func TestCopilotAdapterPreflightRequiresVersionOutput(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command: []string{"echo"},
+		Runner:  &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+	}
+	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "returned no version") {
+		t.Fatalf("Preflight error = %v", err)
 	}
 }
 
 func TestCopilotAdapterPreflightNonZeroExit(t *testing.T) {
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 1}}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected Preflight to fail on non-zero exit")
 	}
@@ -679,7 +693,7 @@ func TestCopilotAdapterRun_PassesMaxTranscriptBytesThrough(t *testing.T) {
 // preflight — the case a version-only check misses (GBO-011).
 func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	runner := &fakeProcessRunner{
-		result: ProcessResult{ExitCode: 0}, // --version succeeds
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}, // --version succeeds
 		act: func(req ProcessRequest) error {
 			for _, a := range req.Command {
 				if a == "auth" { // the auth probe fails: signed out
@@ -690,7 +704,7 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 		},
 	}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected preflight to fail when the sign-in probe fails")
 	}
@@ -705,9 +719,9 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	adapter := &CopilotAdapter{
 		Command:       []string{"echo"},
 		AuthCheckArgs: []string{"auth", "status"},
-		Runner:        &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+		Runner:        &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}},
 	}
-	if err := adapter.Preflight(context.Background()); err != nil {
+	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight should pass when signed in: %v", err)
 	}
 }
@@ -718,11 +732,11 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 func TestCopilotAdapterPreflightNoAuthProbeByDefault(t *testing.T) {
 	calls := 0
 	runner := &fakeProcessRunner{
-		result: ProcessResult{ExitCode: 0},
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
 		act:    func(ProcessRequest) error { calls++; return nil },
 	}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner} // no AuthCheckArgs
-	if err := adapter.Preflight(context.Background()); err != nil {
+	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	if calls != 1 {

@@ -23,7 +23,7 @@ func TestIntegrationCopilotAdapterLiveSmoke(t *testing.T) {
 	}
 
 	adapter := &CopilotAdapter{Command: []string{"copilot"}}
-	if err := adapter.Preflight(context.Background()); err != nil {
+	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
 

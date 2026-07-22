@@ -429,7 +429,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		err = adapter.Preflight(ctx)
+		_, err = adapter.Preflight(ctx)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)

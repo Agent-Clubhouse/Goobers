@@ -51,7 +51,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
-	_, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
+	taskCtx, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
 		Gaggle:      "acme-web",
 		WorkflowID:  "default-implement",
 		RunID:       runID,
@@ -64,10 +64,11 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartTask() error = %v", err)
 	}
+	RecordAgentProvenance(taskCtx, "gpt-5.6-sol", "copilot version 1.2.3")
 	taskSpan.Event("tool.completed", attribute.String("tool.name", "go-test"))
 	taskSpan.Succeed("task completed")
 
-	_, gateSpan, err := client.StartGate(runCtx, GateAttributes{
+	gateCtx, gateSpan, err := client.StartGate(runCtx, GateAttributes{
 		Gaggle:       "acme-web",
 		WorkflowID:   "default-implement",
 		RunID:        runID,
@@ -79,6 +80,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartGate() error = %v", err)
 	}
+	RecordAgentProvenance(gateCtx, "claude-sonnet-5", "copilot version 1.2.3")
 	gateSpan.SetGateResult("pass", 1)
 	gateSpan.Complete(OutcomeSuccess, false)
 	runSpan.End()
@@ -127,6 +129,8 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	assertAttr(t, taskAttrs, AttrStage, "implement")
 	assertAttr(t, taskAttrs, AttrStageType, "agentic")
 	assertAttr(t, taskAttrs, AttrGoober, "coder")
+	assertAttr(t, taskAttrs, AttrModel, "gpt-5.6-sol")
+	assertAttr(t, taskAttrs, AttrHarnessVersion, "copilot version 1.2.3")
 	assertAttr(t, taskAttrs, AttrAttemptNumber, "2")
 	assertAttr(t, taskAttrs, AttrAttemptKind, AttemptKindPolicy)
 	assertAttr(t, taskAttrs, AttrOutcome, OutcomeSuccess)
@@ -141,6 +145,8 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	assertAttr(t, gateAttrs, AttrStage, "qa")
 	assertAttr(t, gateAttrs, AttrStageType, StageTypeGate)
 	assertAttr(t, gateAttrs, AttrGoober, "reviewer")
+	assertAttr(t, gateAttrs, AttrModel, "claude-sonnet-5")
+	assertAttr(t, gateAttrs, AttrHarnessVersion, "copilot version 1.2.3")
 	assertAttr(t, gateAttrs, AttrGateDecision, "pass")
 	assertAttr(t, gateAttrs, AttrGateRepassNumber, "1")
 	assertAttr(t, gateAttrs, AttrOutcome, OutcomeSuccess)
@@ -814,6 +820,8 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.workflow.version",
 		"goobers.workflow.digest",
 		"goobers.goober",
+		"goobers.model",
+		"goobers.harness.version",
 		"goobers.stage",
 		"goobers.stage.type",
 		"goobers.attempt.n",

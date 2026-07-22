@@ -124,6 +124,12 @@ type Outcome struct {
 	TranscriptDroppedBytes int64
 }
 
+// PreflightInfo describes the installed harness verified before agentic work
+// starts. Version is the harness/CLI version used for invocation provenance.
+type PreflightInfo struct {
+	Version string
+}
+
 // Adapter is the harness-adapter seam (GBO-051): the only way an agentic
 // stage drives an external coding agent. Implementations are security-critical
 // (GBO-041) — an Adapter is trusted to materialize only the credentials its
@@ -134,9 +140,9 @@ type Adapter interface {
 	// diagnostics/spans. A Registry may expose it under a distinct goober
 	// configuration name.
 	Name() string
-	// Preflight verifies the harness is installed and signed in, returning
-	// an actionable error if not (GBO-011; wired into `goobers validate`).
-	Preflight(ctx context.Context) error
+	// Preflight verifies the harness is installed and signed in and returns
+	// its version, or an actionable error if not (GBO-011).
+	Preflight(ctx context.Context) (PreflightInfo, error)
 	// Run drives one harness session to completion (or a failure) and
 	// returns whatever it managed to capture. Run returning a non-nil error
 	// means the stage did not complete; Run MUST NOT return a nil error

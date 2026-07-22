@@ -1,6 +1,20 @@
 package telemetry
 
-import "go.opentelemetry.io/otel/attribute"
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// RecordAgentProvenance annotates the active task or gate span. Empty values
+// remain explicit so every harness invocation has both provenance dimensions.
+func RecordAgentProvenance(ctx context.Context, model, harnessVersion string) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(AttrModel, model),
+		attribute.String(AttrHarnessVersion, harnessVersion),
+	)
+}
 
 func runAttributeSet(a RunAttributes) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{

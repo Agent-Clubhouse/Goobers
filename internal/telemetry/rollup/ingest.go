@@ -59,7 +59,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "agent_invocations", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -429,7 +429,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 }
 
 func deleteSpan(tx *sql.Tx, runID, spanID string) error {
-	for _, table := range []string{"span_events", "span_business_status"} {
+	for _, table := range []string{"span_events", "span_business_status", "agent_invocations"} {
 		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
 			return fmt.Errorf("rollup: clear %s for span %s: %w", table, spanID, err)
 		}
@@ -468,6 +468,9 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
 			}
 		}
+		if err := insertAgentInvocation(tx, runID, s); err != nil {
+			return err
+		}
 		if err := insertStageUsage(tx, runID, s); err != nil {
 			return err
 		}
@@ -483,6 +486,47 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 				return fmt.Errorf("rollup: insert span_event %s/%d: %w", s.SpanID, i, err)
 			}
 		}
+	}
+	return nil
+}
+
+func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
+	model, hasModel := span.Attributes[telemetry.AttrModel]
+	harnessVersion, hasHarnessVersion := span.Attributes[telemetry.AttrHarnessVersion]
+	if !hasModel && !hasHarnessVersion {
+		return nil
+	}
+	if !hasModel || !hasHarnessVersion {
+		return fmt.Errorf("rollup: agent span %s has incomplete model/harness version provenance", span.SpanID)
+	}
+	if span.Kind != telemetry.SpanKindTask && span.Kind != telemetry.SpanKindGate {
+		return fmt.Errorf("rollup: span %s carries agent provenance but has kind %q", span.SpanID, span.Kind)
+	}
+	stage := span.Attributes[telemetry.AttrStage]
+	if stage == "" {
+		return fmt.Errorf("rollup: agent span %s has no %s attribute", span.SpanID, telemetry.AttrStage)
+	}
+
+	var traversal, attempt sql.NullInt64
+	if span.Kind == telemetry.SpanKindTask {
+		attemptNumber, err := strconv.Atoi(span.Attributes[telemetry.AttrAttemptNumber])
+		if err != nil || attemptNumber < 1 {
+			return fmt.Errorf("rollup: agent span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, span.Attributes[telemetry.AttrAttemptNumber])
+		}
+		traversalNumber, err := traversalForUsageSpan(tx, runID, stage, attemptNumber, span)
+		if err != nil {
+			return err
+		}
+		traversal = sql.NullInt64{Int64: int64(traversalNumber), Valid: true}
+		attempt = sql.NullInt64{Int64: int64(attemptNumber), Valid: true}
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO agent_invocations (
+			run_id, span_id, kind, stage, traversal, attempt, model, harness_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, span.SpanID, span.Kind, stage, traversal, attempt, model, harnessVersion); err != nil {
+		return fmt.Errorf("rollup: insert agent invocation %s: %w", span.SpanID, err)
 	}
 	return nil
 }

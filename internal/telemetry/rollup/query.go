@@ -27,6 +27,8 @@ type StageAttempt struct {
 	Stage                  string
 	Traversal              int
 	Attempt                int
+	Model                  string
+	HarnessVersion         string
 	AttemptClass           string
 	Status                 string
 	StartedAt              time.Time
@@ -38,6 +40,18 @@ type StageAttempt struct {
 	OutputTokens           *int64
 	CopilotPremiumRequests *float64
 	CostUSD                *float64
+}
+
+// AgentInvocation is model and harness provenance indexed from an agentic task
+// or reviewer-gate span. Traversal and Attempt are nil for reviewer gates.
+type AgentInvocation struct {
+	SpanID         string
+	Kind           string
+	Stage          string
+	Traversal      *int64
+	Attempt        *int64
+	Model          string
+	HarnessVersion string
 }
 
 // GateVerdict is a queryable row from the gate_verdicts table. RunnerJSON is
@@ -141,11 +155,15 @@ func (db *DB) Runs() ([]RunSummary, error) {
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	rows, err := db.sql.Query(`
-		SELECT sa.stage, sa.traversal, sa.attempt, sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
+		SELECT sa.stage, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
+		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
 		FROM stage_attempts sa
 		LEFT JOIN stage_usage su
 			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
+		LEFT JOIN agent_invocations ai
+			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
+			AND ai.kind = 'task'
 		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage_attempts: %w", err)
@@ -159,7 +177,8 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
 		if err := rows.Scan(
-			&s.Stage, &s.Traversal, &s.Attempt, &class, &status, &startedAt, &finishedAt, &durationMs,
+			&s.Stage, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
+			&class, &status, &startedAt, &finishedAt, &durationMs,
 			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
 		); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)
@@ -177,6 +196,33 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 		s.CopilotPremiumRequests = optionalFloat64(premiumRequests)
 		s.CostUSD = optionalFloat64(costUSD)
 		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AgentInvocations returns every indexed agentic span for runID.
+func (db *DB) AgentInvocations(runID string) ([]AgentInvocation, error) {
+	rows, err := db.sql.Query(`
+		SELECT span_id, kind, stage, traversal, attempt, model, harness_version
+		FROM agent_invocations WHERE run_id = ? ORDER BY span_id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query agent_invocations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []AgentInvocation
+	for rows.Next() {
+		var invocation AgentInvocation
+		var traversal, attempt sql.NullInt64
+		if err := rows.Scan(
+			&invocation.SpanID, &invocation.Kind, &invocation.Stage,
+			&traversal, &attempt, &invocation.Model, &invocation.HarnessVersion,
+		); err != nil {
+			return nil, fmt.Errorf("rollup: scan agent_invocation: %w", err)
+		}
+		invocation.Traversal = optionalInt64(traversal)
+		invocation.Attempt = optionalInt64(attempt)
+		out = append(out, invocation)
 	}
 	return out, rows.Err()
 }

@@ -15,11 +15,13 @@ import (
 )
 
 type usageAttemptFixture struct {
-	number   int
-	duration time.Duration
-	status   string
-	metrics  map[string]float64
-	skipSpan bool
+	number         int
+	duration       time.Duration
+	status         string
+	model          string
+	harnessVersion string
+	metrics        map[string]float64
+	skipSpan       bool
 }
 
 func seedUsageRun(
@@ -57,6 +59,10 @@ func seedUsageRun(
 		attrs := map[string]string{
 			telemetry.AttrStage:         stage,
 			telemetry.AttrAttemptNumber: strconv.Itoa(attemptNumber),
+		}
+		if attempt.model != "" || attempt.harnessVersion != "" {
+			attrs[telemetry.AttrModel] = attempt.model
+			attrs[telemetry.AttrHarnessVersion] = attempt.harnessVersion
 		}
 		for name, value := range attempt.metrics {
 			switch name {
@@ -413,7 +419,7 @@ func TestIngestSkipsAgenticGateUsage(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
 	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
-		usageAttemptFixture{duration: time.Millisecond, status: "success", metrics: map[string]float64{
+		usageAttemptFixture{duration: time.Millisecond, status: "success", model: "gpt-5.6-sol", harnessVersion: "copilot version 1.2.3", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens:  10,
 			telemetry.AttrGenAIUsageOutputTokens: 20,
 			telemetry.AttrUsageCostUSD:           0.25,
@@ -445,6 +451,8 @@ func TestIngestSkipsAgenticGateUsage(t *testing.T) {
 			telemetry.AttrStageType:              telemetry.StageTypeGate,
 			telemetry.AttrGateRepassNumber:       "1",
 			telemetry.AttrGoober:                 "reviewer",
+			telemetry.AttrModel:                  "claude-sonnet-5",
+			telemetry.AttrHarnessVersion:         "copilot version 1.2.3",
 			telemetry.AttrGenAIUsageInputTokens:  "100",
 			telemetry.AttrGenAIUsageOutputTokens: "200",
 			telemetry.AttrUsageCostUSD:           "1.5",
@@ -486,6 +494,72 @@ func TestIngestSkipsAgenticGateUsage(t *testing.T) {
 	}
 	if spanCount != 2 || usageCount != 1 {
 		t.Fatalf("ingested spans/usage = %d/%d, want 2/1", spanCount, usageCount)
+	}
+	invocations, err := db.AgentInvocations(fixtureRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invocations) != 2 {
+		t.Fatalf("agent invocations = %#v", invocations)
+	}
+	for _, invocation := range invocations {
+		switch invocation.Kind {
+		case telemetry.SpanKindTask:
+			if invocation.Model != "gpt-5.6-sol" || invocation.Traversal == nil || *invocation.Traversal != 1 {
+				t.Fatalf("task invocation = %#v", invocation)
+			}
+		case telemetry.SpanKindGate:
+			if invocation.Model != "claude-sonnet-5" || invocation.Traversal != nil || invocation.Attempt != nil {
+				t.Fatalf("gate invocation = %#v", invocation)
+			}
+		default:
+			t.Fatalf("unexpected invocation = %#v", invocation)
+		}
+	}
+}
+
+func TestStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	fixtures := []struct {
+		runID, model, version string
+	}{
+		{"1bf92f3577b34da6a3ce929d0e0e4731", "gpt-5.6-sol", "copilot version 1.2.3"},
+		{"2bf92f3577b34da6a3ce929d0e0e4732", "gpt-5.6-sol", "copilot version 1.2.4"},
+		{"3bf92f3577b34da6a3ce929d0e0e4733", "claude-sonnet-5", "copilot version 1.2.3"},
+	}
+	for i, fixture := range fixtures {
+		seedUsageRun(
+			t, runsDir, fixture.runID, "implement", "agent", fixtureStart.Add(time.Duration(i)*time.Hour),
+			usageAttemptFixture{
+				duration: time.Millisecond, status: "success",
+				model: fixture.model, harnessVersion: fixture.version,
+			},
+		)
+	}
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	filtered, err := db.Stats(StatsRequest{Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Runs) != 1 || filtered.Runs[0].TotalRuns != 1 ||
+		len(filtered.Stages) != 1 || filtered.Stages[0].TotalAttempts != 1 {
+		t.Fatalf("filtered stats = %#v", filtered)
+	}
+
+	grouped, err := db.Stats(StatsRequest{GroupByModel: true, GroupByHarnessVersion: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grouped.Runs) != 3 || len(grouped.Stages) != 3 {
+		t.Fatalf("grouped stats = %#v", grouped)
+	}
+	for _, stat := range grouped.Stages {
+		if stat.Model == "" || stat.HarnessVersion == "" || stat.TotalAttempts != 1 {
+			t.Fatalf("grouped stage = %#v", stat)
+		}
 	}
 }
 
