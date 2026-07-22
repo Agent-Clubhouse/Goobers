@@ -129,6 +129,12 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 				branch = &ref
 			}
 		}
+		if ev.Type == journal.EventStageFinished && ev.Stage == "open-pr" && ev.Status == string(apiv1.ResultSuccess) {
+			openedPR = true
+		}
+		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
+			openedPR = true
+		}
 		if i < segmentStart {
 			continue
 		}
@@ -139,12 +145,6 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		}
 		if ev.Type == journal.EventStageFinished && ev.Stage == "push-branch" && ev.Status == string(apiv1.ResultSuccess) {
 			pushed = true
-		}
-		if ev.Type == journal.EventStageFinished && ev.Stage == "open-pr" && ev.Status == string(apiv1.ResultSuccess) {
-			openedPR = true
-		}
-		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
-			openedPR = true
 		}
 	}
 	if alreadyFinalized {
