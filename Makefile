@@ -42,9 +42,11 @@ COVERAGE_THRESHOLD ?= 70
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
 SETUP_ENVTEST_VERSION  ?= release-0.19
+GOVULNCHECK_VERSION    ?= v1.6.0
 ENVTEST_K8S_VERSION    ?= 1.31.0
 CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
+GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 ## help: Show this help.
 .PHONY: help
@@ -144,6 +146,11 @@ vet:
 .PHONY: lint
 lint:
 	$(GOLANGCI_LINT) run
+
+## vulncheck: Scan reachable Go code for known vulnerabilities.
+.PHONY: vulncheck
+vulncheck:
+	$(GOVULNCHECK) ./...
 
 ## build: Build all cmd/* binaries into bin/.
 .PHONY: build
