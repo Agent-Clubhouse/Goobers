@@ -287,6 +287,9 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
 	}
+	if !copilot.OptionalCredentialCapabilities[string(capability.AgentModel)] {
+		t.Fatal("agent:model must allow stored Copilot CLI authentication when no token grant is configured")
+	}
 	if len(copilot.AuthCheckArgs) == 0 {
 		t.Fatal("registered Copilot adapter is missing its authentication preflight")
 	}

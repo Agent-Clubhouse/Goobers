@@ -81,6 +81,7 @@ func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 		"CARGO_HOME":            "/custom/cargo",
 		"RUSTUP_HOME":           "/custom/rustup",
 	}
+
 	for name, value := range vars {
 		t.Setenv(name, value)
 	}
@@ -88,6 +89,33 @@ func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 	for name, value := range vars {
 		if !contains(env, name+"="+value) {
 			t.Fatalf("toolchain var %s did not pass through BaseEnv(), got %v", name, env)
+		}
+	}
+}
+
+func TestBaseEnvPassesThroughProfileLocationsWithoutAuthTokens(t *testing.T) {
+	profileVars := map[string]string{
+		"USERPROFILE":  `C:\Users\operator`,
+		"APPDATA":      `C:\Users\operator\AppData\Roaming`,
+		"LOCALAPPDATA": `C:\Users\operator\AppData\Local`,
+		"HOMEDRIVE":    "C:",
+		"HOMEPATH":     `\Users\operator`,
+	}
+	for name, value := range profileVars {
+		t.Setenv(name, value)
+	}
+	t.Setenv("COPILOT_GITHUB_TOKEN", "must-not-pass")
+	t.Setenv("GH_TOKEN", "must-not-pass")
+
+	env := BaseEnv()
+	for name, value := range profileVars {
+		if !contains(env, name+"="+value) {
+			t.Fatalf("profile location %s did not pass through BaseEnv(): %v", name, env)
+		}
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") || strings.HasPrefix(entry, "GH_TOKEN=") {
+			t.Fatalf("ambient auth token leaked through profile allowlist: %v", env)
 		}
 	}
 }

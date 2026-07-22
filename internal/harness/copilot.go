@@ -3,12 +3,14 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -100,6 +102,11 @@ type CopilotAdapter struct {
 	// present in the invocation's declared+granted set — ever reach the
 	// subprocess environment (capability enforcement, GBO-052).
 	EnvCapabilities map[string]string
+	// OptionalCredentialCapabilities names capabilities whose credential may
+	// be omitted because the CLI can use an existing authenticated user session.
+	// A configured grant still resolves and injects normally; only the absence
+	// of a grant is tolerated. Other capabilities remain fail-closed.
+	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
 	// VersionArgs are the args used to preflight-check the CLI responds
@@ -368,6 +375,10 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		}
 		token, err := req.Credentials.Token(ctx, capability)
 		if err != nil {
+			if c.OptionalCredentialCapabilities[capability] &&
+				errors.Is(err, credentials.ErrNoCredentialForCapability) {
+				continue
+			}
 			return nil, fmt.Errorf("harness: copilot-cli: resolve %s: %w", capability, err)
 		}
 		env = append(env, envVar+"="+token)

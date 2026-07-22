@@ -152,7 +152,7 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 	}
 }
 
-func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
+func TestCopilotAdapterDoesNotUseAnotherGoobersGrantWhenStoredAuthIsAllowed(t *testing.T) {
 	t.Setenv("OTHER_GOOBER_TOKEN", "other-goober-token")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{
 		{Name: "other-goober", Env: "OTHER_GOOBER_TOKEN"},
@@ -172,11 +172,17 @@ func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
-	runner := &fakeProcessRunner{}
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
 	adapter := &CopilotAdapter{
-		Command:         []string{"copilot"},
-		Runner:          runner,
-		EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
 	}
 	_, err = adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace, "agent:model"),
@@ -184,11 +190,97 @@ func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
 		CompletionPath: DefaultResultPath,
 		Credentials:    creds,
 	})
+	if err != nil {
+		t.Fatalf("Run with stored auth fallback: %v", err)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if entry == "COPILOT_GITHUB_TOKEN=other-goober-token" {
+			t.Fatalf("another goober's grant leaked into subprocess env: %v", runner.lastReq.Env)
+		}
+	}
+}
+
+func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
+	t.Setenv("USERPROFILE", `C:\Users\operator`)
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth: %v", err)
+	}
+	hasProfile := false
+	for _, entry := range runner.lastReq.Env {
+		if entry == `USERPROFILE=C:\Users\operator` {
+			hasProfile = true
+		}
+	}
+	if !hasProfile {
+		t.Fatalf("stored-auth profile location missing from env: %v", runner.lastReq.Env)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") {
+			t.Fatalf("unexpected model token injected during stored auth: %v", runner.lastReq.Env)
+		}
+	}
+}
+
+func TestCopilotAdapterStillFailsClosedForMissingRequiredCredential(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"github:issues:write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"github:issues:write": "GH_TOKEN"},
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(t.TempDir(), "github:issues:write"),
+		Workspace:      t.TempDir(),
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
 	if !errors.Is(err, credentials.ErrNoCredentialForCapability) {
 		t.Fatalf("Run error = %v, want ErrNoCredentialForCapability", err)
 	}
 	if len(runner.lastReq.Command) != 0 {
-		t.Fatalf("Copilot subprocess ran with another goober's grant: %+v", runner.lastReq)
+		t.Fatalf("subprocess ran without required credential: %+v", runner.lastReq)
 	}
 }
 
