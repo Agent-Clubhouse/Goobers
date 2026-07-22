@@ -38,13 +38,11 @@ func TestGenerateGroupsHistoryAndUsesCuratedFile(t *testing.T) {
 		command("tag", "--merged", "v1.2.0^", "--sort=-version:refname", "--list", "v*"): {
 			output: "not-semver\nv1.1.0\nv1.0.0",
 		},
-		command("log", "--first-parent", "--format=%H%x09%s", "v1.1.0..v1.2.0"): {
-			output: strings.Join([]string{
-				"111111111111\tfeat(cli): add release command",
-				"222222222222\tfix!: remove broken fallback",
-				"333333333333\tdocs: explain releases",
-				"444444444444\tMerge pull request #42",
-			}, "\n"),
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.1.0..v1.2.0"): {
+			output: "111111111111\x1ffeat(cli): add release command\x1e" +
+				"222222222222\x1ffix!: remove broken fallback\x1e" +
+				"333333333333\x1fdocs: explain releases\x1e" +
+				"444444444444\x1fMerge pull request #42\x1e",
 		},
 	}
 	readFile := func(path string) ([]byte, error) {
@@ -85,8 +83,8 @@ func TestGenerateUsesAnnotatedTagForInitialRelease(t *testing.T) {
 		command("for-each-ref", "--format=%(contents)", "refs/tags/v1.0.0"): {
 			output: "The first curated release.",
 		},
-		command("rev-list", "--parents", "-n", "1", "v1.0.0"):           {output: "release"},
-		command("log", "--first-parent", "--format=%H%x09%s", "v1.0.0"): {output: ""},
+		command("rev-list", "--parents", "-n", "1", "v1.0.0"):                {output: "release"},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.0.0"): {output: ""},
 	}
 
 	got, err := generate("v1.0.0", git, missingFile)
@@ -100,31 +98,73 @@ func TestGenerateUsesAnnotatedTagForInitialRelease(t *testing.T) {
 	}
 }
 
-func TestGenerateUsesFallbackForLightweightTag(t *testing.T) {
+func TestGenerateRequiresCuratedNoteForLightweightTag(t *testing.T) {
+	for name, readFile := range map[string]func(string) ([]byte, error){
+		"missing file": missingFile,
+		"empty file":   func(string) ([]byte, error) { return []byte(" \n"), nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			git := fakeGit{
+				command("rev-parse", "--verify", "refs/tags/v2.0.0^{commit}"): {output: "release"},
+				command("cat-file", "-t", "refs/tags/v2.0.0"):                 {output: "commit"},
+			}
+
+			_, err := generate("v2.0.0", git, readFile)
+			if err == nil || !strings.Contains(err.Error(), "curated release note is required") {
+				t.Fatalf("generate error = %v, want required curated note", err)
+			}
+		})
+	}
+}
+
+func TestGenerateRequiresNonEmptyAnnotatedTagMessage(t *testing.T) {
 	git := fakeGit{
 		command("rev-parse", "--verify", "refs/tags/v2.0.0^{commit}"): {output: "release"},
-		command("cat-file", "-t", "refs/tags/v2.0.0"):                 {output: "commit"},
-		command("rev-list", "--parents", "-n", "1", "v2.0.0"):         {output: "release parent"},
-		command("tag", "--merged", "v2.0.0^", "--sort=-version:refname", "--list", "v*"): {
-			output: "",
-		},
-		command("log", "--first-parent", "--format=%H%x09%s", "v2.0.0"): {
-			output: "abcdef123456\tsecurity(auth): rotate token flow",
+		command("cat-file", "-t", "refs/tags/v2.0.0"):                 {output: "tag"},
+		command("for-each-ref", "--format=%(contents)", "refs/tags/v2.0.0"): {
+			output: " \n",
 		},
 	}
 
-	got, err := generate("v2.0.0", git, missingFile)
+	_, err := generate("v2.0.0", git, missingFile)
+	if err == nil || !strings.Contains(err.Error(), "curated release note is required") {
+		t.Fatalf("generate error = %v, want required curated note", err)
+	}
+}
+
+func TestGenerateRecognizesBreakingChangeFooters(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v1.2.0^{commit}"): {output: "release"},
+		command("rev-list", "--parents", "-n", "1", "v1.2.0"):         {output: "release parent"},
+		command("tag", "--merged", "v1.2.0^", "--sort=-version:refname", "--list", "v*"): {
+			output: "v1.1.0",
+		},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.1.0..v1.2.0"): {
+			output: "111111111111\x1ffeat(api): replace legacy endpoint\n\n" +
+				"BREAKING CHANGE: clients must use /v2\x1e" +
+				"222222222222\x1ffix(config): reject legacy keys\n\n" +
+				"BREAKING-CHANGE: rename old_key to new_key\x1e",
+		},
+	}
+	readFile := func(string) ([]byte, error) {
+		return []byte("A curated overview."), nil
+	}
+
+	got, err := generate("v1.2.0", git, readFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"This release includes the changes listed below.",
-		"### Other changes",
-		"- **auth:** rotate token flow (`abcdef1`)",
+		"### Breaking changes",
+		"- **api:** replace legacy endpoint (clients must use /v2) (`1111111`)",
+		"- **config:** reject legacy keys (rename old_key to new_key) (`2222222`)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notes missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "### Features") || strings.Contains(got, "### Bug fixes") {
+		t.Errorf("footer-marked commits must only appear as breaking changes:\n%s", got)
 	}
 }
 
@@ -141,15 +181,15 @@ func TestGenerateRejectsNonStableTagBeforeGit(t *testing.T) {
 func TestRunWritesOutputFile(t *testing.T) {
 	git := fakeGit{
 		command("rev-parse", "--verify", "refs/tags/v1.0.0^{commit}"): {output: "release"},
-		command("cat-file", "-t", "refs/tags/v1.0.0"):                 {output: "commit"},
 		command("rev-list", "--parents", "-n", "1", "v1.0.0"):         {output: "release"},
-		command("log", "--first-parent", "--format=%H%x09%s", "v1.0.0"): {
-			output: "abcdef123456\tfeat: ship releases",
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.0.0"): {
+			output: "abcdef123456\x1ffeat: ship releases\x1e",
 		},
 	}
 	output := t.TempDir() + "/notes.md"
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"-tag", "v1.0.0", "-output", output}, &stdout, &stderr, git, missingFile); err != nil {
+	readFile := func(string) ([]byte, error) { return []byte("A curated overview."), nil }
+	if err := run([]string{"-tag", "v1.0.0", "-output", output}, &stdout, &stderr, git, readFile); err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
 	data, err := os.ReadFile(output)

@@ -14,11 +14,12 @@ release notes. Re-running the workflow updates the existing release and replaces
 its assets, so a partially failed publication can be recovered safely.
 
 Release notes combine a curated overview with the first-parent commit history
-since the previous stable tag. Conventional-Commit subjects are grouped by type;
-non-conforming subjects remain visible under **Other changes**. Add the curated
-overview at `.github/release-notes/<tag>.md` in the tagged commit. An annotated
-tag message is used when that file is absent, and a short default introduction
-keeps lightweight tags publishable.
+since the previous stable tag. Conventional-Commit messages are grouped by type,
+including `BREAKING CHANGE:` and `BREAKING-CHANGE:` footers; non-conforming
+subjects remain visible under **Other changes**. A non-empty curated overview is
+required. Add it at `.github/release-notes/<tag>.md` in the tagged commit, or use
+a non-empty annotated-tag message. A lightweight tag without the matching file
+fails before publication.
 
 ```sh
 mkdir -p .github/release-notes

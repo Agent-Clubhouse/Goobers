@@ -17,7 +17,10 @@ import (
 var (
 	stableTagPattern   = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 	conventionalCommit = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9-]*)(?:\(([^)]+)\))?(!)?:[[:space:]]+(.+)$`)
+	breakingFooter     = regexp.MustCompile(`(?m)^BREAKING(?: CHANGE|-CHANGE):[ \t]*(.+)$`)
 )
+
+const gitLogFormat = "%H%x1f%B%x1e"
 
 type gitClient interface {
 	output(args ...string) (string, error)
@@ -34,13 +37,14 @@ func (execGit) output(args ...string) (string, error) {
 }
 
 type change struct {
-	hash         string
-	kind         string
-	scope        string
-	description  string
-	subject      string
-	breaking     bool
-	conventional bool
+	hash          string
+	kind          string
+	scope         string
+	description   string
+	subject       string
+	breakingNotes []string
+	breaking      bool
+	conventional  bool
 }
 
 type section struct {
@@ -128,11 +132,14 @@ func curatedNote(tag string, git gitClient, readFile func(string) ([]byte, error
 		if err != nil {
 			return "", fmt.Errorf("read annotated tag %s: %w", tag, err)
 		}
-		if message != "" {
+		if message = strings.TrimSpace(message); message != "" {
 			return message, nil
 		}
 	}
-	return "This release includes the changes listed below.", nil
+	return "", fmt.Errorf(
+		"curated release note is required: add non-empty %s or use an annotated tag with a non-empty message",
+		path,
+	)
 }
 
 func previousTag(tag string, git gitClient) (string, error) {
@@ -162,7 +169,7 @@ func changesSince(tag, previous string, git gitClient) ([]change, error) {
 	if previous != "" {
 		revision = previous + ".." + tag
 	}
-	log, err := git.output("log", "--first-parent", "--format=%H%x09%s", revision)
+	log, err := git.output("log", "--first-parent", "--format="+gitLogFormat, revision)
 	if err != nil {
 		return nil, fmt.Errorf("read changelog history %s: %w", revision, err)
 	}
@@ -171,15 +178,19 @@ func changesSince(tag, previous string, git gitClient) ([]change, error) {
 	}
 
 	var changes []change
-	for line := range strings.Lines(log) {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for record := range strings.SplitSeq(log, "\x1e") {
+		record = strings.TrimSpace(record)
+		if record == "" {
 			continue
 		}
-		hash, subject, ok := strings.Cut(line, "\t")
-		if !ok || hash == "" || subject == "" {
-			return nil, fmt.Errorf("parse git log line %q", line)
+		hash, message, ok := strings.Cut(record, "\x1f")
+		hash = strings.TrimSpace(hash)
+		message = strings.TrimSpace(message)
+		if !ok || hash == "" || message == "" {
+			return nil, fmt.Errorf("parse git log record %q", record)
 		}
+		subject, body, _ := strings.Cut(message, "\n")
+		subject = strings.TrimSpace(strings.TrimSuffix(subject, "\r"))
 		item := change{hash: hash, subject: subject}
 		if match := conventionalCommit.FindStringSubmatch(subject); match != nil {
 			item.kind = strings.ToLower(match[1])
@@ -188,6 +199,12 @@ func changesSince(tag, previous string, git gitClient) ([]change, error) {
 			item.description = match[4]
 			item.conventional = true
 		}
+		for _, match := range breakingFooter.FindAllStringSubmatch(body, -1) {
+			if note := strings.TrimSpace(match[1]); note != "" {
+				item.breakingNotes = append(item.breakingNotes, note)
+			}
+		}
+		item.breaking = item.breaking || len(item.breakingNotes) > 0
 		changes = append(changes, item)
 	}
 	return changes, nil
@@ -258,6 +275,9 @@ func writeChange(out *strings.Builder, item change) {
 		if item.scope != "" {
 			description = fmt.Sprintf("**%s:** %s", item.scope, description)
 		}
+	}
+	if len(item.breakingNotes) > 0 {
+		description += " (" + strings.Join(item.breakingNotes, "; ") + ")"
 	}
 	hash := item.hash
 	if len(hash) > 7 {
