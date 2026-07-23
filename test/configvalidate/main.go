@@ -23,10 +23,11 @@ repos:
 type checkedInTree struct {
 	path       string
 	sourceTree bool
+	strict     bool
 }
 
 var checkedInTrees = []checkedInTree{
-	{path: "selfhost", sourceTree: true},
+	{path: "selfhost", sourceTree: true, strict: true},
 	{path: "config-examples"},
 	{path: "internal/instance/starter"},
 	{path: "internal/instance/demo"},
@@ -131,8 +132,12 @@ func gitWorktreeEnv(root string) ([]string, error) {
 }
 
 func validationArgs(root, tempDir string, tree checkedInTree) ([]string, error) {
+	args := []string{"validate"}
+	if tree.strict {
+		args = append(args, "--strict")
+	}
 	if tree.sourceTree {
-		return []string{"validate", "--source-tree", tree.path}, nil
+		return append(args, "--source-tree", tree.path), nil
 	}
 
 	instanceRoot := filepath.Join(tempDir, strings.NewReplacer("/", "-", `\`, "-").Replace(tree.path))
@@ -148,5 +153,5 @@ func validationArgs(root, tempDir string, tree checkedInTree) ([]string, error) 
 	if err := os.CopyFS(configDir, os.DirFS(source)); err != nil {
 		return nil, err
 	}
-	return []string{"validate", instanceRoot}, nil
+	return append(args, instanceRoot), nil
 }

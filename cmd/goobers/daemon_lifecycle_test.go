@@ -26,9 +26,9 @@ import (
 // rather than going through a full runUpContext.
 func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	t.Helper()
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	var gaggle, digest string
 	found := false

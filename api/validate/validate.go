@@ -120,6 +120,9 @@ type CodedWarning struct {
 }
 
 func (w CodedWarning) String() string {
+	if w.Code == "" {
+		return fmt.Sprintf("%s %s: %s", strings.ToUpper(string(w.Severity)), w.Scope, w.Explanation)
+	}
 	return fmt.Sprintf("%s %s %s: %s", strings.ToUpper(string(w.Severity)), w.Code, w.Scope, w.Explanation)
 }
 

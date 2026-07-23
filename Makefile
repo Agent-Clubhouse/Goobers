@@ -174,7 +174,7 @@ build-%:
 
 build-goobers: portal-build
 
-## validate-configs: Build the validator and check every shipped config tree.
+## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers
