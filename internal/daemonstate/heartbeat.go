@@ -1,3 +1,5 @@
+// Package daemonstate records and evaluates the scheduler heartbeat shared by
+// daemon health consumers.
 package daemonstate
 
 import (
