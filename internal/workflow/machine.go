@@ -55,16 +55,21 @@ type Definition struct {
 // Machine is a compiled, validated view of a Definition with O(1) state lookup
 // and a stable content digest.
 type Machine struct {
-	Def    Definition
-	tasks  map[string]apiv1.Task
-	gates  map[string]apiv1.Gate
-	digest string
+	Def          Definition
+	tasks        map[string]apiv1.Task
+	gates        map[string]apiv1.Gate
+	digest       string
+	gooberDigest string
 }
 
 // Digest returns the content digest of the compiled definition ("sha256:<hex>").
 // It is stable across processes and runs: the same definition always digests to
 // the same value, so a run can record and complete on a pinned digest (WF-016).
 func (m *Machine) Digest() string { return m.digest }
+
+// GooberDigest returns the content digest of the participating resolved
+// goobers. It is empty when compilation did not receive resolved instructions.
+func (m *Machine) GooberDigest() string { return m.gooberDigest }
 
 func (m *Machine) has(name string) bool {
 	if _, ok := m.tasks[name]; ok {

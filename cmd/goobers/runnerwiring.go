@@ -1103,7 +1103,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1148,14 +1148,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
-	instructionsByGoober := make(map[string]string, len(goobers))
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
-		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
-		if err != nil {
-			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
+		if _, ok := instructionsByGoober[name]; !ok {
+			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
-		instructionsByGoober[name] = string(instructions)
 		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
@@ -1345,6 +1342,23 @@ func goobersByName(set *instance.ConfigSet) map[string]apiv1.GooberSpec {
 	return out
 }
 
+func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
+	names := make([]string, 0, len(goobers))
+	for name := range goobers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	instructions := make(map[string]string, len(goobers))
+	for _, name := range names {
+		content, err := os.ReadFile(instructionsPath(configDir, goobers[name], name))
+		if err != nil {
+			return nil, fmt.Errorf("read goober %q instructions: %w", name, err)
+		}
+		instructions[name] = string(content)
+	}
+	return instructions, nil
+}
+
 // knownAutomatedCheckNames returns the automated check names actually
 // registered (internal/gate.DefaultChecks()'s keys) for
 // workflow.WithKnownChecks — every real automated gate resolves its Check
@@ -1367,7 +1381,7 @@ func knownAutomatedCheckNames() []string {
 // registry-assigned (per-name monotonic, WF-016); no registry is wired at the
 // instance level yet, so this pins version 1 for every workflow, matching
 // run.go's existing limitation until a follow-up introduces one.
-func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
@@ -1393,14 +1407,20 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		m, err := workflow.Compile(
-			workflow.Definition{
-				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
-			},
+		options := []workflow.Option{
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
+		}
+		if instructions != nil {
+			options = append(options, workflow.WithGooberInstructions(instructions))
+		}
+		m, err := workflow.Compile(
+			workflow.Definition{
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+			},
+			options...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
