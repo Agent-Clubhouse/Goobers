@@ -667,6 +667,7 @@ const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
+	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = "base_sync_conflict"
 )
@@ -968,6 +969,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			if err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
+			}
+			if err := journalRetryDecision(jr, gr, lastStage, lastResult); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
 				notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason)
@@ -1922,14 +1926,13 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			retryCount := policyAttempts
 			shouldRetry := policyAttempts < policyMaxAttempts
 			nextRetryClass = journal.AttemptPolicy
-			failureClass := journal.AttemptPolicy
-			if invoke.IsInfrastructureFailure(dispatchErr) {
+			failureClass, _ := retryFailureClass(dispatchErr, result)
+			if failureClass == journal.AttemptInfra {
 				infrastructureFailures++
 				retryLimit = DefaultMaxInfrastructureAttempts
 				retryCount = infrastructureFailures
 				shouldRetry = infrastructureFailures < DefaultMaxInfrastructureAttempts
 				nextRetryClass = journal.AttemptInfra
-				failureClass = journal.AttemptInfra
 			}
 			// A journal that cannot be written stops the run (§2.6): this
 			// write failing means the run's own record of what happened is
@@ -2003,6 +2006,49 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 	return apiv1.ResultEnvelope{}, nil, err
+}
+
+// retryFailureClass covers both dispatch retries and business failures that a
+// downstream gate sends through its bounded repass loop.
+func retryFailureClass(dispatchErr error, result apiv1.ResultEnvelope) (journal.AttemptClass, bool) {
+	if dispatchErr != nil {
+		if invoke.IsInfrastructureFailure(dispatchErr) {
+			return journal.AttemptInfra, true
+		}
+		return journal.AttemptPolicy, true
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil {
+		return "", false
+	}
+	switch result.Error.Code {
+	case "nonzero_exit", baseSyncConflictErrorCode:
+		return journal.AttemptPolicy, true
+	default:
+		return "", false
+	}
+}
+
+func journalRetryDecision(jr *journal.Run, result gate.Result, stage string, subject apiv1.ResultEnvelope) error {
+	class, ok := retryFailureClass(nil, subject)
+	if !ok || result.Outcome == gate.OutcomePass || result.Escalated {
+		return nil
+	}
+	switch result.Target {
+	case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: stage,
+		Gate:  result.Gate,
+		Runner: map[string]any{
+			"kind":               retryDecisionKind,
+			retryFailureClassKey: string(class),
+			"failureCode":        subject.Error.Code,
+			"repassAttempt":      result.Attempt,
+			"target":             result.Target,
+		},
+	})
 }
 
 // startTaskSpan opens one task-attempt span under the run's trace, if telemetry is

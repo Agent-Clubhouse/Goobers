@@ -100,6 +100,7 @@ type conflictRemediatingDeterministic struct {
 	remote            string
 	root              string
 	runDir            string
+	baseWork          string
 	implementAttempts int
 	localCIAttempts   int
 }
@@ -115,16 +116,28 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 			runGit(d.t, env.Workspace, "add", "README.md")
 			runGit(d.t, env.Workspace, "commit", "-m", "implement")
 
-			baseWork := filepath.Join(d.root, "conflicting-base-work")
-			runGit(d.t, "", "clone", d.remote, baseWork)
-			runGit(d.t, baseWork, "config", "user.email", "test@example.com")
-			runGit(d.t, baseWork, "config", "user.name", "test")
-			if err := os.WriteFile(filepath.Join(baseWork, "README.md"), []byte("base\n"), 0o644); err != nil {
+			d.baseWork = filepath.Join(d.root, "conflicting-base-work")
+			runGit(d.t, "", "clone", d.remote, d.baseWork)
+			runGit(d.t, d.baseWork, "config", "user.email", "test@example.com")
+			runGit(d.t, d.baseWork, "config", "user.name", "test")
+			for i := 1; i <= 15; i++ {
+				branch := fmt.Sprintf("sibling-%02d", i)
+				runGit(d.t, d.baseWork, "checkout", "-b", branch, "main")
+				name := filepath.Join(d.baseWork, branch+".txt")
+				if err := os.WriteFile(name, []byte(branch+"\n"), 0o644); err != nil {
+					return apiv1.ResultEnvelope{}, err
+				}
+				runGit(d.t, d.baseWork, "add", filepath.Base(name))
+				runGit(d.t, d.baseWork, "commit", "-m", "open "+branch)
+				runGit(d.t, d.baseWork, "push", "origin", branch)
+			}
+			runGit(d.t, d.baseWork, "checkout", "main")
+			if err := os.WriteFile(filepath.Join(d.baseWork, "README.md"), []byte("base round 1\n"), 0o644); err != nil {
 				return apiv1.ResultEnvelope{}, err
 			}
-			runGit(d.t, baseWork, "add", "README.md")
-			runGit(d.t, baseWork, "commit", "-m", "advance base")
-			runGit(d.t, baseWork, "push", "origin", "main")
+			runGit(d.t, d.baseWork, "add", "README.md")
+			runGit(d.t, d.baseWork, "commit", "-m", "advance base during local-ci")
+			runGit(d.t, d.baseWork, "push", "origin", "main")
 			break
 		}
 
@@ -161,6 +174,14 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 		}
 		runGit(d.t, env.Workspace, "add", "README.md")
 		runGit(d.t, env.Workspace, "commit", "-m", "resolve base conflict")
+		if d.implementAttempts == 2 {
+			if err := os.WriteFile(filepath.Join(d.baseWork, "README.md"), []byte("base round 2\n"), 0o644); err != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			runGit(d.t, d.baseWork, "add", "README.md")
+			runGit(d.t, d.baseWork, "commit", "-m", "advance base again during local-ci")
+			runGit(d.t, d.baseWork, "push", "origin", "main")
+		}
 	case strings.HasSuffix(env.TaskID, ":local-ci"):
 		d.localCIAttempts++
 		content, err := os.ReadFile(filepath.Join(env.Workspace, "README.md"))
@@ -174,7 +195,7 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
-func TestRunnerRoutesBaseSyncConflictThroughBoundedRemediation(t *testing.T) {
+func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *testing.T) {
 	remote := newFixtureRepo(t)
 	deterministic := &conflictRemediatingDeterministic{t: t, remote: remote, root: t.TempDir()}
 	r, runsDir := newWorktreeProvisioningTestRunner(t, remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
@@ -226,11 +247,11 @@ func TestRunnerRoutesBaseSyncConflictThroughBoundedRemediation(t *testing.T) {
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %s, want %s", result.Phase, journal.PhaseCompleted)
 	}
-	if deterministic.implementAttempts != 2 {
-		t.Fatalf("implement attempts = %d, want 2", deterministic.implementAttempts)
+	if deterministic.implementAttempts != 3 {
+		t.Fatalf("implement attempts = %d, want 3", deterministic.implementAttempts)
 	}
 	if deterministic.localCIAttempts != 1 {
-		t.Fatalf("local-ci executor attempts = %d, want 1 after conflict remediation", deterministic.localCIAttempts)
+		t.Fatalf("local-ci executor attempts = %d, want 1 after repeated conflict remediation", deterministic.localCIAttempts)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-sync-conflict"))
@@ -241,26 +262,38 @@ func TestRunnerRoutesBaseSyncConflictThroughBoundedRemediation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
-	var typedConflict, successfulCI bool
+	var conflictCount int
+	var successfulCI bool
+	var retryAttempts []int
 	for _, event := range events {
-		if event.Stage != "local-ci" {
-			continue
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "run_failed" {
+			t.Fatalf("batch-load sync conflict terminated the run: %+v", event.Error)
 		}
-		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+		if event.Stage == "local-ci" && event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
 			t.Fatalf("base sync conflict was journaled as executor_error: %+v", event.Error)
 		}
-		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
+		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
 			event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
-			typedConflict = true
+			conflictCount++
 		}
-		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
+		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
 			successfulCI = true
 		}
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind &&
+			event.Runner["failureCode"] == baseSyncConflictErrorCode {
+			if event.Runner[retryFailureClassKey] != string(journal.AttemptPolicy) {
+				t.Fatalf("retry failure class = %v, want %s", event.Runner[retryFailureClassKey], journal.AttemptPolicy)
+			}
+			retryAttempts = append(retryAttempts, int(event.Runner["repassAttempt"].(float64)))
+		}
 	}
-	if !typedConflict {
-		t.Fatal("journal missing typed base-sync conflict stage result")
+	if conflictCount != 2 {
+		t.Fatalf("typed base-sync conflicts = %d, want 2", conflictCount)
 	}
 	if !successfulCI {
 		t.Fatal("journal missing successful local-ci after remediation")
+	}
+	if len(retryAttempts) != 2 || retryAttempts[0] != 1 || retryAttempts[1] != 2 {
+		t.Fatalf("journaled retry attempts = %v, want [1 2]", retryAttempts)
 	}
 }
