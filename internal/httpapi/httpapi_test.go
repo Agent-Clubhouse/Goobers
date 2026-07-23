@@ -418,6 +418,15 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			wantCode:   "invalid_argument",
 		},
 		{
+			name:       "usage runs with telemetry disabled",
+			reader:     &fakeReader{err: readservice.ErrTelemetryUnavailable},
+			method:     http.MethodGet,
+			path:       RunsPath + "?population=token-measured",
+			authorizer: AllowAll,
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "telemetry_unavailable",
+		},
+		{
 			name:       "missing run",
 			reader:     &fakeReader{err: readservice.ErrNotFound},
 			method:     http.MethodGet,

@@ -17,7 +17,13 @@ export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
 export type AttemptClass = "initial" | "policy" | "infra";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
-export type StagePopulationFilter = "attempts" | "measured";
+export type StagePopulationFilter =
+  | "attempts"
+  | "measured"
+  | "token-measured"
+  | "premium-measured"
+  | "cost-measured"
+  | "retry-waste";
 export type ValidationSeverity = "error" | "warning";
 export type ValidationWarningCode = "VER001" | "VER002" | "VER003" | "MODEL002";
 export type UpdateModel = "instance" | "run" | "workflow";
@@ -471,6 +477,7 @@ export interface TelemetryStatsResult {
   gaggles: TelemetryGaggleStats[];
   runs: TelemetryRunStats[];
   stages: TelemetryStageStats[];
+  usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
 }
 
@@ -521,6 +528,26 @@ export interface TelemetryStageStats {
   p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteDurationMs?: number;
+  retryWasteTokens?: number;
+  retryWasteCostUSD?: number;
+}
+
+export interface TelemetryUsageStats {
+  scope: "instance" | "gaggle" | "workflow" | "stage";
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
+  totalAttempts: number;
+  tokenSamples: number;
+  p50Tokens?: number;
+  p95Tokens?: number;
+  premiumRequestSamples: number;
+  p50CopilotPremiumRequests?: number;
+  p95CopilotPremiumRequests?: number;
+  costSamples: number;
+  p50CostUSD?: number;
+  p95CostUSD?: number;
+  retryWasteAttempts: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
 }

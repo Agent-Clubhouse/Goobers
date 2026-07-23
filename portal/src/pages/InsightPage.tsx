@@ -7,6 +7,7 @@ import type {
   TelemetryStageStats,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TelemetryUsageStats,
 } from "../api/types";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
@@ -86,8 +87,8 @@ export function InsightPage({
         <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
-          Success, failure-reason, and latency diagnostics for the selected operational scope.
-          Every metric opens the runs behind it.
+          Success, failure-reason, AI usage, and latency diagnostics for the selected
+          operational scope. Every metric opens the runs behind it.
         </p>
       </header>
 
@@ -151,6 +152,7 @@ function InsightContent({
 }) {
   const summary = scopeMetric(scope, snapshot.stats, snapshot.filters);
   const breakdown = outcomeBreakdown(scope, snapshot.stats, snapshot.filters);
+  const usage = usageForScope(scope, snapshot.stats.usage);
   const stages = stagesInScope(scope, snapshot.stats.stages)
     .filter((stage) => stage.durationSamples > 0)
     .sort(
@@ -168,6 +170,7 @@ function InsightContent({
 
   if (
     !hasOutcomes &&
+    !usage &&
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
@@ -211,6 +214,23 @@ function InsightContent({
               <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
             ))}
           </div>
+        </section>
+      )}
+
+      {usage && (
+        <section className="content-section">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">AI usage</p>
+              <h2>Credits, cost, and tokens</h2>
+            </div>
+            <span className="section-count">Selected scope rollup</span>
+          </div>
+          <p className="usage-description">
+            Attempt measurements are aggregated for the selected scope. Runners that do not
+            report usage remain unmeasured.
+          </p>
+          <UsageAnalytics filters={snapshot.filters} usage={usage} />
         </section>
       )}
 
@@ -409,6 +429,195 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
         {metric.total}
       </a>
     </div>
+  );
+}
+
+function UsageAnalytics({
+  filters,
+  usage,
+}: {
+  filters: TelemetryStatsOptions;
+  usage: TelemetryUsageStats;
+}) {
+  const label = usageMetricLabel(usage);
+  const premiumHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "premium-measured",
+    ),
+  });
+  const tokenHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "token-measured",
+    ),
+  });
+  const costHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "cost-measured",
+    ),
+  });
+  const wasteHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "retry-waste",
+    ),
+  });
+  return (
+    <div className="usage-analytics">
+      <div aria-hidden="true" className="usage-header">
+        <span>Scope</span>
+        <span>AI credits</span>
+        <span>Tokens</span>
+        <span>AI cost</span>
+        <span>Retry waste</span>
+      </div>
+      <div className="usage-row">
+        <span className="distribution-name">
+          <strong>{usageMetricName(usage)}</strong>
+          <small>
+            {usageMetricContext(usage)} · {usage.totalAttempts}{" "}
+            {usage.totalAttempts === 1 ? "attempt" : "attempts"}
+          </small>
+        </span>
+        <UsagePercentiles
+          ariaLabel={`View AI credit runs behind ${label}: ${formatSamples(usage.premiumRequestSamples)}, P50 ${formatMeasuredCredits(usage.p50CopilotPremiumRequests)}, P95 ${formatMeasuredCredits(usage.p95CopilotPremiumRequests)}`}
+          formatter={formatMeasuredCredits}
+          href={premiumHref}
+          label="AI credits"
+          p50={usage.p50CopilotPremiumRequests}
+          p95={usage.p95CopilotPremiumRequests}
+          samples={usage.premiumRequestSamples}
+        />
+        <UsagePercentiles
+          ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
+          formatter={formatMeasuredTokens}
+          href={tokenHref}
+          label="Tokens"
+          p50={usage.p50Tokens}
+          p95={usage.p95Tokens}
+          samples={usage.tokenSamples}
+        />
+        <UsagePercentiles
+          ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+          formatter={formatMeasuredCost}
+          href={costHref}
+          label="AI cost"
+          p50={usage.p50CostUSD}
+          p95={usage.p95CostUSD}
+          samples={usage.costSamples}
+        />
+        <RetryWasteMetric href={wasteHref} label={label} usage={usage} />
+      </div>
+    </div>
+  );
+}
+
+function UsagePercentiles({
+  ariaLabel,
+  formatter,
+  href,
+  label,
+  p50,
+  p95,
+  samples,
+}: {
+  ariaLabel: string;
+  formatter: (value: number | undefined) => string;
+  href: string;
+  label: string;
+  p50?: number;
+  p95?: number;
+  samples: number;
+}) {
+  return (
+    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
+      <span className="usage-metric-heading">
+        <strong>{label}</strong>
+        <small>{formatSamples(samples)}</small>
+      </span>
+      <span className="usage-percentiles">
+        <span>
+          <small>P50</small>
+          <strong>{formatter(p50)}</strong>
+        </span>
+        <span>
+          <small>P95</small>
+          <strong>{formatter(p95)}</strong>
+        </span>
+      </span>
+    </a>
+  );
+}
+
+function RetryWasteMetric({
+  href,
+  label,
+  usage,
+}: {
+  href: string;
+  label: string;
+  usage: TelemetryUsageStats;
+}) {
+  const description =
+    usage.retryWasteAttempts === 0
+      ? "no superseded attempts"
+      : `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(usage.retryWasteTokens)}, ${formatMeasuredCost(usage.retryWasteCostUSD)}`;
+  return (
+    <a
+      aria-label={`View retry-waste runs behind ${label}: ${description}`}
+      className="usage-metric-link usage-waste-link"
+      href={href}
+    >
+      <span className="usage-metric-heading">
+        <strong>Retry waste</strong>
+        <small>
+          {usage.retryWasteAttempts} superseded{" "}
+          {usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}
+        </small>
+      </span>
+      {usage.retryWasteAttempts === 0 ? (
+        <span className="usage-no-waste">
+          <strong>No retry waste</strong>
+        </span>
+      ) : (
+        <span className="usage-waste-values">
+          <span>
+            <small>Attempts</small>
+            <strong>{usage.retryWasteAttempts}</strong>
+          </span>
+          <span>
+            <small>Tokens</small>
+            <strong>{formatMeasuredTokens(usage.retryWasteTokens)}</strong>
+          </span>
+          <span>
+            <small>Cost</small>
+            <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
+          </span>
+        </span>
+      )}
+    </a>
   );
 }
 
@@ -645,6 +854,72 @@ function stagesInScope(
   }
 }
 
+function usageForScope(
+  scope: InsightScope,
+  usage: TelemetryUsageStats[],
+): TelemetryUsageStats | undefined {
+  return usage.find((item) => {
+    switch (scope.kind) {
+      case "instance":
+        return item.scope === "instance";
+      case "gaggle":
+        return item.scope === "gaggle" && item.gaggle === scope.gaggle;
+      case "workflow":
+        return (
+          item.scope === "workflow" &&
+          item.gaggle === scope.gaggle &&
+          item.workflow === scope.workflow
+        );
+      case "stage":
+        return (
+          item.scope === "stage" &&
+          item.gaggle === scope.gaggle &&
+          item.workflow === scope.workflow &&
+          item.stage === scope.stage
+        );
+    }
+  });
+}
+
+function usageMetricLabel(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "Instance";
+    case "gaggle":
+      return usage.gaggle ?? "Gaggle";
+    case "workflow":
+      return [usage.gaggle, usage.workflow].filter(Boolean).join(" / ");
+    case "stage":
+      return [usage.gaggle, usage.workflow, usage.stage].filter(Boolean).join(" / ");
+  }
+}
+
+function usageMetricName(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "Instance";
+    case "gaggle":
+      return usage.gaggle ?? "Gaggle";
+    case "workflow":
+      return usage.workflow ?? "Workflow";
+    case "stage":
+      return usage.stage ?? "Stage";
+  }
+}
+
+function usageMetricContext(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "All gaggles";
+    case "gaggle":
+      return "Gaggle";
+    case "workflow":
+      return usage.gaggle ?? "Workflow";
+    case "stage":
+      return [usage.gaggle, usage.workflow].filter(Boolean).join(" / ");
+  }
+}
+
 function sumGaggles(
   gaggles: TelemetryGaggleStats[],
   filters: TelemetryStatsOptions,
@@ -789,4 +1064,34 @@ function formatRate(value: number | undefined): string {
 
 function formatMeasuredDuration(value: number | undefined): string {
   return value === undefined ? "Unmeasured" : formatDuration(value);
+}
+
+function formatMeasuredTokens(value: number | undefined): string {
+  return value === undefined ? "Unmeasured" : `${value.toLocaleString("en-US")} tokens`;
+}
+
+function formatMeasuredCredits(value: number | undefined): string {
+  if (value === undefined) {
+    return "Unmeasured";
+  }
+  const formatted = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 3,
+  }).format(value);
+  return `${formatted} ${value === 1 ? "credit" : "credits"}`;
+}
+
+function formatMeasuredCost(value: number | undefined): string {
+  if (value === undefined) {
+    return "Unmeasured";
+  }
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
+function formatSamples(samples: number): string {
+  return samples === 0 ? "Unmeasured" : `${samples} ${samples === 1 ? "sample" : "samples"}`;
 }

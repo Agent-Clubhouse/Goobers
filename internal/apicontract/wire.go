@@ -94,6 +94,8 @@ func newWireFixtures() wireFixtures {
 	maxDuration := int64(140001)
 	p50Tokens := int64(24000)
 	p95Tokens := int64(48000)
+	p50PremiumRequests := 1.0
+	p95PremiumRequests := 2.0
 	p50CostUSD := 1.25
 	p95CostUSD := 2.5
 	retryWasteDuration := int64(100000)
@@ -431,6 +433,24 @@ func newWireFixtures() wireFixtures {
 				RetryWasteDurationMs: &retryWasteDuration,
 				RetryWasteTokens:     &retryWasteTokens,
 				RetryWasteCostUSD:    &retryWasteCostUSD,
+			}},
+			Usage: []readservice.TelemetryUsageStats{{
+				Scope:                     "workflow",
+				Gaggle:                    "core",
+				Workflow:                  "implementation",
+				TotalAttempts:             4,
+				TokenSamples:              4,
+				P50Tokens:                 &p50Tokens,
+				P95Tokens:                 &p95Tokens,
+				PremiumRequestSamples:     3,
+				P50CopilotPremiumRequests: &p50PremiumRequests,
+				P95CopilotPremiumRequests: &p95PremiumRequests,
+				CostSamples:               4,
+				P50CostUSD:                &p50CostUSD,
+				P95CostUSD:                &p95CostUSD,
+				RetryWasteAttempts:        1,
+				RetryWasteTokens:          &retryWasteTokens,
+				RetryWasteCostUSD:         &retryWasteCostUSD,
 			}},
 			Models: []readservice.TelemetryModelStats{{
 				Model:                  "gpt-5.4",

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -133,6 +133,128 @@ describe("Insight page", () => {
     );
   });
 
+  it("shows exact scope usage rollups and contributor-specific drill-downs", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Credits, cost, and tokens" }),
+    ).toBeInTheDocument();
+    const costLinks = screen.getAllByRole("link", { name: /^View AI cost runs behind/ });
+    expect(costLinks).toHaveLength(1);
+    expect(costLinks[0]).toHaveAccessibleName(
+      /Instance: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+    );
+
+    const creditLink = screen.getByRole("link", {
+      name: /View AI credit runs behind Instance/,
+    });
+    const tokenLink = screen.getByRole("link", {
+      name: /View token usage runs behind Instance/,
+    });
+    const costLink = screen.getByRole("link", {
+      name: /View AI cost runs behind Instance/,
+    });
+    const wasteLink = screen.getByRole("link", {
+      name: /View retry-waste runs behind Instance/,
+    });
+    expect(creditLink).toHaveAccessibleName(
+      /Instance: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+    );
+    expect(creditLink).toHaveAttribute(
+      "href",
+      expect.stringContaining("population=premium-measured"),
+    );
+    expect(tokenLink).toHaveAttribute("href", expect.stringContaining("population=token-measured"));
+    expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
+    expect(wasteLink).toHaveAttribute("href", expect.stringContaining("population=retry-waste"));
+    for (const link of [creditLink, tokenLink, costLink, wasteLink]) {
+      expect(link).toHaveAttribute("href", expect.not.stringContaining("outcome=finished"));
+      expect(link).toHaveAttribute("href", expect.stringMatching(/since=.*until=/));
+    }
+    expect(screen.getAllByText("15,000 tokens").length).toBeGreaterThan(0);
+    expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
+    expect(screen.getByText("$0.75")).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Workflow · core / implementation" }),
+    );
+    expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(1);
+    expect(
+      screen.getByRole("link", {
+        name: /View AI cost runs behind core \/ implementation: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /View AI credit runs behind core \/ implementation: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+      }),
+    ).toHaveAttribute("href", expect.stringMatching(/gaggle=core.*workflow=implementation/));
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Gaggle · core" }),
+    );
+    expect(
+      screen.getByRole("link", {
+        name: /View token usage runs behind core: 8 samples, P50 15,000 tokens, P95 48,000 tokens/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /View AI credit runs behind core: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+      }),
+    ).toHaveAttribute("href", expect.stringContaining("gaggle=core"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Stage · tools / implementation / implement" }),
+    );
+
+    const unmeasuredTokens = screen.getByRole("link", {
+      name: /View token usage runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
+    const unmeasuredCost = screen.getByRole("link", {
+      name: /View AI cost runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
+    const unmeasuredCredits = screen.getByRole("link", {
+      name: /View AI credit runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
+    expect(within(unmeasuredTokens).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(within(unmeasuredCredits).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(screen.getByText("No retry waste")).toBeInTheDocument();
+    expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
+    expect(within(unmeasuredTokens).queryByText("0 tokens")).not.toBeInTheDocument();
+    expect(within(unmeasuredCredits).queryByText("0 credits")).not.toBeInTheDocument();
+    expect(unmeasuredCredits).toHaveAttribute(
+      "href",
+      expect.stringMatching(
+        /gaggle=tools.*workflow=implementation.*stage=implement.*population=premium-measured/,
+      ),
+    );
+
+    await user.click(unmeasuredCredits);
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listRuns).toHaveBeenCalledWith(
+        expect.objectContaining({
+          gaggle: "tools",
+          workflow: "implementation",
+          stage: "implement",
+          outcome: undefined,
+          population: "premium-measured",
+          since: expect.stringMatching(/Z$/),
+          until: expect.stringMatching(/Z$/),
+        }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
   it("drills into every matching run error while keeping the selected filters", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");
@@ -225,7 +347,13 @@ describe("Insight page", () => {
       await screen.findByLabelText("Scope"),
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
-    getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [], models: [] });
+    getTelemetryStats.mockResolvedValueOnce({
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [],
+    });
     getTelemetryErrorSignatures.mockResolvedValueOnce({ items: [] });
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");

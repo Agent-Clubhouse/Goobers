@@ -58,11 +58,14 @@ const (
 // StagePopulation selects which attempts of a stage contribute runs.
 type StagePopulation string
 
-// StagePopulationAttempts and StagePopulationMeasured are the canonical stage
-// populations.
+// These are the canonical attempt populations behind Insight metrics.
 const (
-	StagePopulationAttempts StagePopulation = "attempts"
-	StagePopulationMeasured StagePopulation = "measured"
+	StagePopulationAttempts        StagePopulation = "attempts"
+	StagePopulationMeasured        StagePopulation = "measured"
+	StagePopulationTokenMeasured   StagePopulation = "token-measured"
+	StagePopulationPremiumMeasured StagePopulation = "premium-measured"
+	StagePopulationCostMeasured    StagePopulation = "cost-measured"
+	StagePopulationRetryWaste      StagePopulation = "retry-waste"
 )
 
 // OfflineRuns is the shared run-diagnostics boundary used by CLI adapters
@@ -295,8 +298,13 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation) {
 		return RunList{}, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
 	}
-	if options.StagePopulation != "" && options.Stage == "" {
+	if options.StagePopulation != "" &&
+		!telemetryStagePopulation(options.StagePopulation) &&
+		options.Stage == "" {
 		return RunList{}, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
+	}
+	if telemetryStagePopulation(options.StagePopulation) && s.sources.Telemetry == nil {
+		return RunList{}, ErrTelemetryUnavailable
 	}
 	if !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until) {
 		return RunList{}, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
@@ -323,6 +331,10 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 // index status can never wrongly include or hide a run because Phase and
 // stageAttempts here come from the journal, not the index.
 func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
+	journalPopulation := options.StagePopulation
+	if telemetryStagePopulation(journalPopulation) {
+		journalPopulation = ""
+	}
 	switch {
 	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
 		return false
@@ -330,11 +342,13 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		return false
 	case options.Stage != "" && !containsString(summary.Stages, options.Stage):
 		return false
-	case (options.Outcome != "" || options.StagePopulation != "") && !summary.Terminal:
+	case (options.Outcome != "" ||
+		(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) &&
+		!summary.Terminal:
 		return false
 	case options.Stage != "" &&
-		(options.Outcome != "" || options.StagePopulation != "") &&
-		!matchesStageAttempt(summary.stageAttempts[options.Stage], options.Outcome, options.StagePopulation):
+		(options.Outcome != "" || journalPopulation != "") &&
+		!matchesStageAttempt(summary.stageAttempts[options.Stage], options.Outcome, journalPopulation):
 		return false
 	case options.Stage == "" && options.Outcome != "" && !matchesRunOutcome(summary.Phase, options.Outcome):
 		return false
@@ -351,7 +365,9 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 }
 
 func attemptStageFor(options RunListOptions) string {
-	if options.Stage != "" && (options.Outcome != "" || options.StagePopulation != "") {
+	if options.Stage != "" &&
+		(options.Outcome != "" ||
+			(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) {
 		return options.Stage
 	}
 	return ""
@@ -454,6 +470,13 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 				return RunList{}, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
 			}
 			if !s.runMatches(summary, options) {
+				continue
+			}
+			matchesUsage, err := s.matchesTelemetryPopulation(ref.RunID, options)
+			if err != nil {
+				return RunList{}, err
+			}
+			if !matchesUsage {
 				continue
 			}
 			kept = append(kept, summary)
@@ -1104,11 +1127,72 @@ func canonicalOutcome(outcome OutcomeFilter) bool {
 
 func canonicalStagePopulation(population StagePopulation) bool {
 	switch population {
-	case StagePopulationAttempts, StagePopulationMeasured:
+	case StagePopulationAttempts,
+		StagePopulationMeasured,
+		StagePopulationTokenMeasured,
+		StagePopulationPremiumMeasured,
+		StagePopulationCostMeasured,
+		StagePopulationRetryWaste:
 		return true
 	default:
 		return false
 	}
+}
+
+func telemetryStagePopulation(population StagePopulation) bool {
+	switch population {
+	case StagePopulationTokenMeasured,
+		StagePopulationPremiumMeasured,
+		StagePopulationCostMeasured,
+		StagePopulationRetryWaste:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions) (bool, error) {
+	if !telemetryStagePopulation(options.StagePopulation) {
+		return true, nil
+	}
+	attempts, err := s.sources.Telemetry.StageAttempts(runID)
+	if err != nil {
+		return false, err
+	}
+	return matchesTelemetryAttempts(attempts, options.Stage, options.StagePopulation), nil
+}
+
+func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, population StagePopulation) bool {
+	latest := make(map[string]int)
+	for _, attempt := range attempts {
+		if attempt.Traversal > latest[attempt.Stage] {
+			latest[attempt.Stage] = attempt.Traversal
+		}
+	}
+	for _, attempt := range attempts {
+		if stage != "" && attempt.Stage != stage {
+			continue
+		}
+		switch population {
+		case StagePopulationTokenMeasured:
+			if attempt.InputTokens != nil && attempt.OutputTokens != nil {
+				return true
+			}
+		case StagePopulationPremiumMeasured:
+			if attempt.CopilotPremiumRequests != nil {
+				return true
+			}
+		case StagePopulationCostMeasured:
+			if attempt.CostUSD != nil {
+				return true
+			}
+		case StagePopulationRetryWaste:
+			if attempt.Traversal < latest[attempt.Stage] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func countStageAttempts(records []journal.EventRecord) (repasses, retries, policyRetries, infraRetries int) {

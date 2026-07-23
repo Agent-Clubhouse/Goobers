@@ -37,6 +37,32 @@ describe("Insight routing", () => {
     });
   });
 
+  it("round-trips contributor-specific usage populations", () => {
+    for (const population of [
+      "token-measured",
+      "premium-measured",
+      "cost-measured",
+      "retry-waste",
+    ] as const) {
+      const route = {
+        page: "runs" as const,
+        filters: { workflow: "implementation", population },
+      };
+      expect(parseRoute(routeHash(route))).toEqual({
+        page: "runs",
+        filters: {
+          gaggle: undefined,
+          workflow: "implementation",
+          stage: undefined,
+          outcome: undefined,
+          population,
+          since: undefined,
+          until: undefined,
+        },
+      });
+    }
+  });
+
   it("round-trips an exact error signature including empty values", () => {
     const route = {
       page: "errors" as const,

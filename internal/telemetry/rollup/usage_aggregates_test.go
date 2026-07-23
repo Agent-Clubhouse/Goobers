@@ -321,25 +321,26 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	seedUsageRun(t, runsDir, "2222222222222222abababababababab", "implement", "agent", base.Add(time.Hour),
 		usageAttemptFixture{duration: 20 * time.Millisecond, status: "failure", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens: 10, telemetry.AttrGenAIUsageOutputTokens: 30,
-			telemetry.AttrUsageCostUSD: 2,
+			telemetry.AttrCopilotPremiumRequests: 2, telemetry.AttrUsageCostUSD: 2,
 		}},
 		usageAttemptFixture{duration: 30 * time.Millisecond, status: "success", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens: 20, telemetry.AttrGenAIUsageOutputTokens: 40,
-			telemetry.AttrUsageCostUSD: 3,
+			telemetry.AttrCopilotPremiumRequests: 3, telemetry.AttrUsageCostUSD: 3,
 		}})
 	seedUsageRun(t, runsDir, "3333333333333333abababababababab", "implement", "agent", base.Add(2*time.Hour),
 		usageAttemptFixture{duration: 40 * time.Millisecond, status: "failure"},
 		usageAttemptFixture{duration: 50 * time.Millisecond, status: "success", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens: 40, telemetry.AttrGenAIUsageOutputTokens: 60,
+			telemetry.AttrCopilotPremiumRequests: 4,
 		}})
 	seedUsageRun(t, runsDir, "4444444444444444abababababababab", "implement", "fully-retried", base.Add(3*time.Hour),
 		usageAttemptFixture{duration: 7 * time.Millisecond, status: "failure", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens: 2, telemetry.AttrGenAIUsageOutputTokens: 3,
-			telemetry.AttrUsageCostUSD: 0.5,
+			telemetry.AttrCopilotPremiumRequests: 0.5, telemetry.AttrUsageCostUSD: 0.5,
 		}},
 		usageAttemptFixture{duration: 8 * time.Millisecond, status: "success", metrics: map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens: 3, telemetry.AttrGenAIUsageOutputTokens: 4,
-			telemetry.AttrUsageCostUSD: 0.75,
+			telemetry.AttrCopilotPremiumRequests: 0.75, telemetry.AttrUsageCostUSD: 0.75,
 		}})
 	unmeteredDir := seedUsageRun(t, runsDir, "5555555555555555abababababababab", "implement", "unmetered", base.Add(4*time.Hour),
 		usageAttemptFixture{duration: 5 * time.Millisecond, status: "success"})
@@ -376,6 +377,29 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	byStage := make(map[string]StageStats, len(stats.Stages))
 	for _, stat := range stats.Stages {
 		byStage[stat.Stage] = stat
+	}
+	usageByStage := make(map[string]UsageStats)
+	var workflowUsage UsageStats
+	for _, usage := range stats.Usage {
+		if usage.Scope == "workflow" && usage.Workflow == "implement" {
+			workflowUsage = usage
+		}
+		if usage.Scope == "stage" {
+			usageByStage[usage.Stage] = usage
+		}
+	}
+	if workflowUsage.TotalAttempts != 9 ||
+		!workflowUsage.HasTokens || workflowUsage.TokenSamples != 7 ||
+		workflowUsage.P50Tokens != 20 || workflowUsage.P95Tokens != 100 ||
+		!workflowUsage.HasPremiumRequests || workflowUsage.PremiumRequestSamples != 7 ||
+		workflowUsage.P50CopilotPremiumRequests != 1 || workflowUsage.P95CopilotPremiumRequests != 4 ||
+		!workflowUsage.HasCost || workflowUsage.CostSamples != 6 ||
+		workflowUsage.P50CostUSD != 0.75 || workflowUsage.P95CostUSD != 3 {
+		t.Fatalf("workflow usage rollup = %#v", workflowUsage)
+	}
+	if workflowUsage.RetryWasteAttempts != 3 ||
+		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
+		t.Fatalf("partial workflow retry usage became a total: %#v", workflowUsage)
 	}
 
 	agent := byStage["agent"]
@@ -429,6 +453,16 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if !zeroStats.HasTokens || zeroStats.TokenSamples != 1 || zeroStats.P50Tokens != 0 ||
 		!zeroStats.HasCost || zeroStats.CostSamples != 1 || zeroStats.P50CostUSD != 0 {
 		t.Fatalf("reported zero usage was not aggregated: %#v", zeroStats)
+	}
+	if unmeteredUsage := usageByStage["unmetered"]; unmeteredUsage.HasPremiumRequests ||
+		unmeteredUsage.PremiumRequestSamples != 0 {
+		t.Fatalf("missing premium requests became observed: %#v", unmeteredUsage)
+	}
+	if zeroUsage := usageByStage["zero-metered"]; !zeroUsage.HasPremiumRequests ||
+		zeroUsage.PremiumRequestSamples != 1 ||
+		zeroUsage.P50CopilotPremiumRequests != 0 ||
+		zeroUsage.P95CopilotPremiumRequests != 0 {
+		t.Fatalf("reported zero premium requests became missing: %#v", zeroUsage)
 	}
 
 	if err := db.IngestRun(firstDir); err != nil {

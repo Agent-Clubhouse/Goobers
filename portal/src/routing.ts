@@ -150,5 +150,12 @@ function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
 
 function populationQuery(search: URLSearchParams): StagePopulationFilter | undefined {
   const value = optionalQuery(search, "population");
-  return value === "attempts" || value === "measured" ? value : undefined;
+  return value === "attempts" ||
+    value === "measured" ||
+    value === "token-measured" ||
+  value === "premium-measured" ||
+  value === "cost-measured" ||
+    value === "retry-waste"
+    ? value
+    : undefined;
 }

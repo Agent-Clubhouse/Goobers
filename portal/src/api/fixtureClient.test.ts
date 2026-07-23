@@ -72,7 +72,7 @@ function fixtures(): DaemonFixtures {
         bytes: new TextEncoder().encode("ok").buffer,
       },
     },
-    telemetryStats: { gaggles: [], runs: [], stages: [], models: [] },
+    telemetryStats: { gaggles: [], runs: [], stages: [], usage: [], models: [] },
     telemetryErrorSignatures: { items: [] },
     telemetryErrors: { items: [] },
   };
@@ -181,5 +181,38 @@ describe("FixtureDaemonClient", () => {
         population: "measured",
       }),
     ).resolves.toEqual([]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        population: "token-measured",
+      }),
+    ).resolves.toEqual([
+      "01JZ441DAEMONAPI",
+      "01JZ402DASHBOARD",
+      "01JZ400FAILED",
+      "01JZ455ESCALATE",
+    ]);
+    await expect(
+      ids({
+        gaggle: "tools",
+        workflow: "implementation",
+        population: "cost-measured",
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        population: "premium-measured",
+      }),
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED", "01JZ455ESCALATE"]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        population: "retry-waste",
+      }),
+    ).resolves.toEqual(["01JZ402DASHBOARD"]);
   });
 });

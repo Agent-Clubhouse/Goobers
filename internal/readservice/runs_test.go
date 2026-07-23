@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -327,6 +328,7 @@ func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
 		{id: "run-other", phase: journal.PhaseAborted, stageStatus: string(apiv1.ResultBlocked)},
 		{id: "run-active", phase: journal.PhaseRunning, stageStatus: string(apiv1.ResultSuccess)},
 	}
+
 	for index, fixture := range fixtures {
 		run, clock := createFixtureRun(
 			t,
@@ -428,6 +430,39 @@ func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
 		if _, err := service.ListRuns(context.Background(), options); !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("options %+v error = %v", options, err)
 		}
+	}
+}
+
+func TestUsageStagePopulationsSelectOnlyContributingAttempts(t *testing.T) {
+	zero := int64(0)
+	zeroPremium := float64(0)
+	zeroCost := float64(0)
+	attempts := []rollup.StageAttempt{
+		{Stage: "implement", Traversal: 1, InputTokens: &zero, OutputTokens: &zero, CopilotPremiumRequests: &zeroPremium},
+		{Stage: "implement", Traversal: 2},
+		{Stage: "review", Traversal: 1, CostUSD: &zeroCost},
+	}
+
+	if !matchesTelemetryAttempts(attempts, "implement", StagePopulationTokenMeasured) {
+		t.Fatal("reported zero tokens were not treated as measured")
+	}
+	if matchesTelemetryAttempts(attempts, "review", StagePopulationTokenMeasured) {
+		t.Fatal("unmeasured review attempt contributed to token population")
+	}
+	if !matchesTelemetryAttempts(attempts, "implement", StagePopulationPremiumMeasured) {
+		t.Fatal("reported zero premium requests were not treated as measured")
+	}
+	if matchesTelemetryAttempts(attempts, "review", StagePopulationPremiumMeasured) {
+		t.Fatal("unmeasured review attempt contributed to premium-request population")
+	}
+	if !matchesTelemetryAttempts(attempts, "", StagePopulationCostMeasured) {
+		t.Fatal("cost-measured attempt did not contribute at workflow scope")
+	}
+	if !matchesTelemetryAttempts(attempts, "implement", StagePopulationRetryWaste) {
+		t.Fatal("superseded implement attempt did not contribute to retry waste")
+	}
+	if matchesTelemetryAttempts(attempts, "review", StagePopulationRetryWaste) {
+		t.Fatal("final review attempt contributed to retry waste")
 	}
 }
 
