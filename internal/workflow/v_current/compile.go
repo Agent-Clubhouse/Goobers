@@ -55,12 +55,6 @@ func WithKnownHarnesses(names []string) Option {
 // acknowledges use of unstable preview DSL features.
 const PreviewFeaturesAnnotation = "goobers.dev/allow-preview-features"
 
-// PreviewFeaturesEnabled reports whether annotations contain the exact,
-// explicit acknowledgement required for preview DSL features.
-func PreviewFeaturesEnabled(annotations map[string]string) bool {
-	return annotations[PreviewFeaturesAnnotation] == "true"
-}
-
 // WithPreviewFeatures applies an instance's preview-feature acknowledgement to
 // compilation. Preview features are rejected when this option is omitted.
 func WithPreviewFeatures(enabled bool) Option {
