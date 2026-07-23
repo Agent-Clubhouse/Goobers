@@ -24,9 +24,10 @@ is delivered to a running instance at each deployment tier.
   - (Platform/engine code is upstream, consumed as a released binary / images /
     charts — not a per-instance repo.)
 - **Config delivery by tier — same schemas everywhere:**
-  - *(Tiers 1–2)*: a **local config directory** loaded, validated, and **watched by
-    the local runner daemon**; edits (usually landing via git + PRs) take effect on
-    reload with no redeploy machinery.
+  - *(Tiers 1–2)*: a **local config directory** loaded and validated by the local
+    runner daemon at startup; edits (usually landing via git + PRs) take effect on
+    daemon restart today, with no redeploy machinery. Watch/hot-reload is V1
+    prescriptive, delivered by Workflow CD (`../design/workflow-cd.md`; `CFG-020`).
   - **Tier 3 (V2):** **ArgoCD sync → CRDs → the Goobers operator** — the cloud
     drop-in for the config-delivery seam (`ARCHITECTURE.md §10`). The definition
     schemas are identical; only delivery changes.
@@ -79,10 +80,15 @@ is delivered to a running instance at each deployment tier.
 
 ### Delivery by tier
 - **CFG-020 (MUST):** *(Tiers 1–2)*: config delivery MUST be a **local config
-  directory** that the local runner daemon loads, validates, and watches — no
-  database, cluster, or sync service required. Valid changes take effect on reload;
-  in-flight runs stay pinned to their started definition version (`WF-016`). This is
-  the owning statement of tiers-1–2 config delivery (`DEP-025` defers here).
+  directory** that the local runner daemon loads and validates — no database,
+  cluster, or sync service required. **Shipped:** config is loaded once at
+  `goobers up` startup; invalid config aborts startup (fail-closed). `goobers
+  config diff` (`../guides/config-drift.md`) detects drift against the shipped
+  canonical config. **Not implemented — V1 prescriptive:** watching the directory
+  and applying validated changes on reload, delivered by the Workflow CD design
+  (`../design/workflow-cd.md`, WCD-4/5). Version pinning holds either way:
+  in-flight runs stay pinned to their started definition version (`WF-016`). This
+  is the owning statement of tiers-1–2 config delivery (`DEP-025` defers here).
 - **CFG-021 (MUST):** **Tier 3 (V2):** config delivery MUST be **ArgoCD sync → CRDs →
   the Goobers operator** — the cloud drop-in for the same config-delivery seam
   (`ARCHITECTURE.md §10`). No definition changes shape when an instance moves tiers.
@@ -95,8 +101,12 @@ is delivered to a running instance at each deployment tier.
   them is valid only at tier 3 and sits outside the cross-runner conformance surface
   until the local runner gains them. *(All tiers)*
 - **CFG-023 (MUST):** Validation MUST fail closed: definitions that do not validate
-  MUST NOT be loaded or trigger runs — the instance keeps the last-known-good config
-  and surfaces the error (CLI/portal), rather than degrading. *(All tiers)*
+  MUST NOT be loaded or trigger runs. **Shipped:** invalid config aborts `goobers
+  up` at startup, with the error surfaced on the CLI. **Not implemented — V1
+  prescriptive:** last-known-good retention — a running instance keeping its prior
+  valid config and surfacing the error rather than stopping — arrives with
+  watch/reload delivery (Workflow CD, `../design/workflow-cd.md` WCD-5). *(All
+  tiers)*
 
 ## Relationships
 
