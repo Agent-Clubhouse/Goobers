@@ -151,9 +151,10 @@ func TestDemoProviderCommandAndErrors(t *testing.T) {
 
 func TestInitDemoBannerGolden(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "tour")
-	code, stdout, stderr := runArgs(t, "init", "--demo", root)
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", root}, strings.NewReader(""), &stdout, &stderr, "linux")
 	if code != 0 {
-		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr)
+		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr.String())
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -170,55 +171,72 @@ Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact
 `, abs, abs)
-	if stdout != want {
-		t.Fatalf("init --demo banner:\n--- got ---\n%s--- want ---\n%s", stdout, want)
+	if stdout.String() != want {
+		t.Fatalf("init --demo banner:\n--- got ---\n%s--- want ---\n%s", stdout.String(), want)
+	}
+}
+
+func TestInitDemoRejectsUnsupportedPlatform(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", root}, strings.NewReader(""), &stdout, &stderr, "windows")
+	if code != 2 {
+		t.Fatalf("init --demo: code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "supported only on Linux and macOS") ||
+		!strings.Contains(stderr.String(), "unavailable on windows") {
+		t.Fatalf("init --demo stderr = %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("init --demo stdout = %q, want empty", stdout.String())
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("unsupported demo created its target: %v", err)
 	}
 }
 
 func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
-	start := time.Now()
-	if runtime.GOOS == "windows" {
-		t.Setenv("GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE", "1")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("demo requires enforced network isolation")
 	}
+	start := time.Now()
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
 		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr)
 	}
 	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 
-	if runtime.GOOS != "windows" {
-		probe, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen for network probe: %v", err)
-		}
-		t.Cleanup(func() { _ = probe.Close() })
-		workflowPath := filepath.Join(root, "config", "gaggles", "demo", "workflows", "demo.yaml")
-		workflowData, err := os.ReadFile(workflowPath)
-		if err != nil {
-			t.Fatalf("read demo workflow: %v", err)
-		}
-		var demo apiv1.Workflow
-		if err := yaml.Unmarshal(workflowData, &demo); err != nil {
-			t.Fatalf("decode demo workflow: %v", err)
-		}
-		testBin, err := os.Executable()
-		if err != nil {
-			t.Fatalf("resolve test binary: %v", err)
-		}
-		demo.Spec.Tasks[0].Run.Command = []string{
-			testBin,
-			"-test.run=^TestDemoNetworkProbe$",
-			"--",
-			"demo-network-probe",
-			probe.Addr().String(),
-		}
-		workflowData, err = yaml.Marshal(demo)
-		if err != nil {
-			t.Fatalf("encode demo workflow: %v", err)
-		}
-		if err := os.WriteFile(workflowPath, workflowData, 0o644); err != nil {
-			t.Fatalf("write demo workflow: %v", err)
-		}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for network probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
+	workflowPath := filepath.Join(root, "config", "gaggles", "demo", "workflows", "demo.yaml")
+	workflowData, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read demo workflow: %v", err)
+	}
+	var demo apiv1.Workflow
+	if err := yaml.Unmarshal(workflowData, &demo); err != nil {
+		t.Fatalf("decode demo workflow: %v", err)
+	}
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	demo.Spec.Tasks[0].Run.Command = []string{
+		testBin,
+		"-test.run=^TestDemoNetworkProbe$",
+		"--",
+		"demo-network-probe",
+		probe.Addr().String(),
+	}
+	workflowData, err = yaml.Marshal(demo)
+	if err != nil {
+		t.Fatalf("encode demo workflow: %v", err)
+	}
+	if err := os.WriteFile(workflowPath, workflowData, 0o644); err != nil {
+		t.Fatalf("write demo workflow: %v", err)
 	}
 
 	orphan := filepath.Join(root, "workcopies", "scratch", "stage-crash-orphan")

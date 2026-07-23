@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,13 +27,18 @@ const initHelp = "Usage: goobers init [--guided | --demo] [path]\n\n" +
 	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
 	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
 	"then validates the result. --demo seeds a hermetic mock-provider full-loop tour\n" +
-	"requiring no repo, provider credentials, model tokens, or network writes.\n"
+	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
+	"demo is supported on Linux and macOS, where network isolation is enforced.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
 }
 
 func runInitWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runInitWithInputForOS(args, stdin, stdout, stderr, runtime.GOOS)
+}
+
+func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Writer, goos string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
@@ -47,6 +53,10 @@ func runInitWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
+		return 2
+	}
+	if *demo && goos != "linux" && goos != "darwin" {
+		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s\n", goos)
 		return 2
 	}
 	root := "."
