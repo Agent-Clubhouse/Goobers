@@ -27,7 +27,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers": "true"}}},
 		}}
-		if c := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil); c != nil {
+		if c := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, ""); c != nil {
 			t.Fatalf("expected nil for no repos, got %+v", c)
 		}
 	})
@@ -40,7 +40,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		}}
-		if c := buildBacklogCounter(cfg, wf, repoRef, nil, nil); c != nil {
+		if c := buildBacklogCounter(cfg, wf, repoRef, nil, nil, ""); c != nil {
 			t.Fatalf("expected nil for a schedule-only workflow, got %+v", c)
 		}
 	})
@@ -53,7 +53,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewResolver: %v", err)
 		}
-		c := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{})
+		c := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler")
 		if c == nil {
 			t.Fatal("expected a non-nil counter for a backlog-item-triggered, repo-backed workflow")
 		}
@@ -66,6 +66,9 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 		if len(bc.labels) != 1 || bc.labels[0] != "goobers:ready" {
 			t.Fatalf("labels = %v, want [goobers:ready] (the selector's keys)", bc.labels)
+		}
+		if bc.schedulerDir != "/instance/scheduler" {
+			t.Fatalf("schedulerDir = %q, want /instance/scheduler", bc.schedulerDir)
 		}
 	})
 }

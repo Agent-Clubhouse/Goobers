@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/providersnapshot"
 )
 
 // TestBaseEnvMatchesProcenv is the #248 drift-guard: executor's baseEnv()
@@ -106,7 +107,8 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil)
+	ctx := providersnapshot.WithID(context.Background(), "tick-1")
+	withCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -116,6 +118,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		"GOOBERS_WORKFLOW=implementation",
 		"GOOBERS_BRANCH_NAMESPACE=goobers/",
 		"GOOBERS_INSTANCE_ROOT=/instances/demo",
+		"GOOBERS_PROVIDER_SNAPSHOT=tick-1",
 		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
 		"FEATURE_FLAG=enabled",
 	} {
@@ -124,11 +127,11 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil, nil)
+	noCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
-	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_BRANCH_NAMESPACE", "GOOBERS_INSTANCE_ROOT"} {
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_BRANCH_NAMESPACE", "GOOBERS_INSTANCE_ROOT", providersnapshot.EnvVar} {
 		if hasEnvPrefix(noCtx, prefix) {
 			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
 		}

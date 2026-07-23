@@ -9,22 +9,25 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/providersnapshot"
 )
 
 // fakeBacklogCounter is a scripted BacklogCounter double: EligibleCount
 // returns count (or err, if set) every time it's called, and records how
 // many times it was invoked.
 type fakeBacklogCounter struct {
-	mu     sync.Mutex
-	count  int
-	err    error
-	polled int
+	mu          sync.Mutex
+	count       int
+	err         error
+	polled      int
+	snapshotIDs []string
 }
 
 func (f *fakeBacklogCounter) EligibleCount(ctx context.Context) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.polled++
+	f.snapshotIDs = append(f.snapshotIDs, providersnapshot.ID(ctx))
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -35,6 +38,12 @@ func (f *fakeBacklogCounter) polls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.polled
+}
+
+func (f *fakeBacklogCounter) snapshots() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.snapshotIDs...)
 }
 
 // TestTickFansOutBacklogTriggeredWorkflow is #344's core acceptance
@@ -58,6 +67,10 @@ func TestTickFansOutBacklogTriggeredWorkflow(t *testing.T) {
 
 	if got := starter.count(); got != 3 {
 		t.Fatalf("dispatched %d runs, want exactly 3 (bounded by maxConcurrentRuns, not the 5 ready items)", got)
+	}
+	snapshotIDs := starter.snapshots()
+	if len(snapshotIDs) != 3 || snapshotIDs[0] == "" || snapshotIDs[0] != snapshotIDs[1] || snapshotIDs[0] != snapshotIDs[2] {
+		t.Fatalf("run snapshot IDs = %v, want one shared non-empty tick snapshot", snapshotIDs)
 	}
 
 	events, err := journal.ReadInstanceLog(dir)
@@ -118,6 +131,23 @@ func TestTickBacklogPolledAtMostOncePerInterval(t *testing.T) {
 	// Outside the interval, the next Tick polls again.
 	sched.Tick(context.Background(), now.Add(backlogPollInterval+time.Second))
 	waitForCount(t, func() int { return counter.polls() }, 2)
+}
+
+func TestTickSharesProviderSnapshotAcrossBacklogConsumers(t *testing.T) {
+	first := &fakeBacklogCounter{}
+	second := &fakeBacklogCounter{}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{Workflow: "first", BacklogCounter: first},
+		{Workflow: "second", BacklogCounter: second},
+	})
+
+	sched.Tick(context.Background(), time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC))
+
+	firstIDs := first.snapshots()
+	secondIDs := second.snapshots()
+	if len(firstIDs) != 1 || len(secondIDs) != 1 || firstIDs[0] == "" || firstIDs[0] != secondIDs[0] {
+		t.Fatalf("snapshot IDs = %v and %v, want one shared non-empty ID", firstIDs, secondIDs)
+	}
 }
 
 // TestTickBacklogCounterErrorDoesNotCrashOrDispatch confirms a

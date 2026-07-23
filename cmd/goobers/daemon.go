@@ -374,7 +374,7 @@ func buildSchedulerDefinitions(
 		runners[gaggle] = rn
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces)
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir())
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +437,7 @@ func buildSchedulerDefinitions(
 			Readiness:       wf.Spec.Readiness,
 			Schedules:       scheds,
 			Signals:         sigs,
-			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
+			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir()),
 			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:         repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.

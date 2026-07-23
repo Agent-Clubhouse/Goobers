@@ -943,20 +943,20 @@ func repoConfig() *instance.Config {
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil)
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "")
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil)
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "")
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil)
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "")
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}
@@ -991,7 +991,10 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	fake := &fakeHeadLister{heads: []string{"goobers/implementation/run-1"}}
 	var gotToken string
 	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string) localscheduler.OpenPRLister { gotToken = token; return fake }
+	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+		gotToken = token
+		return fake
+	}
 	t.Cleanup(func() { newOpenPRProvider = prev })
 
 	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}

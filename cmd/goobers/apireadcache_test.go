@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/goobers/goobers/providers"
 )
 
 func apiReadGet(t *testing.T, c *apiReadCache, url, token string) *http.Response {
@@ -58,7 +64,7 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	cache := newAPIReadCache(dir, &http.Client{})
+	cache := newAPIReadCache(dir, "", &http.Client{})
 
 	// First GET: full 200, stores the ETag + body.
 	if got := apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok")); got != body {
@@ -83,7 +89,7 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	// Cross-process: a fresh cache over the same dir loads the on-disk ETag and
 	// still issues a conditional request — this is the cross-tick/cross-stage win.
 	conditionalSeen = false
-	fresh := newAPIReadCache(dir, &http.Client{})
+	fresh := newAPIReadCache(dir, "", &http.Client{})
 	if got := apiReadBody(t, apiReadGet(t, fresh, srv.URL, "tok")); got != body {
 		t.Fatalf("fresh-instance body = %q, want %q", got, body)
 	}
@@ -113,7 +119,7 @@ func TestAPIReadCacheReducesQuotaGETs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := newAPIReadCache(t.TempDir(), &http.Client{})
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
 	const ticks = 10
 	for i := 0; i < ticks; i++ {
 		_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
@@ -139,7 +145,7 @@ func TestAPIReadCacheTokenScoped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := newAPIReadCache(t.TempDir(), &http.Client{})
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
 	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "token-a")) // primes token-a
 
 	lastConditional = false
@@ -168,7 +174,7 @@ func TestAPIReadCacheOnlyCachesGET(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := newAPIReadCache(t.TempDir(), &http.Client{})
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
 	for i := 0; i < 2; i++ {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
 		resp, err := cache.Do(req)
@@ -194,7 +200,7 @@ func TestAPIReadCacheFailOpen(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := newAPIReadCache("", &http.Client{})
+	cache := newAPIReadCache("", "", &http.Client{})
 	for i := 0; i < 2; i++ {
 		if got := apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok")); got != "body" {
 			t.Fatalf("pass-through body = %q, want %q", got, "body")
@@ -214,10 +220,207 @@ func TestAPIReadCacheNoETagNotCached(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := newAPIReadCache(t.TempDir(), &http.Client{})
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
 	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
 	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
 	if conditionalSeen {
 		t.Fatal("a 200 without an ETag must not be cached")
+	}
+}
+
+func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
+	const body = `[{"number":1},{"number":2},{"number":3}]`
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	const consumers = 20
+	results := make(chan string, consumers)
+	var wg sync.WaitGroup
+	for range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodGet, url, nil)
+			if err != nil {
+				results <- "request error: " + err.Error()
+				return
+			}
+			req.Header.Set("Authorization", "Bearer tok")
+			resp, err := newAPIReadCache(dir, "tick-1", &http.Client{}).Do(req)
+			if err != nil {
+				results <- "request error: " + err.Error()
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				results <- "body error: " + err.Error()
+				return
+			}
+			results <- string(got)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for got := range results {
+		if got != body {
+			t.Errorf("snapshot body = %q, want %q", got, body)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider list reads = %d for %d concurrent consumers, want 1", got, consumers)
+	}
+}
+
+func TestAPIReadCacheRefreshesListSnapshotConditionally(t *testing.T) {
+	const (
+		body = `[{"number":1}]`
+		etag = `"stable"`
+	)
+	requests := 0
+	conditional := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("If-None-Match") == etag {
+			conditional++
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/pulls?state=open"
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("first snapshot body = %q, want %q", got, body)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("not-modified snapshot body = %q, want %q", got, body)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("shared second snapshot body = %q, want %q", got, body)
+	}
+	if requests != 2 || conditional != 1 {
+		t.Fatalf("requests = %d, conditional = %d; want 2 and 1", requests, conditional)
+	}
+}
+
+func TestAPIReadCacheKeepsOverlappingListSnapshotsStable(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("ETag", `"one"`)
+			_, _ = io.WriteString(w, `[{"number":1}]`)
+			return
+		}
+		w.Header().Set("ETag", `"two"`)
+		_, _ = io.WriteString(w, `[{"number":2}]`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != `[{"number":1}]` {
+		t.Fatalf("first snapshot body = %q", got)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != `[{"number":2}]` {
+		t.Fatalf("second snapshot body = %q", got)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != `[{"number":1}]` {
+		t.Fatalf("reused first snapshot body = %q, want its original view", got)
+	}
+	if requests != 2 {
+		t.Fatalf("provider requests = %d, want 2", requests)
+	}
+}
+
+func TestAPIReadCacheListSnapshotDoesNotHideProviderErrors(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch requests {
+		case 1:
+			w.Header().Set("ETag", `"old"`)
+			_, _ = io.WriteString(w, `[{"number":1}]`)
+		case 2:
+			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+		default:
+			w.Header().Set("ETag", `"new"`)
+			_, _ = io.WriteString(w, `[{"number":2}]`)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok"))
+
+	failed := apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")
+	if failed.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("failed refresh status = %d, want %d", failed.StatusCode, http.StatusServiceUnavailable)
+	}
+	_ = apiReadBody(t, failed)
+
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != `[{"number":2}]` {
+		t.Fatalf("retry body = %q, want fresh provider response", got)
+	}
+	if requests != 3 {
+		t.Fatalf("provider requests = %d, want 3 (failed refresh must not mark the snapshot valid)", requests)
+	}
+}
+
+func TestAPIReadCacheSnapshotPreservesPullRequestFilteringAndOrder(t *testing.T) {
+	const body = `[
+		{"number":1,"title":"first","state":"open","head":{"ref":"goobers/implementation/one","sha":"a"},"base":{"ref":"main"},"user":{"login":"bot"}},
+		{"number":2,"title":"second","state":"open","head":{"ref":"goobers/pr-remediation/two","sha":"b"},"base":{"ref":"main"},"user":{"login":"bot"}},
+		{"number":3,"title":"third","state":"open","head":{"ref":"goobers/implementation/three","sha":"c"},"base":{"ref":"main"},"user":{"login":"bot"}}
+	]`
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("ETag", `"prs"`)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	newProvider := func() *providers.GitHubProvider {
+		return providers.NewGitHubProvider("tok",
+			providers.WithHTTPClient(newAPIReadCache(dir, "tick-1", &http.Client{})),
+			func(p *providers.GitHubProvider) { p.BaseURL = srv.URL },
+		)
+	}
+	repo := providers.RepositoryRef{Owner: "acme", Name: "app"}
+	implementation, err := newProvider().ListPullRequests(context.Background(), providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: "goobers/implementation/", SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests implementation: %v", err)
+	}
+	remediation, err := newProvider().ListPullRequests(context.Background(), providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: "goobers/pr-remediation/", SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests remediation: %v", err)
+	}
+	if len(implementation) != 2 || implementation[0].Number != 1 || implementation[1].Number != 3 {
+		t.Fatalf("implementation snapshot = %+v, want PRs 1 then 3", implementation)
+	}
+	if len(remediation) != 1 || remediation[0].Number != 2 {
+		t.Fatalf("remediation snapshot = %+v, want PR 2", remediation)
+	}
+	if requests != 1 {
+		t.Fatalf("provider list reads = %d, want 1 shared raw snapshot", requests)
 	}
 }
