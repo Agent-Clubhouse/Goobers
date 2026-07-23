@@ -47,10 +47,10 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Fatalf("backlog-curation warnings = %v, want warning-clean reference config", warnings)
 	}
 
-	// Structural shape: query-backlog (deterministic) -> curate (agentic) ->
-	// release-claim (deterministic, terminal). No gates — curation is
-	// issues-only with no review/CI loop (ARCHITECTURE.md §12 reserves
-	// reviewer gates for the implementation workflow, not curation).
+	// Structural shape: query-backlog -> surface-duplicates (deterministic) ->
+	// curate (agentic) -> release-claim (deterministic, terminal). No gates —
+	// curation is issues-only with no review/CI loop (ARCHITECTURE.md §12
+	// reserves reviewer gates for the implementation workflow, not curation).
 	// release-claim (issue #234) is the explicit claim-ledger release
 	// curation needs since it never reaches issue-close-out's release
 	// (implementation-only).
@@ -61,8 +61,22 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !ok {
 		t.Fatal("query-backlog task not found")
 	}
-	if query.Next != "curate" {
-		t.Errorf("query-backlog.next = %q, want curate", query.Next)
+	if query.Next != "surface-duplicates" {
+		t.Errorf("query-backlog.next = %q, want surface-duplicates", query.Next)
+	}
+	dedupe, ok := m.Task("surface-duplicates")
+	if !ok {
+		t.Fatal("surface-duplicates task not found")
+	}
+	if dedupe.Next != "curate" {
+		t.Errorf("surface-duplicates.next = %q, want curate", dedupe.Next)
+	}
+	if dedupe.Type != apiv1.TaskDeterministic || dedupe.Run == nil ||
+		len(dedupe.Run.Command) != 2 || dedupe.Run.Command[1] != "backlog-dedupe" {
+		t.Errorf("surface-duplicates = %+v, want deterministic goobers backlog-dedupe task", dedupe)
+	}
+	if dedupe.Inputs["maxCandidates"] != "20" || dedupe.Inputs["resultFile"] != "dedupe-candidates.json" {
+		t.Errorf("surface-duplicates inputs = %v, want bounded candidate artifact", dedupe.Inputs)
 	}
 	if query.Inputs["staleAfterDays"] != "90" {
 		t.Errorf("query-backlog staleAfterDays = %q, want 90", query.Inputs["staleAfterDays"])
@@ -100,7 +114,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:04cce755fcee72d88c7af9e22cdf2f34f6e6d3930975e70de8de44069975f465"
+	const wantDigest = "sha256:6246830e4f63ae3358ea3a17195d4a0440e0defb322fbdf3cbf11d235d63a423"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

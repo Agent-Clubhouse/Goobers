@@ -69,6 +69,22 @@ spec:
         - claim-backlog-items
       expectedOutputs:
         - claimed-items
+      next: surface-duplicates
+    # Deterministic candidate surfacing: compare this run's claimed batch with
+    # the complete open backlog. The ranked artifact is evidence for the curator,
+    # never an automatic close decision.
+    - name: surface-duplicates
+      type: deterministic
+      goal: Surface likely duplicate pairs across the open backlog for curator judgment.
+      run:
+        command: ["goobers", "backlog-dedupe"]
+      inputs:
+        resultFile: "dedupe-candidates.json"
+        maxCandidates: "20"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - dedupe-candidates
       next: curate
     # Agentic curation: dedupe, prune stale, tag, and split oversized items.
     # Issues-only — the curator goober is granted no repo capability (issue #25
@@ -77,10 +93,12 @@ spec:
       type: agentic
       goober: curator
       goal: >-
-        Curate the claimed backlog items using each item's deterministic
-        staleness signal: dedupe, handle staleness, tag, split oversized items,
-        and mark each item goobers:ready or goobers:needs-human. Explain every
-        action in a comment on the item.
+        Curate only the claimed backlog items using each item's deterministic
+        staleness signal and the ranked duplicate candidates as evidence;
+        unclaimed candidate members are read-only. Dedupe, handle staleness,
+        tag, split oversized items, and mark each item goobers:ready or
+        goobers:needs-human. Explain every action in a comment on the claimed
+        item.
       capabilities:
         - github:issues:write
       policyActions:

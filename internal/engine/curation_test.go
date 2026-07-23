@@ -60,7 +60,7 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	spec := loadCurationWorkflow(t)
 	items := fixtureBacklog()
 
-	var gotQueryInputs map[string]interface{}
+	var gotQueryInputs, gotDedupeInputs map[string]interface{}
 	det := &fakeRunner{
 		// Keyed by TaskID, not applied blindly to every deterministic
 		// invocation: release-claim (issue #234) is also a deterministic
@@ -72,6 +72,14 @@ func TestBacklogCurationDryRun(t *testing.T) {
 			// stage name.
 			if strings.HasSuffix(env.TaskID, ":release-claim") {
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "released"}, nil
+			}
+			if strings.HasSuffix(env.TaskID, ":surface-duplicates") {
+				gotDedupeInputs = env.Inputs
+				return apiv1.ResultEnvelope{
+					Status:  apiv1.ResultSuccess,
+					Outputs: map[string]interface{}{"candidateCount": 2},
+					Summary: "surfaced 2 likely-duplicate pairs",
+				}, nil
 			}
 			gotQueryInputs = env.Inputs
 			claimed := make([]interface{}, len(items))
@@ -131,6 +139,9 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	if gotQueryInputs["staleAutoClose"] != "false" {
 		t.Errorf("query-backlog staleAutoClose input = %v, want false", gotQueryInputs["staleAutoClose"])
 	}
+	if gotDedupeInputs["maxCandidates"] != "20" {
+		t.Errorf("surface-duplicates maxCandidates input = %v, want 20", gotDedupeInputs["maxCandidates"])
+	}
 	queryOut, ok := res.Outputs["query-backlog"]
 	if !ok || queryOut.Status != apiv1.ResultSuccess {
 		t.Fatalf("query-backlog output missing or not success: %+v", queryOut)
@@ -139,8 +150,13 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	if len(claimed) != 4 {
 		t.Errorf("claimed-items count = %d, want 4", len(claimed))
 	}
+	dedupeOut, ok := res.Outputs["surface-duplicates"]
+	candidateCount, countOK := dedupeOut.Outputs["candidateCount"].(float64)
+	if !ok || !countOK || candidateCount != 2 {
+		t.Fatalf("surface-duplicates output missing candidate count: %+v", dedupeOut)
+	}
 
-	// curate ran second (goober = curator per the definition) and reported its
+	// curate ran after the two deterministic pre-passes and reported its
 	// outcome through the scalar result summary, without structured outputs.
 	if gotCurateGoal == "" {
 		t.Error("curate stage did not receive a goal")

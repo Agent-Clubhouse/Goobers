@@ -9,6 +9,7 @@
 | Command | Description |
 | --- | --- |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
+| [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
@@ -105,6 +106,33 @@ voided), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers apply-verdict
+~~~
+
+## `goobers backlog-dedupe`
+
+surface ranked duplicate candidates for curator judgment (a workflow stage)
+
+~~~text
+Usage: goobers backlog-dedupe [path]
+
+Surface ranked likely-duplicate pairs for the current curation run. The
+command compares this run's claimed issues against every open backlog item
+using title/body similarity, shared closing references, external references,
+and links. It writes a structured candidate artifact for curator judgment;
+it never changes or closes an issue. A candidate's closeEligibleId is present
+only when its newer issue belongs to this run's claimed, trusted batch;
+unclaimed comparison issues are read-only evidence.
+
+The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+
+Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
+error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers backlog-dedupe
 ~~~
 
 ## `goobers backlog-query`

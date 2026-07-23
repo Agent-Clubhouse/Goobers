@@ -51,6 +51,7 @@ Usage:
                                 query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
+  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
@@ -150,6 +151,7 @@ Usage:
                                 query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
+  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
@@ -210,6 +212,22 @@ cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
+
+### backlog-dedupe
+Usage: goobers backlog-dedupe [path]
+
+Surface ranked likely-duplicate pairs for the current curation run. The
+command compares this run's claimed issues against every open backlog item
+using title/body similarity, shared closing references, external references,
+and links. It writes a structured candidate artifact for curator judgment;
+it never changes or closes an issue. A candidate's closeEligibleId is present
+only when its newer issue belongs to this run's claimed, trusted batch;
+unclaimed comparison issues are read-only evidence.
+
+The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+
+Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
+error, 2 = usage error.
 
 ### backlog-query
 Usage: goobers backlog-query [--claim | --release] [path]

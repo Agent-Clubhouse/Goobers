@@ -212,6 +212,7 @@ func stageInvokesProviderBuiltin(command []string) bool {
 
 var providerStageResultFiles = map[string]string{
 	"apply-verdict":          "verdict-result.json",
+	"backlog-dedupe":         "dedupe-candidates.json",
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
 	"gather-pr-context":      "remediation-brief.json",

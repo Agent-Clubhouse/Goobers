@@ -1,0 +1,29 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BACKLOG DEDUPE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers backlog-dedupe \- surface ranked duplicate candidates for curator judgment (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers backlog-dedupe\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers backlog-dedupe [path]
+
+Surface ranked likely-duplicate pairs for the current curation run. The
+command compares this run's claimed issues against every open backlog item
+using title/body similarity, shared closing references, external references,
+and links. It writes a structured candidate artifact for curator judgment;
+it never changes or closes an issue. A candidate's closeEligibleId is present
+only when its newer issue belongs to this run's claimed, trusted batch;
+unclaimed comparison issues are read-only evidence.
+
+The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+
+Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
+error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers backlog-dedupe
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

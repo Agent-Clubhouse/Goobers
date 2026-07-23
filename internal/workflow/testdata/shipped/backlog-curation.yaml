@@ -31,6 +31,17 @@ spec:
         - github:issues:write
       policyActions:
         - claim-backlog-items
+      next: surface-duplicates
+    - name: surface-duplicates
+      type: deterministic
+      goal: Surface ranked likely-duplicate pairs across the open backlog.
+      run:
+        command: ["goobers", "backlog-dedupe"]
+      inputs:
+        resultFile: "dedupe-candidates.json"
+        maxCandidates: "20"
+      capabilities:
+        - github:issues:write
       next: curate
     - name: curate
       type: agentic
