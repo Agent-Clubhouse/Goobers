@@ -668,6 +668,7 @@ const (
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
+	baseSyncConflictErrorCode   = "base_sync_conflict"
 )
 
 // walkSeed carries the walk-local state a resumed run must NOT start empty —
@@ -2071,6 +2072,17 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
+		if worktree.IsBaseSyncConflict(err) {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      baseSyncConflictErrorCode,
+					Message:   prepErr.Error(),
+					Retryable: true,
+				},
+			}, nil, nil, nil
+		}
 		// #572: a transient network/remote failure provisioning the stage's
 		// worktree (clone/fetch/worktree-add) is retryable infrastructure,
 		// same as #613's transient built-in provider failures — classified

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -66,6 +67,31 @@ type CreateOptions struct {
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
+}
+
+// BaseSyncConflictError identifies a genuine content conflict while merging a
+// freshly fetched base into an existing run branch.
+type BaseSyncConflictError struct {
+	Branch           string
+	BaseRef          string
+	ConflictingFiles []string
+	cause            error
+}
+
+func (e *BaseSyncConflictError) Error() string {
+	return fmt.Sprintf("worktree: sync branch %q with base %q: merge conflict in %s",
+		e.Branch, e.BaseRef, strings.Join(e.ConflictingFiles, ", "))
+}
+
+func (e *BaseSyncConflictError) Unwrap() error {
+	return e.cause
+}
+
+// IsBaseSyncConflict reports whether err identifies a genuine base-sync merge
+// conflict, including through wrapping.
+func IsBaseSyncConflict(err error) bool {
+	var conflict *BaseSyncConflictError
+	return errors.As(err, &conflict)
 }
 
 // Worktree is a disposable, isolated working copy for one run, branched off
@@ -212,9 +238,23 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if opts.SyncBase && existingBranch {
-		if err := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); err != nil {
-			_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
-			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w", opts.Branch, opts.BaseRef, opts.RunID, err)
+		if mergeErr := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); mergeErr != nil {
+			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
+			cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+			if inspectErr == nil && len(conflictingFiles) > 0 {
+				conflictErr := &BaseSyncConflictError{
+					Branch:           opts.Branch,
+					BaseRef:          opts.BaseRef,
+					ConflictingFiles: conflictingFiles,
+					cause:            mergeErr,
+				}
+				if cleanupErr != nil {
+					return nil, errors.Join(conflictErr, fmt.Errorf("worktree: remove conflicted worktree for run %s: %w", opts.RunID, cleanupErr))
+				}
+				return nil, conflictErr
+			}
+			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w",
+				opts.Branch, opts.BaseRef, opts.RunID, errors.Join(mergeErr, inspectErr, cleanupErr))
 		}
 	}
 
@@ -259,6 +299,20 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func mergeConflictFiles(ctx context.Context, path string) ([]string, error) {
+	out, err := gitOutput(ctx, path, "diff", "--name-only", "--diff-filter=U", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, file := range strings.Split(out, "\x00") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	return files, nil
 }
 
 // ActivateAssetPathGuard persists that this invocation reserves the asset
