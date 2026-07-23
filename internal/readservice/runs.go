@@ -311,62 +311,53 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		cursor = &decoded
 	}
 
-	attemptStage := ""
+	if s.sources.Telemetry != nil {
+		return s.listRunsIndexed(ctx, options, cursor, limit)
+	}
+	return s.listRunsScanning(ctx, options, cursor, limit)
+}
+
+// runMatches reports whether summary satisfies every option filter. The
+// summary is always journal-hydrated and therefore authoritative, so this is
+// the single predicate both the scanning and indexed paths apply — a lagging
+// index status can never wrongly include or hide a run because Phase and
+// stageAttempts here come from the journal, not the index.
+func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
+	switch {
+	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
+		return false
+	case options.Workflow != "" && summary.Workflow != options.Workflow:
+		return false
+	case options.Stage != "" && !containsString(summary.Stages, options.Stage):
+		return false
+	case (options.Outcome != "" || options.StagePopulation != "") && !summary.Terminal:
+		return false
+	case options.Stage != "" &&
+		(options.Outcome != "" || options.StagePopulation != "") &&
+		!matchesStageAttempt(summary.stageAttempts[options.Stage], options.Outcome, options.StagePopulation):
+		return false
+	case options.Stage == "" && options.Outcome != "" && !matchesRunOutcome(summary.Phase, options.Outcome):
+		return false
+	case options.Phase != "" && summary.Phase != options.Phase:
+		return false
+	case options.Trigger != "" && summary.Trigger.Kind != options.Trigger:
+		return false
+	case !options.Since.IsZero() && summary.StartedAt.Before(options.Since):
+		return false
+	case !options.Until.IsZero() && summary.StartedAt.After(options.Until):
+		return false
+	}
+	return true
+}
+
+func attemptStageFor(options RunListOptions) string {
 	if options.Stage != "" && (options.Outcome != "" || options.StagePopulation != "") {
-		attemptStage = options.Stage
+		return options.Stage
 	}
-	allSummaries, err := s.runSummariesForStage(ctx, false, attemptStage)
-	if err != nil {
-		return RunList{}, err
-	}
-	summaries := make([]RunSummary, 0, len(allSummaries))
-	for _, summary := range allSummaries {
-		if options.Gaggle != "" && summary.Gaggle != options.Gaggle {
-			continue
-		}
-		if options.Workflow != "" && summary.Workflow != options.Workflow {
-			continue
-		}
-		if options.Stage != "" && !containsString(summary.Stages, options.Stage) {
-			continue
-		}
-		if (options.Outcome != "" || options.StagePopulation != "") && !summary.Terminal {
-			continue
-		}
-		if options.Stage != "" &&
-			(options.Outcome != "" || options.StagePopulation != "") &&
-			!matchesStageAttempt(
-				summary.stageAttempts[options.Stage],
-				options.Outcome,
-				options.StagePopulation,
-			) {
-			continue
-		}
-		if options.Stage == "" && options.Outcome != "" && !matchesRunOutcome(summary.Phase, options.Outcome) {
-			continue
-		}
-		if options.Phase != "" && summary.Phase != options.Phase {
-			continue
-		}
-		if options.Trigger != "" && summary.Trigger.Kind != options.Trigger {
-			continue
-		}
-		if !options.Since.IsZero() && summary.StartedAt.Before(options.Since) {
-			continue
-		}
-		if !options.Until.IsZero() && summary.StartedAt.After(options.Until) {
-			continue
-		}
-		summaries = append(summaries, summary)
-	}
+	return ""
+}
 
-	if cursor != nil {
-		start := sort.Search(len(summaries), func(i int) bool {
-			return runAfterCursor(summaries[i], *cursor)
-		})
-		summaries = summaries[start:]
-	}
-
+func paginateRuns(summaries []RunSummary, limit int) (RunList, error) {
 	result := RunList{Runs: summaries}
 	if len(result.Runs) > limit {
 		result.Runs = result.Runs[:limit]
@@ -380,6 +371,140 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		result.Runs = []RunSummary{}
 	}
 	return result, nil
+}
+
+// listRunsScanning is the journal-authoritative fallback used when no telemetry
+// index is available (offline/CLI reads). It opens and summarizes every run.
+func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
+	allSummaries, err := s.runSummariesForStage(ctx, false, attemptStageFor(options))
+	if err != nil {
+		return RunList{}, err
+	}
+	summaries := make([]RunSummary, 0, len(allSummaries))
+	for _, summary := range allSummaries {
+		if s.runMatches(summary, options) {
+			summaries = append(summaries, summary)
+		}
+	}
+	if cursor != nil {
+		start := sort.Search(len(summaries), func(i int) bool {
+			return runAfterCursor(summaries[i], *cursor)
+		})
+		summaries = summaries[start:]
+	}
+	return paginateRuns(summaries, limit)
+}
+
+// listRunsIndexed serves the list from the telemetry index without parsing
+// every run's journal (DASH-18). The index chooses WHICH runs to open — bounded
+// by page size, filters, and the keyset cursor — and each returned run's
+// summary is hydrated from its journal so displayed data is always
+// authoritative. Completeness is guaranteed by reconcileIndex, so a run present
+// on disk but absent from the index (migrated/imported/still in flight) is
+// never silently hidden.
+func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
+	if err := s.reconcileIndex(ctx); err != nil {
+		return RunList{}, err
+	}
+
+	observedAt := s.now().UTC()
+	attemptStage := attemptStageFor(options)
+	filter := rollup.RunListFilter{
+		Gaggle:      options.Gaggle,
+		Workflow:    options.Workflow,
+		TriggerKind: string(options.Trigger),
+		Since:       options.Since,
+		Until:       options.Until,
+	}
+
+	// Keyset the first index fetch from the caller's cursor; thereafter advance
+	// from the last row examined, so residual (phase/stage/outcome) filtering
+	// that drops candidates still makes forward progress instead of re-reading
+	// the same page.
+	var keyStarted time.Time
+	var keyRunID string
+	if cursor != nil {
+		keyStarted, keyRunID = cursor.StartedAt, cursor.RunID
+	}
+
+	const pageSize = 100
+	kept := make([]RunSummary, 0, limit+1)
+	for len(kept) <= limit {
+		if err := ctx.Err(); err != nil {
+			return RunList{}, err
+		}
+		refs, err := s.sources.Telemetry.RunRefPage(filter, keyStarted, keyRunID, pageSize)
+		if err != nil {
+			return RunList{}, err
+		}
+		if len(refs) == 0 {
+			break
+		}
+		for _, ref := range refs {
+			keyStarted, keyRunID = ref.StartedAt, ref.RunID
+			run, err := s.openRun(ref.RunID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return RunList{}, err
+			}
+			summary, err := summarizeRunForStage(run, observedAt, attemptStage)
+			if err != nil {
+				return RunList{}, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
+			}
+			if !s.runMatches(summary, options) {
+				continue
+			}
+			kept = append(kept, summary)
+			if len(kept) > limit {
+				break
+			}
+		}
+		if len(refs) < pageSize {
+			break
+		}
+	}
+	return paginateRuns(kept, limit)
+}
+
+// reconcileIndex backfills any on-disk run absent from the telemetry index so a
+// list served from the index can never hide a run — the reviewer's
+// "migrated telemetry" concern. Steady state is a no-op: the daemon ingests
+// every run it executes, so the set difference is empty and this only lists
+// directory names (never parses a journal). An individual run that fails to
+// ingest simply stays out of this pass rather than failing the whole list.
+func (s *Local) reconcileIndex(ctx context.Context) error {
+	indexed, err := s.sources.Telemetry.IndexedRunIDs()
+	if err != nil {
+		return err
+	}
+	runDirs, err := s.sources.Layout.RunDirs()
+	if err != nil {
+		return err
+	}
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read runs directory: %w", err)
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !entry.IsDir() || !apiv1.ValidRunID(entry.Name()) {
+				continue
+			}
+			if _, ok := indexed[entry.Name()]; ok {
+				continue
+			}
+			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
+		}
+	}
+	return nil
 }
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
@@ -736,7 +861,16 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 	return summary.RepassCount, nil
 }
 
+// openRunObserver, when non-nil, is invoked with each run id openRun reads. It
+// is a test seam used to assert that the indexed list path opens a number of
+// journals bounded by page size rather than scanning every run. Always nil in
+// production.
+var openRunObserver func(runID string)
+
 func (s *Local) openRun(runID string) (runRead, error) {
+	if openRunObserver != nil {
+		openRunObserver(runID)
+	}
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
