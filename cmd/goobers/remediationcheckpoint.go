@@ -87,9 +87,10 @@ type remediationState struct {
 	EscalatedReason string `json:"escalatedReason,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
 	// moment of escalation — the self-heal comparison snapshot (#716).
-	EscalatedHeadSHA      string `json:"escalatedHeadSha,omitempty"`
-	EscalatedBaseSHA      string `json:"escalatedBaseSha,omitempty"`
-	SiblingOverlapContext string `json:"siblingOverlapContext,omitempty"`
+	EscalatedHeadSHA           string `json:"escalatedHeadSha,omitempty"`
+	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
+	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
+	StructuralCollisionContext string `json:"structuralCollisionContext,omitempty"`
 }
 
 // remediationStatePattern matches the machine-readable payload
@@ -137,6 +138,9 @@ func renderRemediationComment(state remediationState) string {
 		)
 		if state.SiblingOverlapContext != "" {
 			prose += "\n\n**Known sibling-overlap findings from merge-review:**\n" + state.SiblingOverlapContext
+		}
+		if state.StructuralCollisionContext != "" {
+			prose += "\n\n**Same-function structural collision:**\n" + state.StructuralCollisionContext
 		}
 	} else {
 		prose = fmt.Sprintf("pr-remediation checkpoint: cycle %d, diff digest `%s`.", state.Cycles, state.LastDiffDigest)
@@ -418,6 +422,27 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	conflicted, err := strconv.ParseBool(providerInput("conflict", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid conflict input: %v\n", err)
+		return 1
+	}
+	var structuralCollisions []structuralCollision
+	if conflicted && !forced {
+		conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		structuralCollisions, err = findStructuralCollisions(
+			ctx, provider, repo, *current, base, headPrefix, conflictLocations,
+			".", pushToken, providerInput("rebaseBaseSha", ""),
+		)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
+		}
+	}
+
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
@@ -435,12 +460,20 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		*budget = DefaultRemediationBudget
 	}
 	exceeded := cycles > *budget
+	structuralCollision := len(structuralCollisions) > 0
 
 	var state remediationState
-	if exceeded || stalled || forced {
+	if exceeded || stalled || structuralCollision || forced {
 		reason := fmt.Sprintf("repass budget exhausted (%d/%d cycles)", cycles, *budget)
 		if stalled {
 			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
+		}
+		if structuralCollision {
+			collision := structuralCollisions[0]
+			reason = fmt.Sprintf(
+				"the rebase conflict falls inside `%s` in `%s`, which merged sibling PR #%d substantially restructured — retrying the same patch cannot resolve the required human/product reconciliation",
+				collision.Function, collision.Path, collision.SiblingNumber,
+			)
 		}
 		// Checked last so an explicit caller-supplied reason always wins the
 		// prose, even on a cycle that also happens to be stalled or over
@@ -475,7 +508,8 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: escalatedBaseTip,
-			SiblingOverlapContext: renderSiblingOverlapContext(overlaps),
+			SiblingOverlapContext:      renderSiblingOverlapContext(overlaps),
+			StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,

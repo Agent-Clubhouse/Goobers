@@ -153,8 +153,8 @@ func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incomi
 }
 
 // initConflictingPRBranch builds a bare origin where the PR branch and main
-// both modify the SAME line of the SAME file after branching — a real
-// rebase conflict, not a synthetic flag.
+// both modify the SAME line inside the SAME Go function after branching — a
+// real same-function rebase conflict, not a synthetic flag.
 func initConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 	t.Helper()
 	root := t.TempDir()
@@ -165,22 +165,22 @@ func initConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 	runGitT(t, root, "clone", origin, work)
 	runGitT(t, work, "config", "user.name", "seed")
 	runGitT(t, work, "config", "user.email", "seed@example.com")
-	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("line one\n"), 0o644); err != nil {
-		t.Fatalf("write shared file: %v", err)
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"seed\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write status file: %v", err)
 	}
-	runGitT(t, work, "add", "shared.txt")
+	runGitT(t, work, "add", "status.go")
 	runGitT(t, work, "commit", "-m", "seed")
 	runGitT(t, work, "push", "origin", "main")
 
 	runGitT(t, work, "checkout", "-b", prBranch)
-	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("line one\nPR's change\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"pr\"\n}\n"), 0o644); err != nil {
 		t.Fatalf("write PR change: %v", err)
 	}
 	runGitT(t, work, "commit", "-am", "PR work")
 	runGitT(t, work, "push", "origin", prBranch)
 
 	runGitT(t, work, "checkout", "main")
-	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("line one\nmain's conflicting change\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"main\"\n}\n"), 0o644); err != nil {
 		t.Fatalf("write main's conflicting change: %v", err)
 	}
 	runGitT(t, work, "commit", "-am", "main moved on, same line")
@@ -616,6 +616,12 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+	if !strings.Contains(string(data), `runStatus`) || !strings.Contains(string(data), `status.go`) {
+		t.Fatalf("rebase-result.json = %s, want the conflicted function scope and path", data)
+	}
+	if !strings.Contains(string(data), `"rebaseBaseSha":"`) {
+		t.Fatalf("rebase-result.json = %s, want the exact failed-rebase base SHA", data)
 	}
 
 	// The worktree must not be mid-rebase (no unmerged/conflicted paths) —
