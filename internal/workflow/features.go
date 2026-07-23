@@ -344,15 +344,6 @@ func AllFeatures() []Feature {
 	return currentFeatureRegistry.All()
 }
 
-// FeaturesForDSLVersion returns the registry entries contained in one declared
-// DSL version, with each feature's level projected to that version.
-func FeaturesForDSLVersion(version string) ([]Feature, error) {
-	if _, ok := supportmatrix.GetDSL().Lookup(version); !ok {
-		return nil, fmt.Errorf("unknown DSL version %q", version)
-	}
-	return FeaturesAtDSLVersion(AllFeatures(), version)
-}
-
 // FeaturesAtDSLVersion filters a feature snapshot to one DSL version.
 func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
 	filtered := make([]Feature, 0, len(features))

@@ -35,6 +35,8 @@ github.com/goobers/goobers/cmd/goobers.isGeneratedDocFile # CLI documentation pr
 github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
+github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delta helper invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
 github.com/goobers/goobers/internal/clidocs.Command.Name # CLI documentation rendering API retained for the build-time generator.

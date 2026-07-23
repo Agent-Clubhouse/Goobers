@@ -45,7 +45,7 @@ func TestFeaturesScopesToDSLVersion(t *testing.T) {
 	if !strings.Contains(stdout, "DSL VERSION") || !strings.Contains(stdout, version) {
 		t.Fatalf("output missing scoped DSL version:\n%s", stdout)
 	}
-	features, err := workflow.FeaturesForDSLVersion(version)
+	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), version)
 	if err != nil {
 		t.Fatal(err)
 	}

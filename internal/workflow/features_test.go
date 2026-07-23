@@ -166,9 +166,9 @@ func TestStandardFeaturesAreGA(t *testing.T) {
 	}
 }
 
-func TestFeaturesForDSLVersion(t *testing.T) {
+func TestFeaturesAtDSLVersion(t *testing.T) {
 	for _, version := range supportmatrix.GetDSL().Versions() {
-		features, err := FeaturesForDSLVersion(version.Version)
+		features, err := FeaturesAtDSLVersion(AllFeatures(), version.Version)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,9 +178,6 @@ func TestFeaturesForDSLVersion(t *testing.T) {
 		if version.Version == supportmatrix.CurrentDSLVersion && len(features) != len(AllFeatures()) {
 			t.Fatalf("features for current DSL version = %d, want %d", len(features), len(AllFeatures()))
 		}
-	}
-	if _, err := FeaturesForDSLVersion("9.9"); err == nil || !strings.Contains(err.Error(), "unknown DSL version") {
-		t.Fatalf("FeaturesForDSLVersion(9.9) error = %v", err)
 	}
 }
 
