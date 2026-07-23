@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -94,6 +95,7 @@ type fakeGitHubServer struct {
 	issues   map[int]*fakeIssue
 	prs      map[int]*fakePR
 	compares map[string]fakeCompare
+	contents map[string]string
 	// branchTips answers GET .../git/ref/heads/<branch> (GitHubProvider.
 	// BranchTipSHA) — the LIVE base-branch tip the merge-escalated self-heal
 	// check (#1052) compares against, distinct from any PR's pinned baseSHA.
@@ -141,7 +143,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	t.Helper()
 	s := &fakeGitHubServer{
 		owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{},
-		compares: map[string]fakeCompare{}, branchTips: map[string]string{},
+		compares: map[string]fakeCompare{}, contents: map[string]string{}, branchTips: map[string]string{},
 		nextPR: 1, authenticatedLogin: "goobers",
 	}
 	mux := http.NewServeMux()
@@ -153,10 +155,47 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
+	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+func (s *fakeGitHubServer) setFileContent(ref, path, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contents[ref+"\x00"+path] = content
+}
+
+func (s *fakeGitHubServer) deleteFileContent(ref, path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.contents, ref+"\x00"+path)
+}
+
+func (s *fakeGitHubServer) handleContents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/contents/")
+	ref := r.URL.Query().Get("ref")
+	s.mu.Lock()
+	content, ok := s.contents[ref+"\x00"+path]
+	s.mu.Unlock()
+	if !ok {
+		http.Error(w, "no content fixture registered for "+path+" at "+ref, http.StatusNotFound)
+		return
+	}
+	if r.Header.Get("Accept") == "application/vnd.github.raw+json" {
+		_, _ = w.Write([]byte(content))
+		return
+	}
+	writeFakeJSON(w, map[string]string{
+		"type": "file", "encoding": "base64",
+		"content": base64.StdEncoding.EncodeToString([]byte(content)),
+	})
 }
 
 func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *http.Request) {

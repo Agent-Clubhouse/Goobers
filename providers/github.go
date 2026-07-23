@@ -1326,6 +1326,36 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	return out, nil
 }
 
+// RepositoryFileContent returns one file's contents at ref.
+func (p *GitHubProvider) RepositoryFileContent(ctx context.Context, repo RepositoryRef, path, ref string) ([]byte, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "contents", path)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"ref": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.sendWithAccept(ctx, http.MethodGet, endpoint, nil, "application/vnd.github.raw+json")
+	if err != nil {
+		return nil, err
+	}
+	content, _, err := readPage(resp, http.MethodGet, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
 // CompareCommits reports base and head's common ancestor plus the
 // file-level diff between them (issue #718) via GitHub's three-dot compare
 // endpoint — the same computation GitHub itself performs for a PR's own
@@ -2106,6 +2136,10 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 // that only need a decoded body should use doStatus; getAllPages uses send
 // directly so it can read the Link header for pagination (#139).
 func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	return p.sendWithAccept(ctx, method, endpoint, body, "application/vnd.github+json")
+}
+
+func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint string, body interface{}, accept string) (*http.Response, error) {
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
@@ -2120,7 +2154,7 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Accept", accept)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)

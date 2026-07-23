@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,13 +17,17 @@ const (
 	foundationDominanceFactor = 2
 )
 
-var unifiedHunkHeaderPattern = regexp.MustCompile(`(?m)^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@`)
+type fileLineCounts struct {
+	before int
+	after  int
+}
 
 type pullRequestDiffProfile struct {
-	pr        providers.PullRequestSummary
-	files     []providers.ChangedFile
-	byPath    map[string]providers.ChangedFile
-	magnitude int
+	pr         providers.PullRequestSummary
+	files      []providers.ChangedFile
+	byPath     map[string]providers.ChangedFile
+	lineCounts map[string]fileLineCounts
+	magnitude  int
 }
 
 type foundationCoupling struct {
@@ -33,26 +37,75 @@ type foundationCoupling struct {
 	score      int
 }
 
-func loadFoundationCouplings(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, blocked map[int]bool) ([]foundationCoupling, error) {
-	if len(prs) < 2 {
-		return nil, nil
+func loadFoundationCouplings(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	dependents []providers.PullRequestSummary,
+	openPRs []providers.PullRequestSummary,
+	blocked map[int]bool,
+) ([]foundationCoupling, []string, error) {
+	if len(dependents) == 0 || len(openPRs) < 2 {
+		return nil, nil, nil
 	}
-	profiles := make([]pullRequestDiffProfile, 0, len(prs))
-	for _, pr := range prs {
+	profiles := make([]pullRequestDiffProfile, 0, len(openPRs))
+	profileIndexes := make(map[int]int, len(openPRs))
+	for _, pr := range openPRs {
 		files, err := provider.PullRequestFiles(ctx, repo, strconv.Itoa(pr.Number))
 		if err != nil {
-			return nil, fmt.Errorf("list files for PR #%d: %w", pr.Number, err)
+			return nil, nil, fmt.Errorf("list files for PR #%d: %w", pr.Number, err)
 		}
+		profileIndexes[pr.Number] = len(profiles)
 		profiles = append(profiles, newPullRequestDiffProfile(pr, files))
 	}
-	return detectFoundationCouplings(profiles, blocked), nil
+	dependentProfiles := make([]pullRequestDiffProfile, 0, len(dependents))
+	dependentPaths := make(map[string]bool)
+	for _, dependent := range dependents {
+		index, ok := profileIndexes[dependent.Number]
+		if !ok {
+			continue
+		}
+		dependentProfiles = append(dependentProfiles, profiles[index])
+		for _, file := range profiles[index].files {
+			dependentPaths[file.Path] = true
+		}
+	}
+	if len(dependentProfiles) == 0 {
+		return nil, nil, nil
+	}
+
+	contentCache := make(map[string][]byte)
+	var warnings []string
+	for i := range profiles {
+		for _, file := range profiles[i].files {
+			if !dependentPaths[file.Path] ||
+				!strings.EqualFold(file.Status, "modified") ||
+				file.Deletions < foundationRewriteMinLines {
+				continue
+			}
+			counts, err := repositoryFileLineCounts(ctx, provider, repo, profiles[i].pr, file, contentCache)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf(
+					"could not determine line counts for PR #%d file %s: %v; skipping it",
+					profiles[i].pr.Number, file.Path, err,
+				))
+				continue
+			}
+			profiles[i].lineCounts[file.Path] = counts
+		}
+	}
+	for i := range dependentProfiles {
+		dependentProfiles[i] = profiles[profileIndexes[dependentProfiles[i].pr.Number]]
+	}
+	return detectFoundationCouplings(dependentProfiles, profiles, blocked), warnings, nil
 }
 
 func newPullRequestDiffProfile(pr providers.PullRequestSummary, files []providers.ChangedFile) pullRequestDiffProfile {
 	profile := pullRequestDiffProfile{
-		pr:     pr,
-		files:  files,
-		byPath: make(map[string]providers.ChangedFile, len(files)),
+		pr:         pr,
+		files:      files,
+		byPath:     make(map[string]providers.ChangedFile, len(files)),
+		lineCounts: make(map[string]fileLineCounts),
 	}
 	for _, file := range files {
 		profile.byPath[file.Path] = file
@@ -61,11 +114,51 @@ func newPullRequestDiffProfile(pr providers.PullRequestSummary, files []provider
 	return profile
 }
 
-func detectFoundationCouplings(profiles []pullRequestDiffProfile, blocked map[int]bool) []foundationCoupling {
+func repositoryFileLineCounts(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+	file providers.ChangedFile,
+	cache map[string][]byte,
+) (fileLineCounts, error) {
+	key := pr.HeadSHA + "\x00" + file.Path
+	afterContent, ok := cache[key]
+	if !ok {
+		var err error
+		afterContent, err = provider.RepositoryFileContent(ctx, repo, file.Path, pr.HeadSHA)
+		if err != nil {
+			return fileLineCounts{}, fmt.Errorf("read head %s: %w", pr.HeadSHA, err)
+		}
+		cache[key] = afterContent
+	}
+	after := contentLineCount(afterContent)
+	before := after - file.Additions + file.Deletions
+	if before < 0 {
+		return fileLineCounts{}, fmt.Errorf(
+			"invalid line counts at head %s: %d lines with %d additions and %d deletions",
+			pr.HeadSHA, after, file.Additions, file.Deletions,
+		)
+	}
+	return fileLineCounts{before: before, after: after}, nil
+}
+
+func contentLineCount(content []byte) int {
+	if len(content) == 0 {
+		return 0
+	}
+	lines := bytes.Count(content, []byte{'\n'})
+	if content[len(content)-1] != '\n' {
+		lines++
+	}
+	return lines
+}
+
+func detectFoundationCouplings(dependents, foundations []pullRequestDiffProfile, blocked map[int]bool) []foundationCoupling {
 	var couplings []foundationCoupling
-	for _, dependent := range profiles {
+	for _, dependent := range dependents {
 		var candidates []foundationCoupling
-		for _, foundation := range profiles {
+		for _, foundation := range foundations {
 			if foundation.pr.Number == dependent.pr.Number ||
 				foundation.pr.Draft ||
 				blocked[foundation.pr.Number] ||
@@ -106,9 +199,21 @@ func foundationRewriteFiles(dependent, foundation pullRequestDiffProfile) []stri
 	var shared []string
 	for _, foundationFile := range foundation.files {
 		dependentFile, ok := dependent.byPath[foundationFile.Path]
-		if !ok ||
-			!substantiallyRewrites(foundationFile) ||
-			substantiallyRewrites(dependentFile) ||
+		if !ok {
+			continue
+		}
+		foundationRewrite, foundationKnown := substantiallyRewrites(
+			foundationFile, foundation.lineCounts[foundationFile.Path],
+			lineCountsKnown(foundationFile, foundation.lineCounts, foundationFile.Path),
+		)
+		dependentRewrite, dependentKnown := substantiallyRewrites(
+			dependentFile, dependent.lineCounts[dependentFile.Path],
+			lineCountsKnown(dependentFile, dependent.lineCounts, dependentFile.Path),
+		)
+		if !foundationKnown ||
+			!dependentKnown ||
+			!foundationRewrite ||
+			dependentRewrite ||
 			changedFileMagnitude(foundationFile) < foundationDominanceFactor*changedFileMagnitude(dependentFile) {
 			continue
 		}
@@ -116,6 +221,14 @@ func foundationRewriteFiles(dependent, foundation pullRequestDiffProfile) []stri
 	}
 	sort.Strings(shared)
 	return shared
+}
+
+func lineCountsKnown(file providers.ChangedFile, counts map[string]fileLineCounts, path string) bool {
+	if strings.EqualFold(file.Status, "removed") || file.Deletions < foundationRewriteMinLines {
+		return true
+	}
+	_, ok := counts[path]
+	return ok
 }
 
 func changedFileMagnitude(file providers.ChangedFile) int {
@@ -129,69 +242,23 @@ func changedFileMagnitude(file providers.ChangedFile) int {
 	return magnitude
 }
 
-func substantiallyRewrites(file providers.ChangedFile) bool {
+func substantiallyRewrites(file providers.ChangedFile, lines fileLineCounts, countsKnown bool) (bool, bool) {
 	if strings.EqualFold(file.Status, "removed") {
-		return true
+		return true, true
 	}
 	if file.Deletions < foundationRewriteMinLines {
-		return false
+		return false, true
 	}
-	if file.Additions*10 <= file.Deletions {
-		return true
+	if !countsKnown {
+		return false, false
 	}
-	oldExtent, newExtent, startsAtBeginning, ok := diffHunkExtents(file.Patch)
-	if !ok || oldExtent < foundationRewriteMinLines {
-		return false
+	if lines.before < foundationRewriteMinLines {
+		return false, true
 	}
-	if startsAtBeginning && newExtent*10 <= oldExtent {
-		return true
+	if lines.after*10 <= lines.before {
+		return true, true
 	}
-	return file.Deletions*2 >= oldExtent
-}
-
-func diffHunkExtents(patch string) (oldExtent, newExtent int, startsAtBeginning, ok bool) {
-	matches := unifiedHunkHeaderPattern.FindAllStringSubmatch(patch, -1)
-	if len(matches) == 0 {
-		return 0, 0, false, false
-	}
-	minOldStart, minNewStart := int(^uint(0)>>1), int(^uint(0)>>1)
-	for _, match := range matches {
-		oldStart, oldCount, parsed := parseHunkRange(match[1], match[2])
-		if !parsed {
-			return 0, 0, false, false
-		}
-		newStart, newCount, parsed := parseHunkRange(match[3], match[4])
-		if !parsed {
-			return 0, 0, false, false
-		}
-		minOldStart = min(minOldStart, oldStart)
-		minNewStart = min(minNewStart, newStart)
-		oldExtent = max(oldExtent, hunkEnd(oldStart, oldCount))
-		newExtent = max(newExtent, hunkEnd(newStart, newCount))
-	}
-	return oldExtent, newExtent, minOldStart <= 1 && minNewStart <= 1, true
-}
-
-func parseHunkRange(startText, countText string) (start, count int, ok bool) {
-	start, err := strconv.Atoi(startText)
-	if err != nil {
-		return 0, 0, false
-	}
-	count = 1
-	if countText != "" {
-		count, err = strconv.Atoi(countText)
-		if err != nil {
-			return 0, 0, false
-		}
-	}
-	return start, count, true
-}
-
-func hunkEnd(start, count int) int {
-	if count == 0 {
-		return start
-	}
-	return start + count - 1
+	return file.Deletions*2 >= lines.before, true
 }
 
 func flagFoundationCoupling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, coupling foundationCoupling, existingBlockers []int) (bool, error) {

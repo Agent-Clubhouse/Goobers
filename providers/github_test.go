@@ -1371,6 +1371,37 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderRepositoryFileContentReadsRef(t *testing.T) {
+	want := strings.Repeat("first\nsecond\n", 100_000)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/contents/portal/src/App.tsx", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("ref"); got != "head-sha" {
+			t.Fatalf("ref = %q, want head-sha", got)
+		}
+		if got := r.Header.Get("Accept"); got != "application/vnd.github.raw+json" {
+			t.Fatalf("Accept = %q, want raw GitHub content media type", got)
+		}
+		_, _ = w.Write([]byte(want))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	content, err := provider.RepositoryFileContent(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		"portal/src/App.tsx",
+		"head-sha",
+	)
+	if err != nil {
+		t.Fatalf("RepositoryFileContent: %v", err)
+	}
+	if got := string(content); got != want {
+		t.Fatalf("content length = %d, want %d", len(got), len(want))
+	}
+}
+
 // TestGitHubProviderPullRequestMergeable is issue #715's post-merge triage
 // signal: a single-PR detail GET resolving just the mergeable field,
 // distinct from PollPullRequest's heavier review-decision/check-state/

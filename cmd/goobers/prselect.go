@@ -87,7 +87,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -97,7 +97,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	siblingBlocked := make(map[int]bool)
 	liveSiblingBlockers := make(map[int][]int)
 	blockedDependents := make(map[int]int)
-	for _, pr := range prs {
+	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
@@ -108,9 +108,18 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 			blockedDependents[blocker]++
 		}
 	}
-	couplings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, prs, siblingBlocked)
+	var couplingDependents []providers.PullRequestSummary
+	for _, pr := range prs {
+		if pr.State == "open" && pr.Base == base && strings.HasPrefix(pr.Head, headPrefix) {
+			couplingDependents = append(couplingDependents, pr)
+		}
+	}
+	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, siblingBlocked)
 	if err != nil {
 		return failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
+	}
+	for _, warning := range couplingWarnings {
+		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
 	}
 	for _, coupling := range couplings {
 		changed, ferr := flagFoundationCoupling(
@@ -257,22 +266,38 @@ func pullRequestsForSelection(
 	headPrefix string,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
-) ([]providers.PullRequestSummary, error) {
+) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	openPRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, SkipCheckState: true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
+	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if !targeted || completeness == prSelectCompleteSnapshot {
-		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-			Repository: repo, Base: base, HeadPrefix: headPrefix,
-		})
+	if targeted && completeness != prSelectCompleteSnapshot {
+		pr, err := provider.GetPullRequest(ctx, repo, pullID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+		}
+		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+		}
+		return []providers.PullRequestSummary{pr}, openPRs, nil
 	}
-	pr, err := provider.GetPullRequest(ctx, repo, pullID)
-	if err != nil {
-		return nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+
+	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
+	for _, pr := range openPRs {
+		if !strings.HasPrefix(pr.Head, headPrefix) {
+			continue
+		}
+		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
+		}
+		prs = append(prs, pr)
 	}
-	pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-	if err != nil {
-		return nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
-	}
-	return []providers.PullRequestSummary{pr}, nil
+	return prs, openPRs, nil
 }
 
 func splitLabelList(value string) []string {
