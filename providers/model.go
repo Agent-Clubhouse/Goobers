@@ -63,23 +63,24 @@ type Link struct {
 
 // WorkItem is the flat scheduler-facing backlog model shared across providers.
 type WorkItem struct {
-	Provider   ProviderKind           `json:"provider"`
-	ID         string                 `json:"id"`
-	ExternalID string                 `json:"externalId,omitempty"`
-	Type       string                 `json:"type,omitempty"`
-	Title      string                 `json:"title"`
-	Body       string                 `json:"body,omitempty"`
-	Labels     []string               `json:"labels,omitempty"`
-	State      string                 `json:"state,omitempty"`
-	Status     WorkItemStatus         `json:"status,omitempty"`
-	Assignee   string                 `json:"assignee,omitempty"`
-	Links      []Link                 `json:"links,omitempty"`
-	Parent     *WorkItemRef           `json:"parent,omitempty"`
-	Hierarchy  map[string]interface{} `json:"hierarchy,omitempty"`
-	URL        string                 `json:"url,omitempty"`
-	CreatedAt  *time.Time             `json:"createdAt,omitempty"`
-	UpdatedAt  *time.Time             `json:"updatedAt,omitempty"`
-	Raw        interface{}            `json:"raw,omitempty"`
+	Provider       ProviderKind           `json:"provider"`
+	ID             string                 `json:"id"`
+	ExternalID     string                 `json:"externalId,omitempty"`
+	Type           string                 `json:"type,omitempty"`
+	Title          string                 `json:"title"`
+	Body           string                 `json:"body,omitempty"`
+	Labels         []string               `json:"labels,omitempty"`
+	State          string                 `json:"state,omitempty"`
+	Status         WorkItemStatus         `json:"status,omitempty"`
+	Assignee       string                 `json:"assignee,omitempty"`
+	Links          []Link                 `json:"links,omitempty"`
+	Parent         *WorkItemRef           `json:"parent,omitempty"`
+	Hierarchy      map[string]interface{} `json:"hierarchy,omitempty"`
+	URL            string                 `json:"url,omitempty"`
+	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
+	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
+	BlockedByCount int                    `json:"-"`
+	Raw            interface{}            `json:"raw,omitempty"`
 }
 
 // HasLabel reports whether the work item has a scheduler routing label.
