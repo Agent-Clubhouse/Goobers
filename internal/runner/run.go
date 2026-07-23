@@ -1894,6 +1894,14 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 }
 
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	var usageLimits apiv1.Limits
+	if t.Type == apiv1.TaskAgentic {
+		var err error
+		usageLimits, err = workflow.TaskLimits(in.Machine, t)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err)
+		}
+	}
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1965,6 +1973,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			attemptAddendum = instructionAddendum
 		}
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		if dispatchErr == nil && t.Type == apiv1.TaskAgentic {
+			result = enforceStageBudget(usageLimits, result)
+		}
 		// A branchless no-work result with no provider mutations touched no
 		// external ref. Delay branch provenance until an attempt proves otherwise.
 		if !*branchRecorded && machineUsesRepo(in.Machine) &&
