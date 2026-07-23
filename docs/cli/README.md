@@ -582,8 +582,9 @@ telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It prompts for
 a GitHub repository, work tracking, token references, and canonical workflows,
-then validates the result. --demo seeds an offline deterministic tour requiring
-no repo or credentials.
+then validates the result. --demo seeds a hermetic mock-provider full-loop tour
+requiring no repo, provider credentials, model tokens, or network writes. The
+demo is supported on Linux and macOS, where network isolation is enforced.
 ~~~
 
 **Examples**

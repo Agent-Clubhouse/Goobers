@@ -39,7 +39,7 @@ func Init(root string) (*InitResult, error) {
 }
 
 // InitDemo scaffolds a credential-free instance with one runnable,
-// deterministic demo workflow.
+// deterministic full-loop demo workflow backed by a hermetic mock provider.
 func InitDemo(root string) (*InitResult, error) {
 	return initWithConfig(root, demoDir, demoConfig())
 }

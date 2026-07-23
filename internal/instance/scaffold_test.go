@@ -90,14 +90,25 @@ func TestInitDemoFresh(t *testing.T) {
 		t.Fatalf("unexpected demo config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
-	if workflow.Name != "demo" || len(workflow.Spec.Tasks) != 2 || len(workflow.Spec.Gates) != 1 {
+	if workflow.Name != "demo" || len(workflow.Spec.Tasks) != 4 || len(workflow.Spec.Gates) != 1 {
 		t.Fatalf("unexpected demo workflow: %+v", workflow)
 	}
-	for _, task := range workflow.Spec.Tasks {
+	wantTasks := []string{"curate", "implement", "review", "merge-preview"}
+	for i, task := range workflow.Spec.Tasks {
+		if task.Name != wantTasks[i] {
+			t.Fatalf("demo task %d = %q, want %q", i, task.Name, wantTasks[i])
+		}
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil ||
 			task.Run.Workspace != apiv1.WorkspaceScratch || task.Run.Network != apiv1.NetworkNone {
 			t.Fatalf("demo task is not an offline scratch deterministic stage: %+v", task)
 		}
+		if len(task.Run.Command) != 3 || task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "__demo-provider" || task.Run.Command[2] != task.Name {
+			t.Fatalf("demo task does not use its mock-provider phase: %+v", task.Run.Command)
+		}
+	}
+	if gate := workflow.Spec.Gates[0]; gate.Name != "review-verdict" || gate.Branches["pass"] != "merge-preview" {
+		t.Fatalf("unexpected demo review gate: %+v", gate)
 	}
 }
 

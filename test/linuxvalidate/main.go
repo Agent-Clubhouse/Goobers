@@ -97,7 +97,7 @@ func run(bin, outDir string) error {
 	}
 	fmt.Fprintf(&summary, "## Validated environment\n\n```\n%s```\n\n", env)
 
-	// 2 + 3. Offline demo run to completion (its own instance root).
+	// 2 + 3. Hermetic full-loop demo run to completion (its own instance root).
 	runInstance := filepath.Join(outDir, "instance-run")
 	_ = os.RemoveAll(runInstance)
 	demoSummary, err := validateDemoRun(absBin, runInstance, outDir)
@@ -141,8 +141,8 @@ func configureEphemeralAPI(root string) error {
 	return nil
 }
 
-// validateDemoRun scaffolds the offline demo instance, drives `goobers run demo`
-// to phase=completed against the real binary, and captures the run journal.
+// validateDemoRun scaffolds the hermetic demo instance, drives its mock-provider
+// full loop to phase=completed against the real binary, and captures the journal.
 func validateDemoRun(bin, instance, outDir string) (string, error) {
 	var b strings.Builder
 	if out, err := runGoobers(bin, 30*time.Second, "init", "--demo", instance); err != nil {
@@ -169,6 +169,15 @@ func validateDemoRun(bin, instance, outDir string) (string, error) {
 	traceOut, traceErr := runGoobers(bin, 30*time.Second, "trace", runID, instance)
 	if traceErr != nil {
 		return b.String(), fmt.Errorf("`goobers trace %s` failed: %w\n%s", runID, traceErr, traceOut)
+	}
+	for _, phase := range []string{"curate", "implement", "review", "merge-preview"} {
+		if !strings.Contains(traceOut, "stage="+phase) {
+			return b.String(), fmt.Errorf("demo trace did not reach %s:\n%s", phase, traceOut)
+		}
+	}
+	if !strings.Contains(traceOut, `"provider":"mock"`) ||
+		!strings.Contains(traceOut, `"mergePreview":"would squash mock pull request #1 into main"`) {
+		return b.String(), fmt.Errorf("demo trace did not record the mock-provider merge preview:\n%s", traceOut)
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "demo-run-trace.txt"), []byte(traceOut), 0o644); err != nil {
 		return b.String(), fmt.Errorf("write demo-run-trace.txt: %w", err)

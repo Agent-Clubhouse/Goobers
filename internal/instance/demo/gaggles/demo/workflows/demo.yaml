@@ -4,57 +4,119 @@ metadata:
   name: demo
 spec:
   gaggle: demo
-  displayName: Offline triage, build, and verdict
+  displayName: Hermetic full-loop demo
   triggers:
     - type: schedule
       schedule: "@yearly"
   readiness:
     maxConcurrentRuns: 1
-  start: triage
+  start: curate
   tasks:
-    - name: triage
+    - name: curate
       type: deterministic
-      goal: Classify the bundled fixture item.
+      goal: Curate the bundled backlog item through the mock provider.
       inputs:
-        fixture: README links are stale after a release
-        resultFile: triage.json
+        resultFile: curate.json
       expectedOutputs:
-        - category
-        - priority
+        - provider
+        - phase
+        - itemID
+        - itemTitle
       run:
         network: none
         workspace: scratch
         command:
-          - sh
-          - -c
-          - 'printf ''{"item":"%s","category":"documentation","priority":2}\n'' "$GOOBERS_INPUT_FIXTURE" > triage.json'
-      next: build
-    - name: build
+          - goobers
+          - __demo-provider
+          - curate
+      next: implement
+    - name: implement
       type: deterministic
-      goal: Build a deterministic demo artifact from the triage result.
+      goal: Implement the curated item without invoking a model.
       inputs:
-        resultFile: build.json
+        resultFile: implement.json
       inputsFrom:
-        category: category
+        itemID: itemID
+        itemTitle: itemTitle
       expectedOutputs:
-        - artifact
-        - verdict
+        - provider
+        - phase
+        - itemID
+        - pullNumber
+        - pullRequestURL
+        - headSHA
+        - baseSHA
       run:
         network: none
         workspace: scratch
         command:
-          - sh
-          - -c
-          - 'printf ''{"artifact":"demo-binary","verdict":"ready","category":"%s"}\n'' "$GOOBERS_INPUT_CATEGORY" > build.json'
-      next: verdict
+          - goobers
+          - __demo-provider
+          - implement
+      next: review
+    - name: review
+      type: deterministic
+      goal: Review the mock pull request with a deterministic fixture verdict.
+      inputs:
+        resultFile: review.json
+      inputsFrom:
+        itemID: itemID
+        pullNumber: pullNumber
+        pullRequestURL: pullRequestURL
+        headSHA: headSHA
+        baseSHA: baseSHA
+      expectedOutputs:
+        - provider
+        - phase
+        - itemID
+        - pullNumber
+        - pullRequestURL
+        - headSHA
+        - baseSHA
+        - verdict
+        - rationale
+      run:
+        network: none
+        workspace: scratch
+        command:
+          - goobers
+          - __demo-provider
+          - review
+      next: review-verdict
+    - name: merge-preview
+      type: deterministic
+      goal: Preview the merge through the mock provider without writing remotely.
+      inputs:
+        resultFile: merge-preview.json
+      inputsFrom:
+        itemID: itemID
+        pullNumber: pullNumber
+        pullRequestURL: pullRequestURL
+        headSHA: headSHA
+        baseSHA: baseSHA
+        verdict: verdict
+      expectedOutputs:
+        - provider
+        - phase
+        - pullRequestURL
+        - mergeMethod
+        - mergePreview
+        - wouldMerge
+      run:
+        network: none
+        workspace: scratch
+        command:
+          - goobers
+          - __demo-provider
+          - merge-preview
   gates:
-    - name: verdict
+    - name: review-verdict
       evaluator: automated
       automated:
         check: output-equals
         params:
           key: verdict
-          equals: ready
+          equals: pass
       branches:
-        pass: ""
+        pass: merge-preview
         fail: "@abort"

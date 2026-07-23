@@ -155,6 +155,7 @@ func init() {
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
 			withExamples("goobers run default-implement", "goobers run default-implement --no-wait"),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
+		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
 		command("signal", apicontract.ActionWorkflowExecution, runSignal).
 			withSynopsis(synopsisByID["signal"]).
 			withHelp("fire an external signal to subscribed workflows", signalHelp).
