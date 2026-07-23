@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/providersnapshot"
 )
 
 // CredentialEnvVar returns the deterministic env var name a stage's declared
@@ -64,10 +65,11 @@ func baseEnv(extra []string) []string {
 // process env for the stage: baseEnv(), the definition's explicit env, one
 // GOOBERS_CRED_* var per declared capability that has a materialized credential,
 // plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
-// GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_INSTANCE_ROOT (both
-// branchNamespace and instanceRoot may be empty — see ShellExecutor.InstanceRoot),
-// and one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor appends its
-// executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function returns.
+// GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_INSTANCE_ROOT and the
+// provider snapshot identifier associated with the scheduler evaluation (when
+// present), plus one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor
+// appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function
+// returns.
 // Every resolved token is also registered with registrar so it can be scrubbed
 // from anything the stage's process writes.
 //
@@ -121,6 +123,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		}
 		if instanceRoot != "" {
 			env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
+		}
+		if snapshotID := providersnapshot.ID(ctx); snapshotID != "" {
+			env = append(env, providersnapshot.EnvVar+"="+snapshotID)
 		}
 	}
 	for k, v := range inputs {

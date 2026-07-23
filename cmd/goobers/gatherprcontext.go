@@ -105,7 +105,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken, apiReadCacheOption(root))
+	provider := newCachedGitHubProvider(root, prToken)
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())

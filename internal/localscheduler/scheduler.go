@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -503,6 +504,7 @@ func (g *tickGaggle) next() (*tickCandidate, TickResult, journal.TriggerKind, bo
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
+	ctx = providersnapshot.WithTick(ctx, now)
 
 	s.mu.Lock()
 	entries := make([]WorkflowEntry, 0, len(s.workflows))
@@ -838,6 +840,7 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
+	ctx = providersnapshot.WithTick(ctx, now)
 
 	s.mu.Lock()
 	var subscribed []WorkflowEntry
@@ -908,6 +911,7 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
 func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult, kind journal.TriggerKind) (runID string, admitted bool, skipReason string) {
+	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
 		reason := "run-id generation failed: " + err.Error()

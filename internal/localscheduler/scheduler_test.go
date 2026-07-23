@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -39,21 +40,29 @@ func (f *fakeSpanStarter) count() int {
 // on a channel if one is set, so tests can control exactly when a run
 // "finishes" and its condition slot is released.
 type fakeStarter struct {
-	mu     sync.Mutex
-	starts []StartRequest
-	block  chan struct{} // if non-nil, Start waits on it before returning
-	result StartResult
-	err    error
+	mu          sync.Mutex
+	starts      []StartRequest
+	snapshotIDs []string
+	block       chan struct{} // if non-nil, Start waits on it before returning
+	result      StartResult
+	err         error
 }
 
 func (f *fakeStarter) Start(ctx context.Context, req StartRequest) (StartResult, error) {
 	f.mu.Lock()
 	f.starts = append(f.starts, req)
+	f.snapshotIDs = append(f.snapshotIDs, providersnapshot.ID(ctx))
 	f.mu.Unlock()
 	if f.block != nil {
 		<-f.block
 	}
 	return f.result, f.err
+}
+
+func (f *fakeStarter) snapshots() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.snapshotIDs...)
 }
 
 func (f *fakeStarter) count() int {

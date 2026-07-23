@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -938,8 +939,8 @@ func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, add
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
 // var so tests substitute a fake (mirrors newPRPoller / newEscalationPoster).
-var newOpenPRProvider = func(token string) localscheduler.OpenPRLister {
-	return providers.NewGitHubProvider(token)
+var newOpenPRProvider = func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	return providers.NewGitHubProvider(token, opts...)
 }
 
 // resolvingOpenPRLister resolves the org-repo token per poll — honoring
@@ -948,9 +949,10 @@ var newOpenPRProvider = func(token string) localscheduler.OpenPRLister {
 // and lists open PR heads through a freshly-authenticated provider. It is the
 // OpenPRLister the #353 open-PR-count refresher polls off-tick.
 type resolvingOpenPRLister struct {
-	ref      string
-	resolver credentials.Resolver
-	reg      runner.SecretRegistrar
+	ref          string
+	resolver     credentials.Resolver
+	reg          runner.SecretRegistrar
+	schedulerDir string
 }
 
 func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
@@ -959,7 +961,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
 	}
 	l.reg.Register([]byte(token))
-	return newOpenPRProvider(token).ListOpenPullRequests(ctx, repo)
+	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
 }
 
 // buildOpenPRRefresher constructs the #353 open-PR-count refresher only when the
@@ -969,7 +971,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // starts/wires the returned refresher; a single `goobers run` has no accretion
 // to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
 // is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string) (*localscheduler.OpenPRRefresher, error) {
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -988,7 +990,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
 	repo := cfg.Repos[0]
-	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg}
+	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
 	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 	// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 	// the daemon's "parked pending a human" signal on a PR — it cannot be
@@ -1004,11 +1006,12 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	ref      string
-	repo     providers.RepositoryRef
-	labels   []string
-	resolver credentials.Resolver
-	reg      runner.SecretRegistrar
+	ref          string
+	repo         providers.RepositoryRef
+	labels       []string
+	resolver     credentials.Resolver
+	reg          runner.SecretRegistrar
+	schedulerDir string
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -1017,7 +1020,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	b.reg.Register([]byte(token))
-	items, err := newGitHubProvider(token).ListWorkItems(ctx, providers.ListWorkItemsRequest{
+	items, err := newGitHubProvider(token, apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx))).ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
 	})
 	if err != nil {
@@ -1039,7 +1042,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string) localscheduler.BacklogCounter {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -1059,12 +1062,14 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 	for k := range selector {
 		labels = append(labels, k)
 	}
+	sort.Strings(labels)
 	return &backlogCounter{
-		ref:      cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
-		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
-		labels:   labels,
-		resolver: resolver,
-		reg:      reg,
+		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:       labels,
+		resolver:     resolver,
+		reg:          reg,
+		schedulerDir: schedulerDir,
 	}
 }
 

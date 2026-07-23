@@ -54,12 +54,16 @@ func TestParseRemediationStateCommentNoPayloadIsNotFound(t *testing.T) {
 type remediationCheckpointServerState struct {
 	mu sync.Mutex
 
-	number           int
-	headSHA, baseSHA string
-	labels           []string
-	comments         []string
-	siblings         []remediationCheckpointSibling
-	labelRemovalAuth string
+	number             int
+	headSHA, baseSHA   string
+	state              string
+	merged             bool
+	terminalOnComments bool
+	mergeOnComments    bool
+	labels             []string
+	comments           []string
+	siblings           []remediationCheckpointSibling
+	labelRemovalAuth   string
 }
 
 type remediationCheckpointSibling struct {
@@ -79,11 +83,15 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		state := r.URL.Query().Get("state")
+		currentState := st.state
+		if currentState == "" {
+			currentState = "open"
+		}
 		out := make([]map[string]interface{}, 0, 1+len(st.siblings))
-		if state == "" || state == "open" {
+		if (state == "" || state == "open") && currentState == "open" {
 			out = append(out, map[string]interface{}{
 				"number": st.number, "draft": false,
-				"state":    "open",
+				"state":    currentState,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
 				"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
 				"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
@@ -113,6 +121,22 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			out = append(out, pr)
 		}
 		writeFakeJSON(w, out)
+	})
+
+	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d", prefix, st.number), func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		state := st.state
+		if state == "" {
+			state = "open"
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"number": st.number, "draft": false, "state": state, "merged": st.merged,
+			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
+			"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
+			"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
+			"labels":   labelsJSON(st.labels),
+		})
 	})
 
 	// git/ref/heads/main answers GitHubProvider.BranchTipSHA — the LIVE base
@@ -176,6 +200,10 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			st.comments = append(st.comments, body.Body)
 			writeFakeJSON(w, map[string]interface{}{"id": len(st.comments)})
 			return
+		}
+		if st.terminalOnComments {
+			st.state = "closed"
+			st.merged = st.mergeOnComments
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {

@@ -63,7 +63,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken)
+	provider := newCachedGitHubProvider(root, prToken)
 	issuesProvider := newGitHubProvider(issuesToken)
 
 	ctx, cancel := providerCommandContext()
