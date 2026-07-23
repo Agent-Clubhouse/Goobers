@@ -383,6 +383,53 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	if _, ok := got["agent:model"]; ok {
 		t.Fatalf("agent:model must not be granted without a credentials: entry, got %+v", got)
 	}
+	if _, ok := got[string(capability.ConfigRepoRead)]; ok {
+		t.Fatalf("configrepo:read must not default to the repo token, got %+v", got)
+	}
+}
+
+func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
+	t.Setenv("CODE_REPO_TOKEN", "code-repo-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-source-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "web",
+			Token:    instance.TokenRef{Env: "CODE_REPO_TOKEN"},
+		}},
+		WorkflowSource: &instance.WorkflowSource{
+			Kind:  instance.WorkflowSourceKindGit,
+			URL:   "https://example.com/workflow-config.git",
+			Token: &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg, "", "")
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	set, err := injector.Materialize(context.Background(), []string{string(capability.ConfigRepoRead)})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if _, err := set.Token(context.Background(), string(capability.ConfigRepoRead)); !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("stage configrepo:read token error = %v, want ErrNoCredentialForCapability", err)
+	}
+}
+
+func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		Capability: string(capability.ConfigRepoRead),
+		Token:      instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}}}
+	if _, _, err := buildCredentials(cfg, "", ""); err == nil ||
+		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
+		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
+	}
 }
 
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
@@ -661,10 +708,11 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	sources := []credentials.Grant{
 		{Capability: "agent:model", Ref: "model-token"},
 		{Capability: "github:issues:write", Ref: "issues-token"},
+		{Capability: "configrepo:read", Ref: "workflow-source-token"},
 	}
 	grants := buildGooberCredentialGrants(
 		"curator",
-		[]string{"agent:model", "telemetry:read", "agent:model"},
+		[]string{"agent:model", "telemetry:read", "configrepo:read", "agent:model"},
 		sources,
 	)
 	if len(grants) != 1 {

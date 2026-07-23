@@ -61,7 +61,7 @@ type Config struct {
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
-	// Credentials sources individual capabilities from their own token refs,
+	// Credentials sources individual stage capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one
 	// capability at a distinct token; an entry for a capability the runner would
@@ -85,8 +85,8 @@ type Config struct {
 
 // WorkflowSource locates the workflow configuration independently of Repos.
 // A local-dir source reads Path directly. A git source reads a committed Ref
-// from either a local repository Path or a remote URL; remote sources require
-// their own token reference.
+// from either a local repository Path or a remote HTTPS URL; remote sources
+// require their own token reference.
 type WorkflowSource struct {
 	Kind  string    `json:"kind" yaml:"kind"`
 	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
@@ -169,10 +169,8 @@ type TokenRef struct {
 	File string `json:"file,omitempty" yaml:"file,omitempty"`
 }
 
-// CredentialGrant sources one capability from its own token ref (#287). It is
-// the config surface for holding more than one token at a time and routing each
-// to the capability that needs it — e.g. agent:model → a personal Copilot
-// Requests PAT, separate from the repo token backing repo/issue/PR access.
+// CredentialGrant sources one stage capability from its own token ref (#287).
+// Runner-owned capabilities use their dedicated config surfaces instead.
 type CredentialGrant struct {
 	// Capability is the canonical capability string (internal/capability) this
 	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
@@ -556,6 +554,13 @@ func (c *Config) Validate() error {
 		if !capability.Known(cg.Capability) {
 			return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
 		}
+		if !capability.StageDeclarable(cg.Capability) {
+			return fmt.Errorf(
+				"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
+				i,
+				cg.Capability,
+			)
+		}
 		if seen[cg.Capability] {
 			return fmt.Errorf("credentials[%d]: capability %q is sourced more than once", i, cg.Capability)
 		}
@@ -589,6 +594,15 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
+	if c.WorkflowSource != nil &&
+		c.WorkflowSource.Token != nil &&
+		c.WorkflowSource.Token.Env != "" &&
+		stageEnvironmentAllows(c.WorkflowSource.Token.Env, c.Runner.EnvPassthrough) {
+		return fmt.Errorf(
+			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+			c.WorkflowSource.Token.Env,
+		)
+	}
 	return nil
 }
 
@@ -611,6 +625,9 @@ func (s WorkflowSource) Validate() error {
 			return fmt.Errorf("kind %q must set exactly one of path or url", s.Kind)
 		}
 		if hasURL {
+			if err := validateRemoteGitURL(s.URL); err != nil {
+				return err
+			}
 			if s.Token == nil {
 				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
@@ -639,6 +656,25 @@ func (s WorkflowSource) Validate() error {
 		}
 	}
 	return nil
+}
+
+func stageEnvironmentAllows(name string, extra []string) bool {
+	for _, allowed := range procenv.Vars {
+		if strings.EqualFold(name, allowed) {
+			return true
+		}
+	}
+	for _, allowed := range extra {
+		if strings.EqualFold(name, allowed) {
+			return true
+		}
+	}
+	for _, prefix := range procenv.Prefixes {
+		if len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateOTLPEndpoint(endpoint string, insecure bool) error {

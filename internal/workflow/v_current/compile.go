@@ -346,6 +346,11 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if t.Inputs["kind"] == "ci-poll" && !toSet(t.Capabilities)[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
 		}
+		for _, c := range t.Capabilities {
+			if capability.Known(c) && !capability.StageDeclarable(c) {
+				problems = append(problems, fmt.Sprintf("task %q declares runner-only capability %q", t.Name, c))
+			}
+		}
 	}
 	problems = append(problems, policyActionProblems(def, goobers)...)
 	if goobers == nil {
@@ -365,6 +370,8 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			for _, c := range goobers[name].Capabilities {
 				if !capability.Known(c) {
 					problems = append(problems, fmt.Sprintf("goober %q grants %s", name, unknownCapability(c)))
+				} else if !capability.StageDeclarable(c) {
+					problems = append(problems, fmt.Sprintf("goober %q grants runner-only capability %q", name, c))
 				}
 			}
 		}

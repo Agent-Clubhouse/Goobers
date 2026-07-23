@@ -625,6 +625,16 @@ func (ix *index) crossCheck(r *Report) {
 		}
 		for _, value := range g.Spec.Capabilities {
 			if capability.Known(value) {
+				if !capability.StageDeclarable(value) {
+					r.add(
+						Error,
+						file,
+						"Goober",
+						g.Name,
+						"spec.capabilities contains runner-only capability %q",
+						value,
+					)
+				}
 				continue
 			}
 			message := fmt.Sprintf("spec.capabilities contains unknown capability %q", value)
