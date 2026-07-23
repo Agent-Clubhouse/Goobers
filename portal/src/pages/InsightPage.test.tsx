@@ -133,7 +133,7 @@ describe("Insight page", () => {
     );
   });
 
-  it("shows measured AI usage and keeps missing runner usage unmeasured", async () => {
+  it("shows exact scope usage rollups and contributor-specific drill-downs", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");
     const user = userEvent.setup();
@@ -143,32 +143,28 @@ describe("Insight page", () => {
       await screen.findByRole("heading", { name: "Credits, cost, and tokens" }),
     ).toBeInTheDocument();
     const costLinks = screen.getAllByRole("link", { name: /^View AI cost runs behind/ });
-    expect(costLinks).toHaveLength(3);
+    expect(costLinks).toHaveLength(1);
     expect(costLinks[0]).toHaveAccessibleName(
-      /core \/ implementation \/ implement: 4 samples, P50 \$1\.25, P95 \$2\.50/,
-    );
-    expect(costLinks[1]).toHaveAccessibleName(
-      /core \/ implementation \/ review: 4 samples, P50 \$0\.40, P95 \$0\.80/,
+      /Instance: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     );
 
     const tokenLink = screen.getByRole("link", {
-      name: /View token usage runs behind core \/ implementation \/ implement/,
+      name: /View token usage runs behind Instance/,
     });
     const costLink = screen.getByRole("link", {
-      name: /View AI cost runs behind core \/ implementation \/ implement/,
+      name: /View AI cost runs behind Instance/,
     });
     const wasteLink = screen.getByRole("link", {
-      name: /View retry-waste runs behind core \/ implementation \/ implement/,
+      name: /View retry-waste runs behind Instance/,
     });
+    expect(tokenLink).toHaveAttribute("href", expect.stringContaining("population=token-measured"));
+    expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
+    expect(wasteLink).toHaveAttribute("href", expect.stringContaining("population=retry-waste"));
     for (const link of [tokenLink, costLink, wasteLink]) {
-      expect(link).toHaveAttribute(
-        "href",
-        expect.stringMatching(
-          /#\/runs\?.*gaggle=core.*workflow=implementation.*stage=implement.*outcome=finished.*population=attempts.*since=.*until=/,
-        ),
-      );
+      expect(link).toHaveAttribute("href", expect.not.stringContaining("outcome=finished"));
+      expect(link).toHaveAttribute("href", expect.stringMatching(/since=.*until=/));
     }
-    expect(screen.getAllByText("24,000 tokens").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("15,000 tokens").length).toBeGreaterThan(0);
     expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
     expect(screen.getByText("$0.75")).toBeInTheDocument();
 
@@ -176,12 +172,22 @@ describe("Insight page", () => {
       screen.getByLabelText("Scope"),
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
-    expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(1);
     expect(
-      screen.queryByRole("link", {
-        name: /View AI cost runs behind tools \/ implementation \/ implement/,
+      screen.getByRole("link", {
+        name: /View AI cost runs behind core \/ implementation: 8 samples, P50 \$0\.80, P95 \$2\.50/,
       }),
-    ).not.toBeInTheDocument();
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Gaggle · core" }),
+    );
+    expect(
+      screen.getByRole("link", {
+        name: /View token usage runs behind core: 8 samples, P50 15,000 tokens, P95 48,000 tokens/,
+      }),
+    ).toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
@@ -208,8 +214,8 @@ describe("Insight page", () => {
           gaggle: "tools",
           workflow: "implementation",
           stage: "implement",
-          outcome: "finished",
-          population: "attempts",
+          outcome: undefined,
+          population: "cost-measured",
           since: expect.stringMatching(/Z$/),
           until: expect.stringMatching(/Z$/),
         }),
@@ -310,7 +316,13 @@ describe("Insight page", () => {
       await screen.findByLabelText("Scope"),
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
-    getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [], models: [] });
+    getTelemetryStats.mockResolvedValueOnce({
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [],
+    });
     getTelemetryErrorSignatures.mockResolvedValueOnce({ items: [] });
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");

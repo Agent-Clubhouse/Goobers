@@ -45,6 +45,7 @@ type TelemetryStatsResult struct {
 	Gaggles []TelemetryGaggleStats `json:"gaggles"`
 	Runs    []TelemetryRunStats    `json:"runs"`
 	Stages  []TelemetryStageStats  `json:"stages"`
+	Usage   []TelemetryUsageStats  `json:"usage"`
 	Models  []TelemetryModelStats  `json:"models"`
 }
 
@@ -105,6 +106,26 @@ type TelemetryStageStats struct {
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+}
+
+// TelemetryUsageStats is an exact AI usage rollup for one operational scope.
+type TelemetryUsageStats struct {
+	Scope              string   `json:"scope"`
+	Gaggle             string   `json:"gaggle,omitempty"`
+	Workflow           string   `json:"workflow,omitempty"`
+	Stage              string   `json:"stage,omitempty"`
+	Model              string   `json:"model,omitempty"`
+	HarnessVersion     string   `json:"harnessVersion,omitempty"`
+	TotalAttempts      int      `json:"totalAttempts"`
+	TokenSamples       int      `json:"tokenSamples"`
+	P50Tokens          *int64   `json:"p50Tokens,omitempty"`
+	P95Tokens          *int64   `json:"p95Tokens,omitempty"`
+	CostSamples        int      `json:"costSamples"`
+	P50CostUSD         *float64 `json:"p50CostUSD,omitempty"`
+	P95CostUSD         *float64 `json:"p95CostUSD,omitempty"`
+	RetryWasteAttempts int      `json:"retryWasteAttempts"`
+	RetryWasteTokens   *int64   `json:"retryWasteTokens,omitempty"`
+	RetryWasteCostUSD  *float64 `json:"retryWasteCostUSD,omitempty"`
 }
 
 // TelemetryModelStats is observed usage totaled by model.
@@ -228,6 +249,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
 		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
 		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Usage:   make([]TelemetryUsageStats, 0, len(stats.Usage)),
 		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
 	}
 	for _, stat := range stats.Gaggles {
@@ -312,6 +334,35 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
 		}
 		result.Stages = append(result.Stages, item)
+	}
+	for _, stat := range stats.Usage {
+		item := TelemetryUsageStats{
+			Scope:              stat.Scope,
+			Gaggle:             stat.Gaggle,
+			Workflow:           stat.Workflow,
+			Stage:              stat.Stage,
+			Model:              stat.Model,
+			HarnessVersion:     stat.HarnessVersion,
+			TotalAttempts:      stat.TotalAttempts,
+			TokenSamples:       stat.TokenSamples,
+			CostSamples:        stat.CostSamples,
+			RetryWasteAttempts: stat.RetryWasteAttempts,
+		}
+		if stat.HasTokens {
+			item.P50Tokens = int64Pointer(stat.P50Tokens)
+			item.P95Tokens = int64Pointer(stat.P95Tokens)
+		}
+		if stat.HasCost {
+			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
+			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+		}
+		if stat.HasRetryWasteTokens {
+			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+		}
+		if stat.HasRetryWasteCost {
+			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+		}
+		result.Usage = append(result.Usage, item)
 	}
 	for _, stat := range stats.Models {
 		item := TelemetryModelStats{

@@ -120,6 +120,34 @@ type StageStats struct {
 	HasRetryWasteCost     bool    `json:"-"`
 }
 
+// UsageStats is the AI usage aggregate for an instance, gaggle, workflow, or
+// stage scope. Percentiles include only attempts that reported the resource.
+type UsageStats struct {
+	Scope          string `json:"scope"`
+	Gaggle         string `json:"gaggle,omitempty"`
+	Workflow       string `json:"workflow,omitempty"`
+	Stage          string `json:"stage,omitempty"`
+	Model          string `json:"model,omitempty"`
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+	TotalAttempts  int    `json:"totalAttempts"`
+
+	TokenSamples int   `json:"tokenSamples"`
+	P50Tokens    int64 `json:"p50Tokens"`
+	P95Tokens    int64 `json:"p95Tokens"`
+	HasTokens    bool  `json:"-"`
+
+	CostSamples int     `json:"costSamples"`
+	P50CostUSD  float64 `json:"p50CostUSD"`
+	P95CostUSD  float64 `json:"p95CostUSD"`
+	HasCost     bool    `json:"-"`
+
+	RetryWasteAttempts  int     `json:"retryWasteAttempts"`
+	RetryWasteTokens    int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD   float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteTokens bool    `json:"-"`
+	HasRetryWasteCost   bool    `json:"-"`
+}
+
 // ModelStats is total observed usage grouped by model. Each measure carries its
 // own sample count so absent usage is never reported as zero.
 type ModelStats struct {
@@ -145,6 +173,7 @@ type StatsResult struct {
 	Gaggles []GaggleStats `json:"gaggles"`
 	Runs    []RunStats    `json:"runs"`
 	Stages  []StageStats  `json:"stages"`
+	Usage   []UsageStats  `json:"usage"`
 	Models  []ModelStats  `json:"models"`
 }
 
@@ -304,14 +333,20 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	if err != nil {
 		return StatsResult{}, err
 	}
-	if err := db.populateStageDistributions(req, stages); err != nil {
+	distributions, err := db.stageDistributionAccums(req)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	populateStageDistributions(stages, distributions)
+	usage, err := usageStats(distributions)
+	if err != nil {
 		return StatsResult{}, err
 	}
 	models, err := db.modelStats(req)
 	if err != nil {
 		return StatsResult{}, err
 	}
-	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages, Models: models}, nil
+	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages, Usage: usage, Models: models}, nil
 }
 
 func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {

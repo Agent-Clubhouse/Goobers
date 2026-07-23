@@ -607,6 +607,23 @@ export const goWireFixtures = {
         "retryWasteCostUSD": 0.75
       }
     ],
+    "usage": [
+      {
+        "scope": "workflow",
+        "gaggle": "core",
+        "workflow": "implementation",
+        "totalAttempts": 4,
+        "tokenSamples": 4,
+        "p50Tokens": 24000,
+        "p95Tokens": 48000,
+        "costSamples": 4,
+        "p50CostUSD": 1.25,
+        "p95CostUSD": 2.5,
+        "retryWasteAttempts": 1,
+        "retryWasteTokens": 12000,
+        "retryWasteCostUSD": 0.75
+      }
+    ],
     "models": [
       {
         "model": "gpt-5.4",

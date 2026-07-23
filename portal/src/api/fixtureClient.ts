@@ -44,11 +44,20 @@ export interface DaemonFixtures {
   runs: RunList;
   runDetails?: Record<string, RunDetail>;
   runEvents?: Record<string, EventList>;
+  stageUsage?: Record<string, FixtureStageUsage[]>;
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
   telemetryStats: TelemetryStatsResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
+}
+
+export interface FixtureStageUsage {
+  stage: string;
+  traversal: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUSD?: number;
 }
 
 const DEFAULT_RUN_LIMIT = 50;
@@ -120,7 +129,12 @@ export class FixtureDaemonClient implements DaemonClient {
     throwIfCancelled(options);
     const limit = request?.limit ?? DEFAULT_RUN_LIMIT;
     let runs = this.fixtures.runs.runs.filter((run) =>
-      matchesRunRequest(run, this.fixtures.runEvents?.[run.id]?.events ?? [], request),
+      matchesRunRequest(
+        run,
+        this.fixtures.runEvents?.[run.id]?.events ?? [],
+        this.fixtures.stageUsage?.[run.id] ?? [],
+        request,
+      ),
     );
     runs = [...runs].sort(compareRunsNewestFirst);
     if (request?.cursor) {
@@ -185,6 +199,11 @@ export class FixtureDaemonClient implements DaemonClient {
           (!request?.gaggle || item.gaggle === request.gaggle) &&
           (!request?.workflow || item.workflow === request.workflow),
       ),
+      usage: stats.usage.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
       models: stats.models,
     });
   }
@@ -233,6 +252,7 @@ interface FixtureStageAttempt {
 function matchesRunRequest(
   run: RunSummary,
   events: RunEvent[],
+  usage: FixtureStageUsage[],
   request?: RunListOptions,
 ): boolean {
   if (
@@ -245,12 +265,22 @@ function matchesRunRequest(
   ) {
     return false;
   }
-  if ((request?.outcome || request?.population) && !run.terminal) {
+  if (
+    (request?.outcome ||
+      (request?.population && !isUsagePopulation(request.population))) &&
+    !run.terminal
+  ) {
+    return false;
+  }
+  if (isUsagePopulation(request?.population) && !matchesUsagePopulation(usage, request)) {
     return false;
   }
 
   if (!request?.stage) {
     return !request?.outcome || matchesOutcome(run.phase, request.outcome);
+  }
+  if (isUsagePopulation(request.population) && !request.outcome) {
+    return true;
   }
   const stageEvents = events.filter((event) => event.stage === request.stage);
   if (!request.outcome && !request.population) {
@@ -263,6 +293,38 @@ function matchesRunRequest(
         isMeasuredAttempt(attempt)) &&
       (!request.outcome || matchesAttemptOutcome(attempt.status, request.outcome)),
   );
+}
+
+function isUsagePopulation(
+  population: RunListOptions["population"],
+): population is "token-measured" | "cost-measured" | "retry-waste" {
+  return (
+    population === "token-measured" ||
+    population === "cost-measured" ||
+    population === "retry-waste"
+  );
+}
+
+function matchesUsagePopulation(usage: FixtureStageUsage[], request: RunListOptions): boolean {
+  const attempts = request.stage
+    ? usage.filter((attempt) => attempt.stage === request.stage)
+    : usage;
+  const latest = new Map<string, number>();
+  for (const attempt of attempts) {
+    latest.set(attempt.stage, Math.max(latest.get(attempt.stage) ?? 0, attempt.traversal));
+  }
+  return attempts.some((attempt) => {
+    switch (request.population) {
+      case "token-measured":
+        return attempt.inputTokens !== undefined && attempt.outputTokens !== undefined;
+      case "cost-measured":
+        return attempt.costUSD !== undefined;
+      case "retry-waste":
+        return attempt.traversal < (latest.get(attempt.stage) ?? attempt.traversal);
+      default:
+        return false;
+    }
+  });
 }
 
 function fixtureStageAttempts(events: RunEvent[]): FixtureStageAttempt[] {

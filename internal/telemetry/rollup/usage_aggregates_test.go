@@ -377,6 +377,24 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	for _, stat := range stats.Stages {
 		byStage[stat.Stage] = stat
 	}
+	var workflowUsage UsageStats
+	for _, usage := range stats.Usage {
+		if usage.Scope == "workflow" && usage.Workflow == "implement" {
+			workflowUsage = usage
+			break
+		}
+	}
+	if workflowUsage.TotalAttempts != 9 ||
+		!workflowUsage.HasTokens || workflowUsage.TokenSamples != 7 ||
+		workflowUsage.P50Tokens != 20 || workflowUsage.P95Tokens != 100 ||
+		!workflowUsage.HasCost || workflowUsage.CostSamples != 6 ||
+		workflowUsage.P50CostUSD != 0.75 || workflowUsage.P95CostUSD != 3 {
+		t.Fatalf("workflow usage rollup = %#v", workflowUsage)
+	}
+	if workflowUsage.RetryWasteAttempts != 3 ||
+		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
+		t.Fatalf("partial workflow retry usage became a total: %#v", workflowUsage)
+	}
 
 	agent := byStage["agent"]
 	if agent.DurationSamples != 5 || agent.P50DurationMs != 30 || agent.P95DurationMs != 50 {

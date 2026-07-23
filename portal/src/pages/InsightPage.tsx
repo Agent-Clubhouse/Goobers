@@ -7,6 +7,7 @@ import type {
   TelemetryStageStats,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TelemetryUsageStats,
 } from "../api/types";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
@@ -151,8 +152,8 @@ function InsightContent({
 }) {
   const summary = scopeMetric(scope, snapshot.stats, snapshot.filters);
   const breakdown = outcomeBreakdown(scope, snapshot.stats, snapshot.filters);
-  const usageStages = stagesInScope(scope, snapshot.stats.stages).sort(compareUsageStages);
-  const stages = usageStages
+  const usage = usageForScope(scope, snapshot.stats.usage);
+  const stages = stagesInScope(scope, snapshot.stats.stages)
     .filter((stage) => stage.durationSamples > 0)
     .sort(
       (left, right) =>
@@ -169,7 +170,7 @@ function InsightContent({
 
   if (
     !hasOutcomes &&
-    usageStages.length === 0 &&
+    !usage &&
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
@@ -216,20 +217,20 @@ function InsightContent({
         </section>
       )}
 
-      {usageStages.length > 0 && (
+      {usage && (
         <section className="content-section">
           <div className="section-heading">
             <div>
               <p className="section-kicker">AI usage</p>
               <h2>Credits, cost, and tokens</h2>
             </div>
-            <span className="section-count">Ordered by P95 cost</span>
+            <span className="section-count">Selected scope rollup</span>
           </div>
           <p className="usage-description">
-            Stage measurements roll up under the selected workflow, gaggle, or instance.
-            Runners that do not report usage remain unmeasured.
+            Attempt measurements are aggregated for the selected scope. Runners that do not
+            report usage remain unmeasured.
           </p>
-          <UsageAnalytics filters={snapshot.filters} stages={usageStages} />
+          <UsageAnalytics filters={snapshot.filters} usage={usage} />
         </section>
       )}
 
@@ -433,63 +434,81 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
 
 function UsageAnalytics({
   filters,
-  stages,
+  usage,
 }: {
   filters: TelemetryStatsOptions;
-  stages: TelemetryStageStats[];
+  usage: TelemetryUsageStats;
 }) {
+  const label = usageMetricLabel(usage);
+  const tokenHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "token-measured",
+    ),
+  });
+  const costHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "cost-measured",
+    ),
+  });
+  const wasteHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "retry-waste",
+    ),
+  });
   return (
     <div className="usage-analytics">
       <div aria-hidden="true" className="usage-header">
-        <span>Stage</span>
+        <span>Scope</span>
         <span>Tokens</span>
         <span>AI cost</span>
         <span>Retry waste</span>
       </div>
-      {stages.map((stage) => {
-        const label = `${stage.gaggle} / ${stage.workflow} / ${stage.stage}`;
-        const href = routeHash({
-          page: "runs",
-          filters: drillFilters(
-            filters,
-            stage.gaggle,
-            stage.workflow,
-            stage.stage,
-            "finished",
-            "attempts",
-          ),
-        });
-        return (
-          <div className="usage-row" key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}>
-            <span className="distribution-name">
-              <strong>{stage.stage}</strong>
-              <small>
-                {stage.gaggle} / {stage.workflow} · {stage.totalAttempts}{" "}
-                {stage.totalAttempts === 1 ? "attempt" : "attempts"}
-              </small>
-            </span>
-            <UsagePercentiles
-              ariaLabel={`View token usage runs behind ${label}: ${formatSamples(stage.tokenSamples)}, P50 ${formatMeasuredTokens(stage.p50Tokens)}, P95 ${formatMeasuredTokens(stage.p95Tokens)}`}
-              formatter={formatMeasuredTokens}
-              href={href}
-              label="Tokens"
-              p50={stage.p50Tokens}
-              p95={stage.p95Tokens}
-              samples={stage.tokenSamples}
-            />
-            <UsagePercentiles
-              ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(stage.costSamples)}, P50 ${formatMeasuredCost(stage.p50CostUSD)}, P95 ${formatMeasuredCost(stage.p95CostUSD)}`}
-              formatter={formatMeasuredCost}
-              href={href}
-              label="AI cost"
-              p50={stage.p50CostUSD}
-              p95={stage.p95CostUSD}
-              samples={stage.costSamples}
-            />
-            <RetryWasteMetric href={href} label={label} stage={stage} />
-          </div>
-        );
-      })}
+      <div className="usage-row">
+        <span className="distribution-name">
+          <strong>{usageMetricName(usage)}</strong>
+          <small>
+            {usageMetricContext(usage)} · {usage.totalAttempts}{" "}
+            {usage.totalAttempts === 1 ? "attempt" : "attempts"}
+          </small>
+        </span>
+        <UsagePercentiles
+          ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
+          formatter={formatMeasuredTokens}
+          href={tokenHref}
+          label="Tokens"
+          p50={usage.p50Tokens}
+          p95={usage.p95Tokens}
+          samples={usage.tokenSamples}
+        />
+        <UsagePercentiles
+          ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+          formatter={formatMeasuredCost}
+          href={costHref}
+          label="AI cost"
+          p50={usage.p50CostUSD}
+          p95={usage.p95CostUSD}
+          samples={usage.costSamples}
+        />
+        <RetryWasteMetric href={wasteHref} label={label} usage={usage} />
+      </div>
     </div>
   );
 }
@@ -534,16 +553,16 @@ function UsagePercentiles({
 function RetryWasteMetric({
   href,
   label,
-  stage,
+  usage,
 }: {
   href: string;
   label: string;
-  stage: TelemetryStageStats;
+  usage: TelemetryUsageStats;
 }) {
   const description =
-    stage.retryWasteAttempts === 0
+    usage.retryWasteAttempts === 0
       ? "no superseded attempts"
-      : `${stage.retryWasteAttempts} superseded ${stage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(stage.retryWasteTokens)}, ${formatMeasuredCost(stage.retryWasteCostUSD)}`;
+      : `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(usage.retryWasteTokens)}, ${formatMeasuredCost(usage.retryWasteCostUSD)}`;
   return (
     <a
       aria-label={`View retry-waste runs behind ${label}: ${description}`}
@@ -553,11 +572,11 @@ function RetryWasteMetric({
       <span className="usage-metric-heading">
         <strong>Retry waste</strong>
         <small>
-          {stage.retryWasteAttempts} superseded{" "}
-          {stage.retryWasteAttempts === 1 ? "attempt" : "attempts"}
+          {usage.retryWasteAttempts} superseded{" "}
+          {usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}
         </small>
       </span>
-      {stage.retryWasteAttempts === 0 ? (
+      {usage.retryWasteAttempts === 0 ? (
         <span className="usage-no-waste">
           <strong>No retry waste</strong>
         </span>
@@ -565,15 +584,15 @@ function RetryWasteMetric({
         <span className="usage-waste-values">
           <span>
             <small>Attempts</small>
-            <strong>{stage.retryWasteAttempts}</strong>
+            <strong>{usage.retryWasteAttempts}</strong>
           </span>
           <span>
             <small>Tokens</small>
-            <strong>{formatMeasuredTokens(stage.retryWasteTokens)}</strong>
+            <strong>{formatMeasuredTokens(usage.retryWasteTokens)}</strong>
           </span>
           <span>
             <small>Cost</small>
-            <strong>{formatMeasuredCost(stage.retryWasteCostUSD)}</strong>
+            <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
           </span>
         </span>
       )}
@@ -814,14 +833,70 @@ function stagesInScope(
   }
 }
 
-function compareUsageStages(left: TelemetryStageStats, right: TelemetryStageStats): number {
-  return (
-    (right.p95CostUSD ?? -1) - (left.p95CostUSD ?? -1) ||
-    (right.p95Tokens ?? -1) - (left.p95Tokens ?? -1) ||
-    left.gaggle.localeCompare(right.gaggle) ||
-    left.workflow.localeCompare(right.workflow) ||
-    left.stage.localeCompare(right.stage)
-  );
+function usageForScope(
+  scope: InsightScope,
+  usage: TelemetryUsageStats[],
+): TelemetryUsageStats | undefined {
+  return usage.find((item) => {
+    switch (scope.kind) {
+      case "instance":
+        return item.scope === "instance";
+      case "gaggle":
+        return item.scope === "gaggle" && item.gaggle === scope.gaggle;
+      case "workflow":
+        return (
+          item.scope === "workflow" &&
+          item.gaggle === scope.gaggle &&
+          item.workflow === scope.workflow
+        );
+      case "stage":
+        return (
+          item.scope === "stage" &&
+          item.gaggle === scope.gaggle &&
+          item.workflow === scope.workflow &&
+          item.stage === scope.stage
+        );
+    }
+  });
+}
+
+function usageMetricLabel(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "Instance";
+    case "gaggle":
+      return usage.gaggle ?? "Gaggle";
+    case "workflow":
+      return [usage.gaggle, usage.workflow].filter(Boolean).join(" / ");
+    case "stage":
+      return [usage.gaggle, usage.workflow, usage.stage].filter(Boolean).join(" / ");
+  }
+}
+
+function usageMetricName(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "Instance";
+    case "gaggle":
+      return usage.gaggle ?? "Gaggle";
+    case "workflow":
+      return usage.workflow ?? "Workflow";
+    case "stage":
+      return usage.stage ?? "Stage";
+  }
+}
+
+function usageMetricContext(usage: TelemetryUsageStats): string {
+  switch (usage.scope) {
+    case "instance":
+      return "All gaggles";
+    case "gaggle":
+      return "Gaggle";
+    case "workflow":
+      return usage.gaggle ?? "Workflow";
+    case "stage":
+      return [usage.gaggle, usage.workflow].filter(Boolean).join(" / ");
+  }
 }
 
 function sumGaggles(

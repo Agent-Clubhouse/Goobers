@@ -114,8 +114,15 @@ function formatScope(filters: RunRouteFilters): string {
 }
 
 function formatPopulation(filters: RunRouteFilters): string {
-  if (filters.population === "measured") {
-    return " · Measured attempts";
+  switch (filters.population) {
+    case "measured":
+      return " · Duration-measured attempts";
+    case "token-measured":
+      return " · Token-measured attempts";
+    case "cost-measured":
+      return " · Cost-measured attempts";
+    case "retry-waste":
+      return " · Superseded attempts";
   }
   switch (filters.outcome) {
     case "terminal":
