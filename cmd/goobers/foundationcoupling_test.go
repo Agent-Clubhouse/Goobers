@@ -262,6 +262,28 @@ func TestPRSelectFoundationScanIncludesWebhookSiblings(t *testing.T) {
 	assertFoundationBlocker(t, server, 700, 709)
 }
 
+func TestPRSelectFoundationScanIncludesDependentsWhenFoundationWebhookTriggers(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	addFoundationScanFixture(server, "goobers/implementation/709")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-foundation")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv(executor.TriggerRefEnvVar, webhookhttp.TriggerRef(webhookhttp.Delivery{
+		Event:      "pull_request",
+		PullNumber: 709,
+	}))
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "parked PR #700 behind PR #709") {
+		t.Fatalf("stdout = %q, want existing dependent detected from foundation webhook", stdout)
+	}
+	assertFoundationBlocker(t, server, 700, 709)
+}
+
 func TestPRSelectFoundationScanSkipsUnavailableContent(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

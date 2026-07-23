@@ -109,7 +109,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	var couplingDependents []providers.PullRequestSummary
-	for _, pr := range prs {
+	for _, pr := range openPRs {
 		if pr.State == "open" && pr.Base == base && strings.HasPrefix(pr.Head, headPrefix) {
 			couplingDependents = append(couplingDependents, pr)
 		}
