@@ -138,7 +138,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestPrepareDashboardAPIFallsBackWhenDaemonTicksAreStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
-	release, err := acquireDaemonLock(lockPath, root)
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}

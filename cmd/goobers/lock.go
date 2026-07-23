@@ -50,10 +50,6 @@ func acquireInstanceLock(lockPath string) (release func(), err error) {
 	return acquireInstanceLockWithIdentity(lockPath, nil)
 }
 
-func acquireDaemonLock(lockPath, instanceRoot string) (release func(), err error) {
-	return acquireDaemonLockWithTimeout(lockPath, instanceRoot, instance.DefaultDaemonLivenessTimeout)
-}
-
 func acquireDaemonLockWithTimeout(lockPath, instanceRoot string, livenessTimeout time.Duration) (release func(), err error) {
 	if livenessTimeout <= 0 {
 		return nil, fmt.Errorf("daemon liveness timeout must be positive")
