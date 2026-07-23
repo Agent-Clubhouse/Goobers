@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,6 +99,7 @@ type conflictRemediatingDeterministic struct {
 	t                 *testing.T
 	remote            string
 	root              string
+	runDir            string
 	implementAttempts int
 	localCIAttempts   int
 }
@@ -124,6 +126,29 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 			runGit(d.t, baseWork, "commit", "-m", "advance base")
 			runGit(d.t, baseWork, "push", "origin", "main")
 			break
+		}
+
+		var conflictPointer *apiv1.ArtifactPointer
+		for i := range env.ContextPointers {
+			if env.ContextPointers[i].Name == "local-ci.artifact[0]" {
+				conflictPointer = env.ContextPointers[i].Artifact
+				break
+			}
+		}
+		if conflictPointer == nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("remediation invocation missing local-ci conflict context: %+v", env.ContextPointers)
+		}
+		conflictData, err := conflictPointer.Resolve(d.runDir)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve local-ci conflict context: %w", err)
+		}
+		var conflict baseSyncConflictArtifact
+		if err := json.Unmarshal(conflictData, &conflict); err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("decode local-ci conflict context: %w", err)
+		}
+		if conflict.Code != baseSyncConflictErrorCode || conflict.Branch == "" || conflict.BaseRef != "main" ||
+			len(conflict.ConflictingFiles) != 1 || conflict.ConflictingFiles[0] != "README.md" {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("local-ci conflict context = %+v, want README.md conflict against main", conflict)
 		}
 
 		cmd := exec.Command("git", "merge", "--no-edit", "main")
@@ -155,6 +180,7 @@ func TestRunnerRoutesBaseSyncConflictThroughBoundedRemediation(t *testing.T) {
 	r, runsDir := newWorktreeProvisioningTestRunner(t, remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
 		return deterministic, nil
 	})
+	deterministic.runDir = filepath.Join(runsDir, "run-sync-conflict")
 	machine, err := workflow.Compile(workflow.Definition{
 		Name:    "implementation",
 		Version: 1,

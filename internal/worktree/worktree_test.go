@@ -500,6 +500,22 @@ func TestManager_Create_ClassifiesBaseSyncConflictAndPreservesBranch(t *testing.
 	}
 }
 
+func TestBaseSyncFailureWithCleanupErrorIsNotRemediableConflict(t *testing.T) {
+	err := baseSyncFailure(
+		CreateOptions{RunID: "run-conflict", Branch: "goobers/wf/run-conflict", BaseRef: "main"},
+		errors.New("merge failed"),
+		[]string{"README.md"},
+		nil,
+		errors.New("cleanup failed"),
+	)
+	if IsBaseSyncConflict(err) {
+		t.Fatalf("baseSyncFailure error = %v, must not be remediable when cleanup failed", err)
+	}
+	if !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("baseSyncFailure error = %v, want cleanup failure surfaced", err)
+	}
+}
+
 // TestManager_Create_ResolvesRelativeRootToAbsolute is #282's regression: a
 // Manager constructed with a relative Root (the common case — cmd/goobers
 // wires it off a "."-rooted instance) must not let git resolve a worktree's

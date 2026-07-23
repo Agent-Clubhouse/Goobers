@@ -671,6 +671,14 @@ const (
 	baseSyncConflictErrorCode   = "base_sync_conflict"
 )
 
+type baseSyncConflictArtifact struct {
+	Code             string   `json:"code"`
+	Message          string   `json:"message"`
+	Branch           string   `json:"branch"`
+	BaseRef          string   `json:"baseRef"`
+	ConflictingFiles []string `json:"conflictingFiles"`
+}
+
 // walkSeed carries the walk-local state a resumed run must NOT start empty —
 // Start's fresh walk always begins with the zero value. pointers is the
 // upstream ContextPointers every already-finished stage produced (#107);
@@ -2072,10 +2080,28 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
-		if worktree.IsBaseSyncConflict(err) {
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			data, marshalErr := json.Marshal(baseSyncConflictArtifact{
+				Code:             baseSyncConflictErrorCode,
+				Message:          prepErr.Error(),
+				Branch:           conflict.Branch,
+				BaseRef:          conflict.BaseRef,
+				ConflictingFiles: conflict.ConflictingFiles,
+			})
+			if marshalErr != nil {
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("marshal base synchronization conflict for stage %q: %w", t.Name, marshalErr), nil
+			}
+			ref, recordErr := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/base-sync-conflict.json", data)
+			if recordErr != nil {
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("record base synchronization conflict for stage %q: %w", t.Name, recordErr), nil
+			}
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Artifacts: []apiv1.ArtifactPointer{{
+					Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json",
+				}},
 				Error: &apiv1.ErrorInfo{
 					Code:      baseSyncConflictErrorCode,
 					Message:   prepErr.Error(),

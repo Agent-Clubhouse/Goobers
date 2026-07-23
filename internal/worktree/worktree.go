@@ -240,21 +240,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if opts.SyncBase && existingBranch {
 		if mergeErr := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); mergeErr != nil {
 			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
-			cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
-			if inspectErr == nil && len(conflictingFiles) > 0 {
-				conflictErr := &BaseSyncConflictError{
-					Branch:           opts.Branch,
-					BaseRef:          opts.BaseRef,
-					ConflictingFiles: conflictingFiles,
-					cause:            mergeErr,
-				}
-				if cleanupErr != nil {
-					return nil, errors.Join(conflictErr, fmt.Errorf("worktree: remove conflicted worktree for run %s: %w", opts.RunID, cleanupErr))
-				}
-				return nil, conflictErr
-			}
-			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w",
-				opts.Branch, opts.BaseRef, opts.RunID, errors.Join(mergeErr, inspectErr, cleanupErr))
+			cleanupErr := m.forceClear(ctx, key, path)
+			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, cleanupErr)
 		}
 	}
 
@@ -313,6 +300,23 @@ func mergeConflictFiles(ctx context.Context, path string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+func baseSyncFailure(opts CreateOptions, mergeErr error, conflictingFiles []string, inspectErr, cleanupErr error) error {
+	if cleanupErr != nil {
+		return fmt.Errorf("worktree: sync branch %q with base %q for run %s and clean up conflicted worktree: %w",
+			opts.Branch, opts.BaseRef, opts.RunID, errors.Join(mergeErr, inspectErr, cleanupErr))
+	}
+	if inspectErr == nil && len(conflictingFiles) > 0 {
+		return &BaseSyncConflictError{
+			Branch:           opts.Branch,
+			BaseRef:          opts.BaseRef,
+			ConflictingFiles: conflictingFiles,
+			cause:            mergeErr,
+		}
+	}
+	return fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w",
+		opts.Branch, opts.BaseRef, opts.RunID, errors.Join(mergeErr, inspectErr))
 }
 
 // ActivateAssetPathGuard persists that this invocation reserves the asset
