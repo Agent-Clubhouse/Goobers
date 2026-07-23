@@ -69,6 +69,7 @@ type issueMock struct {
 	body      string
 	state     string
 	labels    []string
+	milestone int
 	comments  []map[string]interface{}
 	nextID    int64
 	authSeen  string
@@ -194,6 +195,9 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 			if v, ok := body["state"].(string); ok {
 				m.state = v
 			}
+			if v, ok := body["milestone"].(float64); ok {
+				m.milestone = int(v)
+			}
 		}
 		writeJSON(t, w, m.issueJSON())
 	})
@@ -201,11 +205,17 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 }
 
 func (m *issueMock) issueJSON() map[string]interface{} {
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"id": 123, "number": 7, "title": m.title, "body": m.body, "state": m.state,
 		"html_url": "https://github.com/acme/app/issues/7",
 		"labels":   labelObjects(m.labels),
 	}
+	if m.milestone > 0 {
+		out["milestone"] = map[string]interface{}{
+			"id": m.milestone, "number": m.milestone, "title": fmt.Sprintf("Milestone %d", m.milestone),
+		}
+	}
+	return out
 }
 
 func labelObjects(labels []string) []map[string]string {
@@ -343,6 +353,57 @@ func TestGitHubUpdateWorkItemNoChangeSkipsRecord(t *testing.T) {
 	}
 	if m.patchBody != nil {
 		t.Fatalf("no-op update should not PATCH, got %#v", m.patchBody)
+	}
+}
+
+func TestGitHubUpdateWorkItemAssignsExistingMilestoneAndRecordsDigest(t *testing.T) {
+	m := newIssueMock()
+	m.milestone = 3
+	rec := &recordingRecorder{}
+	p, repo := newIssueProvider(t, m, WithMutationRecorder(rec))
+	milestone := 8
+
+	item, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		Milestone:  &milestone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	if item.Parent == nil || item.Parent.Type != "milestone" || item.Parent.ID != "8" {
+		t.Fatalf("final milestone = %#v, want milestone 8", item.Parent)
+	}
+	if got := m.patchBody["milestone"]; got != float64(8) {
+		t.Fatalf("PATCH milestone = %#v, want 8", got)
+	}
+	ref, ok := rec.last()
+	if !ok {
+		t.Fatal("expected milestone mutation to be recorded")
+	}
+	if ref.Operation != "milestone" {
+		t.Fatalf("operation = %q, want milestone", ref.Operation)
+	}
+	want := FieldDigest{Before: digestString("3"), After: digestString("8")}
+	if got := ref.Fields["milestone"]; got != want {
+		t.Fatalf("milestone digest = %#v, want %#v", got, want)
+	}
+}
+
+func TestGitHubUpdateWorkItemRejectsInvalidMilestone(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	milestone := 0
+
+	if _, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		Milestone:  &milestone,
+	}); err == nil {
+		t.Fatal("UpdateWorkItem with milestone 0: err = nil, want an error")
+	}
+	if m.patchBody != nil {
+		t.Fatalf("invalid milestone should not PATCH, got %#v", m.patchBody)
 	}
 }
 

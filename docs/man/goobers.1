@@ -11,7 +11,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -178,6 +178,9 @@ scaffold a goober in a gaggle
 \fBgoobers scaffold workflow\fR
 scaffold a workflow in a gaggle
 .TP
+\fBgoobers set-milestone\fR
+assign an existing milestone to an issue (a workflow stage)
+.TP
 \fBgoobers signal\fR
 fire an external signal to subscribed workflows
 .TP
@@ -277,6 +280,7 @@ show a workflow as a text DAG
 \fBgoobers-scaffold\fR(1),
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
+\fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),

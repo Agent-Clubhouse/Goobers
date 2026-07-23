@@ -137,8 +137,9 @@ func BranchNameIn(namespace, workflow, runID string) string {
 }
 
 // BacklogProvider abstracts backlog work item operations: query/read, create,
-// general edit (title/body/label/close/comment), status mirroring, and claiming.
-// The GitHub implementation is the V0 workload; ADO reaches parity in V1 (BL-033).
+// general edit (title/body/label/milestone/close/comment), status mirroring, and
+// claiming. The GitHub implementation is the V0 workload; ADO reaches parity in
+// V1 (BL-033).
 type BacklogProvider interface {
 	ListWorkItems(context.Context, ListWorkItemsRequest) ([]WorkItem, error)
 	GetWorkItem(context.Context, RepositoryRef, string) (WorkItem, error)

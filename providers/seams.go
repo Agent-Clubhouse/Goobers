@@ -63,7 +63,7 @@ type ExternalRef struct {
 	Provider  ProviderKind           `json:"provider"`
 	Ref       string                 `json:"ref"`           // e.g. "owner/name#7"
 	URL       string                 `json:"url,omitempty"` // canonical URL of the touched entity
-	Operation string                 `json:"operation"`     // create|update|label|close|comment|claim|review|merge|delete
+	Operation string                 `json:"operation"`     // create|update|label|milestone|close|comment|claim|review|merge|delete
 	Fields    map[string]FieldDigest `json:"fields,omitempty"`
 	RunID     string                 `json:"runId,omitempty"` // set for claim mutations
 }

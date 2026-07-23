@@ -41,6 +41,10 @@ const (
 	// surface). It does not grant the trust decision represented by
 	// goobers:approved.
 	GitHubIssuesWrite Capability = "github:issues:write"
+	// GitHubMilestonesWrite grants assignment of an existing GitHub milestone
+	// to an issue. It is separate from ordinary issue writes so roadmap
+	// mutation must be explicitly declared by the workflow stage.
+	GitHubMilestonesWrite Capability = "github:milestones:write"
 	// GitHubIssuesApprove grants the narrow authority to apply
 	// goobers:approved to a nominated issue. It is separate from general issue
 	// writes so a workflow must explicitly opt into approving its own output.
@@ -91,7 +95,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.
