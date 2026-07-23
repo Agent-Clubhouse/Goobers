@@ -284,7 +284,21 @@ spec:
       # re-selects it. (push-remediated independently refuses to publish a
       # branch that never moved, so this is defense in depth, not the only
       # guard.)
-      next: review
+      next: validate-finding-responses
+
+    # Validate the model-authored scalar while the run can still repass into
+    # implement. The terminal responder repeats the same validation after
+    # publication as defense in depth, but discovering a count mismatch there
+    # is too late to repair it without losing the whole remediation cycle.
+    - name: validate-finding-responses
+      type: deterministic
+      goal: Validate that the implementer accounted for every original merge-review finding before review and publication.
+      run:
+        command: ["goobers", "respond-to-findings", "--check"]
+        workspace: scratch
+      inputs:
+        resultFile: "finding-response-validation.json"
+      next: finding-responses-gate
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
     # the PR's branch carrying the rework.
@@ -431,6 +445,17 @@ spec:
       branches:
         pass: gather-sibling-context
         fail: ""
+
+    # A malformed or partial finding account is repairable agent output, not a
+    # post-publication provider failure. Route its exact validation error back
+    # to the implementer before spending review/CI work or moving the PR branch.
+    - name: finding-responses-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: review
+        fail: implement
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on

@@ -131,11 +131,44 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if implement.Goober != "implementer" {
 		t.Errorf("implement goober = %q, want the shared implementer", implement.Goober)
 	}
-	if got := implement.Next; got != "review" {
-		t.Errorf("implement next = %q, want the review gate", got)
+	if got := implement.Next; got != "validate-finding-responses" {
+		t.Errorf("implement next = %q, want pre-publication finding response validation", got)
 	}
 	if !containsString(implement.ExpectedOutputs, "findingResponses") {
 		t.Errorf("implement expectedOutputs = %v, missing findingResponses account", implement.ExpectedOutputs)
+	}
+
+	validateResponses, ok := m.Task("validate-finding-responses")
+	if !ok {
+		t.Fatal("validate-finding-responses stage not found")
+	}
+	if validateResponses.Run == nil ||
+		len(validateResponses.Run.Command) != 3 ||
+		validateResponses.Run.Command[0] != "goobers" ||
+		validateResponses.Run.Command[1] != "respond-to-findings" ||
+		validateResponses.Run.Command[2] != "--check" {
+		t.Errorf("validate-finding-responses command = %v, want [goobers respond-to-findings --check]", validateResponses.Run)
+	}
+	if validateResponses.Run != nil && validateResponses.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("validate-finding-responses workspace = %q, want scratch", validateResponses.Run.Workspace)
+	}
+	if validateResponses.Inputs["resultFile"] != "finding-response-validation.json" {
+		t.Errorf("validate-finding-responses resultFile = %q, want finding-response-validation.json", validateResponses.Inputs["resultFile"])
+	}
+	if validateResponses.Next != "finding-responses-gate" {
+		t.Errorf("validate-finding-responses next = %q, want finding-responses-gate", validateResponses.Next)
+	}
+	responseGate, ok := m.Gate("finding-responses-gate")
+	if !ok {
+		t.Fatal("finding-responses-gate not found")
+	}
+	if responseGate.Evaluator != apiv1.EvaluatorAutomated ||
+		responseGate.Automated == nil ||
+		responseGate.Automated.Check != "status-equals" {
+		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
+	}
+	if responseGate.Branches["pass"] != "review" || responseGate.Branches["fail"] != "implement" {
+		t.Errorf("finding-responses-gate branches = %v, want pass->review and fail->implement", responseGate.Branches)
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
@@ -249,6 +282,28 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	}
 	if !strings.Contains(implement.Goal, "remediation-brief.json") {
 		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
+	}
+}
+
+func TestPRRemediationImplementerRequiresCompleteFindingAccount(t *testing.T) {
+	path := filepath.Join(
+		"..", "..", "selfhost", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
+	)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementer instructions: %v", err)
+	}
+	instructions := strings.Join(strings.Fields(string(raw)), " ")
+	for _, required := range []string{
+		"`pr-remediation` workflow invokes",
+		"original merge-review verdict remains the authoritative checklist",
+		"all integers from 1 through `N` exactly once",
+		"Mechanically decode the finished scalar",
+		"never return only the latest reviewer finding",
+	} {
+		if !strings.Contains(instructions, required) {
+			t.Errorf("implementer instructions missing remediation contract %q", required)
+		}
 	}
 }
 
