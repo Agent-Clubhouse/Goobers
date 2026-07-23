@@ -110,12 +110,13 @@ goobers status ./my-instance                    # list runs + phase
 goobers trace <run-id> ./my-instance            # inspect the run journal
 ```
 
-To try the whole flow with **no repo or credentials**, use the offline demo —
-the same fixture the CI validation drives:
+To watch the whole loop with **no repo, provider credentials, model tokens, or
+network writes**, use the hermetic mock-provider demo — the same fixture the
+Linux validation drives:
 
 ```sh
 goobers init --demo ./demo-instance
-goobers run demo ./demo-instance                # deterministic triage → build → verdict
+goobers run demo ./demo-instance                # curate -> implement -> review -> merge preview
 goobers trace <run-id> ./demo-instance
 ```
 

@@ -51,8 +51,11 @@ func TestMain(m *testing.M) {
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
 	// dispatcher instead of handing stage arguments to testing's flag parser.
-	if os.Getenv("GOOBERS_RUN_ID") != "" && len(os.Args) > 1 && os.Args[1] == "validate" {
-		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	if os.Getenv("GOOBERS_RUN_ID") != "" && len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate", demoProviderCommand:
+			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+		}
 	}
 
 	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) (harnessPreflightInfo, error) {

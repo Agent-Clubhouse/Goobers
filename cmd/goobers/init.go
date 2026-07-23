@@ -25,8 +25,8 @@ const initHelp = "Usage: goobers init [--guided | --demo] [path]\n\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
 	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
 	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
-	"then validates the result. --demo seeds an offline deterministic tour requiring\n" +
-	"no repo or credentials.\n"
+	"then validates the result. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"requiring no repo, provider credentials, model tokens, or network writes.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -411,8 +411,7 @@ Developer docs:
 `
 
 const demoTourBanner = `
-Demo tour (run these from %s):
-  goobers up          # in one terminal
-  goobers run demo    # watch stages execute and gate branch
-  goobers trace <id>  # see the journal the run left behind
+Demo full loop (run these from %s):
+  goobers run demo    # watch curate -> implement -> review -> merge preview
+  goobers trace <id>  # inspect the journal and merge-preview artifact
 `
