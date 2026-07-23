@@ -87,6 +87,17 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(reconcile.Capabilities, wantReconcileCapabilities) {
 				t.Errorf("reconcile-post-merge capabilities = %v, want %v", reconcile.Capabilities, wantReconcileCapabilities)
 			}
+			wantReconcilePolicyActions := []string{
+				"close-issues",
+				"fan-out-remediation",
+				"unpark-resolved-siblings",
+				"clear-healed-escalations",
+				"clear-healed-demotions",
+				"delete-branch",
+			}
+			if !reflect.DeepEqual(reconcile.PolicyActions, wantReconcilePolicyActions) {
+				t.Errorf("reconcile-post-merge policyActions = %v, want %v", reconcile.PolicyActions, wantReconcilePolicyActions)
+			}
 
 			prSelect, ok := m.Task("pr-select")
 			if !ok {
@@ -308,6 +319,16 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			wantPostMergeCapabilities := []string{"github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(postMerge.Capabilities, wantPostMergeCapabilities) {
 				t.Errorf("post-merge capabilities = %v, want %v", postMerge.Capabilities, wantPostMergeCapabilities)
+			}
+			wantPostMergePolicyActions := []string{
+				"close-issues",
+				"fan-out-remediation",
+				"unpark-resolved-siblings",
+				"clear-healed-escalations",
+				"clear-healed-demotions",
+			}
+			if !reflect.DeepEqual(postMerge.PolicyActions, wantPostMergePolicyActions) {
+				t.Errorf("post-merge policyActions = %v, want %v", postMerge.PolicyActions, wantPostMergePolicyActions)
 			}
 
 			// A shell stage's Outputs are harvested ONLY from a declared

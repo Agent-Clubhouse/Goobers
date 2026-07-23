@@ -32,6 +32,9 @@ spec:
       policyActions:
         - close-issues
         - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
         - delete-branch
       continueOnError: true
       next: pr-select
@@ -237,6 +240,9 @@ spec:
       policyActions:
         - close-issues
         - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
 
     # #950: merge-gate's fail branch records a durable per-PR counter of merge
     # refusals at an unchanged head and demotes a persistently-stuck lander

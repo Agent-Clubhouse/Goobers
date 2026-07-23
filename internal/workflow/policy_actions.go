@@ -1,10 +1,9 @@
 package workflow
 
 import (
-	"flag"
 	"fmt"
-	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -18,6 +17,8 @@ type policyActionContract struct {
 var policyActionContracts = map[string]policyActionContract{
 	"approve-issue":                 {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
 	"claim-backlog-items":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"clear-healed-demotions":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"clear-healed-escalations":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -44,6 +45,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"update-pr-branch":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"watch-merge-queue":             {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
@@ -55,11 +57,11 @@ var commandPolicyActions = map[string][]string{
 	"merge-pr":               {"merge-pr", "delete-branch"},
 	"merge-queue-poll":       {"watch-merge-queue", "route-queue-outcome", "delete-branch"},
 	"open-pr":                {"open-or-update-pr"},
-	"post-merge":             {"close-issues", "fan-out-remediation"},
+	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},
 	"rebase-pr":              {"rebase-pr", "clear-remediation"},
-	"reconcile-post-merge":   {"close-issues", "fan-out-remediation", "delete-branch"},
+	"reconcile-post-merge":   {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions", "delete-branch"},
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
@@ -70,6 +72,15 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	"backlog-query": {
 		"claim":   {"claim-backlog-items"},
 		"release": {"release-backlog-claim"},
+	},
+	"reconcile-branches": {
+		"delete": {"delete-branch"},
+	},
+}
+
+var commandArgumentPolicyActionInputs = map[string]map[string]string{
+	"reconcile-branches": {
+		"delete": "deleteBranches",
 	},
 }
 
@@ -236,17 +247,39 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	}
 	sort.Strings(names)
 
-	fs := flag.NewFlagSet(command, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	enabled := make(map[string]*bool, len(names))
+	enabled := make(map[string]bool, len(names))
 	for _, name := range names {
-		enabled[name] = fs.Bool(name, false, "")
+		defaultEnabled := false
+		if inputName := commandArgumentPolicyActionInputs[command][name]; inputName != "" {
+			_, dynamic := task.InputsFrom[inputName]
+			defaultEnabled = dynamic
+			if raw, ok := task.Inputs[inputName]; ok && !dynamic {
+				if parsed, err := strconv.ParseBool(raw); err == nil {
+					defaultEnabled = parsed
+				}
+			}
+		}
+		enabled[name] = defaultEnabled
 	}
-	if err := fs.Parse(task.Run.Command[2:]); err != nil {
-		return actions
+	for _, arg := range task.Run.Command[2:] {
+		if arg == "--" {
+			break
+		}
+		for _, name := range names {
+			for _, prefix := range []string{"--" + name, "-" + name} {
+				switch {
+				case arg == prefix:
+					enabled[name] = true
+				case strings.HasPrefix(arg, prefix+"="):
+					if parsed, err := strconv.ParseBool(strings.TrimPrefix(arg, prefix+"=")); err == nil {
+						enabled[name] = parsed
+					}
+				}
+			}
+		}
 	}
 	for _, name := range names {
-		if *enabled[name] {
+		if enabled[name] {
 			actions = append(actions, argumentActions[name]...)
 		}
 	}

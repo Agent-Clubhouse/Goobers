@@ -374,7 +374,8 @@ declares the action and its capability. The workflow compiler rejects unknown
 actions, omitted built-in/persona declarations, and actions whose task or
 goober lacks the canonical grant.
 
-The audit below covers all six shipped self-host workflows. Read-only stages
+The audit below covers all six shipped self-host workflows and conditional
+mutation modes exposed by policy-bearing built-in commands. Read-only stages
 (`gather-signals`, PR/context selection, CI polling, validation, local tests)
 and the `analyst` and `reviewer` personas prescribe no external mutation and
 therefore have no action row.
@@ -399,9 +400,12 @@ therefore have no action row.
 | Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` | Covered |
 | Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` | Covered |
 | Route an evicted or timed-out queue entry to remediation (`route-queue-outcome`) | `merge-review/queue-watch` | `github:issues:write` | Covered |
-| Delete a merged head branch (`delete-branch`) | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch` | `github:branch:delete` | Covered |
+| Delete a merged or eligible stale owned branch (`delete-branch`) | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch`; `reconcile-branches` when `--delete` or `deleteBranches` is enabled | `github:branch:delete` | Covered |
 | Close originating issues after merge (`close-issues`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:issues:write` | Covered |
 | Fan out remediation to affected siblings (`fan-out-remediation`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
+| Unpark siblings whose named blockers resolved (`unpark-resolved-siblings`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
+| Clear stale escalation labels after self-healing (`clear-healed-escalations`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
+| Clear stale demotion labels after self-healing (`clear-healed-demotions`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
 | Record a merge refusal at the current head (`record-merge-refusal`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
 | Demote a repeatedly refused lander (`demote-pr`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
 | Update a clean behind-base PR through the provider API (`update-pr-branch`) | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered |

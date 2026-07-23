@@ -63,6 +63,9 @@ spec:
       policyActions:
         - close-issues
         - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
         - delete-branch
       continueOnError: true
       next: pr-select
@@ -348,6 +351,9 @@ spec:
       policyActions:
         - close-issues
         - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
       # Terminal after a successful merge.
 
     # #950: merge-gate's fail branch (merge-pr refused to land) records a

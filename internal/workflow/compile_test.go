@@ -787,6 +787,88 @@ func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 	}
 }
 
+func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		inputs     map[string]string
+		wantAction bool
+	}{
+		{name: "long flag", args: []string{"--delete"}, wantAction: true},
+		{name: "short flag", args: []string{"-delete"}, wantAction: true},
+		{name: "explicit true", args: []string{"--delete=true"}, wantAction: true},
+		{name: "after unrelated flag", args: []string{"--max", "5", "--delete"}, wantAction: true},
+		{name: "before unrelated flag", args: []string{"--delete", "--max", "5"}, wantAction: true},
+		{name: "explicit false", args: []string{"--delete=false"}},
+		{name: "flags terminated", args: []string{"--", "--delete"}},
+		{name: "input true", inputs: map[string]string{"deleteBranches": "true"}, wantAction: true},
+		{name: "input false", inputs: map[string]string{"deleteBranches": "false"}},
+		{name: "flag overrides input", args: []string{"--delete=false"}, inputs: map[string]string{"deleteBranches": "true"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "reconcile",
+				Tasks: []apiv1.Task{{
+					Name:         "reconcile",
+					Type:         apiv1.TaskDeterministic,
+					Goal:         "reconcile stale branches",
+					Run:          &apiv1.DeterministicRun{Command: append([]string{"goobers", "reconcile-branches"}, tc.args...)},
+					Inputs:       tc.inputs,
+					Capabilities: []string{string(capability.GitHubBranchDelete)},
+				}},
+			}
+
+			_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+			if !tc.wantAction {
+				if err != nil {
+					t.Fatalf("non-deleting reconciliation should compile: %v", err)
+				}
+				return
+			}
+			const want = `command "goobers reconcile-branches" prescribes policy action "delete-branch"`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Compile error = %v, want containing %q", err, want)
+			}
+		})
+	}
+
+	task := apiv1.Task{
+		Run:        &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
+		InputsFrom: map[string]string{"deleteBranches": "enabled"},
+	}
+	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "delete-branch" {
+		t.Fatalf("dynamic deleteBranches actions = %v, want [delete-branch]", got)
+	}
+	task.Run.Command = append(task.Run.Command, "--delete=false")
+	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
+		t.Fatalf("explicitly disabled dynamic deleteBranches actions = %v, want none", got)
+	}
+
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "reconcile",
+		Tasks: []apiv1.Task{{
+			Name:          "reconcile",
+			Type:          apiv1.TaskDeterministic,
+			Goal:          "delete eligible stale branches",
+			Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches", "--delete"}},
+			PolicyActions: []string{"delete-branch"},
+		}},
+	}
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `policy action "delete-branch" requires capability "github:branch:delete"`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubBranchDelete)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared branch deletion action and capability should compile: %v", err)
+	}
+}
+
 func TestCompileMutationCapabilityWithoutPrescribedAction(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
