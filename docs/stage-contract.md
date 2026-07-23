@@ -114,7 +114,11 @@ The stage returns a `ResultEnvelope`:
 - `outputs` — small declared **scalar** values only.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
-- `summary`, `metrics` — human and telemetry detail.
+- `summary`, `metrics` — human and telemetry detail. Agentic usage uses
+  `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+  `goobers.usage.copilot_premium_requests`, and `goobers.usage.cost_usd`.
+  A measure the harness does not expose is omitted; an observed zero remains
+  present.
 
 Every stage process also receives `GOOBERS_TELEMETRY_DIR`, a writable directory
 scoped to that stage attempt. A stage may append one JSON object per line to:
