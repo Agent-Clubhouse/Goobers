@@ -275,6 +275,25 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	}
 
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
+}
+
+// EvaluateKnownOutcome applies the gate's branch and repass policy to an
+// outcome already established by the runner without dispatching an evaluator.
+func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, error) {
+	if r, recovered, err := e.RecoverInterrupted(g, ""); err != nil || recovered {
+		return r, err
+	}
+	if g.Evaluator != apiv1.EvaluatorAutomated {
+		return Result{}, fmt.Errorf("gate %q: only automated gates accept a known outcome", g.Name)
+	}
+	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
+	}
+	return e.resolveOutcome(g, outcome, nil, "", false, false)
+}
+
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, cacheHit bool) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
