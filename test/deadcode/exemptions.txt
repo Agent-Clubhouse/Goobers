@@ -23,7 +23,6 @@ github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feat
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
-github.com/goobers/goobers/internal/workflow/v_current.CheckStageContractWarnings # Current-interpreter implementation behind the retained stage-contract advisory facade.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.

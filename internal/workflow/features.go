@@ -59,7 +59,11 @@ func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error)
 
 // FeaturesForWorkflow resolves features used by a workflow definition.
 func FeaturesForWorkflow(def Definition) ([]Feature, error) {
-	return vcurrent.FeaturesForWorkflow(def)
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return nil, err
+	}
+	return interpreter.featuresForWorkflow(def)
 }
 
 // FeaturesForGoober resolves features used by a goober definition.
@@ -74,7 +78,11 @@ func CheckFeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnos
 
 // CheckWorkflowFeatureSupport resolves a workflow and applies support policy.
 func CheckWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
-	return vcurrent.CheckWorkflowFeatureSupport(def, allowPreview)
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
+	}
+	return interpreter.checkWorkflowFeatureSupport(def, allowPreview)
 }
 
 // CheckGooberFeatureSupport resolves a goober and applies support policy.
