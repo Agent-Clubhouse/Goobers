@@ -103,6 +103,12 @@ func (e *providerResponseError) hasRetryGuidance() bool {
 	return e.retryAfter != "" || e.rateLimitRemaining == "0"
 }
 
+// IsNotFoundError reports whether err is a typed provider response with HTTP 404.
+func IsNotFoundError(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound
+}
+
 // retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
 // `(Retry-After="1", X-RateLimit-Remaining="0", X-RateLimit-Reset="...")`
 // suffix shared by every error that surfaces a rate-limited response's

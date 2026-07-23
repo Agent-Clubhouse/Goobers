@@ -29,9 +29,9 @@ spec:
     # the issues provider and claims candidates, honoring the untrusted-input
     # eligibility gate (SEC-047) — only items carrying the maintainer-applied
     # trust label are claimable. This is a public repo: goobers:approved is a
-    # hard gate, not a default to relax. Re-running is a no-op because the
-    # query only ever returns items still missing both output markers
-    # (idempotency).
+    # hard gate, not a default to relax. Before selecting work, the stage
+    # reconciles drifted backlog labels against the claim ledger and live forge
+    # issue/child state; a clean backlog produces no mutations.
     - name: query-backlog
       type: deterministic
       goal: Query the backlog for trust-labeled, uncurated items and claim them.

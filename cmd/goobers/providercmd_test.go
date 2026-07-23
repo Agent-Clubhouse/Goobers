@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
@@ -27,6 +28,10 @@ type fakeIssue struct {
 	comments       []string
 	commentIDs     []int64
 	commentAuthors []string
+	commentTypes   []string
+	commentTimes   []time.Time
+	assignee       string
+	children       []int
 }
 
 type fakePR struct {
@@ -238,6 +243,9 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	matched := []map[string]interface{}{}
 	for _, num := range nums {
 		issue := s.issues[num]
+		if state := q.Get("state"); state != "" && state != "all" && issue.state != state {
+			continue
+		}
 		if !hasAllLabels(issue.labels, wantLabels) {
 			continue
 		}
@@ -310,10 +318,25 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			issue.state = body.State
 		}
 		writeFakeJSON(w, issueJSON(issue))
+	case len(parts) == 2 && parts[1] == "sub_issues" && r.Method == http.MethodGet:
+		out := make([]map[string]interface{}, 0, len(issue.children))
+		for _, childID := range issue.children {
+			if child, ok := s.issues[childID]; ok {
+				out = append(out, issueJSON(child))
+			}
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(issue.comments))
 		for i, body := range issue.comments {
-			out = append(out, map[string]interface{}{"id": issue.commentIDs[i], "body": body, "html_url": "", "user": map[string]string{"login": issue.commentAuthors[i]}})
+			comment := map[string]interface{}{
+				"id": issue.commentIDs[i], "body": body, "html_url": "",
+				"user": map[string]string{"login": issue.commentAuthors[i], "type": issue.commentTypes[i]},
+			}
+			if !issue.commentTimes[i].IsZero() {
+				comment["created_at"] = issue.commentTimes[i]
+			}
+			out = append(out, comment)
 		}
 		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodPost:
@@ -325,6 +348,8 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		issue.comments = append(issue.comments, body.Body)
 		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
+		issue.commentTypes = append(issue.commentTypes, "Bot")
+		issue.commentTimes = append(issue.commentTimes, time.Now().UTC())
 		writeFakeJSON(w, map[string]interface{}{"id": s.nextCommentID, "body": body.Body})
 	case len(parts) == 2 && parts[1] == "labels" && r.Method == http.MethodPost:
 		var body struct {
@@ -374,6 +399,8 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				issue.comments = append(issue.comments[:i], issue.comments[i+1:]...)
 				issue.commentIDs = append(issue.commentIDs[:i], issue.commentIDs[i+1:]...)
 				issue.commentAuthors = append(issue.commentAuthors[:i], issue.commentAuthors[i+1:]...)
+				issue.commentTypes = append(issue.commentTypes[:i], issue.commentTypes[i+1:]...)
+				issue.commentTimes = append(issue.commentTimes[:i], issue.commentTimes[i+1:]...)
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -588,10 +615,14 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	for _, l := range issue.labels {
 		labels = append(labels, map[string]string{"name": l})
 	}
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"id": issue.number, "number": issue.number, "title": issue.title, "body": issue.body,
 		"state": issue.state, "labels": labels, "html_url": fmt.Sprintf("https://example/issues/%d", issue.number),
 	}
+	if issue.assignee != "" {
+		out["assignees"] = []map[string]string{{"login": issue.assignee}}
+	}
+	return out
 }
 
 func prJSON(pr *fakePR) map[string]interface{} {
@@ -712,12 +743,28 @@ func (s *fakeGitHubServer) addComment(number int, body string) {
 }
 
 func (s *fakeGitHubServer) addCommentAs(number int, author, body string) {
+	s.addCommentAtAs(number, author, body, time.Time{})
+}
+
+func (s *fakeGitHubServer) addCommentAtAs(number int, author, body string, createdAt time.Time) {
+	s.addCommentAtAsType(number, author, "", body, createdAt)
+}
+
+func (s *fakeGitHubServer) addCommentAtAsType(number int, author, authorType, body string, createdAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextCommentID++
 	s.issues[number].comments = append(s.issues[number].comments, body)
 	s.issues[number].commentIDs = append(s.issues[number].commentIDs, s.nextCommentID)
 	s.issues[number].commentAuthors = append(s.issues[number].commentAuthors, author)
+	s.issues[number].commentTypes = append(s.issues[number].commentTypes, authorType)
+	s.issues[number].commentTimes = append(s.issues[number].commentTimes, createdAt)
+}
+
+func (s *fakeGitHubServer) addChild(parent, child int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[parent].children = append(s.issues[parent].children, child)
 }
 
 func hasAllLabels(have, want []string) bool {

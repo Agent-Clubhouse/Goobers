@@ -24,6 +24,8 @@ const (
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
 	LabelNeedsHuman = "goobers:needs-human"
+	LabelStale      = "stale"
+	LabelTracking   = "tracking"
 )
 
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.
@@ -91,11 +93,12 @@ func (w WorkItem) HasLabel(label string) bool {
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).
 type Comment struct {
-	ID        string     `json:"id"`
-	Author    string     `json:"author,omitempty"`
-	Body      string     `json:"body"`
-	CreatedAt *time.Time `json:"createdAt,omitempty"`
-	URL       string     `json:"url,omitempty"`
+	ID         string     `json:"id"`
+	Author     string     `json:"author,omitempty"`
+	AuthorType string     `json:"authorType,omitempty"`
+	Body       string     `json:"body"`
+	CreatedAt  *time.Time `json:"createdAt,omitempty"`
+	URL        string     `json:"url,omitempty"`
 }
 
 // RepositoryRef identifies a repository in a provider backend.

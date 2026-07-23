@@ -451,11 +451,18 @@ summary:focus-visible {
 }
 
 .loading-mark {
+  animation: spin 0.8s linear infinite;
   border: 2px solid var(--line);
   border-radius: 50%;
   border-top-color: var(--accent);
   height: 24px;
   width: 24px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .reconnect-button {
@@ -3720,5 +3727,12 @@ a.telemetry-error-row:hover {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* A stilled spinner must read as a deliberate, complete indicator — a full
+     accent ring — not the frozen half-drawn ring a paused rotation leaves. */
+  .loading-mark {
+    animation: none;
+    border-color: var(--accent);
   }
 }
