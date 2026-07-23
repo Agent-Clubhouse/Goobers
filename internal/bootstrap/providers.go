@@ -8,19 +8,11 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// BacklogProviderFor constructs a backlog provider for a gaggle's BacklogRef,
-// authenticated with token, and returns the RepositoryRef the scheduler polls.
-// Credentials are passed in (resolved from a Key Vault secret ref by the caller),
+// BacklogProviderFor constructs a backlog provider while allowing ADO to use an
+// Entra credential source instead of a fixed PAT. Credentials are passed in,
 // never read from config. Credentialed ADO providers require registrar so every
 // form used on the wire is scrubbed at output boundaries.
-func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
-	return BacklogProviderForWithADOAuth(backlog, token, nil, registrar, rateObserver)
-}
-
-// BacklogProviderForWithADOAuth constructs a backlog provider while allowing
-// ADO to use an Entra credential source instead of a fixed PAT. GitHub behavior
-// and the legacy BacklogProviderFor API are unchanged.
-func BacklogProviderForWithADOAuth(backlog apiv1.BacklogRef, token string, adoSource providers.ADOCredentialSource, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
+func BacklogProviderFor(backlog apiv1.BacklogRef, token string, adoSource providers.ADOCredentialSource, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
 	switch backlog.Provider {
 	case apiv1.ProviderGitHub:
 		owner, name, ok := splitProject(backlog.Project)

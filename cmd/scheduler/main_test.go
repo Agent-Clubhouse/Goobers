@@ -139,7 +139,7 @@ func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
 	if _, _, err := bootstrap.BacklogProviderFor(apiv1.BacklogRef{
 		Provider: apiv1.ProviderADO,
 		Project:  "organization/project",
-	}, token, registry, nil); err != nil {
+	}, token, nil, registry, nil); err != nil {
 		t.Fatalf("BacklogProviderFor: %v", err)
 	}
 

@@ -14,7 +14,7 @@ import (
 )
 
 func TestBacklogProviderForGitHub(t *testing.T) {
-	p, repo, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/web"}, "tok", nil, nil)
+	p, repo, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/web"}, "tok", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BacklogProviderFor: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestBacklogProviderForGitHub(t *testing.T) {
 func TestBacklogProviderForADO(t *testing.T) {
 	const token = "ado-token-value"
 	reg := journal.NewRegistryScrubber()
-	_, repo, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"}, token, reg, nil)
+	_, repo, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"}, token, nil, reg, nil)
 	if err != nil {
 		t.Fatalf("BacklogProviderFor: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestBacklogProviderForADO(t *testing.T) {
 
 func TestBacklogProviderForADOAcceptsCredentialSource(t *testing.T) {
 	source := providers.NewADOPATCredentialSource("goobers", "source-token")
-	if _, _, err := BacklogProviderForWithADOAuth(
+	if _, _, err := BacklogProviderFor(
 		apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"},
 		"",
 		source,
@@ -53,7 +53,7 @@ func TestBacklogProviderForADOAcceptsCredentialSource(t *testing.T) {
 	); err == nil {
 		t.Fatal("expected credential source without registrar to fail")
 	}
-	provider, _, err := BacklogProviderForWithADOAuth(
+	provider, _, err := BacklogProviderFor(
 		apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"},
 		"",
 		source,
@@ -61,18 +61,18 @@ func TestBacklogProviderForADOAcceptsCredentialSource(t *testing.T) {
 		nil,
 	)
 	if err != nil || provider == nil {
-		t.Fatalf("BacklogProviderForWithADOAuth() = %T, %v", provider, err)
+		t.Fatalf("BacklogProviderFor() = %T, %v", provider, err)
 	}
 }
 
 func TestBacklogProviderForErrors(t *testing.T) {
-	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "noslash"}, "t", nil, nil); err == nil {
+	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "noslash"}, "t", nil, nil, nil); err == nil {
 		t.Error("expected error for malformed github project")
 	}
-	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: "gitlab", Project: "a/b"}, "t", nil, nil); err == nil {
+	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: "gitlab", Project: "a/b"}, "t", nil, nil, nil); err == nil {
 		t.Error("expected error for unsupported provider")
 	}
-	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "a/b"}, "credential", nil, nil); err == nil {
+	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "a/b"}, "credential", nil, nil, nil); err == nil {
 		t.Error("expected error for credentialed ADO provider without registrar")
 	}
 }
@@ -130,7 +130,7 @@ func TestBacklogProviderForWiresRateLimitObserver(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			before := len(observer.events)
-			provider, _, err := BacklogProviderFor(test.backlog, "token", test.registrar, observer)
+			provider, _, err := BacklogProviderFor(test.backlog, "token", nil, test.registrar, observer)
 			if err != nil {
 				t.Fatal(err)
 			}

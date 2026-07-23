@@ -116,7 +116,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 			log.Warn("skipping gaggle: ADO credential source", "gaggle", g.Name, "err", sourceErr)
 			continue
 		}
-		provider, repo, perr := bootstrap.BacklogProviderForWithADOAuth(g.Spec.Backlog, cfg.backlogToken, adoSource, secretReg, tel)
+		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken, adoSource, secretReg, tel)
 		if perr != nil {
 			log.Warn("skipping gaggle: backlog provider", "gaggle", g.Name, "err", perr)
 			continue
