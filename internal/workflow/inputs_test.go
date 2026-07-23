@@ -1,4 +1,4 @@
-package vcurrent
+package workflow
 
 import (
 	"testing"
@@ -12,7 +12,7 @@ func TestTaskInvocationInputsUsesDownstreamGatePollCadence(t *testing.T) {
 		Inputs: map[string]string{taskKindInput: ciPollTaskKind, ciPollIntervalInput: "30s"},
 		Next:   "ci-gate",
 	}
-	machine, err := newMachine(Definition{Spec: apiv1.WorkflowSpec{
+	machine := newMachine(Definition{Spec: apiv1.WorkflowSpec{
 		Tasks: []apiv1.Task{task},
 		Gates: []apiv1.Gate{{
 			Name:      "ci-gate",
@@ -20,9 +20,6 @@ func TestTaskInvocationInputsUsesDownstreamGatePollCadence(t *testing.T) {
 			Automated: &apiv1.AutomatedGate{Check: "ci-status", PollIntervalSeconds: 7},
 		}},
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	got := TaskInvocationInputs(machine, task)
 
@@ -38,10 +35,7 @@ func TestTaskInvocationInputsPreservesLegacyCIPollCadenceWithoutGatePolicy(t *te
 	task := apiv1.Task{
 		Inputs: map[string]string{taskKindInput: ciPollTaskKind, ciPollIntervalInput: "30s"},
 	}
-	machine, err := newMachine(Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	machine := newMachine(Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}}})
 
 	got := TaskInvocationInputs(machine, task)
 

@@ -31,7 +31,6 @@ type WorkflowEntry struct {
 	Workflow        string
 	WorkflowVersion int
 	WorkflowDigest  string
-	GooberDigest    string
 	Gaggle          string
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
@@ -1045,7 +1044,6 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, runID st
 		WorkflowID:      entry.Workflow,
 		WorkflowVersion: strconv.Itoa(entry.WorkflowVersion),
 		WorkflowDigest:  entry.WorkflowDigest,
-		GooberDigest:    entry.GooberDigest,
 		RunID:           runID,
 		Action:          "dispatch",
 	}

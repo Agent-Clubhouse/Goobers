@@ -14,7 +14,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
-	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -123,115 +122,6 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	}
 }
 
-func TestUpReloadsGooberInstructionContentForNextRun(t *testing.T) {
-	previousReloadInterval := configReloadInterval
-	previousDelegationInterval := delegationSweepInterval
-	configReloadInterval = 20 * time.Millisecond
-	delegationSweepInterval = 20 * time.Millisecond
-	t.Cleanup(func() {
-		configReloadInterval = previousReloadInterval
-		delegationSweepInterval = previousDelegationInterval
-	})
-
-	root := initDemo(t)
-	layout := instance.NewLayout(root)
-	address := freeLoopbackAddress(t)
-	setAPIListenAddress(t, root, address)
-	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
-	writeFixture(t, workflowPath, `apiVersion: goobers.dev/v1alpha1
-kind: Workflow
-metadata:
-  name: default-implement
-spec:
-  gaggle: example
-  triggers:
-    - type: manual
-  start: implement
-  tasks:
-    - name: implement
-      type: agentic
-      goober: coder
-      goal: Complete the fixture task.
-`)
-
-	fixtureRepo := newDaemonFixtureRepo(t)
-	previousRepoCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
-				Status:  apiv1.ResultSuccess,
-				Summary: "completed fixture task",
-			})
-		}}
-	}
-	t.Cleanup(func() {
-		repoCloneURL = previousRepoCloneURL
-		newAgenticAdapter = previousAdapter
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	started := &daemonStartedWriter{started: make(chan struct{})}
-	daemonDone := make(chan int, 1)
-	go func() {
-		daemonDone <- runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, io.Discard)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case code := <-daemonDone:
-			if code != 0 {
-				t.Errorf("daemon exit code = %d", code)
-			}
-		case <-time.After(10 * time.Second):
-			t.Error("daemon did not stop")
-		}
-	})
-	select {
-	case <-started.started:
-	case code := <-daemonDone:
-		t.Fatalf("daemon exited before startup with code %d", code)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for daemon startup")
-	}
-
-	runIdentity := func() journal.RunIdentity {
-		t.Helper()
-		code, stdout, stderr := runArgs(t, "run", "default-implement", root)
-		if code != 0 {
-			t.Fatalf("run default-implement: code=%d stdout=%q stderr=%q", code, stdout, stderr)
-		}
-		runID := runIDFromRunStdout(t, stdout)
-		reader, err := journal.OpenRead(filepath.Join(layout.ForGaggle("example").RunsDir(), runID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		identity, err := reader.Identity()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return identity
-	}
-
-	initialHealth := readDaemonHealth(t, address)
-	before := runIdentity()
-	instructionsPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "goobers", "coder", "instructions.md")
-	if err := os.WriteFile(instructionsPath, []byte("# Reloaded coder instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
-	waitForDefinitionsReload(t, address, initialHealth.Freshness.DefinitionsLoadedAt)
-	after := runIdentity()
-
-	if before.GooberDigest == "" || after.GooberDigest == "" || before.GooberDigest == after.GooberDigest {
-		t.Fatalf("goober digests before=%q after=%q, want distinct non-empty values", before.GooberDigest, after.GooberDigest)
-	}
-	if before.WorkflowDigest != after.WorkflowDigest {
-		t.Fatalf("workflow digest changed after instructions edit: before=%q after=%q", before.WorkflowDigest, after.WorkflowDigest)
-	}
-}
-
 func readDaemonHealth(t *testing.T, address string) readservice.Health {
 	t.Helper()
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -266,18 +156,6 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 	}
 	t.Fatalf("timed out waiting for health identity %s/%s", name, environment)
 	return readservice.Health{}
-}
-
-func waitForDefinitionsReload(t *testing.T, address string, loadedAt time.Time) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if readDaemonHealth(t, address).Freshness.DefinitionsLoadedAt.After(loadedAt) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for definitions loaded after %s", loadedAt)
 }
 
 func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
@@ -338,20 +216,6 @@ func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: A\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gooberDir := filepath.Join(root, "gaggles", "example", "goobers", "coder")
-	if err := os.MkdirAll(gooberDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gooberDir, "goober.yaml"), []byte(`kind: Goober
-spec:
-  instructions: instructions.md
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	instructionsPath := filepath.Join(gooberDir, "instructions.md")
-	if err := os.WriteFile(instructionsPath, []byte("# Original instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	baseline, err := configDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +232,6 @@ spec:
 		".git/index":         "git internals",
 		".git/HEAD":          "ref: refs/heads/main\n",
 		"config.json":        "{}",
-		"gaggles/example/goobers/coder/README.md": "# unrelated docs\n",
 	}
 	for name, content := range noise {
 		p := filepath.Join(root, name)
@@ -385,17 +248,6 @@ spec:
 		t.Fatalf("non-config churn changed digest: got %s, want %s", got, baseline)
 	}
 
-	if err := os.WriteFile(instructionsPath, []byte("# Updated instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	withInstructions, err := configDirectoryDigest(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if withInstructions == baseline {
-		t.Fatalf("referenced instruction edit did not change digest: %s", withInstructions)
-	}
-
 	asset := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets", ".hidden", "reference.txt")
 	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
 		t.Fatal(err)
@@ -407,7 +259,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withAsset == withInstructions {
+	if withAsset == baseline {
 		t.Fatalf("asset addition did not change digest: %s", withAsset)
 	}
 
@@ -419,37 +271,6 @@ spec:
 		t.Fatal(err)
 	} else if got == withAsset {
 		t.Fatalf("config edit did not change digest: %s", got)
-	}
-}
-
-func TestConfigDirectoryDigestTracksParentRelativeInstructions(t *testing.T) {
-	root := t.TempDir()
-	gooberDir := filepath.Join(root, "gaggles", "example", "goobers", "coder")
-	if err := os.MkdirAll(gooberDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gooberDir, "goober.yaml"), []byte(`kind: Goober
-spec:
-  instructions: ../shared.md
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	instructionsPath := filepath.Join(filepath.Dir(gooberDir), "shared.md")
-	if err := os.WriteFile(instructionsPath, []byte("# Original instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	baseline, err := configDirectoryDigest(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(instructionsPath, []byte("# Updated instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := configDirectoryDigest(root); err != nil {
-		t.Fatal(err)
-	} else if got == baseline {
-		t.Fatalf("parent-relative instruction edit did not change digest: %s", got)
 	}
 }
 

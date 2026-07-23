@@ -24,7 +24,6 @@ func runAttributeSet(a RunAttributes) []attribute.KeyValue {
 	}
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
-	attrs = appendOptionalString(attrs, AttrGooberDigest, a.GooberDigest)
 	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
 	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }
@@ -43,7 +42,6 @@ func taskAttributeSet(a TaskAttributes) []attribute.KeyValue {
 	}
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
-	attrs = appendOptionalString(attrs, AttrGooberDigest, a.GooberDigest)
 	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
 	attrs = appendOptionalString(attrs, AttrStageType, a.TaskType)
 	if a.TaskType == StageTypeAgentic {
@@ -68,7 +66,6 @@ func gateAttributeSet(a GateAttributes) []attribute.KeyValue {
 	}
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
-	attrs = appendOptionalString(attrs, AttrGooberDigest, a.GooberDigest)
 	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
 	if a.Agentic {
 		attrs = append(attrs,
@@ -91,7 +88,6 @@ func schedulerAttributeSet(a SchedulerAttributes) []attribute.KeyValue {
 	attrs = appendOptionalString(attrs, AttrRunID, a.RunID)
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
-	attrs = appendOptionalString(attrs, AttrGooberDigest, a.GooberDigest)
 	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
 	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }

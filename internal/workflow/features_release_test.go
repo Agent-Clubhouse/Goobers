@@ -1,4 +1,4 @@
-package vcurrent
+package workflow
 
 import (
 	"encoding/json"

@@ -57,7 +57,6 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		Workflow:        "implement",
 		WorkflowVersion: 3,
 		WorkflowDigest:  "sha256:deadbeefcafef00d",
-		GooberDigest:    "sha256:resolvedgoobers",
 		Gaggle:          "web",
 		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "issue-42"},
 	}, nil)
@@ -98,8 +97,7 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 	}
 	r := runs[0]
 	if r.RunID != runID || r.Workflow != "implement" || r.WorkflowVersion != 3 ||
-		r.GooberDigest != "sha256:resolvedgoobers" || r.Gaggle != "web" ||
-		r.TriggerKind != "item" || r.TriggerRef != "issue-42" || r.Status != "failed" {
+		r.Gaggle != "web" || r.TriggerKind != "item" || r.TriggerRef != "issue-42" || r.Status != "failed" {
 		t.Fatalf("unexpected run row from real journal output: %#v", r)
 	}
 

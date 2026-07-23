@@ -145,13 +145,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	// at daemon startup — including WithKnownChecks, which nothing else here
 	// validates (#124). A config that fails this would also fail to start
 	// the daemon; catching that now, at `validate` time, is the whole point.
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
-	if err != nil {
-		pf(stdout, "\nINVALID workflow: %v\n", err)
-		return 1
-	}
-	if _, err := compiledMachines(set, goobers, instructions); err != nil {
+	if _, err := compiledMachines(set, goobersByName(set)); err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		return 1
 	}

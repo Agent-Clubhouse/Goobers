@@ -85,7 +85,6 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrWorkflow, "implementation"),
 		attribute.String(AttrWorkflowVersion, "1"),
 		attribute.String(AttrWorkflowDigest, "sha256:digest"),
-		attribute.String(AttrGooberDigest, "sha256:goobers"),
 		attribute.String(AttrGoober, "implementer"),
 		attribute.String(AttrModel, "gpt-5.6-sol"),
 		attribute.String(AttrHarnessVersion, "copilot version 1.2.3"),

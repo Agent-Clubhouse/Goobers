@@ -114,7 +114,6 @@ type runIdentity struct {
 	Workflow        string            `json:"workflow"`
 	WorkflowVersion int               `json:"workflowVersion"`
 	WorkflowDigest  string            `json:"workflowDigest,omitempty"`
-	GooberDigest    string            `json:"gooberDigest,omitempty"`
 	Gaggle          string            `json:"gaggle"`
 	Trigger         journalTrigger    `json:"trigger"`
 	Inputs          []journalInputRef `json:"inputs,omitempty"`

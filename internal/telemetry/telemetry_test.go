@@ -43,7 +43,6 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		WorkflowID:      "default-implement",
 		WorkflowVersion: "v7",
 		WorkflowDigest:  "sha256:workflow",
-		GooberDigest:    "sha256:goobers",
 		RunID:           runID,
 		ItemID:          "42",
 		ItemURL:         "https://github.com/acme/web/issues/42",
@@ -55,7 +54,6 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	_, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
 		Gaggle:         "acme-web",
 		WorkflowID:     "default-implement",
-		GooberDigest:   "sha256:goobers",
 		RunID:          runID,
 		TaskID:         "implement",
 		TaskType:       "agentic",
@@ -74,7 +72,6 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	_, gateSpan, err := client.StartGate(runCtx, GateAttributes{
 		Gaggle:         "acme-web",
 		WorkflowID:     "default-implement",
-		GooberDigest:   "sha256:goobers",
 		RunID:          runID,
 		GateID:         "qa",
 		Decision:       "pass",
@@ -127,13 +124,11 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	assertAttr(t, runAttrs, AttrWorkflow, "default-implement")
 	assertAttr(t, runAttrs, AttrWorkflowVersion, "v7")
 	assertAttr(t, runAttrs, AttrWorkflowDigest, "sha256:workflow")
-	assertAttr(t, runAttrs, AttrGooberDigest, "sha256:goobers")
 	assertAttr(t, runAttrs, AttrRunID, runID)
 	assertAttr(t, runAttrs, AttrItemID, "42")
 	assertAttr(t, runAttrs, AttrItemURL, "https://github.com/acme/web/issues/42")
 
 	taskAttrs := attrMap(task)
-	assertAttr(t, taskAttrs, AttrGooberDigest, "sha256:goobers")
 	assertAttr(t, taskAttrs, AttrStage, "implement")
 	assertAttr(t, taskAttrs, AttrStageType, "agentic")
 	assertAttr(t, taskAttrs, AttrGoober, "coder")
@@ -150,7 +145,6 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	}
 
 	gateAttrs := attrMap(gate)
-	assertAttr(t, gateAttrs, AttrGooberDigest, "sha256:goobers")
 	assertAttr(t, gateAttrs, AttrStage, "qa")
 	assertAttr(t, gateAttrs, AttrStageType, StageTypeGate)
 	assertAttr(t, gateAttrs, AttrGoober, "reviewer")
@@ -828,7 +822,6 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.workflow",
 		"goobers.workflow.version",
 		"goobers.workflow.digest",
-		"goobers.goober.digest",
 		"goobers.goober",
 		"goobers.model",
 		"goobers.harness.version",

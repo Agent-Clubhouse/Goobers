@@ -1292,15 +1292,6 @@ func TestRunnerInputsFromMissingUpstreamOutputFailsClosed(t *testing.T) {
 
 func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	machine := fixtureMachine(t)
-	var err error
-	machine, err = workflow.Compile(
-		machine.Def,
-		workflow.WithGooberInstructions(map[string]string{}),
-		workflow.WithPreviewFeatures(true),
-	)
-	if err != nil {
-		t.Fatalf("compile with resolved goobers: %v", err)
-	}
 	byTask := map[string]stubTaskResult{
 		"run-1:implement": {
 			status: apiv1.ResultSuccess, summary: "wrote a diff",
@@ -1339,9 +1330,6 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.WorkflowDigest != machine.Digest() {
 		t.Errorf("run.yaml workflowDigest = %q, want %q (WF-016 pin)", id.WorkflowDigest, machine.Digest())
-	}
-	if id.GooberDigest != machine.GooberDigest() {
-		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, machine.GooberDigest())
 	}
 	if len(id.Inputs) != 2 ||
 		id.Inputs[0].Name != "item" ||

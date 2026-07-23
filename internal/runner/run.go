@@ -505,7 +505,6 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Workflow:        in.Machine.Def.Name,
 		WorkflowVersion: in.Machine.Def.Version,
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
 		Gaggle:          in.Gaggle,
 		Trigger:         in.Trigger,
 	}, inputs, journal.WithScrubber(scrubber))
@@ -592,7 +591,6 @@ func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Conte
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
 		RunID:           in.RunID,
 	}
 	if in.Item != nil {
@@ -2085,7 +2083,6 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
 		RunID:           in.RunID,
 		TaskID:          t.Name,
 		TaskType:        string(t.Type),
@@ -2145,16 +2142,9 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
 	}
-	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
-	}
-	taskLimits, err := workflow.TaskLimits(in.Machine, t)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
-	}
+	taskInputs := workflow.TaskInvocationInputs(in.Machine, t)
 	syncBase := t.Run != nil && t.Run.SyncBase
-	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, taskLimits, upstream, workspaceMode, syncBase, workspaceBranch)
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
 		var conflict *worktree.BaseSyncConflictError
@@ -2508,12 +2498,6 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 	var gateTelemetryDir string
 	var agentInvocation *gooberInvocation
 	var workspace *stageWorkspace
-	gateLimits, err := workflow.GateLimits(in.Machine, g)
-	if err != nil {
-		err = fmt.Errorf("runner: project gate %q limits: %w", g.Name, err)
-		span.Fail(err)
-		return gate.Result{}, err, nil
-	}
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:          in.RunID + ":" + g.Name,
@@ -2524,7 +2508,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			Goal:            "gate: " + g.Name,
 			RepoRef:         in.RepoRef,
 			Item:            in.Item,
-			Limits:          gateLimits,
+			Limits:          workflow.GateLimits(g),
 		}
 	} else {
 		var wt *worktree.Worktree
@@ -2537,7 +2521,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, apiv1.WorkspaceRepo, false, workspaceBranch)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, false, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -2718,7 +2702,6 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
 		RunID:           in.RunID,
 		GateID:          g.Name,
 		GooberID:        gooberName,

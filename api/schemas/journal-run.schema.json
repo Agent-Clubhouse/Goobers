@@ -20,11 +20,6 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
-    "gooberDigest": {
-      "description": "Content digest of the participating resolved goobers, including instruction content, skills, model, and harness configuration.",
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
     "gaggle": { "type": "string", "minLength": 1 },
     "trigger": {
       "type": "object",

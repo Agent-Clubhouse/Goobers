@@ -25,7 +25,6 @@ func testIdentity() RunIdentity {
 		Workflow:        "nominate-and-fix",
 		WorkflowVersion: 3,
 		WorkflowDigest:  Digest([]byte("definition-bytes")),
-		GooberDigest:    Digest([]byte("resolved-goobers")),
 		Gaggle:          "web",
 		Trigger:         Trigger{Kind: TriggerItem, Ref: "issue-8"},
 	}

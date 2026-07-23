@@ -1,23 +1,31 @@
 package workflow
 
-import (
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-)
+import apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
-// TaskLimits returns the wire limits compiled from a task policy.
-func TaskLimits(machine *Machine, task apiv1.Task) (apiv1.Limits, error) {
-	interpreter, err := interpreterForMachine(machine)
-	if err != nil {
-		return apiv1.Limits{}, err
+// TaskLimits returns the wire limits compiled from a task's execution policy.
+func TaskLimits(task apiv1.Task) apiv1.Limits {
+	var limits apiv1.Limits
+	if task.Limits != nil {
+		limits = *task.Limits
 	}
-	return interpreter.taskLimits(task), nil
+	if task.TimeoutSeconds > 0 {
+		limits.MaxDurationSeconds = task.TimeoutSeconds
+	}
+	return limits
 }
 
-// GateLimits returns the wire limits declared by a gate evaluator.
-func GateLimits(machine *Machine, gate apiv1.Gate) (apiv1.Limits, error) {
-	interpreter, err := interpreterForMachine(machine)
-	if err != nil {
-		return apiv1.Limits{}, err
+// GateLimits returns the wire limits declared by the selected gate evaluator.
+func GateLimits(gate apiv1.Gate) apiv1.Limits {
+	var timeout int32
+	switch gate.Evaluator {
+	case apiv1.EvaluatorAutomated:
+		if gate.Automated != nil {
+			timeout = gate.Automated.TimeoutSeconds
+		}
+	case apiv1.EvaluatorAgentic:
+		if gate.Agentic != nil {
+			timeout = gate.Agentic.TimeoutSeconds
+		}
 	}
-	return interpreter.gateLimits(gate), nil
+	return apiv1.Limits{MaxDurationSeconds: timeout}
 }

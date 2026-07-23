@@ -1,4 +1,4 @@
-package vcurrent
+package workflow
 
 import (
 	"os"
@@ -35,8 +35,8 @@ func loadWorkflowFile(t *testing.T, path string) Definition {
 // to everyone else.
 func shippedWorkflowRoots() []string {
 	return []string{
-		filepath.Join("..", "..", "..", "selfhost", "gaggles", "goobers", "workflows"),
-		filepath.Join("..", "..", "..", "config-examples", "gaggles", "acme-web", "workflows"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows"),
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows"),
 	}
 }
 

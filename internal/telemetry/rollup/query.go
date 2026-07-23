@@ -13,7 +13,6 @@ type RunSummary struct {
 	Workflow        string
 	WorkflowVersion int
 	WorkflowDigest  string
-	GooberDigest    string
 	Gaggle          string
 	TriggerKind     string
 	TriggerRef      string
@@ -124,11 +123,8 @@ type SpanEventSummary struct {
 // a stable, comparable result set (rebuild-is-reproducible acceptance, #22).
 func (db *DB) Runs() ([]RunSummary, error) {
 	rows, err := db.sql.Query(`
-		SELECT r.run_id, r.workflow, r.workflow_version, r.workflow_digest, rgd.goober_digest,
-		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms
-		FROM runs r
-		LEFT JOIN run_goober_digests rgd ON rgd.run_id = r.run_id
-		ORDER BY r.started_at, r.run_id`)
+		SELECT run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms
+		FROM runs ORDER BY started_at, run_id`)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query runs: %w", err)
 	}
@@ -137,14 +133,13 @@ func (db *DB) Runs() ([]RunSummary, error) {
 	var out []RunSummary
 	for rows.Next() {
 		var r RunSummary
-		var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt sql.NullString
+		var digest, triggerKind, triggerRef, status, startedAt, finishedAt sql.NullString
 		var durationMs sql.NullInt64
-		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &gooberDigest, &r.Gaggle,
+		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &r.Gaggle,
 			&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs); err != nil {
 			return nil, fmt.Errorf("rollup: scan run: %w", err)
 		}
-		r.WorkflowDigest, r.GooberDigest = digest.String, gooberDigest.String
-		r.TriggerKind, r.TriggerRef, r.Status = triggerKind.String, triggerRef.String, status.String
+		r.WorkflowDigest, r.TriggerKind, r.TriggerRef, r.Status = digest.String, triggerKind.String, triggerRef.String, status.String
 		if r.StartedAt, err = parseTime(startedAt); err != nil {
 			return nil, err
 		}

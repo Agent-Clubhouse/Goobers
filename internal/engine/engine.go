@@ -110,7 +110,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		}
 
 		if g, ok := m.Gate(state); ok {
-			outcome, gerr := evaluateGate(ctx, m, g, in)
+			outcome, gerr := evaluateGate(ctx, g, in)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -134,15 +134,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task) (apiv1.ResultEnvelope, error) {
-	inputs, err := wf.TaskInvocationInputs(machine, t)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
-	}
-	limits, err := wf.TaskLimits(machine, t)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
-	}
-	env := buildInvocation(in, t.Name, t.Goal, inputs, limits)
+	env := buildInvocation(in, t.Name, t.Goal, wf.TaskInvocationInputs(machine, t), wf.TaskLimits(t))
 	ctx = stageActivityContext(ctx, env.Limits)
 	var res apiv1.ResultEnvelope
 	if t.Type == apiv1.TaskAgentic {
@@ -161,18 +153,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return res, nil
 }
 
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput) (string, error) {
-	limits, err := wf.GateLimits(machine, g)
-	if err != nil {
-		return "", fmt.Errorf("project gate %q limits: %w", g.Name, err)
-	}
+func evaluateGate(ctx workflow.Context, g apiv1.Gate, in RunInput) (string, error) {
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
 		conf := apiv1.AutomatedGate{}
 		if g.Automated != nil {
 			conf = *g.Automated
 		}
-		env := buildInvocation(in, g.Name, "automated gate: "+g.Name, nil, limits)
+		env := buildInvocation(in, g.Name, "automated gate: "+g.Name, nil, wf.GateLimits(g))
 		ctx := stageActivityContext(ctx, env.Limits)
 		var outcome string
 		if err := workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome); err != nil {
@@ -181,7 +169,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		return outcome, nil
 
 	case apiv1.EvaluatorAgentic:
-		env := buildInvocation(in, g.Name, "review gate: "+g.Name, nil, limits)
+		env := buildInvocation(in, g.Name, "review gate: "+g.Name, nil, wf.GateLimits(g))
 		ctx := stageActivityContext(ctx, env.Limits)
 		var verdict apiv1.Verdict
 		if err := workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict); err != nil {

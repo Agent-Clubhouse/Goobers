@@ -1,23 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -212,12 +207,10 @@ func configReloadErrorMessage(err error) string {
 }
 
 // configDirectoryDigest fingerprints the config directory so the reloader can
-// tell a real change from a no-op. It tracks YAML definitions, their referenced
-// goober instructions, and every file in a goober assets directory; unrelated
-// config-tree churn remains excluded.
+// tell a real change from a no-op. It tracks YAML definitions plus every file
+// in a goober assets directory; unrelated config-tree churn remains excluded.
 func configDirectoryDigest(root string) (string, error) {
 	hash := sha256.New()
-	instructionPaths := make(map[string]struct{})
 	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -283,71 +276,10 @@ func configDirectoryDigest(root string) (string, error) {
 			}
 			return err
 		}
-		if err := writeEntry(path, 0, content); err != nil {
-			return err
-		}
-		for _, instructionPath := range gooberInstructionReferences(path, content) {
-			instructionPaths[instructionPath] = struct{}{}
-		}
-		return nil
+		return writeEntry(path, 0, content)
 	})
 	if err != nil {
 		return "", fmt.Errorf("digest config directory: %w", err)
 	}
-	paths := make([]string, 0, len(instructionPaths))
-	for path := range instructionPaths {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("digest config directory: stat goober instructions: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("digest config directory: read goober instructions: %w", err)
-		}
-		if err := writeEntry(path, 0, content); err != nil {
-			return "", fmt.Errorf("digest config directory: %w", err)
-		}
-	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-type configDigestDocument struct {
-	Kind string `json:"kind"`
-	Spec struct {
-		Instructions string `json:"instructions"`
-	} `json:"spec"`
-}
-
-func gooberInstructionReferences(definitionPath string, content []byte) []string {
-	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(content), 4096)
-	var paths []string
-	for {
-		var document configDigestDocument
-		err := decoder.Decode(&document)
-		if errors.Is(err, io.EOF) {
-			return paths
-		}
-		if err != nil {
-			// The YAML bytes already move the digest; config validation owns the
-			// diagnostic for malformed documents.
-			return paths
-		}
-		if document.Kind != "Goober" || document.Spec.Instructions == "" {
-			continue
-		}
-		paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
-	}
 }

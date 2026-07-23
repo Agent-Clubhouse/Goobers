@@ -324,15 +324,4 @@ CREATE TABLE IF NOT EXISTS stage_model_usage (
 
 CREATE INDEX IF NOT EXISTS idx_stage_model_usage_run ON stage_model_usage(run_id);
 `,
-	// v10 (issue #1192): pin the participating resolved goober definitions
-	// alongside the workflow definition so efficacy cohorts can distinguish
-	// instruction, skill, model, and harness changes. A satellite table keeps
-	// the migration replay-safe and preserves an explicit absence for legacy
-	// runs.
-	`
-CREATE TABLE IF NOT EXISTS run_goober_digests (
-	run_id        TEXT PRIMARY KEY,
-	goober_digest TEXT NOT NULL
-);
-`,
 }
