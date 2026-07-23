@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
+import { RunStageInspector } from "../components/RunStageInspector";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
@@ -64,22 +65,28 @@ export function RunPage({
 
   return (
     <RunDetailWorkspace
+      client={client}
       events={query.state.data.events}
       key={query.state.data.run.id}
       navigate={navigate}
       run={query.state.data.run}
+      runId={runId}
     />
   );
 }
 
 function RunDetailWorkspace({
+  client,
   events,
   navigate,
   run,
+  runId,
 }: {
+  client: DaemonClient;
   events: RunEvent[];
   navigate: Navigate;
   run: RunDetail;
+  runId: string;
 }) {
   const latestEvent = events.at(-1);
   const initialSeq = latestEvent?.seq ?? 0;
@@ -91,6 +98,7 @@ function RunDetailWorkspace({
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
+  const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
 
   useEffect(() => {
     if (!followingLatest) {
@@ -192,6 +200,15 @@ function RunDetailWorkspace({
             </div>
           )}
         </GraphFrame>
+
+        {run.graphStatus === "pinned" && run.graph && (
+          <RunStageInspector
+            client={client}
+            node={selectedNode}
+            runId={runId}
+            selectedSeq={selectedSeq}
+          />
+        )}
 
         <EventLedger
           events={events}
