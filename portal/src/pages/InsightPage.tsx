@@ -440,6 +440,17 @@ function UsageAnalytics({
   usage: TelemetryUsageStats;
 }) {
   const label = usageMetricLabel(usage);
+  const premiumHref = routeHash({
+    page: "runs",
+    filters: drillFilters(
+      filters,
+      usage.gaggle,
+      usage.workflow,
+      usage.stage,
+      undefined,
+      "premium-measured",
+    ),
+  });
   const tokenHref = routeHash({
     page: "runs",
     filters: drillFilters(
@@ -477,6 +488,7 @@ function UsageAnalytics({
     <div className="usage-analytics">
       <div aria-hidden="true" className="usage-header">
         <span>Scope</span>
+        <span>AI credits</span>
         <span>Tokens</span>
         <span>AI cost</span>
         <span>Retry waste</span>
@@ -489,6 +501,15 @@ function UsageAnalytics({
             {usage.totalAttempts === 1 ? "attempt" : "attempts"}
           </small>
         </span>
+        <UsagePercentiles
+          ariaLabel={`View AI credit runs behind ${label}: ${formatSamples(usage.premiumRequestSamples)}, P50 ${formatMeasuredCredits(usage.p50CopilotPremiumRequests)}, P95 ${formatMeasuredCredits(usage.p95CopilotPremiumRequests)}`}
+          formatter={formatMeasuredCredits}
+          href={premiumHref}
+          label="AI credits"
+          p50={usage.p50CopilotPremiumRequests}
+          p95={usage.p95CopilotPremiumRequests}
+          samples={usage.premiumRequestSamples}
+        />
         <UsagePercentiles
           ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
           formatter={formatMeasuredTokens}
@@ -1047,6 +1068,16 @@ function formatMeasuredDuration(value: number | undefined): string {
 
 function formatMeasuredTokens(value: number | undefined): string {
   return value === undefined ? "Unmeasured" : `${value.toLocaleString("en-US")} tokens`;
+}
+
+function formatMeasuredCredits(value: number | undefined): string {
+  if (value === undefined) {
+    return "Unmeasured";
+  }
+  const formatted = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 3,
+  }).format(value);
+  return `${formatted} ${value === 1 ? "credit" : "credits"}`;
 }
 
 function formatMeasuredCost(value: number | undefined): string {

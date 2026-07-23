@@ -57,6 +57,7 @@ export interface FixtureStageUsage {
   traversal: number;
   inputTokens?: number;
   outputTokens?: number;
+  copilotPremiumRequests?: number;
   costUSD?: number;
 }
 
@@ -297,9 +298,10 @@ function matchesRunRequest(
 
 function isUsagePopulation(
   population: RunListOptions["population"],
-): population is "token-measured" | "cost-measured" | "retry-waste" {
+): population is "token-measured" | "premium-measured" | "cost-measured" | "retry-waste" {
   return (
     population === "token-measured" ||
+    population === "premium-measured" ||
     population === "cost-measured" ||
     population === "retry-waste"
   );
@@ -317,6 +319,8 @@ function matchesUsagePopulation(usage: FixtureStageUsage[], request: RunListOpti
     switch (request.population) {
       case "token-measured":
         return attempt.inputTokens !== undefined && attempt.outputTokens !== undefined;
+      case "premium-measured":
+        return attempt.copilotPremiumRequests !== undefined;
       case "cost-measured":
         return attempt.costUSD !== undefined;
       case "retry-waste":

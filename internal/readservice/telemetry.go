@@ -110,22 +110,25 @@ type TelemetryStageStats struct {
 
 // TelemetryUsageStats is an exact AI usage rollup for one operational scope.
 type TelemetryUsageStats struct {
-	Scope              string   `json:"scope"`
-	Gaggle             string   `json:"gaggle,omitempty"`
-	Workflow           string   `json:"workflow,omitempty"`
-	Stage              string   `json:"stage,omitempty"`
-	Model              string   `json:"model,omitempty"`
-	HarnessVersion     string   `json:"harnessVersion,omitempty"`
-	TotalAttempts      int      `json:"totalAttempts"`
-	TokenSamples       int      `json:"tokenSamples"`
-	P50Tokens          *int64   `json:"p50Tokens,omitempty"`
-	P95Tokens          *int64   `json:"p95Tokens,omitempty"`
-	CostSamples        int      `json:"costSamples"`
-	P50CostUSD         *float64 `json:"p50CostUSD,omitempty"`
-	P95CostUSD         *float64 `json:"p95CostUSD,omitempty"`
-	RetryWasteAttempts int      `json:"retryWasteAttempts"`
-	RetryWasteTokens   *int64   `json:"retryWasteTokens,omitempty"`
-	RetryWasteCostUSD  *float64 `json:"retryWasteCostUSD,omitempty"`
+	Scope                     string   `json:"scope"`
+	Gaggle                    string   `json:"gaggle,omitempty"`
+	Workflow                  string   `json:"workflow,omitempty"`
+	Stage                     string   `json:"stage,omitempty"`
+	Model                     string   `json:"model,omitempty"`
+	HarnessVersion            string   `json:"harnessVersion,omitempty"`
+	TotalAttempts             int      `json:"totalAttempts"`
+	TokenSamples              int      `json:"tokenSamples"`
+	P50Tokens                 *int64   `json:"p50Tokens,omitempty"`
+	P95Tokens                 *int64   `json:"p95Tokens,omitempty"`
+	PremiumRequestSamples     int      `json:"premiumRequestSamples"`
+	P50CopilotPremiumRequests *float64 `json:"p50CopilotPremiumRequests,omitempty"`
+	P95CopilotPremiumRequests *float64 `json:"p95CopilotPremiumRequests,omitempty"`
+	CostSamples               int      `json:"costSamples"`
+	P50CostUSD                *float64 `json:"p50CostUSD,omitempty"`
+	P95CostUSD                *float64 `json:"p95CostUSD,omitempty"`
+	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
+	RetryWasteTokens          *int64   `json:"retryWasteTokens,omitempty"`
+	RetryWasteCostUSD         *float64 `json:"retryWasteCostUSD,omitempty"`
 }
 
 // TelemetryModelStats is observed usage totaled by model.
@@ -337,20 +340,25 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Usage {
 		item := TelemetryUsageStats{
-			Scope:              stat.Scope,
-			Gaggle:             stat.Gaggle,
-			Workflow:           stat.Workflow,
-			Stage:              stat.Stage,
-			Model:              stat.Model,
-			HarnessVersion:     stat.HarnessVersion,
-			TotalAttempts:      stat.TotalAttempts,
-			TokenSamples:       stat.TokenSamples,
-			CostSamples:        stat.CostSamples,
-			RetryWasteAttempts: stat.RetryWasteAttempts,
+			Scope:                 stat.Scope,
+			Gaggle:                stat.Gaggle,
+			Workflow:              stat.Workflow,
+			Stage:                 stat.Stage,
+			Model:                 stat.Model,
+			HarnessVersion:        stat.HarnessVersion,
+			TotalAttempts:         stat.TotalAttempts,
+			TokenSamples:          stat.TokenSamples,
+			PremiumRequestSamples: stat.PremiumRequestSamples,
+			CostSamples:           stat.CostSamples,
+			RetryWasteAttempts:    stat.RetryWasteAttempts,
 		}
 		if stat.HasTokens {
 			item.P50Tokens = int64Pointer(stat.P50Tokens)
 			item.P95Tokens = int64Pointer(stat.P95Tokens)
+		}
+		if stat.HasPremiumRequests {
+			item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
+			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
 		}
 		if stat.HasCost {
 			item.P50CostUSD = float64Pointer(stat.P50CostUSD)

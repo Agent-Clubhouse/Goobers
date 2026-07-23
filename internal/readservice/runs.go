@@ -60,11 +60,12 @@ type StagePopulation string
 
 // These are the canonical attempt populations behind Insight metrics.
 const (
-	StagePopulationAttempts      StagePopulation = "attempts"
-	StagePopulationMeasured      StagePopulation = "measured"
-	StagePopulationTokenMeasured StagePopulation = "token-measured"
-	StagePopulationCostMeasured  StagePopulation = "cost-measured"
-	StagePopulationRetryWaste    StagePopulation = "retry-waste"
+	StagePopulationAttempts        StagePopulation = "attempts"
+	StagePopulationMeasured        StagePopulation = "measured"
+	StagePopulationTokenMeasured   StagePopulation = "token-measured"
+	StagePopulationPremiumMeasured StagePopulation = "premium-measured"
+	StagePopulationCostMeasured    StagePopulation = "cost-measured"
+	StagePopulationRetryWaste      StagePopulation = "retry-waste"
 )
 
 // OfflineRuns is the shared run-diagnostics boundary used by CLI adapters
@@ -1129,6 +1130,7 @@ func canonicalStagePopulation(population StagePopulation) bool {
 	case StagePopulationAttempts,
 		StagePopulationMeasured,
 		StagePopulationTokenMeasured,
+		StagePopulationPremiumMeasured,
 		StagePopulationCostMeasured,
 		StagePopulationRetryWaste:
 		return true
@@ -1139,7 +1141,10 @@ func canonicalStagePopulation(population StagePopulation) bool {
 
 func telemetryStagePopulation(population StagePopulation) bool {
 	switch population {
-	case StagePopulationTokenMeasured, StagePopulationCostMeasured, StagePopulationRetryWaste:
+	case StagePopulationTokenMeasured,
+		StagePopulationPremiumMeasured,
+		StagePopulationCostMeasured,
+		StagePopulationRetryWaste:
 		return true
 	default:
 		return false
@@ -1171,6 +1176,10 @@ func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, popu
 		switch population {
 		case StagePopulationTokenMeasured:
 			if attempt.InputTokens != nil && attempt.OutputTokens != nil {
+				return true
+			}
+		case StagePopulationPremiumMeasured:
+			if attempt.CopilotPremiumRequests != nil {
 				return true
 			}
 		case StagePopulationCostMeasured:

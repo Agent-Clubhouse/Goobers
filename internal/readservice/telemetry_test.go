@@ -87,6 +87,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			Scope: "workflow", Gaggle: "core", Workflow: "failed",
 			TotalAttempts: 2,
 			TokenSamples:  2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
+			PremiumRequestSamples: 2, P50CopilotPremiumRequests: 0, P95CopilotPremiumRequests: 1, HasPremiumRequests: true,
 			CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
 			RetryWasteAttempts: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
 			RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
@@ -155,6 +156,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	}
 	if len(got.Usage) != 1 || got.Usage[0].Scope != "workflow" ||
 		got.Usage[0].P95Tokens == nil || *got.Usage[0].P95Tokens != 200 ||
+		got.Usage[0].P50CopilotPremiumRequests == nil || *got.Usage[0].P50CopilotPremiumRequests != 0 ||
+		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
 		got.Usage[0].RetryWasteCostUSD == nil || *got.Usage[0].RetryWasteCostUSD != 0.5 {
 		t.Fatalf("projected scope usage = %+v", got.Usage)
 	}

@@ -21,6 +21,7 @@ export type StagePopulationFilter =
   | "attempts"
   | "measured"
   | "token-measured"
+  | "premium-measured"
   | "cost-measured"
   | "retry-waste";
 export type ValidationSeverity = "error" | "warning";
@@ -540,6 +541,9 @@ export interface TelemetryUsageStats {
   tokenSamples: number;
   p50Tokens?: number;
   p95Tokens?: number;
+  premiumRequestSamples: number;
+  p50CopilotPremiumRequests?: number;
+  p95CopilotPremiumRequests?: number;
   costSamples: number;
   p50CostUSD?: number;
   p95CostUSD?: number;

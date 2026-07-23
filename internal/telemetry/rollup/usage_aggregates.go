@@ -8,10 +8,11 @@ import (
 )
 
 type stageDistributionAccum struct {
-	attempts  int
-	durations []int64
-	tokens    []int64
-	costs     []float64
+	attempts        int
+	durations       []int64
+	tokens          []int64
+	premiumRequests []float64
+	costs           []float64
 
 	wasteAttempts          int
 	wasteDurationsObserved int
@@ -107,6 +108,7 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		       sa.duration_ms,
 		       su.input_tokens,
 		       su.output_tokens,
+		       su.copilot_premium_requests,
 		       su.cost_usd
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
@@ -131,10 +133,10 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		var key stageDistributionKey
 		var wasted bool
 		var durationMs, inputTokens, outputTokens sql.NullInt64
-		var costUSD sql.NullFloat64
+		var premiumRequests, costUSD sql.NullFloat64
 		scan := []any{&key.gaggle, &key.workflow, &key.stage}
 		scan = appendAgentDimensionScan(scan, req, &key.model, &key.harnessVersion)
-		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &costUSD)
+		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &premiumRequests, &costUSD)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage distribution: %w", err)
 		}
@@ -161,6 +163,14 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 				return nil, fmt.Errorf("rollup: sum token usage for stage %s: %w", key.stage, err)
 			}
 			accum.tokens = append(accum.tokens, tokens)
+		}
+		if premiumRequests.Valid {
+			if premiumRequests.Float64 < 0 ||
+				math.IsNaN(premiumRequests.Float64) ||
+				math.IsInf(premiumRequests.Float64, 0) {
+				return nil, fmt.Errorf("rollup: stage %s has invalid premium requests %v", key.stage, premiumRequests.Float64)
+			}
+			accum.premiumRequests = append(accum.premiumRequests, premiumRequests.Float64)
 		}
 		if costUSD.Valid {
 			if costUSD.Float64 < 0 || math.IsNaN(costUSD.Float64) || math.IsInf(costUSD.Float64, 0) {
@@ -281,25 +291,31 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum) ([
 	for _, key := range keys {
 		accum := accums[key]
 		stat := UsageStats{
-			Scope:               key.scope,
-			Gaggle:              key.gaggle,
-			Workflow:            key.workflow,
-			Stage:               key.stage,
-			Model:               key.model,
-			HarnessVersion:      key.harnessVersion,
-			TotalAttempts:       accum.attempts,
-			TokenSamples:        len(accum.tokens),
-			CostSamples:         len(accum.costs),
-			RetryWasteAttempts:  accum.wasteAttempts,
-			HasRetryWasteTokens: accum.wasteAttempts > 0 && accum.wasteTokensObserved == accum.wasteAttempts,
-			HasRetryWasteCost:   accum.wasteAttempts > 0 && accum.wasteCostsObserved == accum.wasteAttempts,
-			RetryWasteTokens:    accum.wasteTokens,
-			RetryWasteCostUSD:   accum.wasteCostUSD,
+			Scope:                 key.scope,
+			Gaggle:                key.gaggle,
+			Workflow:              key.workflow,
+			Stage:                 key.stage,
+			Model:                 key.model,
+			HarnessVersion:        key.harnessVersion,
+			TotalAttempts:         accum.attempts,
+			TokenSamples:          len(accum.tokens),
+			PremiumRequestSamples: len(accum.premiumRequests),
+			CostSamples:           len(accum.costs),
+			RetryWasteAttempts:    accum.wasteAttempts,
+			HasRetryWasteTokens:   accum.wasteAttempts > 0 && accum.wasteTokensObserved == accum.wasteAttempts,
+			HasRetryWasteCost:     accum.wasteAttempts > 0 && accum.wasteCostsObserved == accum.wasteAttempts,
+			RetryWasteTokens:      accum.wasteTokens,
+			RetryWasteCostUSD:     accum.wasteCostUSD,
 		}
 		if stat.TokenSamples > 0 {
 			stat.HasTokens = true
 			stat.P50Tokens = nearestRankInt64(accum.tokens, 0.50)
 			stat.P95Tokens = nearestRankInt64(accum.tokens, 0.95)
+		}
+		if stat.PremiumRequestSamples > 0 {
+			stat.HasPremiumRequests = true
+			stat.P50CopilotPremiumRequests = nearestRankFloat64(accum.premiumRequests, 0.50)
+			stat.P95CopilotPremiumRequests = nearestRankFloat64(accum.premiumRequests, 0.95)
 		}
 		if stat.CostSamples > 0 {
 			stat.HasCost = true
@@ -314,6 +330,7 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum) ([
 func mergeUsageAccum(target, source *stageDistributionAccum) error {
 	target.attempts += source.attempts
 	target.tokens = append(target.tokens, source.tokens...)
+	target.premiumRequests = append(target.premiumRequests, source.premiumRequests...)
 	target.costs = append(target.costs, source.costs...)
 	target.wasteAttempts += source.wasteAttempts
 	target.wasteTokensObserved += source.wasteTokensObserved

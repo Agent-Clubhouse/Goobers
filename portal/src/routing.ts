@@ -153,7 +153,8 @@ function populationQuery(search: URLSearchParams): StagePopulationFilter | undef
   return value === "attempts" ||
     value === "measured" ||
     value === "token-measured" ||
-    value === "cost-measured" ||
+  value === "premium-measured" ||
+  value === "cost-measured" ||
     value === "retry-waste"
     ? value
     : undefined;

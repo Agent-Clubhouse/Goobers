@@ -38,7 +38,12 @@ describe("Insight routing", () => {
   });
 
   it("round-trips contributor-specific usage populations", () => {
-    for (const population of ["token-measured", "cost-measured", "retry-waste"] as const) {
+    for (const population of [
+      "token-measured",
+      "premium-measured",
+      "cost-measured",
+      "retry-waste",
+    ] as const) {
       const route = {
         page: "runs" as const,
         filters: { workflow: "implementation", population },

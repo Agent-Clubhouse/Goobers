@@ -119,6 +119,8 @@ function formatPopulation(filters: RunRouteFilters): string {
       return " · Duration-measured attempts";
     case "token-measured":
       return " · Token-measured attempts";
+    case "premium-measured":
+      return " · AI-credit-measured attempts";
     case "cost-measured":
       return " · Cost-measured attempts";
     case "retry-waste":

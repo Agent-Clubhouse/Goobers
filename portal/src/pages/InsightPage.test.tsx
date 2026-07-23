@@ -148,6 +148,9 @@ describe("Insight page", () => {
       /Instance: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     );
 
+    const creditLink = screen.getByRole("link", {
+      name: /View AI credit runs behind Instance/,
+    });
     const tokenLink = screen.getByRole("link", {
       name: /View token usage runs behind Instance/,
     });
@@ -157,10 +160,17 @@ describe("Insight page", () => {
     const wasteLink = screen.getByRole("link", {
       name: /View retry-waste runs behind Instance/,
     });
+    expect(creditLink).toHaveAccessibleName(
+      /Instance: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+    );
+    expect(creditLink).toHaveAttribute(
+      "href",
+      expect.stringContaining("population=premium-measured"),
+    );
     expect(tokenLink).toHaveAttribute("href", expect.stringContaining("population=token-measured"));
     expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
     expect(wasteLink).toHaveAttribute("href", expect.stringContaining("population=retry-waste"));
-    for (const link of [tokenLink, costLink, wasteLink]) {
+    for (const link of [creditLink, tokenLink, costLink, wasteLink]) {
       expect(link).toHaveAttribute("href", expect.not.stringContaining("outcome=finished"));
       expect(link).toHaveAttribute("href", expect.stringMatching(/since=.*until=/));
     }
@@ -178,6 +188,11 @@ describe("Insight page", () => {
         name: /View AI cost runs behind core \/ implementation: 8 samples, P50 \$0\.80, P95 \$2\.50/,
       }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /View AI credit runs behind core \/ implementation: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+      }),
+    ).toHaveAttribute("href", expect.stringMatching(/gaggle=core.*workflow=implementation/));
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
@@ -188,6 +203,11 @@ describe("Insight page", () => {
         name: /View token usage runs behind core: 8 samples, P50 15,000 tokens, P95 48,000 tokens/,
       }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /View AI credit runs behind core: 7 samples, P50 0\.8 credits, P95 2\.5 credits/,
+      }),
+    ).toHaveAttribute("href", expect.stringContaining("gaggle=core"));
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
@@ -200,13 +220,24 @@ describe("Insight page", () => {
     const unmeasuredCost = screen.getByRole("link", {
       name: /View AI cost runs behind tools \/ implementation \/ implement: Unmeasured/,
     });
+    const unmeasuredCredits = screen.getByRole("link", {
+      name: /View AI credit runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
     expect(within(unmeasuredTokens).getAllByText("Unmeasured")).toHaveLength(3);
     expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(within(unmeasuredCredits).getAllByText("Unmeasured")).toHaveLength(3);
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
     expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
     expect(within(unmeasuredTokens).queryByText("0 tokens")).not.toBeInTheDocument();
+    expect(within(unmeasuredCredits).queryByText("0 credits")).not.toBeInTheDocument();
+    expect(unmeasuredCredits).toHaveAttribute(
+      "href",
+      expect.stringMatching(
+        /gaggle=tools.*workflow=implementation.*stage=implement.*population=premium-measured/,
+      ),
+    );
 
-    await user.click(unmeasuredCost);
+    await user.click(unmeasuredCredits);
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
     await waitFor(() =>
       expect(listRuns).toHaveBeenCalledWith(
@@ -215,7 +246,7 @@ describe("Insight page", () => {
           workflow: "implementation",
           stage: "implement",
           outcome: undefined,
-          population: "cost-measured",
+          population: "premium-measured",
           since: expect.stringMatching(/Z$/),
           until: expect.stringMatching(/Z$/),
         }),

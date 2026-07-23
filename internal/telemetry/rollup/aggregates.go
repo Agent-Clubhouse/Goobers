@@ -136,6 +136,11 @@ type UsageStats struct {
 	P95Tokens    int64 `json:"p95Tokens"`
 	HasTokens    bool  `json:"-"`
 
+	PremiumRequestSamples     int     `json:"premiumRequestSamples"`
+	P50CopilotPremiumRequests float64 `json:"p50CopilotPremiumRequests"`
+	P95CopilotPremiumRequests float64 `json:"p95CopilotPremiumRequests"`
+	HasPremiumRequests        bool    `json:"-"`
+
 	CostSamples int     `json:"costSamples"`
 	P50CostUSD  float64 `json:"p50CostUSD"`
 	P95CostUSD  float64 `json:"p95CostUSD"`

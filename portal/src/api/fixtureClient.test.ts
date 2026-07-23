@@ -204,6 +204,13 @@ describe("FixtureDaemonClient", () => {
       ids({
         gaggle: "core",
         workflow: "implementation",
+        population: "premium-measured",
+      }),
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED", "01JZ455ESCALATE"]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
         population: "retry-waste",
       }),
     ).resolves.toEqual(["01JZ402DASHBOARD"]);
