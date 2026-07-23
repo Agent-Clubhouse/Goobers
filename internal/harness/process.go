@@ -100,9 +100,13 @@ func (b *syncBuffer) Bytes() []byte {
 	defer b.mu.Unlock()
 	out := append([]byte(nil), b.buf.Bytes()...)
 	if b.dropped > 0 {
-		out = append(out, fmt.Sprintf("\n[transcript truncated: %d bytes dropped]\n", b.dropped)...)
+		out = append(out, transcriptTruncationMarker(b.dropped)...)
 	}
 	return out
+}
+
+func transcriptTruncationMarker(dropped int64) []byte {
+	return []byte(fmt.Sprintf("\n[transcript truncated: %d bytes dropped]\n", dropped))
 }
 
 func (b *syncBuffer) retainedBytes() []byte {

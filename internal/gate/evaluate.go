@@ -413,9 +413,10 @@ func retryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Durat
 // by policy, retrying ONLY transient errors — those an evaluator seam marked
 // invoke.InfrastructureFailure, the same predicate the runner's stage-retry
 // path uses (internal/runner, run.go). The #765 case is a reviewer session that
-// wrote no verdict file, tagged infrastructure at the reviewer seam
-// (reviewer.go). A non-transient error — a misconfiguration, a business
-// failure, anything unmarked — returns immediately, and exhausting the bound
+// wrote no verdict file, tagged infrastructure by the harness Executor or, for
+// custom Goober implementations, the reviewer seam. A non-transient error — a
+// misconfiguration, a business failure, anything unmarked — returns immediately,
+// and exhausting the bound
 // returns the last error: both fail the run exactly as before #765. Each failed
 // transient attempt is journaled (recordEvaluatorRetry), and each attempt runs
 // under its own timeoutSeconds deadline so a retry gets a fresh window.
