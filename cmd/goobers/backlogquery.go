@@ -291,6 +291,11 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		eligible = backstopped
 	}
 
+	eligible, dependencyWarnings := filterDeclaredDependencyEligibility(ctx, issueProvider, repo, eligible)
+	for _, warning := range dependencyWarnings {
+		pf(stderr, "warning: native issue dependencies: %s\n", warning)
+	}
+
 	// Dependency-aware skip (#552): snapshot blocked.json under its local
 	// lock, then resolve every provider-backed issue state after releasing it.
 	// A stalled provider must never prevent terminal claim finalization.
@@ -586,6 +591,26 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
 	return 0
+}
+
+func filterDeclaredDependencyEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem) ([]providers.WorkItem, []string) {
+	filtered := eligible[:0]
+	var warnings []string
+	for _, item := range eligible {
+		if item.BlockedByCount == 0 {
+			filtered = append(filtered, item)
+			continue
+		}
+		blocked, err := provider.HasOpenWorkItemBlocker(ctx, repo, item.ID)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
+			continue
+		}
+		if !blocked {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, warnings
 }
 
 // openPRIssueNumbers returns the set of issue numbers already referenced by

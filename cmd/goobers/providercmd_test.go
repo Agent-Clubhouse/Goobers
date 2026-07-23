@@ -33,6 +33,7 @@ type fakeIssue struct {
 	assignee       string
 	milestone      int
 	children       []int
+	blockers       []int
 	createdAt      time.Time
 }
 
@@ -106,6 +107,7 @@ type fakeGitHubServer struct {
 	filesRequests      int
 	checkStateRequests int
 	pullListRequests   int
+	dependencyRequests int
 	authenticatedLogin string
 }
 
@@ -127,6 +129,12 @@ func (s *fakeGitHubServer) pullListRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pullListRequests
+}
+
+func (s *fakeGitHubServer) dependencyRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dependencyRequests
 }
 
 func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
@@ -166,6 +174,18 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 		number: number, title: title, labels: append([]string{}, labels...), state: "open",
 		createdAt: time.Now().UTC(),
 	}
+}
+
+func (s *fakeGitHubServer) setIssueState(number int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[number].state = state
+}
+
+func (s *fakeGitHubServer) setIssueBlockers(number int, blockers ...int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[number].blockers = append([]int(nil), blockers...)
 }
 
 // addOpenPR seeds a fixture PR for ListPullRequests/PullRequestFiles (issue
@@ -339,6 +359,15 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		for _, childID := range issue.children {
 			if child, ok := s.issues[childID]; ok {
 				out = append(out, issueJSON(child))
+			}
+		}
+		writeFakeJSON(w, out)
+	case len(parts) == 3 && parts[1] == "dependencies" && parts[2] == "blocked_by" && r.Method == http.MethodGet:
+		s.dependencyRequests++
+		out := make([]map[string]interface{}, 0, len(issue.blockers))
+		for _, blockerID := range issue.blockers {
+			if blocker, ok := s.issues[blockerID]; ok {
+				out = append(out, issueJSON(blocker))
 			}
 		}
 		writeFakeJSON(w, out)
@@ -635,6 +664,7 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	out := map[string]interface{}{
 		"id": issue.number, "number": issue.number, "title": issue.title, "body": issue.body,
 		"state": issue.state, "labels": labels, "html_url": fmt.Sprintf("https://example/issues/%d", issue.number),
+		"issue_dependencies_summary": map[string]int{"total_blocked_by": len(issue.blockers)},
 	}
 	if !issue.createdAt.IsZero() {
 		out["created_at"] = issue.createdAt

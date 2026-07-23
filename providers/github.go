@@ -1820,6 +1820,38 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 	return items, nil
 }
 
+// HasOpenWorkItemBlocker reports whether a GitHub issue has a native blocker
+// that is still open.
+func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return false, err
+	}
+	if id == "" {
+		return false, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	if err != nil {
+		return false, err
+	}
+	open := false
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil && strings.EqualFold(issue.State, "open") {
+				open = true
+				return errStopPaging
+			}
+		}
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	return open, nil
+}
+
 // CreateWorkItem creates a GitHub issue from a unified work item request.
 func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
@@ -2215,19 +2247,24 @@ func (p *GitHubProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent
 }
 
 type githubIssue struct {
-	ID        int64         `json:"id"`
-	Number    int           `json:"number"`
-	Title     string        `json:"title"`
-	Body      string        `json:"body"`
-	State     string        `json:"state"`
-	HTMLURL   string        `json:"html_url"`
-	Labels    []githubLabel `json:"labels"`
-	Assignees []githubUser  `json:"assignees"`
-	Milestone *githubNode   `json:"milestone"`
-	CreatedAt *time.Time    `json:"created_at"`
-	UpdatedAt *time.Time    `json:"updated_at"`
+	ID                       int64                           `json:"id"`
+	Number                   int                             `json:"number"`
+	Title                    string                          `json:"title"`
+	Body                     string                          `json:"body"`
+	State                    string                          `json:"state"`
+	HTMLURL                  string                          `json:"html_url"`
+	Labels                   []githubLabel                   `json:"labels"`
+	Assignees                []githubUser                    `json:"assignees"`
+	Milestone                *githubNode                     `json:"milestone"`
+	CreatedAt                *time.Time                      `json:"created_at"`
+	UpdatedAt                *time.Time                      `json:"updated_at"`
+	IssueDependenciesSummary *githubIssueDependenciesSummary `json:"issue_dependencies_summary,omitempty"`
 	// PullRequest is non-nil when this "issue" is actually a pull request.
 	PullRequest *githubPullRequestLink `json:"pull_request"`
+}
+
+type githubIssueDependenciesSummary struct {
+	TotalBlockedBy int `json:"total_blocked_by"`
 }
 
 // githubPullRequestLink marks an issues-endpoint entry as a pull request.
@@ -2404,23 +2441,28 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 	if len(issue.Assignees) > 0 {
 		assignee = issue.Assignees[0].Login
 	}
+	blockedByCount := 0
+	if issue.IssueDependenciesSummary != nil {
+		blockedByCount = issue.IssueDependenciesSummary.TotalBlockedBy
+	}
 	return WorkItem{
-		Provider:   ProviderGitHub,
-		ID:         strconv.Itoa(issue.Number),
-		ExternalID: strconv.FormatInt(issue.ID, 10),
-		Type:       "issue",
-		Title:      issue.Title,
-		Body:       issue.Body,
-		Labels:     labels,
-		State:      issue.State,
-		Status:     statusFromLabels(labels, issue.State),
-		Assignee:   assignee,
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        issue.HTMLURL,
-		CreatedAt:  issue.CreatedAt,
-		UpdatedAt:  issue.UpdatedAt,
-		Raw:        issue,
+		Provider:       ProviderGitHub,
+		ID:             strconv.Itoa(issue.Number),
+		ExternalID:     strconv.FormatInt(issue.ID, 10),
+		Type:           "issue",
+		Title:          issue.Title,
+		Body:           issue.Body,
+		Labels:         labels,
+		State:          issue.State,
+		Status:         statusFromLabels(labels, issue.State),
+		Assignee:       assignee,
+		Links:          links,
+		Parent:         parent,
+		Hierarchy:      hierarchy,
+		URL:            issue.HTMLURL,
+		CreatedAt:      issue.CreatedAt,
+		UpdatedAt:      issue.UpdatedAt,
+		BlockedByCount: blockedByCount,
+		Raw:            issue,
 	}
 }
