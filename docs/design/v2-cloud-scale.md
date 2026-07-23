@@ -47,11 +47,15 @@ implies but never detailed:
   repos is **unwired** (`internal/credentials/git.go` has no production callers; the mirror
   path clones unauthenticated).
 - **Credentials:** `internal/credentials` is multi-token, capability-scoped, fail-closed;
-  per-capability sourcing shipped in V0.2 (`credentials:` block). Per-goober scoping is V1
-  epic #35; per-stage grants and a secret-resolver beyond env/file are planned but unbuilt.
-- **Daemon:** no network listener of any kind. CLI↔daemon coordination is file-based (flock
-  singleton, delegated-trigger sweep). The dashboard milestone (#14) introduces the loopback
-  `/api/v1` read service; auth is a seam (#38) with no Go implementation yet.
+  per-capability sourcing shipped in V0.2 (`credentials:` block); the resolver interface
+  is stabilized (#822) and per-goober scoping shipped (#823). Per-stage grants and
+  resolvers beyond env/file remain planned but unbuilt.
+- **Daemon** *(updated 2026-07-23)*: serves a **loopback-only** HTTP API
+  (`internal/httpapi`: `/api/v1/*` reads, health, dashboard/event-stream endpoints;
+  loopback bind validated) — still **no remote listener** of any kind. CLI↔daemon
+  coordination remains file-based (flock singleton, delegated-trigger sweep). Auth is a
+  seam (#38): the `Authorizer` interface exists (tier-1 `AllowAll`); no OIDC
+  implementation yet.
 - **State:** journals are files with **local flock** single-writer guards; the scheduler
   keeps trigger state in memory reconstructed by journal replay; crash-resume assumes sole
   ownership of `runs/`. None of this is multi-node-safe — by design, Temporal is the

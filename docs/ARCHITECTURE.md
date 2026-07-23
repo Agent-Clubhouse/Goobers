@@ -4,7 +4,10 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-07-12
+> Last updated: 2026-07-12 · Descriptive/prescriptive status annotated 2026-07-23:
+> §4–§7 (as amended) describe shipped, verified behavior of the local runner;
+> §3.2, §10, and the V1/V2 parts of §12 are prescriptive roadmap — mandated, not
+> yet built.
 
 ## 1. One system, three deployment tiers
 
@@ -209,6 +212,13 @@ Contract rules:
 `goobers init` scaffolds this; `goobers validate` checks it; `goobers up` runs the
 daemon (scheduler + runner); `goobers run <workflow>` triggers one manually (still
 honoring run conditions); `goobers status` / `goobers trace <run-id>` inspect it.
+These are the anchor commands of a wider registry-sourced CLI (~50 subcommands with
+generated help/man/completions), including the built-in stage kinds workflows invoke
+as subcommands (`backlog-query`, `open-pr`, `merge-pr`, `elect-lander`,
+`apply-verdict`, …). The daemon also serves a **loopback-only HTTP API**
+(`internal/httpapi`: `/api/v1/*` reads, health, event stream) backing an embedded
+dashboard (`goobers dashboard`); long-lived daemons run under platform supervision
+(systemd/launchd/Windows service — `docs/guides/supervision.md`).
 The two-repo split (`infra` vs `config`) from the vision maps onto tiers: at tiers
 1–2 "infra" collapses into `instance.yaml` + the binary; at tier 3 it is a real
 infra repo (Bicep + GitOps) again. The **Tutor write boundary holds at every tier**:
@@ -219,15 +229,29 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
 
 ## 7. Scheduling and triggers
 
-- **V0:** cron-expression triggers only (`goobers up` evaluates them), plus run
-  conditions: max parallel runs per workflow/instance, per-workflow run budgets.
-- Backlog-item triggers and their selectors remain in the schema but are **reserved
-  for V1**; V0 has no runtime consumer for either. At V0 backlog consumption is
-  expressed as a cron-triggered workflow whose first stage — a built-in deterministic
-  **`backlog-query`** stage kind — queries the provider for eligible items and
-  **claims** them (label/assignee marker + claim ledger) so concurrent runs never
-  double-process (`WF-031`). On public repos, eligibility requires a
+- **Shipped triggers — five types, all with live runtime consumers:** `manual`
+  (`goobers run`), `schedule` (cron / time-since-last-run, with a catch-up policy
+  for missed ticks), `backlog-item`, `signal` (workflow outputs admitted as
+  triggers through the scheduler; also `goobers signal`), and `webhook` (signed
+  GitHub webhooks, delivered through the signal path —
+  `docs/guides/github-webhooks.md`).
+- **Backlog-item triggers fan out on eligible work:** the scheduler polls the
+  provider's eligible-item count (#344) and dispatches runs accordingly; the run's
+  first stage — a built-in deterministic **`backlog-query`** stage kind — still
+  performs the actual query and **claims** items (label/assignee marker + claim
+  ledger) so concurrent runs never double-process (`WF-031`). A trigger
+  `selector`'s KEYS are applied as required GitHub labels; values are ignored
+  (GitHub labels are flat strings). On public repos, eligibility requires a
   maintainer-applied trust label: backlog content is untrusted input (`SEC-047`).
+- **Readiness conditions** enforced before any run starts: max parallel runs per
+  workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
+  chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
+  provider-quota / rate-limit-reset gating.
+- **Still prescriptive (V1):** true k8s-style selector matching (values, set
+  expressions), routing one item across multiple candidate workflows with a
+  priority single-winner election (`SCH-010` full form, `SCH-011`), dead-letter /
+  unrouted-item surfacing (`SCH-012`), and an item priority field (`SCH-030`).
+  None of these have runtime consumers.
 - At tier 3, cron triggers become Temporal Schedules and claiming coordinates across
   distributed workers — same declared semantics, different substrate.
 
@@ -249,7 +273,7 @@ the exporter changes per tier. Work-nomination workflows read these stores; the 
 | Tier | Identity/auth | Secrets | Isolation |
 |---|---|---|---|
 | 1 — Solo | None (local trust) | Env vars / token file, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
-| 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + sandboxed stage execution, per-goober credential injection (V1) |
+| 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + per-goober credential scoping (shipped, #823); sandboxed stage execution (V1, mechanism per ADR 0001) |
 | 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces + identities, network policy (existing `SEC-*`) |
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
@@ -302,6 +326,13 @@ workflows prove it: **backlog curation**, **work nomination**, **implementation*
 (with optional reviewer gates, local deterministic gates, and a CI-poll/repass loop).
 Definition of done: feed issues into the backlog and watch them get curated, scoped,
 and implemented into PRs by the instance running on your own machine.
+
+**Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
+then closed the PR loop: the selfhost instance now runs **six** workflows (backlog
+curation, work nomination, implementation, merge-review, pr-remediation, Tutor) and
+**merges its own PRs autonomously** — a ratified product decision (G2 in
+`docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
+`docs/design/sibling-pr-sequencing.md`).
 
 ### V1 — Arbitrary repos, teams, hardening
 

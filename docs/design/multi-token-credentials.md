@@ -1,7 +1,10 @@
 # Design: Multiple capability-scoped credentials (per-capability token sourcing)
 
-> Status: **Draft for review** · Area: `SEC` / `area:runner` · Milestone: **V0.2** (unblocks
-> the #30 live-run gate) with a defined path to per-stage isolation.
+> Status: **Implemented — historical record** (2026-07-23) · Area: `SEC` / `area:runner` ·
+> Milestone: **V0.2** (unblocked the #30 live-run gate) with a defined path to
+> per-stage isolation. Shipped: the `agent:model` capability, the `credentials:`
+> block in instance config, and per-goober scoping (#823); §5's forward path has
+> partially landed via #822 (resolver-interface stabilization) and #823.
 > References: `docs/ARCHITECTURE.md` §9, `docs/requirements/security.md` (SEC-042/045/046),
 > `docs/guides/github-token-scopes.md`, `internal/credentials`,
 > `cmd/goobers/runnerwiring.go`.

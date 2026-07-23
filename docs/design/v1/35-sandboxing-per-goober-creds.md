@@ -7,6 +7,12 @@
 > Detailed-design artifact for epic **#35**. The dispatchable work items (S0–S4)
 > each link back to the correspondingly-named section here. This is the most
 > security-sensitive epic in the pass; fail-closed is the rule throughout.
+>
+> Progress (2026-07-23): S1 per-goober credential scoping **shipped** (#823); S0
+> sandbox mechanism **decided**
+> ([ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md)) with the native
+> implementation landed (`internal/sandbox`, darwin + linux); S2–S4
+> (executor/harness wiring and enforcement rollout) in progress/open.
 
 ## 1. Verdict
 

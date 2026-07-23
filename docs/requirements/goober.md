@@ -108,7 +108,12 @@ cloud cluster without change.
 ### Scaling
 - **GBO-030 (MUST):** A Goober's concurrency MUST be controlled by a scale factor in
   its definition; increasing it and reloading/redeploying the definition yields more
-  concurrent replicas. *(All tiers)*
+  concurrent replicas. *(All tiers)* **Status:** `scaleFactor` is schema-reserved
+  but the local runner does not consume it — local concurrency is governed by
+  per-workflow `maxConcurrentRuns` readiness conditions. Only the quarantined
+  tier-3 operator (`internal/operator`) consumes it today; local-runner
+  consumption (or supersession by workflow-level limits) is a pending V1/V2
+  decision.
 - **GBO-031 (MUST):** Scaled replicas MUST claim work so no two replicas process the
   same item — a lease-based atomic claim owned by the runner (mechanism owned by the
   Scheduler spec). *(All tiers)*

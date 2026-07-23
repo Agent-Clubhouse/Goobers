@@ -50,8 +50,8 @@ input; the rest of the document is a response to it.
 | 9 | Merge queue eviction | comment prose only |
 | 10 | Verdict `fail` | never remediated (correct — human judgment) |
 | 11 | Budget exhausted / no progress | escalated out of the loop |
-| 12 | `merge-pr` conjunct refusal | **no label at all**; reason never posted |
-| 13 | Queue timeout | **no label at all** |
+| 12 | `merge-pr` conjunct refusal | ~~no label at all~~ **since shipped**: durable per-head refusal counter → `goobers:merge-demoted` + reason trail (#950, `record-merge-refusal`) |
+| 13 | Queue timeout | ~~no label at all~~ **since shipped**: `needs-remediation` + comment + reconciliation ledger (#886, `merge-queue-poll`) |
 | 14 | Empty `needs-changes` verdict | labeled, but with zero findings to act on |
 
 Four specific facts drive the design:

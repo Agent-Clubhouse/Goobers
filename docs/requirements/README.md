@@ -44,10 +44,11 @@ self-contained: purpose, model, requirements, and open questions.
 | Primitive | [Task](task.md) | Draft | |
 | Primitive | [Gate](gate.md) | Draft | Unified gate, pluggable evaluator |
 | System | [Scheduler & work distribution](scheduler.md) | Draft | Routing + work-claiming |
+| System | [PR lifecycle & merge loop](pr-lifecycle.md) | Draft | Cross-PR selection, election, merge/close authority, escalation drainage |
 | System | [Backlog & providers (GitHub/ADO)](backlog-providers.md) | Draft | Provider abstraction |
 | System | [Telemetry & tracing](telemetry.md) | Draft | Two separate stores; journal+rollup → ADX at tier 3 |
-| System | [Tutor & learning loop](tutor.md) | Draft | Writes only to `config`; reads journals; V1 scope |
-| System | [Portal](portal.md) | Draft | Observability-first; reads run journals; minimal runtime ops |
+| System | [Tutor & learning loop](tutor.md) | Draft | Writes only to `config`; reads journals; ships narrow-slice, forward scope per `../design/tutor-redesign.md` |
+| System | [Portal](portal.md) | Approved for staged implementation | Observability-first; reads run journals; minimal runtime ops |
 | System | [Deployment & infra](deployment.md) | Draft | Tiered: local install → AKS/Bicep drop-in (V2) |
 | System | [Security & isolation](security.md) | Draft | Auth/isolation ladder; Key Vault refs at tier 3 |
 | System | [Config-as-code model](config-as-code.md) | Draft | Manifest + markdown + folder layout |

@@ -24,9 +24,12 @@ changes (`ARCHITECTURE.md §7`).
 - **Admission loop:** the scheduler continuously evaluates each workflow — has its
   **trigger** fired and are its **readiness conditions** met (`WF-010`/`WF-011`)? If yes
   and matching work exists, it starts a run.
-- **Routing — labels + selectors (k8s-style, V1):** units of work (e.g. backlog
-  items) carry **labels**; workflows declare **selectors** over those labels. The
-  V0 schema reserves these fields but the scheduler does not consume them until V1.
+- **Routing — labels + selectors:** units of work (e.g. backlog items) carry
+  **labels**; workflows declare **selectors** over those labels. **Shipped:** the
+  backlog-item trigger consumes selector KEYS as required GitHub labels when
+  counting eligible items (values are ignored — GitHub labels are flat strings).
+  **V1 prescriptive:** full k8s-style selector matching and multi-workflow
+  routing (`SCH-010`/`SCH-011`).
 - **Claiming — lease-based atomic claim, owned by the runner:** before a run, the
   scheduler claims the unit atomically. At tiers 1–2 the claim is recorded in a
   **claim ledger in instance state** plus a **provider-visible marker**
@@ -49,15 +52,21 @@ changes (`ARCHITECTURE.md §7`).
   is saturated (queue/defer rather than fail).
 
 ### Routing
-- **SCH-010 (MUST, V1):** The scheduler MUST route a unit of work to workflow(s) by
-  matching item **labels** against workflow **selectors**. V0 accepts these fields
-  as reserved schema surface but does not route on them.
+- **SCH-010 (MUST, V1 full form):** The scheduler MUST route a unit of work to
+  workflow(s) by matching item **labels** against workflow **selectors**.
+  **Shipped:** the backlog-item trigger filters on selector KEYS as required
+  GitHub labels when counting eligible items (values ignored — GitHub labels are
+  flat strings). **Not implemented — V1 prescriptive:** true selector semantics
+  (value matching, set expressions) and routing one item across multiple
+  candidate workflows.
 - **SCH-011 (MUST):** When an item matches **multiple** workflows, the scheduler MUST
   resolve to a **single** winner by declared **priority** (deterministic tiebreak) —
   preserving one-item-one-workflow so exactly-once claiming holds on either runner.
+  *(Not implemented — V1 prescriptive.)*
 - **SCH-012 (MUST):** When an item matches **no** workflow, it MUST go to a visible
   **dead-letter / unrouted** state for human attention. A catch-all **default workflow**
   MAY be configured per gaggle to handle unmatched items instead.
+  *(Not implemented — V1 prescriptive.)*
 
 ### Claiming & exactly-once
 - **SCH-020 (MUST):** Exactly-once processing MUST be enforced **instance-side by the
@@ -82,6 +91,7 @@ changes (`ARCHITECTURE.md §7`).
 ### Prioritization & telemetry
 - **SCH-030 (SHOULD):** The scheduler SHOULD support backlog prioritization (which item
   next) — explicit priority field, FIFO within a priority (see `SCH-Q3`).
+  *(Not implemented — V1 prescriptive; no priority field exists yet.)*
 - **SCH-031 (MUST):** The scheduler MUST emit telemetry for its decisions, claims, and
   releases to the goober-run telemetry store — at tiers 1–2 as events in the
   **instance journal** (`scheduler/events.jsonl`, `ARCHITECTURE.md §4/§6`) rolled up
@@ -93,12 +103,15 @@ changes (`ARCHITECTURE.md §7`).
   scheduler service. *(Tiers 1–2)*
 - **SCH-041 (MUST):** Cron-expression triggers MUST ship first (V0): the embedded
   scheduler evaluates them and enforces run conditions (max-parallel, run budgets).
-  At V0 backlog consumption rides cron-triggered workflows whose first stage — the
-  built-in **`backlog-query`** deterministic stage kind — queries + claims eligible
-  items, honoring the untrusted-input eligibility gate (`SEC-047`). This is the
-  owning statement of the V0 cron-claim pattern (`WF-055` defers here; `WF-010`).
-  Direct backlog-item triggers and selectors are reserved for V1. *(All tiers;
-  ships tiers 1–2 first)*
+  **Shipped since:** all five trigger types (`manual`, `schedule`, `backlog-item`,
+  `signal`, `webhook`) now have live runtime consumers. The backlog-item trigger
+  fans out on the provider's eligible-item count (#344), filtered by selector
+  KEYS as required labels; the run's first stage — the built-in **`backlog-query`**
+  deterministic stage kind — still performs the query + claim, honoring the
+  untrusted-input eligibility gate (`SEC-047`). This is the owning statement of
+  the query-and-claim pattern (`WF-055` defers here; `WF-010`). Full selector
+  matching and multi-workflow routing remain V1 (`SCH-010`–`SCH-012`). *(All
+  tiers; ships tiers 1–2 first)*
 - **SCH-042 (MUST):** **Tier 3 (V2):** declared schedule triggers MUST map onto
   **Temporal Schedules**, and claiming MUST use workflow-id-based exactly-once
   identity (`SCH-020`) — the cloud drop-in for the scheduling seam

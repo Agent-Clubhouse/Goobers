@@ -1,7 +1,10 @@
 # Design: V0.6 ladder remediation — executor convergence + lifecycle unblock
 
-> Status: **Draft for review** · Area: `RUN` / `PRL` · Milestone: **V0.7 — ladder
-> frontload (must-fix before next ladder)** + **V0.8 (fast-follow)**
+> Status: **Executed — historical record** (2026-07-23) · Area: `RUN` / `PRL` ·
+> Milestone: **V0.7 — ladder frontload** + **V0.8 (fast-follow)**. All frontload
+> items landed: L1 merge-review threading, L2 rich PR bodies (`openprbody.go`),
+> L3 repass verdict context (#412), L6 non-retryable escalate (#415), L7 open-PR
+> backstop (#414).
 > Origin: the **V0.6 reliability eval ladder (round 2)** — epic #394, report at
 > `~/source/Goobers-Review/ladder/{scorecard,observations}.md`. First round run
 > through the **full V0.5 lifecycle** via `goobers up` (implementation →
