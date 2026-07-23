@@ -182,9 +182,32 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	}
 }
 
-func TestPrepareDashboardAPIFallsBackWhenDaemonTicksAreStale(t *testing.T) {
+func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
+	lastTick := time.Now().UTC().Add(-3 * time.Minute)
+	lastTickAgeMillis := int64((3 * time.Minute) / time.Millisecond)
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+			Healthy:       false,
+			Freshness: readservice.Freshness{
+				ObservedAt:          time.Now().UTC(),
+				LastSchedulerTickAt: &lastTick,
+				LastTickAgeMillis:   &lastTickAgeMillis,
+			},
+		}); err != nil {
+			t.Errorf("encode health response: %v", err)
+		}
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
 	config, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		t.Fatal(err)
@@ -208,8 +231,36 @@ func TestPrepareDashboardAPIFallsBackWhenDaemonTicksAreStale(t *testing.T) {
 			t.Errorf("close dashboard API: %v", err)
 		}
 	}()
-	if api.mode != dashboardModeStandalone {
-		t.Fatalf("mode = %q, want standalone for stale daemon heartbeat", api.mode)
+	if api.mode != dashboardModeDaemon {
+		t.Fatalf("mode = %q, want daemon for responsive stale daemon", api.mode)
+	}
+	handler, err := newDashboardHandler(
+		fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(dashboardTestIndex)}},
+		api.handler,
+		api.mode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
+	if index.Code != http.StatusOK || !strings.Contains(index.Body.String(), `content="daemon"`) {
+		t.Fatalf("index response = %d %q", index.Code, index.Body.String())
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %q", response.Code, response.Body.String())
+	}
+	var health readservice.Health
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Healthy {
+		t.Fatal("dashboard masked the stale scheduler heartbeat")
+	}
+	if health.Freshness.LastTickAgeMillis == nil || *health.Freshness.LastTickAgeMillis != lastTickAgeMillis {
+		t.Fatalf("last tick age = %v, want %d", health.Freshness.LastTickAgeMillis, lastTickAgeMillis)
 	}
 }
 

@@ -251,14 +251,14 @@ func listenDashboard(port dashboardPort) (net.Listener, error) {
 }
 
 func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *instance.Config, errorLog *log.Logger) (dashboardAPI, error) {
-	running, _, liveness, err := inspectDaemonLiveness(
+	running, _, _, err := inspectDaemonLiveness(
 		filepath.Join(layout.SchedulerDir(), "up.lock"),
 		time.Now(),
 	)
 	if err != nil {
 		return dashboardAPI{}, err
 	}
-	if running && liveness.Healthy {
+	if running {
 		target, err := waitForDashboardDaemon(ctx, layout, config.APIListenAddress())
 		if err != nil {
 			return dashboardAPI{}, err
@@ -305,8 +305,6 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configu
 						lastErr = decodeErr
 					case !health.Ready:
 						lastErr = errors.New("daemon API is not ready")
-					case !health.Healthy:
-						lastErr = errors.New("daemon scheduler heartbeat is stale")
 					case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
 						lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
 							health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
