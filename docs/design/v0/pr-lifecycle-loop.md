@@ -1,6 +1,13 @@
 # Design: PR lifecycle loop — closing "issue → PR" into "issue → merged change" (V0.5)
 
-> Status: **Draft for review** · Area prefix: `PRL` · Milestone: **V0.5 — closing the loop: PR review → remediation → (auto-)merge**
+> Status: **Superseded in part (2026-07-23)** — the shipped loop's normative contract now
+> lives in [`docs/requirements/pr-lifecycle.md`](../../requirements/pr-lifecycle.md) (PRL-*);
+> this doc remains the design rationale. Known-stale details vs shipped code: §6 D7's
+> one-merge-per-tick became a poll→decide→land lock window only (#719,
+> `maxConcurrentRuns: 4`); §3's per-number `goobers:blocked-on/<n>` labels shipped as a
+> single `goobers:blocked-on-sibling` label + JSON blocker payload; §9's "winner-election
+> deferred to V1" shipped in V0.5+ (#833/#834).
+> Area prefix: `PRL` · Milestone: **V0.5 — closing the loop: PR review → remediation → (auto-)merge**
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §2 (invariants), §5 (stages/gates)
 > Requirements: [`docs/requirements/workflow.md`](../../requirements/workflow.md) · [`docs/requirements/gate.md`](../../requirements/gate.md)
 > Builds on: the shipped `implementation` workflow (issue #27) · reframes #353 (integration-review altitude) and #355 (close-out timing)
