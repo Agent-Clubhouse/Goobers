@@ -117,6 +117,22 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 }
 
+func TestSchedulerADOCredentialSource(t *testing.T) {
+	if source, err := schedulerADOCredentialSource(apiv1.ProviderGitHub, config{adoAuthKind: "azure-cli"}); err != nil || source != nil {
+		t.Fatalf("GitHub source = %T, %v", source, err)
+	}
+	source, err := schedulerADOCredentialSource(apiv1.ProviderADO, config{adoAuthKind: "azure-cli", adoTenant: "tenant"})
+	if err != nil || source == nil {
+		t.Fatalf("ADO Azure CLI source = %T, %v", source, err)
+	}
+	if _, err := schedulerADOCredentialSource(apiv1.ProviderADO, config{adoAuthKind: "unknown"}); err == nil {
+		t.Fatal("unknown ADO auth kind did not fail")
+	}
+	if _, err := schedulerADOCredentialSource(apiv1.ProviderADO, config{}); err == nil {
+		t.Fatal("missing ADO auth did not fail")
+	}
+}
+
 func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
 	const token = "ado-token-value"
 	registry, scrubber := journal.DefaultScrubber()

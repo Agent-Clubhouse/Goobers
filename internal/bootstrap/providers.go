@@ -14,6 +14,13 @@ import (
 // never read from config. Credentialed ADO providers require registrar so every
 // form used on the wire is scrubbed at output boundaries.
 func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
+	return BacklogProviderForWithADOAuth(backlog, token, nil, registrar, rateObserver)
+}
+
+// BacklogProviderForWithADOAuth constructs a backlog provider while allowing
+// ADO to use an Entra credential source instead of a fixed PAT. GitHub behavior
+// and the legacy BacklogProviderFor API are unchanged.
+func BacklogProviderForWithADOAuth(backlog apiv1.BacklogRef, token string, adoSource providers.ADOCredentialSource, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
 	switch backlog.Provider {
 	case apiv1.ProviderGitHub:
 		owner, name, ok := splitProject(backlog.Project)
@@ -27,17 +34,19 @@ func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar provid
 		if !ok {
 			return nil, providers.RepositoryRef{}, fmt.Errorf("ado backlog project %q must be organization/project", backlog.Project)
 		}
-		if token != "" && registrar == nil {
+		if (token != "" || adoSource != nil) && registrar == nil {
 			return nil, providers.RepositoryRef{}, fmt.Errorf("ado backlog provider requires a secret registrar")
 		}
 		repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: project}
-		return providers.NewADOProvider(
-			org,
-			project,
-			token,
+		options := []func(*providers.ADOProvider){
 			providers.WithADOSecretRegistrar(registrar),
 			providers.WithADORateLimitObserver(rateObserver),
-		), repo, nil
+		}
+		if adoSource != nil {
+			token = ""
+			options = append(options, providers.WithADOCredentialSource(adoSource))
+		}
+		return providers.NewADOProvider(org, project, token, options...), repo, nil
 	default:
 		return nil, providers.RepositoryRef{}, fmt.Errorf("unsupported backlog provider %q", backlog.Provider)
 	}

@@ -58,21 +58,50 @@ func (r EnvProviderResolver) RepoProvider(provider apiv1.Provider, repo apiv1.Re
 		return providers.NewGitHubProvider(token, providers.WithRateLimitObserver(r.RateLimitObserver)), nil
 	case apiv1.ProviderADO:
 		token := firstEnv("GOOBERS_ADO_TOKEN", "AZURE_DEVOPS_TOKEN", "ADO_TOKEN")
-		if token == "" {
-			return nil, fmt.Errorf("ado repo provider requires GOOBERS_ADO_TOKEN, AZURE_DEVOPS_TOKEN, or ADO_TOKEN")
-		}
-		org := firstNonEmpty(firstEnv("GOOBERS_ADO_ORG", "AZURE_DEVOPS_ORG", "ADO_ORG"), repo.Owner)
-		project := firstNonEmpty(firstEnv("GOOBERS_ADO_PROJECT", "AZURE_DEVOPS_PROJECT", "ADO_PROJECT"), repo.Owner)
+		org, project := adoCoordinates(repo)
 		if org == "" || project == "" {
 			return nil, fmt.Errorf("ado repo provider requires organization and project")
 		}
 		if r.SecretRegistrar == nil {
 			return nil, fmt.Errorf("ado repo provider requires a secret registrar")
 		}
+		authKind := firstEnv("GOOBERS_ADO_AUTH_KIND", "AZURE_DEVOPS_AUTH_KIND")
+		if authKind == "" && token != "" {
+			authKind = "pat"
+		}
+		var source providers.ADOCredentialSource
+		var err error
+		switch authKind {
+		case "pat":
+			if token == "" {
+				return nil, fmt.Errorf("ado PAT auth requires GOOBERS_ADO_TOKEN, AZURE_DEVOPS_TOKEN, or ADO_TOKEN")
+			}
+			return providers.NewADOProvider(
+				org,
+				project,
+				token,
+				providers.WithADOSecretRegistrar(r.SecretRegistrar),
+				providers.WithADORateLimitObserver(r.RateLimitObserver),
+			), nil
+		case "azure-cli":
+			source = providers.NewAzureCLIADOCredentialSource(nil, firstEnv("GOOBERS_ADO_TENANT", "AZURE_DEVOPS_TENANT"))
+		case "workload-identity":
+			source, err = providers.NewWorkloadIdentityADOCredentialSource()
+		case "managed-identity":
+			source, err = providers.NewManagedIdentityADOCredentialSource(firstEnv("GOOBERS_ADO_CLIENT_ID", "AZURE_CLIENT_ID"))
+		case "":
+			return nil, fmt.Errorf("ado repo provider requires GOOBERS_ADO_AUTH_KIND or an ADO token")
+		default:
+			return nil, fmt.Errorf("ado repo provider has unsupported auth kind %q", authKind)
+		}
+		if err != nil {
+			return nil, err
+		}
 		return providers.NewADOProvider(
 			org,
 			project,
-			token,
+			"",
+			providers.WithADOCredentialSource(source),
 			providers.WithADOSecretRegistrar(r.SecretRegistrar),
 			providers.WithADORateLimitObserver(r.RateLimitObserver),
 		), nil
@@ -154,11 +183,40 @@ func (p InProcessPreparer) runtimeEnv(env apiv1.InvocationEnvelope, workspace, r
 }
 
 func toProviderRepo(repo apiv1.RepoRef) providers.RepositoryRef {
+	owner := repo.Owner
+	project := repo.Project
+	if repo.Provider == apiv1.ProviderADO && project == "" {
+		if org, parsedProject, ok := strings.Cut(repo.Owner, "/"); ok {
+			owner = org
+			project = parsedProject
+		}
+	}
 	return providers.RepositoryRef{
 		Provider: providers.ProviderKind(repo.Provider),
-		Owner:    repo.Owner,
+		Owner:    owner,
+		Project:  project,
 		Name:     repo.Name,
 	}
+}
+
+func adoCoordinates(repo apiv1.RepoRef) (string, string) {
+	org := firstEnv("GOOBERS_ADO_ORG", "AZURE_DEVOPS_ORG", "ADO_ORG")
+	project := firstEnv("GOOBERS_ADO_PROJECT", "AZURE_DEVOPS_PROJECT", "ADO_PROJECT")
+	if org == "" {
+		org = repo.Owner
+	}
+	if project == "" {
+		project = repo.Project
+	}
+	if parsedOrg, parsedProject, ok := strings.Cut(repo.Owner, "/"); ok {
+		if org == repo.Owner {
+			org = parsedOrg
+		}
+		if project == "" {
+			project = parsedProject
+		}
+	}
+	return org, project
 }
 
 func safePathPart(s string) string {

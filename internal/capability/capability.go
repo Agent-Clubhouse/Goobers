@@ -70,6 +70,14 @@ const (
 	// (docs/design/v0/pr-lifecycle-loop.md §7, "capability isolation, the
 	// clinching reason" a decider and an executor stay separate workflows).
 	GitHubPRMerge Capability = "github:pr:merge"
+	// ADOCodeRead grants read-only Azure Repos and pull-request inspection.
+	ADOCodeRead Capability = "ado:code:read"
+	// ADOPRComment grants posting Azure Repos pull-request threads without vote,
+	// branch-write, or completion authority.
+	ADOPRComment Capability = "ado:pr:comment"
+	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
+	// items. It does not grant repository or pull-request writes.
+	ADOWorkItemsWrite Capability = "ado:work-items:write"
 	// TelemetryRead grants read access to the local telemetry rollup
 	// (stats/errors/spans) — internal/telemetry/query's gate.
 	TelemetryRead Capability = "telemetry:read"
@@ -97,7 +105,12 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, ConfigRepoRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{
+		RepoRead, RepoPush, ConfigRepoRead,
+		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge,
+		ADOCodeRead, ADOPRComment, ADOWorkItemsWrite,
+		TelemetryRead, JournalRead, AgentModel,
+	}
 }
 
 // Known reports whether s is a canonical capability string.

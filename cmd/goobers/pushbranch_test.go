@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -212,6 +213,29 @@ func TestPushBranchMissingCredentialFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_CRED_REPO_PUSH") {
 		t.Fatalf("stderr = %q, want a mention of the missing credential env var", stderr)
+	}
+}
+
+func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
+	repo := instance.RepoRef{
+		Provider: "ado",
+		Owner:    "organization",
+		Project:  "project name",
+		Name:     "repository",
+		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
+	got, ok := adoRepoForOrigin(cfg, "https://dev.azure.com/organization/project%20name/_git/repository")
+	if !ok || got.Owner != repo.Owner || got.Project != repo.Project || got.Name != repo.Name {
+		t.Fatalf("adoRepoForOrigin() = %#v, %v", got, ok)
+	}
+	if _, ok := adoRepoForOrigin(cfg, "https://dev.azure.com/other/project%20name/_git/repository"); ok {
+		t.Fatal("mismatched ADO remote received configured credentials")
+	}
+	if !isADORemote("https://dev.azure.com/other/project/_git/repository") ||
+		!isADORemote("https://organization.visualstudio.com/project/_git/repository") ||
+		isADORemote("https://github.com/organization/repository") {
+		t.Fatal("ADO remote classification is incorrect")
 	}
 }
 

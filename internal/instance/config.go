@@ -146,15 +146,38 @@ type WebhookConfig struct {
 
 // RepoRef is a target repository this instance connects to.
 type RepoRef struct {
-	// Provider is the backing system. V0 supports "github" only.
+	// Provider is the backing system: "github" or "ado".
 	Provider string `json:"provider" yaml:"provider"`
-	// Owner is the repo owner/organization.
+	// Owner is the GitHub owner or Azure DevOps organization.
 	Owner string `json:"owner" yaml:"owner"`
+	// Project is required for Azure DevOps and omitted for GitHub.
+	Project string `json:"project,omitempty" yaml:"project,omitempty"`
 	// Name is the repo name.
 	Name string `json:"name" yaml:"name"`
 	// Token is a reference to this repo's credential. Never an inline value
-	// (CFG-009, SEC-010) — exactly one of Env or File must be set.
-	Token TokenRef `json:"token" yaml:"token"`
+	// (CFG-009, SEC-010). GitHub and ADO PAT auth require exactly one of Env
+	// or File. Entra-backed ADO auth does not use this field.
+	Token TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// Auth selects Azure DevOps authentication. Nil preserves legacy PAT
+	// behavior when Token is configured.
+	Auth *ADOAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+const (
+	ADOAuthPAT              = "pat"
+	ADOAuthAzureCLI         = "azure-cli"
+	ADOAuthWorkloadIdentity = "workload-identity"
+	ADOAuthManagedIdentity  = "managed-identity"
+)
+
+// ADOAuthConfig selects an Azure DevOps credential source without embedding
+// credential material in configuration.
+type ADOAuthConfig struct {
+	Kind string `json:"kind" yaml:"kind"`
+	// Tenant optionally pins Azure CLI authentication to one tenant.
+	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
+	// ClientID optionally selects a user-assigned managed identity.
+	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 }
 
 // TokenRef points at a credential without storing its value: an environment
@@ -476,17 +499,53 @@ func (c *Config) Validate() error {
 		return err
 	}
 	for i, r := range c.Repos {
-		if r.Provider != "github" {
-			return fmt.Errorf("repos[%d]: unsupported provider %q (V0 supports \"github\" only)", i, r.Provider)
+		if r.Provider != "github" && r.Provider != "ado" {
+			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\")", i, r.Provider)
 		}
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
 		}
 		hasEnv := r.Token.Env != ""
 		hasFile := r.Token.File != ""
-		if hasEnv == hasFile {
+		if hasEnv && hasFile {
 			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env or file — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+		}
+		switch r.Provider {
+		case "github":
+			if r.Project != "" {
+				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if r.Auth != nil {
+				return fmt.Errorf("repos[%d] (%s/%s): auth is only valid for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if !hasEnv && !hasFile {
+				return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env or file — "+
+					"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+			}
+		case "ado":
+			if r.Project == "" {
+				return fmt.Errorf("repos[%d] (%s/%s): project is required for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			kind := ADOAuthPAT
+			if r.Auth != nil {
+				kind = r.Auth.Kind
+			}
+			switch kind {
+			case ADOAuthPAT:
+				if !hasEnv && !hasFile {
+					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env or token.file", i, r.Owner, r.Name)
+				}
+			case ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity:
+				if hasEnv || hasFile {
+					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env or token.file", i, r.Owner, r.Name, kind)
+				}
+			default:
+				return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
+			}
+			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
+				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+			}
 		}
 	}
 	seen := make(map[string]bool, len(c.Credentials))

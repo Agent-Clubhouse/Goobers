@@ -42,6 +42,29 @@ func TestBacklogProviderForADO(t *testing.T) {
 	}
 }
 
+func TestBacklogProviderForADOAcceptsCredentialSource(t *testing.T) {
+	source := providers.NewADOPATCredentialSource("goobers", "source-token")
+	if _, _, err := BacklogProviderForWithADOAuth(
+		apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"},
+		"",
+		source,
+		nil,
+		nil,
+	); err == nil {
+		t.Fatal("expected credential source without registrar to fail")
+	}
+	provider, _, err := BacklogProviderForWithADOAuth(
+		apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "myorg/myproject"},
+		"",
+		source,
+		journal.NewRegistryScrubber(),
+		nil,
+	)
+	if err != nil || provider == nil {
+		t.Fatalf("BacklogProviderForWithADOAuth() = %T, %v", provider, err)
+	}
+}
+
 func TestBacklogProviderForErrors(t *testing.T) {
 	if _, _, err := BacklogProviderFor(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "noslash"}, "t", nil, nil); err == nil {
 		t.Error("expected error for malformed github project")

@@ -14,6 +14,7 @@
 //	GOOBERS_TEMPORAL_NAMESPACE Temporal namespace (default "default")
 //	GOOBERS_TASK_QUEUE         engine task queue (default goobers-engine)
 //	GOOBERS_BACKLOG_TOKEN      backlog provider token (Key Vault-injected)
+//	GOOBERS_ADO_AUTH_KIND      pat|azure-cli|workload-identity|managed-identity
 //	GOOBERS_POLL_INTERVAL      backlog poll cadence (default 30s)
 //	GOOBERS_OTEL_EXPORTER      telemetry exporter: stdout|otlp (default stdout)
 //	GOOBERS_OTLP_ENDPOINT      OTLP endpoint when exporter=otlp
@@ -23,17 +24,20 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/providers"
 )
 
 func main() {
@@ -50,6 +54,9 @@ type config struct {
 	temporalNamespace string
 	taskQueue         string
 	backlogToken      string
+	adoAuthKind       string
+	adoTenant         string
+	adoClientID       string
 	pollInterval      time.Duration
 	triggerBackoff    time.Duration
 	pollLimit         int
@@ -66,6 +73,9 @@ func configFromEnv() config {
 		temporalNamespace: envOr("GOOBERS_TEMPORAL_NAMESPACE", "default"),
 		taskQueue:         envOr("GOOBERS_TASK_QUEUE", bootstrap.DefaultTaskQueue),
 		backlogToken:      os.Getenv("GOOBERS_BACKLOG_TOKEN"),
+		adoAuthKind:       os.Getenv("GOOBERS_ADO_AUTH_KIND"),
+		adoTenant:         os.Getenv("GOOBERS_ADO_TENANT"),
+		adoClientID:       envOr("GOOBERS_ADO_CLIENT_ID", os.Getenv("AZURE_CLIENT_ID")),
 		pollInterval:      envDuration("GOOBERS_POLL_INTERVAL", 30*time.Second),
 		triggerBackoff:    envDuration("GOOBERS_TRIGGER_BACKOFF", 5*time.Second),
 		pollLimit:         100,
@@ -101,7 +111,12 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 
 	var wg sync.WaitGroup
 	for _, g := range loaded.Gaggles {
-		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken, secretReg, tel)
+		adoSource, sourceErr := schedulerADOCredentialSource(g.Spec.Backlog.Provider, cfg)
+		if sourceErr != nil {
+			log.Warn("skipping gaggle: ADO credential source", "gaggle", g.Name, "err", sourceErr)
+			continue
+		}
+		provider, repo, perr := bootstrap.BacklogProviderForWithADOAuth(g.Spec.Backlog, cfg.backlogToken, adoSource, secretReg, tel)
 		if perr != nil {
 			log.Warn("skipping gaggle: backlog provider", "gaggle", g.Name, "err", perr)
 			continue
@@ -152,6 +167,32 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+func schedulerADOCredentialSource(provider apiv1.Provider, cfg config) (providers.ADOCredentialSource, error) {
+	if provider != apiv1.ProviderADO {
+		return nil, nil
+	}
+	switch cfg.adoAuthKind {
+	case "":
+		if cfg.backlogToken == "" {
+			return nil, fmt.Errorf("ADO backlog requires GOOBERS_ADO_AUTH_KIND or GOOBERS_BACKLOG_TOKEN")
+		}
+		return nil, nil
+	case "pat":
+		if cfg.backlogToken == "" {
+			return nil, fmt.Errorf("ADO PAT auth requires GOOBERS_BACKLOG_TOKEN")
+		}
+		return nil, nil
+	case "azure-cli":
+		return providers.NewAzureCLIADOCredentialSource(nil, cfg.adoTenant), nil
+	case "workload-identity":
+		return providers.NewWorkloadIdentityADOCredentialSource()
+	case "managed-identity":
+		return providers.NewManagedIdentityADOCredentialSource(cfg.adoClientID)
+	default:
+		return nil, fmt.Errorf("unsupported GOOBERS_ADO_AUTH_KIND %q", cfg.adoAuthKind)
+	}
 }
 
 func schedulerTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.Config {
