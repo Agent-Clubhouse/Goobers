@@ -452,10 +452,16 @@ func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
 	nominator := loadNominator(t)
 
 	nominatorAllowsApproval := false
+	nominatorDeclaresApproval := false
 	nominateTask := -1
 	for _, granted := range nominator.Capabilities {
 		if granted == string(capability.GitHubIssuesApprove) {
 			nominatorAllowsApproval = true
+		}
+	}
+	for _, action := range nominator.ConditionalPolicyActions {
+		if action == "approve-issue" {
+			nominatorDeclaresApproval = true
 		}
 	}
 	for i, task := range spec.Tasks {
@@ -468,9 +474,17 @@ func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
 				t.Fatal("shipped nominate stage must leave self-approval disabled")
 			}
 		}
+		for _, action := range task.PolicyActions {
+			if action == "approve-issue" {
+				t.Fatal("shipped nominate stage must leave the self-approval action disabled")
+			}
+		}
 	}
 	if !nominatorAllowsApproval {
 		t.Fatal("nominator must allow an operator to opt the stage into github:issues:approve")
+	}
+	if !nominatorDeclaresApproval {
+		t.Fatal("nominator must declare approve-issue as a conditional policy action")
 	}
 	if nominateTask == -1 {
 		t.Fatal("nominate task not found")
@@ -480,6 +494,7 @@ func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
 		spec.Tasks[nominateTask].Capabilities,
 		string(capability.GitHubIssuesApprove),
 	)
+	spec.Tasks[nominateTask].PolicyActions = append(spec.Tasks[nominateTask].PolicyActions, "approve-issue")
 	if _, err := workflow.Compile(
 		workflow.Definition{Name: "work-nomination", Version: 1, Spec: spec},
 		workflow.WithGoobers(map[string]apiv1.GooberSpec{"nominator": nominator}),

@@ -58,6 +58,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"build-goobers",
 		"validate-configs",
 		"build-scheduler",
+		"shipped-workflows",
 		"test",
 		"lint",
 		"portal-test",
@@ -70,7 +71,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[9]
+	testCheck := gotChecks[10]
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -85,6 +86,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"GOSUMDB=off",
 		"GOTOOLCHAIN=local",
 		"GOVCS=*:off",
+		"GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1",
 	}
 	if !reflect.DeepEqual(testCheck.env, wantEnv) {
 		t.Fatalf("test environment = %q, want %q", testCheck.env, wantEnv)
@@ -95,6 +97,11 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
+	}
+	shippedCheck := gotChecks[9]
+	if shippedCheck.label != "shipped-workflows" ||
+		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
+		t.Fatalf("shipped workflow check = %#v", shippedCheck)
 	}
 
 	buildCheck := gotChecks[6]
@@ -168,7 +175,6 @@ func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
 		"cover-check",
 		"sandbox-check",
 		"linux-node-validation",
-		"test-shipped-workflows",
 		"stress",
 	}
 	if len(got) != len(want) {
@@ -241,7 +247,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check vet build-scheduler portal-install portal-build portal-dist-diff test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
 		t.Fatalf("check order = %q", labels)
 	}
 }

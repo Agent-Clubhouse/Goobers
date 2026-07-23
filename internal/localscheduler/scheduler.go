@@ -31,6 +31,7 @@ type WorkflowEntry struct {
 	Workflow        string
 	WorkflowVersion int
 	WorkflowDigest  string
+	GooberDigest    string
 	Gaggle          string
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
@@ -991,6 +992,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	go func() {
 		defer s.dispatches.Done()
 		defer s.ReleaseRun(runID, entry.Workflow)
+		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,
@@ -1069,6 +1071,7 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, runID st
 		WorkflowID:      entry.Workflow,
 		WorkflowVersion: strconv.Itoa(entry.WorkflowVersion),
 		WorkflowDigest:  entry.WorkflowDigest,
+		GooberDigest:    entry.GooberDigest,
 		RunID:           runID,
 		Action:          "dispatch",
 	}

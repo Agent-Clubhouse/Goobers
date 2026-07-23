@@ -27,6 +27,10 @@ spec:
         # signal beyond the exit code, and the runner has no way to tell
         # "genuinely nothing to do" from "claimed something."
         resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
       next: curate
     - name: curate
       type: agentic
@@ -34,6 +38,10 @@ spec:
       goal: Triage, label, and de-duplicate the claimed backlog items.
       capabilities:
         - github:issues:write
+      policyActions:
+        - close-issue
+        - comment-on-issue
+        - label-issue
       next: release-claim
     # Explicit release (issue #234): curation never opens a PR or closes the
     # issue, so issue-close-out's release never runs for it — without this
@@ -47,4 +55,6 @@ spec:
         command: ["goobers", "backlog-query", "--release"]
       capabilities:
         - github:issues:write
+      policyActions:
+        - release-backlog-claim
       # Terminal: no `next`.

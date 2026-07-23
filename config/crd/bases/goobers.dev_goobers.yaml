@@ -54,6 +54,15 @@ spec:
                 items:
                   type: string
                 type: array
+              conditionalPolicyActions:
+                description: |-
+                  ConditionalPolicyActions lists persona actions that are prescribed only
+                  when an invoking task explicitly declares the action and grants its
+                  capability. This supports opt-in authority such as issue self-approval
+                  without making it part of every invocation.
+                items:
+                  type: string
+                type: array
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.
@@ -87,6 +96,14 @@ spec:
                   Model selects the harness model. Values are scoped to Harness and
                   validated by its adapter before a run starts.
                 type: string
+              policyActions:
+                description: |-
+                  PolicyActions is the closed vocabulary of externally mutating actions
+                  this goober's persona unconditionally prescribes. Every agentic task that
+                  invokes the goober must redeclare these actions and their capabilities.
+                items:
+                  type: string
+                type: array
               role:
                 description: Role is the goober's role, e.g. "coder", "perf-hunter",
                   "reviewer".

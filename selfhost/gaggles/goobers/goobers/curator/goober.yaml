@@ -19,6 +19,12 @@ spec:
   capabilities:
     - github:issues:write
     - agent:model
+  policyActions:
+    - close-issue
+    - comment-on-issue
+    - create-issue
+    - edit-issue
+    - label-issue
   skills:
     - triage
   tools:

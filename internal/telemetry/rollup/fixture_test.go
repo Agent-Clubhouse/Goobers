@@ -39,6 +39,7 @@ runId: %s
 workflow: implement
 workflowVersion: 3
 workflowDigest: sha256:deadbeefcafef00d
+gooberDigest: sha256:resolvedgoobers
 gaggle: web
 trigger:
   kind: item

@@ -29,6 +29,13 @@ spec:
         - github:pr:write
         - github:issues:write
         - github:branch:delete
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
+        - delete-branch
       continueOnError: true
       next: pr-select
 
@@ -59,6 +66,8 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - flag-scope-drift
       expectedOutputs:
         - selectedNumber
         - selectedHeadSha
@@ -93,6 +102,10 @@ spec:
       capabilities:
         - github:pr:write
         - github:pr:review
+      policyActions:
+        - publish-review
+        - route-verdict
+        - close-pr
       expectedOutputs:
         - selectedNumber
         - selectedHeadSha
@@ -163,6 +176,9 @@ spec:
         # github:branch:delete lets post-merge cleanupMergedBranch delete the
         # merged head branch instead of failing closed and leaking it (#1075).
         - github:branch:delete
+      policyActions:
+        - merge-pr
+        - delete-branch
       expectedOutputs:
         - selectedNumber
         - merged
@@ -202,6 +218,10 @@ spec:
         # github:branch:delete: queue-watch runs the same post-merge
         # cleanupMergedBranch as merge-pr when the queue reports merged (#1075).
         - github:branch:delete
+      policyActions:
+        - watch-merge-queue
+        - route-queue-outcome
+        - delete-branch
       expectedOutputs:
         - selectedNumber
         - queueOutcome
@@ -219,6 +239,12 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
 
     # #950: merge-gate's fail branch records a durable per-PR counter of merge
     # refusals at an unchanged head and demotes a persistently-stuck lander
@@ -236,6 +262,9 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
+      policyActions:
+        - record-merge-refusal
+        - demote-pr
 
   gates:
     - name: review

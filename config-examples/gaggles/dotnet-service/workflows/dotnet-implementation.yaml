@@ -35,6 +35,8 @@ spec:
         local-ci stage below owns that authoritatively.
       capabilities:
         - repo:push
+      policyActions:
+        - modify-repository
       retry:
         maxAttempts: 2
         backoffSeconds: 15

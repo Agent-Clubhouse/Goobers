@@ -23,6 +23,8 @@ spec:
   capabilities:
     - repo:push
     - agent:model
+  policyActions:
+    - modify-repository
   skills:
     - config-authoring
   tools:

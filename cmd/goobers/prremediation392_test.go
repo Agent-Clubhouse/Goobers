@@ -306,6 +306,8 @@ func pushRemediatedFixture(t *testing.T, recordHeadSHA bool) (instanceRoot strin
 // success having changed nothing — the work would die with the worktree.
 func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 	instanceRoot, st, wtPath, remoteTip := pushRemediatedFixture(t, true)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "pr-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "issues-token")
 
 	code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
 	if code != 0 {
@@ -336,6 +338,9 @@ func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 		if l == needsRemediationLabel {
 			t.Errorf("labels = %v, want %s cleared so merge-review re-evaluates the PR", st.labels, needsRemediationLabel)
 		}
+	}
+	if st.labelRemovalAuth != "Bearer issues-token" {
+		t.Errorf("label removal authorization = %q, want the github:issues:write credential", st.labelRemovalAuth)
 	}
 }
 

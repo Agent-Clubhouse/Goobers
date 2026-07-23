@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -49,13 +51,15 @@ type postMergeServerState struct {
 	// filesRequests/mergeableRequests count GET /pulls/{n}/files and
 	// /pulls/{n} (mergeable) hits per PR number — #715's cache-reuse tests
 	// assert a warm sibling cache costs zero extra files requests.
-	filesRequests     map[int]int
-	mergeableRequests map[int]int
-	pollRequests      int
-	deleteCalls       int
-	deleteStatus      int
-	labelStatus       int
-	commentStatus     int
+	filesRequests      map[int]int
+	mergeableRequests  map[int]int
+	pollRequests       int
+	pollAuthorization  string
+	issueAuthorization map[int][]string
+	deleteCalls        int
+	deleteStatus       int
+	labelStatus        int
+	commentStatus      int
 }
 
 // newPostMergeServerState returns a state with every map initialized and
@@ -65,18 +69,19 @@ type postMergeServerState struct {
 func newPostMergeServerState(mergedNumber int, baseBranch, body string, mergedFiles []string, otherOpenPRs []int) *postMergeServerState {
 	st := &postMergeServerState{
 		mergedNumber: mergedNumber, baseBranch: baseBranch, body: body, mergedFiles: mergedFiles,
-		merged:            true,
-		otherOpenPRs:      otherOpenPRs,
-		headSHA:           map[int]string{},
-		mergeable:         map[int]*bool{},
-		files:             map[int][]string{},
-		issueLabels:       map[int][]string{},
-		issueState:        map[int]string{},
-		issueComments:     map[int][]string{},
-		commentIDs:        map[int][]int{},
-		nextCommentID:     1,
-		filesRequests:     map[int]int{},
-		mergeableRequests: map[int]int{},
+		merged:             true,
+		otherOpenPRs:       otherOpenPRs,
+		headSHA:            map[int]string{},
+		mergeable:          map[int]*bool{},
+		files:              map[int][]string{},
+		issueLabels:        map[int][]string{},
+		issueState:         map[int]string{},
+		issueComments:      map[int][]string{},
+		commentIDs:         map[int][]int{},
+		nextCommentID:      1,
+		filesRequests:      map[int]int{},
+		mergeableRequests:  map[int]int{},
+		issueAuthorization: map[int][]string{},
 	}
 	trueVal := true
 	for _, n := range otherOpenPRs {
@@ -124,6 +129,7 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d", prefix, st.mergedNumber), func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.pollRequests++
+		st.pollAuthorization = r.Header.Get("Authorization")
 		merged := st.merged
 		st.mu.Unlock()
 		state := "open"
@@ -282,6 +288,7 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 		}
 		st.mu.Lock()
 		defer st.mu.Unlock()
+		st.issueAuthorization[num] = append(st.issueAuthorization[num], r.Header.Get("Authorization"))
 		switch {
 		case len(parts) == 1 && r.Method == http.MethodGet:
 			state := st.issueState[num]
@@ -445,6 +452,35 @@ func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 	if !ok || overlap.DisplacingPullNumber != 20 ||
 		strings.Join(overlap.OverlappingFiles, ",") != "portal/src/App.tsx,shared/pkg.go" {
 		t.Fatalf("PR #22 handoff = %+v, ok=%v; want displacing PR #20 and both overlapping paths", overlap, ok)
+	}
+}
+
+func TestPostMergeUsesIssuesCredentialForReferencedIssue(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "Fixes #42", nil, nil)
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	root, _ := postMergeEnv(t, server.URL, false, map[string]string{"pullNumber": "20"})
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "pr-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesWrite)), "issues-token")
+
+	code, stdout, stderr := runArgs(t, "post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	pollAuthorization := st.pollAuthorization
+	issueAuthorizations := append([]string(nil), st.issueAuthorization[42]...)
+	st.mu.Unlock()
+	if pollAuthorization != "Bearer pr-token" {
+		t.Fatalf("pull request authorization = %q, want PR credential", pollAuthorization)
+	}
+	if len(issueAuthorizations) == 0 {
+		t.Fatal("referenced issue received no requests")
+	}
+	for _, authorization := range issueAuthorizations {
+		if authorization != "Bearer issues-token" {
+			t.Fatalf("referenced issue authorization = %q, want issues credential", authorization)
+		}
 	}
 }
 
