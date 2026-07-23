@@ -5872,6 +5872,11 @@ func TestDefaultRepoCloneURL(t *testing.T) {
 			want: "https://dev.azure.com/acme/widgets/_git/web",
 		},
 		{
+			name: "azure devops explicit project",
+			ref:  apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"},
+			want: "https://dev.azure.com/acme/widgets/_git/web",
+		},
+		{
 			name: "azure devops escapes path segments",
 			ref:  apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme/widgets project", Name: "web app"},
 			want: "https://dev.azure.com/acme/widgets%20project/_git/web%20app",

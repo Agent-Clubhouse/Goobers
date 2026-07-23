@@ -56,6 +56,7 @@ type Manager struct {
 	gaggle        string
 	usageObserver UsageObserver
 	diskUsage     func(string) (int64, error)
+	gitEnv        func(context.Context, string) ([]string, error)
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -97,6 +98,15 @@ func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 		if len(out) > 0 {
 			m.runBranchNamespaces = out
 		}
+	}
+}
+
+// WithGitEnvironment configures credentials for remote clone/fetch commands.
+// The callback receives the repository URL and returns the complete child
+// environment. Local worktree operations never receive this environment.
+func WithGitEnvironment(resolve func(context.Context, string) ([]string, error)) ManagerOption {
+	return func(m *Manager) {
+		m.gitEnv = resolve
 	}
 }
 
@@ -215,7 +225,7 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", fmt.Errorf("worktree: create workcopy parent for %s: %w", repoURL, err)
 		}
-		if err := runGit(ctx, "", "clone", "--mirror", repoURL, dir); err != nil {
+		if err := m.runRemoteGit(ctx, repoURL, "", "clone", "--mirror", repoURL, dir); err != nil {
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
 			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
 		}
@@ -240,7 +250,7 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	for _, ns := range m.runBranchNamespaces {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
-	if err := runGit(ctx, dir, fetchArgs...); err != nil {
+	if err := m.runRemoteGit(ctx, repoURL, dir, fetchArgs...); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
 	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;
@@ -252,6 +262,17 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		return "", err
 	}
 	return dir, nil
+}
+
+func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ...string) error {
+	if m.gitEnv == nil {
+		return runGit(ctx, dir, args...)
+	}
+	env, err := m.gitEnv(ctx, repoURL)
+	if err != nil {
+		return fmt.Errorf("resolve git environment: %w", err)
+	}
+	return runGitWithEnv(ctx, dir, env, args...)
 }
 
 // managedGitConfig is the explicit per-mirror git config the worktree layer sets
@@ -524,9 +545,16 @@ func IsTransientProvisionError(err error) bool {
 // exit code + combined output for IsTransientProvisionError's classification)
 // on failure.
 func runGit(ctx context.Context, dir string, args ...string) error {
+	return runGitWithEnv(ctx, dir, nil, args...)
+}
+
+func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -363,7 +363,7 @@ func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	runner := &fakeRunner{}
+	runner := &adoAuthRunner{}
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) {
 		p.BaseURL = server.URL
 		p.Runner = runner

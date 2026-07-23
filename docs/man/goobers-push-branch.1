@@ -9,8 +9,8 @@ goobers push-branch \- push the worktree's checked-out branch to origin (a workf
 Usage: goobers push-branch [path]
 
 Push the worktree's checked-out branch to origin, authenticated via the
-repo:push credential the runner already resolved for this stage — never
-the host's ambient git credentials, and never persisted to .git/config.
+configured repository credential — never the host's ambient git
+credentials, and never persisted to .git/config.
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 .fi
