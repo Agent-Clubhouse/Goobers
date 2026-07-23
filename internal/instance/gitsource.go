@@ -71,6 +71,13 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 
 	repository := opts.Repository
 	local := false
+	remote := false
+	if filepath.VolumeName(repository) == "" {
+		parsed, parseErr := url.Parse(repository)
+		at := strings.IndexByte(repository, '@')
+		colon := strings.IndexByte(repository, ':')
+		remote = (parseErr == nil && parsed.Scheme != "") || (at >= 0 && colon > at)
+	}
 	switch info, statErr := os.Stat(repository); {
 	case statErr == nil && !info.IsDir():
 		return nil, errors.New("git config source: local repository is not a directory")
@@ -80,7 +87,7 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 			return nil, fmt.Errorf("git config source: resolve local repository: %w", err)
 		}
 		local = true
-	case !isGitSourceRemote(repository) && !os.IsNotExist(statErr):
+	case !remote && !os.IsNotExist(statErr):
 		return nil, fmt.Errorf("git config source: inspect repository: %w", statErr)
 	}
 
@@ -97,19 +104,6 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 		source.mirror = filepath.Join(repositoryDir, "repo.git")
 	}
 	return source, nil
-}
-
-func isGitSourceRemote(repository string) bool {
-	if filepath.VolumeName(repository) != "" {
-		return false
-	}
-	parsed, err := url.Parse(repository)
-	if err == nil && parsed.Scheme != "" {
-		return true
-	}
-	at := strings.IndexByte(repository, '@')
-	colon := strings.IndexByte(repository, ':')
-	return at >= 0 && colon > at
 }
 
 // Resolve fetches the source when needed and returns an immutable materialized
