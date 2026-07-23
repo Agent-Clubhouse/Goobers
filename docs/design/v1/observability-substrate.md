@@ -37,12 +37,11 @@ PO goals (traceability anchors used throughout):
   `telemetry.db` rollup tables (`runs`, `stage_attempts`, `gate_verdicts`,
   `provider_mutations`, `run_errors`, `spans`, `span_events`); a `goobers telemetry
   stats|errors` CLI over them. Journals are the source of truth; the rollup is a
-  rebuildable projection (TEL-032). **Caveat (2026-07-13 review):** the OTel span
-  pipeline is *library-complete but unwired* — no V0 binary constructs the telemetry
-  `Client`, so production runs emit journal events but zero spans, and the shipped
-  work-nomination workflow invokes a `goobers telemetry-query` subcommand that does
-  not exist. Both are filed as V0 remediation; O1/O6 below build on those fixes
-  landing first.
+  rebuildable projection (TEL-032). **Update (2026-07-23):** the 2026-07-13
+  "library-complete but unwired" caveat is resolved — the span pipeline is **wired**
+  (`cmd/goobers/runnerwiring.go` constructs the telemetry `Client` with the
+  journal-span exporter, so production runs emit spans) and a minimal
+  `goobers telemetry-query` subcommand exists. O1/O6 below build on that base.
 - **Envelope contract**: `ResultEnvelope.Metrics` (numeric: duration, tokens, cost,
   custom) and `ErrorInfo.Code` already exist (G1/G4's contract foothold);
   `Limits.MaxTokens` / `MaxCostUSD` exist as *declared* budgets.
@@ -237,9 +236,9 @@ mid-run.
 | **O7** (#149) | Retention: config, daemon housekeeping, `telemetry prune` | D8 | — |
 | **O8** (#150) | DSL: `Goober.spec.model` + `harnessOptions` (+ validation, docs, starter examples) | D9 | — |
 
-(V0.1 remediation prerequisites: #126 wires the span pipeline; #132 implements the
-minimal `telemetry-query` subcommand; #127 makes the rollup robust; #117 unifies
-scrubbing across at-rest surfaces.)
+(V0.1 remediation prerequisites — **all done**: #126 wired the span pipeline; #132
+implemented the minimal `telemetry-query` subcommand; #127 made the rollup robust;
+#117 unified scrubbing across at-rest surfaces.)
 
 Test plans follow the repo standard: seeded-fixture unit tests per aggregate/surface,
 negative controls for redaction on every new at-rest form (per the #qa-gate standard

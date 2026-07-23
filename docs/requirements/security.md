@@ -17,7 +17,7 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   | Tier | Identity/auth | Secrets | Isolation |
   |---|---|---|---|
   | 1 — Solo | None (local trust) | Env vars / token file, redacted from journals | Worktree + process isolation, capability admission |
-  | 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + sandboxed stage execution, per-goober credential injection (V1) |
+  | 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + per-goober credential scoping (shipped, #823); sandboxed stage execution (V1, mechanism per ADR 0001) |
   | 3 — Cloud (V2) | Entra ID (OIDC) | Azure Key Vault | Per-gaggle namespaces + identities, network policy |
 
 - **Fail closed:** undeclared capabilities, unvalidated definitions, or an unwritable
@@ -70,12 +70,19 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   seam as tier 3; only the issuer changes.
 - **SEC-044 (MUST):** *(Tiers 1–2, V1)* Agentic stage execution MUST be sandboxable —
   constraining filesystem and network reach of the harness process beyond bare worktree +
-  process isolation.
+  process isolation. **Status:** mechanism decided
+  ([ADR 0001](../adr/0001-agentic-sandbox-mechanism.md), accepted — OS-native:
+  `sandbox-exec`/Seatbelt on macOS, bubblewrap on Linux) and the native
+  implementation is landed (`internal/sandbox`, darwin + linux). The agentic
+  executor/harness does not yet wrap stages in it — enforcement rollout (S2–S4 of
+  `../design/v1/35-sandboxing-per-goober-creds.md`) is still in progress.
 - **SEC-045 (MUST):** *(Tiers 1–2)* Credentials MUST be resolved and injected **per
   run, scoped to the stage's declared capabilities** — never ambient to the whole
-  daemon. This ships at V0 (it is the enforcement mechanism behind `SEC-042`); V1
-  deepens it with per-goober sandbox integration (`SEC-044`) so per-gaggle
-  credential scoping (`SEC-002`) holds locally too.
+  daemon. This ships at V0 (it is the enforcement mechanism behind `SEC-042`).
+  **Per-goober scoping is now shipped too** (#823: grants carry a goober identity,
+  so injection is scoped per goober, not just per stage) — approximating per-gaggle
+  credential scoping (`SEC-002`) locally. V1 completes runtime containment by
+  pairing it with sandbox integration (`SEC-044`).
 - **SEC-046 (MUST):** *(Tiers 1–2)* Secrets MUST be referenced via `instance.yaml` token
   refs resolving to env vars or a token file (or a team secret store at tier 2) — never
   committed to `config/` or the instance directory. This is the same secret-resolver

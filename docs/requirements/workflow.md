@@ -27,8 +27,8 @@ everything a goober does happens inside a workflow, at every deployment tier.
 - **Triggers** differentiate workflow archetypes but not the taxonomy: a schedule
   (cron / time-since-last-run) — first to ship (V0); a backlog item becoming
   available; or an external signal. Perf hunter, error miner, Tutor, researchers,
-  implementers are **all just workflows** differing by trigger + stages. At V0,
-  backlog consumption is expressed as a cron-triggered workflow whose first stage
+  implementers are **all just workflows** differing by trigger + stages. Backlog
+  consumption pairs a backlog-item (or cron) trigger with a first stage that
   queries the provider for eligible items and claims them.
 - The **default starter** is an ordinary **length-1 (single-stage), implement-only**
   workflow, shipped so a gaggle works immediately.
@@ -50,12 +50,14 @@ everything a goober does happens inside a workflow, at every deployment tier.
   fragments to avoid duplication.
 
 ### Triggers, readiness & scheduling
-- **WF-010 (MUST):** A Workflow MUST declare its trigger(s): schedule/cron/
-  time-since-last-run (**ships first, V0**), backlog-item-available, and/or external
-  signal. Direct backlog-item triggers and their selectors remain in the schema but
-  are **reserved for V1** and have no V0 runtime consumer. At V0 backlog consumption
-  is expressed as a **cron-triggered workflow whose first stage queries and claims
-  eligible items** (see `WF-055`, `SCH-041`).
+- **WF-010 (MUST):** A Workflow MUST declare its trigger(s). **Shipped — all five
+  trigger types have live runtime consumers:** `manual`, `schedule` (cron /
+  time-since-last-run), `backlog-item`, `signal`, and `webhook` (signed GitHub
+  webhooks, delivered via the signal path). The backlog-item trigger fans out on
+  the provider's eligible-item count, filtered on selector KEYS as required
+  labels; the run's first stage still **queries and claims eligible items** (see
+  `WF-055`, `SCH-041`). Full selector matching and multi-workflow routing remain
+  V1 prescriptive (`SCH-010`).
 - **WF-011 (MUST):** A Workflow MUST declare readiness conditions (e.g. max parallel
   runs, run budgets, worker/resource capacity). A run MUST start only when the
   trigger has fired AND readiness conditions are satisfied. *(All tiers)*
@@ -100,10 +102,11 @@ everything a goober does happens inside a workflow, at every deployment tier.
   so no unit of work is processed more than once. (See Scheduler spec.)
 
 ### Routing
-- **WF-040 (MUST, V1):** The platform MUST map an incoming unit of work (e.g. a
-  backlog item) to the correct workflow. Mechanism owned by the Scheduler spec
-  (labels + selectors). The V0 schema reserves these fields but does not consume
-  them at runtime.
+- **WF-040 (MUST, V1 full form):** The platform MUST map an incoming unit of work
+  (e.g. a backlog item) to the correct workflow. Mechanism owned by the Scheduler
+  spec (labels + selectors, `SCH-010`). **Shipped:** selector-KEY label filtering
+  on the backlog-item trigger. **Not implemented — V1 prescriptive:** full
+  selector semantics and routing one item across multiple candidate workflows.
 
 ### Run journal & runner-seam contract
 - **WF-050 (MUST):** Every run MUST produce an append-only, content-digested **run

@@ -55,9 +55,13 @@ choice, never a product fork: the same definitions run everywhere.
   MUST recover by replaying `state.json` + the journal and resuming each run from its
   last completed stage (`ARCHITECTURE.md §3.1`). Owning requirement: `WF-054`; this ID
   defers to it.
-- **DEP-025 (MUST):** *(Tiers 1–2)* The daemon MUST watch the local `config/` directory
-  and apply validated definition changes as the tier 1–2 config-delivery mechanism
-  (tier-3 counterpart: `DEP-012`). Version pinning holds: in-flight runs complete on the
+- **DEP-025 (MUST):** *(Tiers 1–2)* The local `config/` directory is the tier 1–2
+  config-delivery mechanism (tier-3 counterpart: `DEP-012`). **Shipped:** the daemon
+  loads and validates it once at `goobers up` startup — invalid config aborts startup
+  (fail-closed) — and `goobers config diff` detects drift against the shipped
+  canonical config. **Not implemented — V1 prescriptive:** watching `config/` and
+  applying validated changes live, delivered by Workflow CD
+  (`../design/workflow-cd.md`). Version pinning holds: in-flight runs complete on the
   definition version they started with (`WF-016`). Owning statement: `CFG-020`; this ID
   defers to it.
 - **DEP-026 (MUST):** *(Tiers 1–2)* Target repos MUST be materialized as **managed working
@@ -80,7 +84,8 @@ component goes when you outgrow the box.
   service).
 - **DEP-003 (MUST):** **Tier 3 (V2):** A reconcile controller MUST continuously drive the
   `config` repo's manifest desired state into the running deployment idempotently
-  (Helm-like / GitOps). Tier 1–2 counterpart: the daemon's `config/` watch (`DEP-025`).
+  (Helm-like / GitOps). Tier 1–2 counterpart: load-at-startup + `goobers config diff`
+  drift detection today; live `config/` watch is V1 via Workflow CD (`DEP-025`).
 - **DEP-010 (MUST):** **Tier 3 (V2):** The `infra` and `config` repos MUST be
   deployable/permissioned independently (supports Tutor write-scoping — `SEC-021`). At
   tiers 1–2 the same boundary holds with "infra" collapsed to the binary +
@@ -130,8 +135,8 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
 ## Relationships
 
 - Installs/provisions → the **Instance** and the **Telemetry** store.
-- Applies → the **Config-as-code** definitions (daemon watch at tiers 1–2; ArgoCD +
-  operator at tier 3).
+- Applies → the **Config-as-code** definitions (daemon load-at-startup at tiers 1–2,
+  watch pending via Workflow CD; ArgoCD + operator at tier 3).
 - Hosts → the **runner** (local runner at tiers 1–2; Temporal runner at tier 3) and
   ephemeral **Goober** run environments.
 - Bounded by → **Security** (worktree/process isolation locally; per-gaggle
@@ -152,8 +157,9 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
 - **DEP-Q4:** *(build-time design, tier 3)* AKS resource sizing and autoscaling (cluster
   autoscaler + HPA) under load.
 - **DEP-Q5:** ~~Build-vs-buy reconciliation tooling~~ **Resolved:** ArgoCD + Goobers
-  operator (CRDs) as the tier-3 config delivery; at tiers 1–2 delivery is the daemon
-  watching `config/` (`ARCHITECTURE.md §10`). See `DEP-012`, `DEP-025`.
+  operator (CRDs) as the tier-3 config delivery; at tiers 1–2 delivery is the local
+  `config/` directory (load-at-startup today; watch is V1 via Workflow CD —
+  `ARCHITECTURE.md §10`). See `DEP-012`, `DEP-025`.
 - **DEP-Q6:** ~~Daemon supervision at tiers 1–2~~ **Resolved (2026-07-20):** supervision
   units ship per platform — **systemd** user service (Linux,
   `packaging/systemd/goobers.service`), **launchd** LaunchAgent (macOS,

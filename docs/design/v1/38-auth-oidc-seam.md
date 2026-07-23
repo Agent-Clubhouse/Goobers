@@ -6,6 +6,10 @@
 >
 > Detailed-design artifact for epic **#38**. The dispatchable work items (A0–A3)
 > each link back to the correspondingly-named section here.
+>
+> Progress (2026-07-23): A2 secret-resolver stabilization **shipped** (#822); the
+> `internal/httpapi` `Authorizer` seam exists (tier-1 `AllowAll`); A0/A1/A3
+> remain unbuilt.
 
 ## 1. Verdict
 

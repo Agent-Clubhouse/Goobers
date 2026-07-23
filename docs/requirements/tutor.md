@@ -14,10 +14,14 @@ The doctrine is unchanged by the tiered architecture: the Tutor is just a workfl
 writes only to config, and humans hold the quality bar via PR controls. Only its data
 source and the enforcement mechanism of its write-boundary vary by tier.
 
-> **Roadmap note:** the Tutor is **V1 scope** (`ARCHITECTURE.md §12`) — it ships with
-> teams/hardening, as a Tutor workflow if it needs more than the standard workflow
-> primitives. Nothing about it is architecturally special; it waits only on the run
-> history V0 accumulates.
+> **Status note (2026-07-23):** the first Tutor **ships** — `tutor.yaml` runs in the
+> selfhost instance as a narrow slice (T1–T5 wave; see `../V0-ACCEPTANCE.md`), and
+> the config-only write boundary (`TUT-005`) is enforced by
+> `internal/configboundary`, wired into the open-pr stage. The Tutor's **forward
+> scope is superseded** by the accepted Tutor v2 redesign
+> (`../design/tutor-redesign.md`, PO-ratified 2026-07-21), which re-anchors it on
+> instance config delivered via Workflow CD; this spec's requirements remain the
+> base contract.
 
 ## Model
 
@@ -86,7 +90,8 @@ source and the enforcement mechanism of its write-boundary vary by tier.
 
 ## Relationships
 
-- Is a → **Workflow** (special-purpose). **V1 scope** per `ARCHITECTURE.md §12`.
+- Is a → **Workflow** (special-purpose). Ships narrow-slice in selfhost; forward
+  scope per `../design/tutor-redesign.md`.
 - Reads → **run journals** + the **Telemetry** run store (rollup at tiers 1–2, ADX at
   tier 3) — the same contract the portal reads; never runner internals.
 - Writes → PRs via the repo provider against **Goober/Workflow/Gate** definitions in
