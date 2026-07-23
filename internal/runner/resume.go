@@ -275,6 +275,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
 	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	seed.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
 	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)
 

@@ -133,6 +133,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
 		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+		seed.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
 

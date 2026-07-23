@@ -1042,13 +1042,13 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":query-backlog": {status: apiv1.ResultNoWork, summary: "nothing eligible"},
 	}
-	r, _ := newTestRunner(t, byTask, nil)
+	r, runsDir := newTestRunner(t, byTask, nil)
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   runID,
 		Machine: machine,
 		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
 	if err != nil {
@@ -1059,6 +1059,19 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	}
 	if res.FinalState != "query-backlog" {
 		t.Fatalf("finalState = %q, want query-backlog (curate must never have become the final state)", res.FinalState)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
+		}
 	}
 }
 
@@ -3053,28 +3066,26 @@ func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
 // torn-write repair is internal/journal's own, already-tested concern
 // (TestKill9MidAppendRecovers); this test is about the runner's
 // interpretation of "started with no finished", not journal-write durability.
-func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int) {
+func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int, trigger journal.Trigger, branchRecorded bool) {
 	t.Helper()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
-		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: trigger,
 	}, nil)
 	if err != nil {
 		t.Fatalf("simulateCrashMidAttempt: journal.Create: %v", err)
 	}
-	// Mirror Start's unconditional run-branch ref.touched event (#133) — a
-	// real crash always went through Start first, so a faithful simulation
-	// must too, or a conformance comparison against a real Start'd run sees
-	// a phantom extra event on the clean side only.
-	if err := jr.Append(journal.Event{
-		Type: journal.EventRefTouched,
-		ExternalRef: &journal.ExternalRef{
-			Provider: string(apiv1.ProviderGitHub),
-			Kind:     "branch",
-			ID:       providers.BranchName(machine.Def.Name, runID),
-		},
-	}); err != nil {
-		t.Fatalf("simulateCrashMidAttempt: append ref.touched: %v", err)
+	if branchRecorded {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventRefTouched,
+			ExternalRef: &journal.ExternalRef{
+				Provider: string(apiv1.ProviderGitHub),
+				Kind:     "branch",
+				ID:       providers.BranchName(machine.Def.Name, runID),
+			},
+		}); err != nil {
+			t.Fatalf("simulateCrashMidAttempt: append ref.touched: %v", err)
+		}
 	}
 	jr.SetMachineState(stageName)
 	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: stageName, Attempt: attempt}); err != nil {
@@ -3102,7 +3113,7 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newFixtureRepo(t)
 
-	simulateCrashMidAttempt(t, runsDir, machine, "run-crash", "implement", 1)
+	simulateCrashMidAttempt(t, runsDir, machine, "run-crash", "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
 
 	det := &flakyDeterministic{failUntil: 0} // succeeds immediately once dispatched
 	r, err := New(Config{
@@ -3262,7 +3273,7 @@ func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newFixtureRepo(t)
 
-	simulateCrashMidAttempt(t, runsDir, machine, "run-crash-exhausted", "implement", 1)
+	simulateCrashMidAttempt(t, runsDir, machine, "run-crash-exhausted", "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
 
 	det := &flakyDeterministic{}
 	r, err := New(Config{
@@ -3305,6 +3316,51 @@ func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeRecordsDeferredBranchBeforeExhaustedBudget(t *testing.T) {
+	const runID = "run-scheduled-crash-exhausted"
+	machine := fixtureMachine(t)
+	det := &flakyDeterministic{}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerSchedule}, false)
+
+	_, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   runID,
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Resume: want an error because the interrupted attempt exhausted the default one-attempt budget")
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor called %d times, want 0", det.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	wantBranch := providers.BranchName(machine.Def.Name, runID)
+	branchRefs := 0
+	for _, event := range events {
+		if event.Type != journal.EventRefTouched || event.ExternalRef == nil || event.ExternalRef.Kind != "branch" {
+			continue
+		}
+		branchRefs++
+		if event.ExternalRef.Provider != string(apiv1.ProviderGitHub) || event.ExternalRef.ID != wantBranch {
+			t.Fatalf("run branch ref = %+v, want provider=github id=%q", event.ExternalRef, wantBranch)
+		}
+	}
+	if branchRefs != 1 {
+		t.Fatalf("run branch refs = %d, want 1 after interrupted deferred attempt: %+v", branchRefs, events)
+	}
+}
+
 // TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget is #109's
 // acceptance scenario: Resume #1 of a crash on a task's LAST allowed attempt
 // must not leave the run resumable again with a fresh budget. Before #110's
@@ -3328,7 +3384,7 @@ func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newFixtureRepo(t)
 
-	simulateCrashMidAttempt(t, runsDir, machine, "run-double-resume", "implement", 1)
+	simulateCrashMidAttempt(t, runsDir, machine, "run-double-resume", "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
 
 	det := &flakyDeterministic{}
 	r, err := New(Config{
