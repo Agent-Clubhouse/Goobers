@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
@@ -292,7 +293,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	argv := append(resolveCopilotCommand(c.Command), flag, prompt)
+	baseCommand := resolveCopilotCommand(c.Command)
+	argv := append(baseCommand, flag, prompt)
+	promptArg := len(baseCommand) + 1
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -310,25 +313,62 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
+		captureID, err := newCopilotCaptureID()
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
+		}
+		argv = append(argv, "--session-id", captureID)
 		// Pin the log to this run without replacing the home that also holds
 		// the user's Copilot configuration.
 		if copilotHome, ok := copilotConfigHome(env); ok {
-			captureID, err := newCopilotCaptureID()
-			if err != nil {
-				return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
-			}
-			argv = append(argv, "--session-id", captureID)
 			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
 		}
 	}
 
-	result, err := c.runner().Run(ctx, ProcessRequest{
+	runner := c.runner()
+	started := time.Now()
+	result, runErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 	})
+	var payload []byte
+	var completionErr error
+	if runErr == nil {
+		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+		if errors.Is(completionErr, ErrNoCompletion) {
+			// A clean Copilot exit can still omit the contract file. Give the
+			// same session one contract-only turn without extending its budget.
+			totalTimeout := req.Timeout
+			if totalTimeout <= 0 {
+				totalTimeout = DefaultTimeout
+			}
+			remaining := totalTimeout - time.Since(started)
+			if remaining <= 0 {
+				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
+				completionErr = nil
+			} else {
+				recoveryArgv := append([]string(nil), argv...)
+				recoveryArgv[promptArg] = renderCompletionRecoveryPrompt(req)
+				recovery, err := runner.Run(ctx, ProcessRequest{
+					Command:            recoveryArgv,
+					Dir:                req.Workspace,
+					Env:                env,
+					Timeout:            remaining,
+					MaxTranscriptBytes: req.MaxTranscriptBytes,
+				})
+				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
+				if err != nil {
+					runErr = err
+					completionErr = nil
+				} else {
+					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+				}
+			}
+		}
+	}
 	out := Outcome{
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
@@ -346,16 +386,31 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			}
 		}
 	}
-	if err != nil {
-		return out, err
+	if runErr != nil {
+		return out, runErr
 	}
-
-	payload, err := readCompletion(req.Workspace, req.CompletionPath)
-	if err != nil {
-		return out, err
+	if completionErr != nil {
+		return out, completionErr
 	}
 	out.Payload = payload
 	return out, nil
+}
+
+func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
+	// Each subprocess enforces limit independently; re-bound their combined
+	// output so recovery cannot double the session's transcript allowance.
+	transcript := newTranscriptBuffer(limit)
+	_, _ = transcript.Write(first.Transcript)
+	if len(first.Transcript) > 0 && len(second.Transcript) > 0 {
+		_, _ = transcript.Write([]byte("\n"))
+	}
+	_, _ = transcript.Write(second.Transcript)
+	return ProcessResult{
+		Transcript:             transcript.Bytes(),
+		ExitCode:               second.ExitCode,
+		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || transcript.Truncated(),
+		TranscriptDroppedBytes: first.TranscriptDroppedBytes + second.TranscriptDroppedBytes + transcript.Dropped(),
+	}
 }
 
 // baseEnv returns the minimal, explicit env every harness process starts

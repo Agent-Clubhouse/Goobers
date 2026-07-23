@@ -46,10 +46,7 @@ func renderPrompt(req RunRequest) string {
 		b.WriteString("\n")
 	}
 
-	completionKind, schemaHint := "result", resultShapeHint
-	if req.Mode == ModeReview {
-		completionKind, schemaHint = "verdict", verdictShapeHint
-	}
+	completionKind, schemaHint := completionContract(req)
 	fmt.Fprintf(&b, "## Completion contract\n\n"+
 		"When you are finished, write your %s as JSON to `%s` (relative to your "+
 		"working directory), matching this shape:\n\n%s\n\n"+
@@ -58,6 +55,26 @@ func renderPrompt(req RunRequest) string {
 		completionKind, req.CompletionPath, schemaHint)
 
 	return b.String()
+}
+
+func renderCompletionRecoveryPrompt(req RunRequest) string {
+	completionKind, schemaHint := completionContract(req)
+	return fmt.Sprintf(
+		"Your previous turn ended without writing the mandatory completion file. "+
+			"Do not repeat completed work or make unrelated changes. Inspect the current state, then write "+
+			"the final %s as valid JSON to `%s` "+
+			"(relative to the working directory), matching this shape:\n\n%s\n\n"+
+			"Report the actual outcome; do not claim success unless the task is complete. "+
+			"Do not finish this turn until the file exists and is valid JSON.",
+		completionKind, req.CompletionPath, schemaHint,
+	)
+}
+
+func completionContract(req RunRequest) (string, string) {
+	if req.Mode == ModeReview {
+		return "verdict", verdictShapeHint
+	}
+	return "result", resultShapeHint
 }
 
 // resultShapeHint deliberately omits "error", "artifacts", and "transcript" from the base

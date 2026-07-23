@@ -627,6 +627,9 @@ func TestExecutorInvokeFailsClosedOnMissingCompletion(t *testing.T) {
 	if !errors.Is(err, ErrNoCompletion) {
 		t.Fatalf("Invoke error = %v, want ErrNoCompletion", err)
 	}
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("Invoke error = %v, want infrastructure retry classification", err)
+	}
 }
 
 func TestExecutorInvokeFailsClosedOnInvalidCompletion(t *testing.T) {
