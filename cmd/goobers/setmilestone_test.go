@@ -88,3 +88,24 @@ func TestSetMilestoneRequiresMilestoneCapability(t *testing.T) {
 		t.Fatalf("mutation sidecar exists without capability: %v", err)
 	}
 }
+
+func TestSetMilestoneUsesDefaultResultFileOnFailure(t *testing.T) {
+	unsetProviderResultFile(t)
+	t.Setenv(executor.InputEnvVar("itemID"), "")
+	t.Setenv(executor.InputEnvVar("milestone"), "")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "set-milestone", "--milestone", "22")
+	if code != 1 {
+		t.Fatalf("set-milestone without item: code=%d stderr=%q, want 1", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "milestone-result.json"))
+	if result[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+	}
+	message, _ := result[executor.OutputErrorMessage].(string)
+	if !strings.Contains(message, "item is required") {
+		t.Fatalf("errorMessage = %q, want missing item error", message)
+	}
+}
