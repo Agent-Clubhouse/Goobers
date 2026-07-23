@@ -110,8 +110,10 @@ spec:
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
     # clean rebase never suppresses a known substantive finding, and a rebase
-    # conflict is itself substantive. Re-checks out the SAME PR branch
-    # gather-pr-context selected (each stage gets its own fresh worktree —
+    # unresolved conflict is itself substantive. A conflict consisting only
+    # of distinct adjacent entries in an existing line-oriented list is
+    # combined deterministically before routing. Re-checks out the SAME PR
+    # branch gather-pr-context selected (each stage gets its own fresh worktree —
     # see the file's own doc comment) before attempting anything.
     #
     #   rebase clean, no substantive finding or failing CI ->
@@ -120,7 +122,7 @@ spec:
     #   failing CI -> push a clean rebase to retrigger CI, then route to
     #     remediation-checkpoint so a persistent failure cannot starve later
     #     candidates.
-    #   rebase conflict, OR a substantive finding is present -> needs the
+    #   unsafe rebase conflict, OR a substantive finding is present -> needs the
     #     agentic chain — rebase-gate's "fail" branch routes to
     #     remediation-checkpoint, which uses the PR's CURRENT diff (whatever
     #     rebase-pr left pushed, unchanged on this path) to detect a stuck PR
