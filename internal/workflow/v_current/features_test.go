@@ -1,4 +1,4 @@
-package workflow
+package vcurrent
 
 import (
 	"slices"
@@ -8,7 +8,6 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestFeatureRegistryLookup(t *testing.T) {
@@ -133,7 +132,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 			t.Errorf("feature %q since-version = %q, want %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
 		}
 		if len(feature.DSLVersions) != 1 ||
-			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: wantLevel}) {
+			feature.DSLVersions[0] != (DSLFeatureSupport{Version: DSLVersion, Level: wantLevel}) {
 			t.Errorf("feature %q DSL versions = %+v, want level %q", feature.ID, feature.DSLVersions, wantLevel)
 		}
 		wantHistory := []SupportTransition{{Level: wantLevel, SinceVersion: initialFeatureSinceVersion}}
@@ -167,17 +166,12 @@ func TestStandardFeaturesAreGA(t *testing.T) {
 }
 
 func TestFeaturesAtDSLVersion(t *testing.T) {
-	for _, version := range supportmatrix.GetDSL().Versions() {
-		features, err := FeaturesAtDSLVersion(AllFeatures(), version.Version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(features) == 0 {
-			t.Errorf("DSL version %q has no feature-registry coverage", version.Version)
-		}
-		if version.Version == supportmatrix.CurrentDSLVersion && len(features) != len(AllFeatures()) {
-			t.Fatalf("features for current DSL version = %d, want %d", len(features), len(AllFeatures()))
-		}
+	features, err := FeaturesAtDSLVersion(AllFeatures(), DSLVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(features) != len(AllFeatures()) {
+		t.Fatalf("features for interpreter DSL version = %d, want %d", len(features), len(AllFeatures()))
 	}
 }
 
@@ -671,7 +665,14 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	currentFeatureRegistry = registry
 	t.Cleanup(func() { currentFeatureRegistry = original })
 
-	_, err = compileAcknowledged(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
+	_, err = Compile(Definition{Name: "linear", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement"},
+		},
+	}}, WithPreviewFeatures(true))
 	if err == nil || !strings.Contains(err.Error(), `DSL feature registry is missing: workflow.spec.gaggle`) {
 		t.Fatalf("Compile error = %v, want missing registry feature", err)
 	}

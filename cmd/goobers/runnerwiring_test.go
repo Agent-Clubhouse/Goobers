@@ -419,7 +419,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 		Workflows: []apiv1.Workflow{
 			workflowDefinition("alpha", "1.4"),
-			workflowDefinition("beta", "1.5"),
+			workflowDefinition("beta", ""),
 		},
 	}
 
@@ -436,7 +436,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	if len(machines) != 2 || machines[alpha] == nil || machines[beta] == nil {
 		t.Fatalf("compiled machines = %+v", machines)
 	}
-	if machines[alpha].Def.DSLVersion != "1.4" || machines[beta].Def.DSLVersion != "1.5" {
+	if machines[alpha].Def.DSLVersion != "1.4" || machines[beta].Def.DSLVersion != "" {
 		t.Fatalf("compiled machine DSL versions = alpha %q, beta %q",
 			machines[alpha].Def.DSLVersion, machines[beta].Def.DSLVersion)
 	}

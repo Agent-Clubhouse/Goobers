@@ -1,0 +1,38 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: golden-runtime-policy
+spec:
+  gaggle: golden
+  triggers:
+    - type: backlog-item
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: Poll CI.
+      run:
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+        prNumber: "42"
+      capabilities:
+        - github:pr:write
+      timeoutSeconds: 120
+      limits:
+        maxDurationSeconds: 90
+        maxTokens: 1234
+        maxCostUSD: 0.5
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+        timeoutSeconds: 30
+        pollIntervalSeconds: 7
+      branches:
+        pass: ""
+        fail: "@abort"
+        timeout: "@escalate"
