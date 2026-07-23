@@ -34,4 +34,8 @@ spec:
       capabilities:
         - telemetry:read
         - github:issues:write
+      policyActions:
+        - comment-on-issue
+        - create-issue
+        - label-issue
       # Terminal: no `next`.

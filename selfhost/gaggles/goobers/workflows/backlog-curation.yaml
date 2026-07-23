@@ -68,6 +68,8 @@ spec:
         # unlikely to already have an open PR, but the check is defense in
         # depth, not conditional on caller.
         - github:pr:write
+      policyActions:
+        - claim-backlog-items
       expectedOutputs:
         - claimed-items
       next: curate
@@ -84,6 +86,12 @@ spec:
       capabilities:
         - github:issues:write
         - agent:model
+      policyActions:
+        - close-issue
+        - comment-on-issue
+        - create-issue
+        - edit-issue
+        - label-issue
       # No structured output: per-item outcomes are posted as issue comments,
       # and a result's `outputs` are scalar-only (#299). The scalar `summary`
       # in the result envelope carries the run's counts.
@@ -106,4 +114,6 @@ spec:
         command: ["goobers", "backlog-query", "--release"]
       capabilities:
         - github:issues:write
+      policyActions:
+        - release-backlog-claim
       # Terminal: no `next`.

@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
@@ -39,116 +40,38 @@ const (
 	contractHelperPayload    = "GOOBERS_SHIPPED_CONTRACT_PAYLOAD"
 	contractHelperResultFile = "GOOBERS_SHIPPED_CONTRACT_RESULT_FILE"
 	contractHelperExitCode   = "GOOBERS_SHIPPED_CONTRACT_EXIT_CODE"
+	skipShippedContracts     = "GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS"
 	contractNumber           = float64(73)
 )
 
-type scenarioKind string
-
-const (
-	scenarioHappy      scenarioKind = "happy"
-	scenarioFailure    scenarioKind = "failure"
-	scenarioEscalation scenarioKind = "escalation"
-)
-
-type contractScenario struct {
-	kind               scenarioKind
-	wantPhase          journal.RunPhase
-	wantSequence       []string
-	wantGateFailure    bool
-	wantGateEscalation bool
+type terminalScenario struct {
+	name           string
+	steps          []workflow.GraphEdge
+	gateOutcomes   map[string][]string
+	escalationTask string
+	escalationGate string
+	wantPhase      journal.RunPhase
 }
 
-type workflowContract struct {
-	scenarios []contractScenario
+type valueHandoffContract struct {
+	workflow       string
+	producer       string
+	producerOutput string
+	consumer       string
+	consumerInput  string
+	consumerOutput string
+	expectedValue  any
 }
 
-var shippedContracts = map[string]workflowContract{
-	"backlog-curation": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted, "task:query-backlog", "task:curate", "task:release-claim"),
-			scenario(scenarioFailure, journal.PhaseFailed, "task:query-backlog"),
-			scenario(scenarioEscalation, journal.PhaseEscalated, "task:query-backlog"),
-		},
-	},
-	"implementation": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted,
-				"task:query-backlog", "task:implement", "gate:review=pass",
-				"task:local-ci", "gate:local-gate=pass", "task:push-branch",
-				"task:open-pr", "gate:open-pr-gate=pass", "task:ci-poll",
-				"gate:ci-gate=pass", "task:close-out"),
-			withGateFailure(scenario(scenarioFailure, journal.PhaseAborted,
-				"task:query-backlog", "task:implement", "gate:review=fail",
-				"task:park-needs-human")),
-			withGateEscalation(scenario(scenarioEscalation, journal.PhaseEscalated,
-				"task:query-backlog", "task:implement", "gate:review=needs-changes",
-				"task:implement", "gate:review=needs-changes", "task:park-escalated")),
-		},
-	},
-	"merge-review": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted,
-				"task:reconcile-post-merge", "task:pr-select", "task:gather-sibling-context",
-				"gate:review=pass", "task:apply-verdict", "gate:published-verdict=pass",
-				"task:merge-pr", "gate:merge-gate=merged", "task:post-merge"),
-			withGateFailure(scenario(scenarioFailure, journal.PhaseCompleted,
-				"task:reconcile-post-merge", "task:pr-select", "task:gather-sibling-context",
-				"gate:review=fail", "task:apply-verdict", "gate:published-verdict=fail")),
-			scenario(scenarioEscalation, journal.PhaseEscalated,
-				"task:reconcile-post-merge", "task:pr-select"),
-		},
-	},
-	"pr-remediation": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted,
-				"task:update-behind-pr", "gate:update-behind-gate=pass"),
-			withGateFailure(scenario(scenarioFailure, journal.PhaseCompleted,
-				"task:update-behind-pr", "gate:update-behind-gate=fail",
-				"task:gather-pr-context", "task:rebase-pr", "gate:rebase-gate=pass")),
-			withGateEscalation(scenario(scenarioEscalation, journal.PhaseEscalated,
-				"task:update-behind-pr", "gate:update-behind-gate=fail",
-				"task:gather-pr-context", "task:rebase-pr", "gate:rebase-gate=fail",
-				"task:remediation-checkpoint", "gate:checkpoint-gate=pass",
-				"task:gather-sibling-context",
-				"task:implement", "gate:review=needs-changes",
-				"task:implement", "gate:review=needs-changes", "task:park-escalated")),
-		},
-	},
-	"tutor": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted,
-				"task:gather-signals", "task:analyze", "task:draft-change",
-				"task:validate-config", "gate:config-valid=pass",
-				"task:push-branch", "task:open-pr"),
-			withGateFailure(scenario(scenarioFailure, journal.PhaseAborted,
-				"task:gather-signals", "task:analyze", "task:draft-change",
-				"task:validate-config", "gate:config-valid=fail")),
-			scenario(scenarioEscalation, journal.PhaseEscalated, "task:gather-signals"),
-		},
-	},
-	"work-nomination": {
-		scenarios: []contractScenario{
-			scenario(scenarioHappy, journal.PhaseCompleted, "task:gather-signals", "task:nominate"),
-			scenario(scenarioFailure, journal.PhaseFailed, "task:gather-signals"),
-			scenario(scenarioEscalation, journal.PhaseEscalated, "task:gather-signals"),
-		},
-	},
-}
-
-func scenario(kind scenarioKind, phase journal.RunPhase, sequence ...string) contractScenario {
-	return contractScenario{kind: kind, wantPhase: phase, wantSequence: sequence}
-}
-
-func withGateFailure(s contractScenario) contractScenario {
-	s.wantGateFailure = true
-	return s
-}
-
-func withGateEscalation(s contractScenario) contractScenario {
-	s.wantGateFailure = true
-	s.wantGateEscalation = true
-	return s
-}
+var requiredValueHandoffs = []valueHandoffContract{{
+	workflow:       "merge-review",
+	producer:       "pr-select",
+	producerOutput: "number",
+	consumer:       "gather-sibling-context",
+	consumerInput:  "selectedNumber",
+	consumerOutput: "selectedNumber",
+	expectedValue:  contractNumber,
+}}
 
 func TestShippedWorkflowCommandHelper(t *testing.T) {
 	if os.Getenv(contractHelperMode) == "" {
@@ -169,86 +92,102 @@ func TestShippedWorkflowCommandHelper(t *testing.T) {
 }
 
 func TestShippedWorkflowContracts(t *testing.T) {
+	if os.Getenv(skipShippedContracts) != "" {
+		t.Skip("covered by the dedicated shipped-workflows CI tier")
+	}
 	root := repositoryRoot(t)
-	selfhost := filepath.Join(root, "selfhost")
-	set, report, err := instance.LoadConfigDir(selfhost)
-	if err != nil {
-		t.Fatalf("load selfhost config: %v\n%v", err, report)
+	configs := []struct {
+		name string
+		path string
+	}{
+		{name: "selfhost", path: filepath.Join(root, "selfhost")},
+		{name: "config-examples", path: filepath.Join(root, "config-examples")},
 	}
-	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
+	for _, config := range configs {
+		config := config
+		t.Run(config.name, func(t *testing.T) {
+			set, report, err := instance.LoadConfigDir(config.path)
+			if err != nil {
+				t.Fatalf("load shipped config: %v\n%v", err, report)
+			}
+			discovered := discoverWorkflowDefinitions(t, config.path)
+			loaded := make(map[string]apiv1.Workflow, len(set.Workflows))
+			for _, definition := range set.Workflows {
+				key := shippedWorkflowKey(definition.Spec.Gaggle, definition.Name)
+				loaded[key] = definition
+				source, ok := set.WorkflowSource(definition.Spec.Gaggle, definition.Name)
+				if !ok {
+					t.Fatalf("workflow %q has no source path", key)
+				}
+				if got := filepath.ToSlash(source); got != discovered[key] {
+					t.Fatalf("workflow %q source = %q, discovered %q", key, got, discovered[key])
+				}
+			}
+			assertDiscoveryCoverage(t, discovered, loaded)
 
-	discovered := discoverWorkflowDefinitions(t, selfhost)
-	loaded := make(map[string]apiv1.Workflow, len(set.Workflows))
-	for _, definition := range set.Workflows {
-		loaded[definition.Name] = definition
-		source, ok := set.WorkflowSource(definition.Spec.Gaggle, definition.Name)
-		if !ok {
-			t.Fatalf("loaded workflow %q has no source path", definition.Name)
-		}
-		if got := filepath.ToSlash(source); got != discovered[definition.Name] {
-			t.Fatalf("workflow %q source = %q, discovered %q", definition.Name, got, discovered[definition.Name])
-		}
-	}
-	assertContractCoverage(t, discovered, loaded)
+			keys := make([]string, 0, len(loaded))
+			for key := range loaded {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
+			gateCapabilities := gooberCapabilities(set.Goobers)
+			for _, key := range keys {
+				definition := loaded[key]
+				source := discovered[key]
+				t.Run(strings.ReplaceAll(key, "/", "_"), func(t *testing.T) {
+					def := workflow.Definition{
+						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+					}
+					assertStaticStageContracts(t, source, def)
+					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview))
+					if err != nil {
+						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
+					}
+					scenarios := terminalScenarios(t, machine)
+					for _, scenario := range scenarios {
+						scenario := scenario
+						t.Run(scenario.name, func(t *testing.T) {
+							t.Parallel()
+							script := newScenarioScript(definition, scenario)
+							localRunner, runsDir := newContractRunner(t, script, gateCapabilities)
+							runID := contractRunID(config.name, key, scenario.name)
+							_, runErr := localRunner.Start(context.Background(), runner.StartInput{
+								RunID:   runID,
+								Machine: machine,
+								Gaggle:  definition.Spec.Gaggle,
+								Trigger: journal.Trigger{Kind: journal.TriggerManual},
+								RepoRef: apiv1.RepoRef{
+									Provider: apiv1.ProviderGitHub,
+									Owner:    "fixture",
+									Name:     "repository",
+									Branch:   "main",
+								},
+							})
+							if runErr != nil {
+								t.Fatalf("%s: workflow %q terminal path %q: %v", source, key, scenario.name, runErr)
+							}
 
-	names := make([]string, 0, len(loaded))
-	for name := range loaded {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	gateCapabilities := gooberCapabilities(set.Goobers)
-
-	for _, name := range names {
-		definition := loaded[name]
-		contract := shippedContracts[name]
-		t.Run(name, func(t *testing.T) {
-			for _, contractScenario := range contract.scenarios {
-				contractScenario := contractScenario
-				t.Run(string(contractScenario.kind), func(t *testing.T) {
-					machine, err := workflow.Compile(workflow.Definition{
-						Name: definition.Name, Version: 1, Spec: definition.Spec,
-					}, workflow.WithPreviewFeatures(allowPreview))
-					if err != nil {
-						t.Fatalf("compile shipped workflow: %v", err)
-					}
-
-					script := newScenarioScript(definition.Name, contractScenario.kind)
-					localRunner, runsDir := newContractRunner(t, script, gateCapabilities)
-					runID := "contract-" + definition.Name + "-" + string(contractScenario.kind)
-					_, err = localRunner.Start(context.Background(), runner.StartInput{
-						RunID:   runID,
-						Machine: machine,
-						Gaggle:  definition.Spec.Gaggle,
-						Trigger: journal.Trigger{Kind: journal.TriggerManual},
-						RepoRef: apiv1.RepoRef{
-							Provider: apiv1.ProviderGitHub,
-							Owner:    "fixture",
-							Name:     "repository",
-							Branch:   "main",
-						},
-					})
-					if err != nil {
-						t.Fatalf("run shipped workflow: %v", err)
-					}
-
-					reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
-					if err != nil {
-						t.Fatalf("open run journal: %v", err)
-					}
-					events, err := reader.Events()
-					if err != nil {
-						t.Fatalf("read run events: %v", err)
-					}
-					assertJournalScenario(t, events, contractScenario)
-					state, err := reader.State()
-					if err != nil {
-						t.Fatalf("read run state: %v", err)
-					}
-					if state.Phase != contractScenario.wantPhase {
-						t.Fatalf("journal phase = %q, want %q", state.Phase, contractScenario.wantPhase)
-					}
-					if definition.Name == "merge-review" && contractScenario.kind == scenarioHappy {
-						assertNumericInputThreading(t, events)
+							runDir := filepath.Join(runsDir, runID)
+							reader, err := journal.OpenRead(runDir)
+							if err != nil {
+								t.Fatalf("%s: workflow %q open journal: %v", source, key, err)
+							}
+							events, err := reader.Events()
+							if err != nil {
+								t.Fatalf("%s: workflow %q read journal events: %v", source, key, err)
+							}
+							assertJournalScenario(t, definition, events, scenario)
+							assertRequiredValueHandoffs(t, definition.Name, events)
+							state, err := reader.State()
+							if err != nil {
+								t.Fatalf("%s: workflow %q read journal state: %v", source, key, err)
+							}
+							if state.Phase != scenario.wantPhase {
+								t.Fatalf("%s: workflow %q terminal path %q phase = %q, want %q",
+									source, key, scenario.name, state.Phase, scenario.wantPhase)
+							}
+						})
 					}
 				})
 			}
@@ -291,6 +230,9 @@ func discoverWorkflowDefinitions(t *testing.T, root string) map[string]string {
 				Metadata struct {
 					Name string `json:"name"`
 				} `json:"metadata"`
+				Spec struct {
+					Gaggle string `json:"gaggle"`
+				} `json:"spec"`
 			}
 			if err := yaml.Unmarshal([]byte(document), &metadata); err != nil || metadata.Kind != "Workflow" {
 				continue
@@ -299,10 +241,11 @@ func discoverWorkflowDefinitions(t *testing.T, root string) map[string]string {
 			if err != nil {
 				return err
 			}
-			if previous, exists := discovered[metadata.Metadata.Name]; exists {
-				return fmt.Errorf("duplicate shipped workflow %q in %s and %s", metadata.Metadata.Name, previous, rel)
+			key := shippedWorkflowKey(metadata.Spec.Gaggle, metadata.Metadata.Name)
+			if previous, exists := discovered[key]; exists {
+				return fmt.Errorf("duplicate shipped workflow %q in %s and %s", key, previous, rel)
 			}
-			discovered[metadata.Metadata.Name] = filepath.ToSlash(rel)
+			discovered[key] = filepath.ToSlash(rel)
 		}
 		return nil
 	})
@@ -312,36 +255,426 @@ func discoverWorkflowDefinitions(t *testing.T, root string) map[string]string {
 	return discovered
 }
 
-func assertContractCoverage(t *testing.T, discovered map[string]string, loaded map[string]apiv1.Workflow) {
+func shippedWorkflowKey(gaggle, name string) string {
+	return gaggle + "/" + name
+}
+
+func assertDiscoveryCoverage(t *testing.T, discovered map[string]string, loaded map[string]apiv1.Workflow) {
 	t.Helper()
-	for name, path := range discovered {
-		if _, ok := loaded[name]; !ok {
-			t.Errorf("discovered workflow %q (%s) is not loaded by the production config loader", name, path)
-		}
-		if _, ok := shippedContracts[name]; !ok {
-			t.Errorf("discovered workflow %q (%s) has no contract scenarios", name, path)
+	for key, path := range discovered {
+		if _, ok := loaded[key]; !ok {
+			t.Errorf("discovered workflow %q (%s) is not loaded by the production config loader", key, path)
 		}
 	}
-	for name, contract := range shippedContracts {
-		if _, ok := discovered[name]; !ok {
-			t.Errorf("contract scenarios name removed or undiscoverable workflow %q", name)
+	for key := range loaded {
+		if _, ok := discovered[key]; !ok {
+			t.Errorf("loaded workflow %q is not discovered from shipped YAML", key)
 		}
-		seen := map[scenarioKind]bool{}
-		for _, scenario := range contract.scenarios {
-			if seen[scenario.kind] {
-				t.Errorf("workflow %q repeats %q scenario", name, scenario.kind)
+	}
+	if len(discovered) != len(loaded) {
+		t.Fatalf("workflow discovery coverage: discovered=%d loaded=%d", len(discovered), len(loaded))
+	}
+}
+
+func assertStaticStageContracts(t *testing.T, source string, def workflow.Definition) {
+	t.Helper()
+	checks := []struct {
+		name     string
+		problems []string
+	}{
+		{name: "handoff", problems: workflow.CheckStageContracts(def)},
+		{name: "output", problems: workflow.CheckStageContractWarnings(def)},
+		{name: "required-input", problems: workflow.CheckStageRequiredInputs(def)},
+		{name: "gate-output", problems: gateOutputContractProblems(def)},
+		{name: "required-value-handoff", problems: requiredValueHandoffProblems(def)},
+	}
+	for _, check := range checks {
+		if len(check.problems) > 0 {
+			t.Fatalf("%s: workflow %q %s contract: %s",
+				source, def.Name, check.name, strings.Join(check.problems, "; "))
+		}
+	}
+}
+
+func gateOutputContractProblems(def workflow.Definition) []string {
+	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
+	for _, gateDefinition := range def.Spec.Gates {
+		gates[gateDefinition.Name] = gateDefinition
+	}
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		gateDefinition, ok := gates[task.Next]
+		if !ok || gateDefinition.Automated == nil {
+			continue
+		}
+		key := automatedGateOutputKey(*gateDefinition.Automated)
+		if key == "" || contains(task.ExpectedOutputs, key) {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"task %q feeds gate %q check %q from output %q, but expectedOutputs does not declare it; the wired fake emits only declared outputs, so this path cannot produce the requested gate outcome",
+			task.Name, gateDefinition.Name, gateDefinition.Automated.Check, key,
+		))
+	}
+	return problems
+}
+
+func requiredValueHandoffProblems(def workflow.Definition) []string {
+	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
+	for _, task := range def.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	var problems []string
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != def.Name {
+			continue
+		}
+		consumer, ok := tasks[contract.consumer]
+		if !ok {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s has no consumer task %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput, contract.consumer,
+			))
+			continue
+		}
+		output, ok := consumer.InputsFrom[contract.consumerInput]
+		if !ok {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s is missing inputsFrom mapping %q: %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerInput, contract.producerOutput,
+			))
+		} else if output != contract.producerOutput {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s maps output %q, want %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				output, contract.producerOutput,
+			))
+		}
+		if !contains(consumer.ExpectedOutputs, contract.consumerOutput) {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s cannot be observed: task %q does not declare expected output %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumer, contract.consumerOutput,
+			))
+		}
+	}
+	return problems
+}
+
+func automatedGateOutputKey(automated apiv1.AutomatedGate) string {
+	switch automated.Check {
+	case "output-equals", "output-not-equals", "output-numeric-gte", "output-numeric-lte", "output-numeric-lt", "output-matches":
+		return automated.Params["key"]
+	case "ci-status":
+		return executor.OutputCIStatus
+	case "queue-outcome":
+		return "queueOutcome"
+	case "land-outcome":
+		// landOutcome is conditional and intentionally omitted from merge-pr's
+		// exhaustive postconditions; the runner check handles its vocabulary.
+		return ""
+	default:
+		return ""
+	}
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGateOutputContractNamesMissingExpectedOutput(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "l1-regression", Spec: apiv1.WorkflowSpec{
+		Start: "apply-verdict",
+		Tasks: []apiv1.Task{{
+			Name: "apply-verdict", ExpectedOutputs: []string{"selectedNumber"}, Next: "published-verdict",
+		}},
+		Gates: []apiv1.Gate{{
+			Name: "published-verdict",
+			Automated: &apiv1.AutomatedGate{
+				Check:  "output-equals",
+				Params: map[string]string{"key": "decision", "equals": "pass"},
+			},
+		}},
+	}}
+	problems := gateOutputContractProblems(def)
+	if len(problems) != 1 ||
+		!strings.Contains(problems[0], `task "apply-verdict"`) ||
+		!strings.Contains(problems[0], `gate "published-verdict"`) ||
+		!strings.Contains(problems[0], `output "decision"`) {
+		t.Fatalf("gate output problems = %v, want producer, consumer, and missing output", problems)
+	}
+}
+
+func TestRequiredValueHandoffNamesMissingOrMisthreadedMapping(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		inputsFrom map[string]string
+		want       string
+	}{
+		{name: "missing", want: `is missing inputsFrom mapping "selectedNumber": "number"`},
+		{
+			name:       "misthreaded",
+			inputsFrom: map[string]string{"selectedNumber": "head"},
+			want:       `maps output "head", want "number"`,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			def := workflow.Definition{Name: "merge-review", Spec: apiv1.WorkflowSpec{
+				Tasks: []apiv1.Task{{
+					Name:            "gather-sibling-context",
+					InputsFrom:      test.inputsFrom,
+					ExpectedOutputs: []string{"selectedNumber"},
+				}},
+			}}
+			problems := requiredValueHandoffProblems(def)
+			if len(problems) != 1 || !strings.Contains(problems[0], test.want) {
+				t.Fatalf("required value handoff problems = %v, want one containing %q", problems, test.want)
 			}
-			seen[scenario.kind] = true
+		})
+	}
+}
+
+func TestTerminalScenariosDiscoverInsertedLinearStages(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		stages []string
+	}{
+		{
+			name:   "implementation",
+			stages: []string{"query-backlog", "gather-implement-context", "implement"},
+		},
+		{
+			name:   "backlog-curation",
+			stages: []string{"query-backlog", "surface-duplicates", "curate", "release-claim"},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tasks := make([]apiv1.Task, 0, len(test.stages))
+			for index, stage := range test.stages {
+				task := apiv1.Task{
+					Name: stage, Type: apiv1.TaskAgentic, Goober: "fixture", Goal: stage,
+				}
+				if index+1 < len(test.stages) {
+					task.Next = test.stages[index+1]
+				}
+				tasks = append(tasks, task)
+			}
+			machine, err := workflow.Compile(workflow.Definition{
+				Name: test.name,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle:   "fixture",
+					Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+					Start:    test.stages[0],
+					Tasks:    tasks,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scenarios := terminalScenarios(t, machine)
+			if len(scenarios) != 1 {
+				t.Fatalf("terminal scenarios = %d, want one linear path", len(scenarios))
+			}
+			var got []string
+			for _, edge := range scenarios[0].steps {
+				got = append(got, edge.Source)
+			}
+			if !reflect.DeepEqual(got, test.stages) {
+				t.Fatalf("terminal scenario stages = %v, want %v", got, test.stages)
+			}
+		})
+	}
+}
+
+func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
+	t.Helper()
+	graph := machine.Graph()
+	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
+	}
+
+	var scenarios []terminalScenario
+	seenPaths := map[string]bool{}
+	// Build a start-to-terminal run around every edge, then deduplicate identical
+	// runs. This covers new branches automatically without a workflow allowlist.
+	for _, selected := range graph.Edges {
+		path, ok := pathToState(graph.Start, selected.Source, outgoing)
+		if !ok {
+			t.Fatalf("workflow %q edge %s -> %s is unreachable",
+				graph.Name, selected.Source, selected.Target)
 		}
-		for _, required := range []scenarioKind{scenarioHappy, scenarioFailure, scenarioEscalation} {
-			if !seen[required] {
-				t.Errorf("workflow %q has no %q contract scenario", name, required)
+		path = append(path, selected)
+		if selected.Terminal == "" {
+			suffix, ok := pathToTerminal(selected.Target, outgoing)
+			if !ok {
+				t.Fatalf("workflow %q edge %s -> %s cannot reach a terminal",
+					graph.Name, selected.Source, selected.Target)
+			}
+			path = append(path, suffix...)
+		}
+		signature := pathSignature(path)
+		if seenPaths[signature] {
+			continue
+		}
+		seenPaths[signature] = true
+		terminal := path[len(path)-1]
+		scenario := terminalScenario{
+			name: fmt.Sprintf("%02d_%s_%s", len(scenarios)+1,
+				contractToken(selected.Source), contractToken(selected.Outcome)),
+			steps:        path,
+			gateOutcomes: map[string][]string{},
+			wantPhase:    phaseForTerminal(terminal.Terminal),
+		}
+		for stepIndex, edge := range path {
+			if edge.Outcome == "" {
+				continue
+			}
+			scenario.gateOutcomes[edge.Source] = append(scenario.gateOutcomes[edge.Source], edge.Outcome)
+			if edge.Outcome != workflow.BranchEscalate {
+				continue
+			}
+			if scenario.escalationGate != "" {
+				t.Fatalf("workflow %q terminal path %q crosses multiple escalation control branches", graph.Name, scenario.name)
+			}
+			if stepIndex == 0 {
+				t.Fatalf("workflow %q escalation gate %q has no preceding task", graph.Name, edge.Source)
+			}
+			preceding := path[stepIndex-1].Source
+			if _, ok := machine.Task(preceding); !ok {
+				t.Fatalf("workflow %q escalation gate %q is preceded by %q, not a task", graph.Name, edge.Source, preceding)
+			}
+			scenario.escalationTask = preceding
+			scenario.escalationGate = edge.Source
+		}
+		scenarios = append(scenarios, scenario)
+	}
+	for _, edge := range graph.Edges {
+		covered := false
+		for _, scenario := range scenarios {
+			if containsEdge(scenario.steps, edge) {
+				covered = true
+				break
 			}
 		}
+		if !covered {
+			t.Fatalf("workflow %q edge %s --%s--> %s has no executable terminal scenario",
+				graph.Name, edge.Source, edge.Outcome, edge.Target)
+		}
 	}
-	if len(discovered) != len(loaded) || len(discovered) != len(shippedContracts) {
-		t.Fatalf("workflow coverage counts: discovered=%d loaded=%d scripted=%d", len(discovered), len(loaded), len(shippedContracts))
+	return scenarios
+}
+
+func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
+	var walk func(string, map[string]bool) ([]workflow.GraphEdge, bool)
+	walk = func(state string, seen map[string]bool) ([]workflow.GraphEdge, bool) {
+		// Graph edges put pass first; depth-first selection exits repass loops
+		// through a successful suffix before trying another non-pass verdict.
+		for _, edge := range outgoing[state] {
+			if edge.Terminal != "" {
+				return []workflow.GraphEdge{edge}, true
+			}
+			if seen[edge.Target] {
+				continue
+			}
+			nextSeen := make(map[string]bool, len(seen)+1)
+			for visited := range seen {
+				nextSeen[visited] = true
+			}
+			nextSeen[edge.Target] = true
+			suffix, ok := walk(edge.Target, nextSeen)
+			if ok {
+				return append([]workflow.GraphEdge{edge}, suffix...), true
+			}
+		}
+		return nil, false
 	}
+	return walk(start, map[string]bool{start: true})
+}
+
+func pathSignature(path []workflow.GraphEdge) string {
+	var parts []string
+	for _, edge := range path {
+		parts = append(parts, edge.Source+"|"+edge.Outcome+"|"+edge.Target)
+	}
+	return strings.Join(parts, "->")
+}
+
+func containsEdge(edges []workflow.GraphEdge, wanted workflow.GraphEdge) bool {
+	for _, edge := range edges {
+		if edge == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func pathToState(start, target string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
+	type candidate struct {
+		state string
+		path  []workflow.GraphEdge
+		seen  map[string]bool
+	}
+	queue := []candidate{{state: start, seen: map[string]bool{start: true}}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.state == target {
+			return current.path, true
+		}
+		for _, edge := range outgoing[current.state] {
+			if edge.Terminal != "" || current.seen[edge.Target] {
+				continue
+			}
+			seen := make(map[string]bool, len(current.seen)+1)
+			for state := range current.seen {
+				seen[state] = true
+			}
+			seen[edge.Target] = true
+			path := append(append([]workflow.GraphEdge(nil), current.path...), edge)
+			queue = append(queue, candidate{state: edge.Target, path: path, seen: seen})
+		}
+	}
+	return nil, false
+}
+
+func phaseForTerminal(terminal workflow.GraphTerminal) journal.RunPhase {
+	switch terminal {
+	case workflow.GraphTerminalComplete:
+		return journal.PhaseCompleted
+	case workflow.GraphTerminalAbort:
+		return journal.PhaseAborted
+	case workflow.GraphTerminalEscalate:
+		return journal.PhaseEscalated
+	default:
+		panic(fmt.Sprintf("unknown graph terminal %q", terminal))
+	}
+}
+
+func contractToken(value string) string {
+	if value == "" {
+		return "next"
+	}
+	return strings.NewReplacer("@", "", "/", "-", ":", "-", " ", "-").Replace(value)
+}
+
+func contractRunID(_, _, _ string) string {
+	return "wired-contract"
 }
 
 func gooberCapabilities(goobers []apiv1.Goober) map[string][]string {
@@ -352,73 +685,123 @@ func gooberCapabilities(goobers []apiv1.Goober) map[string][]string {
 	return out
 }
 
-func assertJournalScenario(t *testing.T, events []journal.Event, contract contractScenario) {
+func assertJournalScenario(t *testing.T, definition apiv1.Workflow, events []journal.Event, scenario terminalScenario) {
 	t.Helper()
-	var (
-		sequence      []string
-		terminalPhase string
-		gateFailed    bool
-		gateEscalated bool
-	)
-	for _, event := range events {
+	tasks := make(map[string]apiv1.Task, len(definition.Spec.Tasks))
+	for _, task := range definition.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	var sequence []string
+	var terminalEvents int
+	for index, event := range events {
+		if event.Schema != journal.EventSchema {
+			t.Errorf("journal event %d schema = %q, want %q", event.Seq, event.Schema, journal.EventSchema)
+		}
+		if event.Seq != uint64(index+1) {
+			t.Errorf("journal event index %d seq = %d, want %d", index, event.Seq, index+1)
+		}
+		if event.Type == "" {
+			t.Errorf("journal event %d has no type", event.Seq)
+		}
 		switch event.Type {
 		case journal.EventStageStarted:
 			sequence = append(sequence, "task:"+event.Stage)
 		case journal.EventGateEvaluated:
 			sequence = append(sequence, "gate:"+event.Gate+"="+event.Verdict)
-			if event.Verdict != gate.OutcomePass {
-				gateFailed = true
+		case journal.EventStageFinished:
+			if event.Status != string(apiv1.ResultSuccess) {
+				continue
 			}
-			gateEscalated = gateEscalated || event.Escalated
+			task := tasks[event.Stage]
+			for _, expected := range task.ExpectedOutputs {
+				if _, ok := event.Outputs[expected]; !ok {
+					t.Errorf("task %q succeeded without expected output %q", event.Stage, expected)
+				}
+			}
 		case journal.EventRunFinished:
-			terminalPhase = event.Status
+			terminalEvents++
+			if event.Status != string(scenario.wantPhase) {
+				t.Errorf("journal terminal status = %q, want %q", event.Status, scenario.wantPhase)
+			}
 		}
 	}
-	if !reflect.DeepEqual(sequence, contract.wantSequence) {
-		t.Fatalf("journal execution sequence:\n got: %v\nwant: %v", sequence, contract.wantSequence)
+	if terminalEvents != 1 {
+		t.Fatalf("journal has %d terminal events, want 1", terminalEvents)
 	}
-	if terminalPhase != string(contract.wantPhase) {
-		t.Errorf("journal terminal status = %q, want %q", terminalPhase, contract.wantPhase)
+	var expected []string
+	for _, edge := range scenario.steps {
+		if edge.Source == scenario.escalationGate {
+			continue
+		}
+		if _, ok := tasks[edge.Source]; ok {
+			expected = append(expected, "task:"+edge.Source)
+			continue
+		}
+		expected = append(expected, "gate:"+edge.Source+"="+edge.Outcome)
 	}
-	if contract.wantGateFailure && !gateFailed {
-		t.Error("journal has no non-pass gate verdict")
-	}
-	if contract.wantGateEscalation && !gateEscalated {
-		t.Error("journal has no escalated gate verdict")
+	if !reflect.DeepEqual(sequence, expected) {
+		t.Fatalf("journal execution sequence:\n got: %v\nwant: %v", sequence, expected)
 	}
 }
 
-func assertNumericInputThreading(t *testing.T, events []journal.Event) {
+func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []journal.Event) {
 	t.Helper()
-	var source, destination any
-	for _, event := range events {
-		if event.Type != journal.EventStageFinished {
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != workflowName {
 			continue
 		}
-		switch event.Stage {
-		case "pr-select":
-			source = event.Outputs["number"]
-		case "gather-sibling-context":
-			destination = event.Outputs["contractThreadedNumber"]
+		var source, destination any
+		var sourceFound, destinationFound bool
+		for _, event := range events {
+			if event.Type != journal.EventStageFinished {
+				continue
+			}
+			switch event.Stage {
+			case contract.producer:
+				source, sourceFound = event.Outputs[contract.producerOutput]
+			case contract.consumer:
+				destination, destinationFound = event.Outputs[contract.consumerOutput]
+			}
 		}
-	}
-	sourceNumber, sourceOK := source.(float64)
-	destinationNumber, destinationOK := destination.(float64)
-	if !sourceOK || !destinationOK || sourceNumber != contractNumber || destinationNumber != contractNumber {
-		t.Fatalf("journal numeric threading pr-select -> gather-sibling-context = source(%T %v), destination(%T %v), want float64(%v) at both ends",
-			source, source, destination, destination, contractNumber)
+		if !sourceFound || !destinationFound ||
+			!reflect.DeepEqual(source, contract.expectedValue) ||
+			!reflect.DeepEqual(destination, source) {
+			t.Fatalf(
+				"required value handoff %s.%s -> %s.%s = source(%T %v), destination(%T %v), want %T(%v) at both ends",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				source, source, destination, destination, contract.expectedValue, contract.expectedValue,
+			)
+		}
 	}
 }
 
 type scenarioScript struct {
-	workflow string
-	scenario scenarioKind
-	mu       sync.Mutex
-	calls    map[string]int
+	definition apiv1.Workflow
+	scenario   terminalScenario
+	tasks      map[string]apiv1.Task
+	gates      map[string]apiv1.Gate
+	mu         sync.Mutex
+	calls      map[string]int
+	gateCalls  map[string]int
+	ciOutcome  string
 }
 
-func newScenarioScript(workflowName string, scenario scenarioKind) *scenarioScript {
-	return &scenarioScript{workflow: workflowName, scenario: scenario, calls: map[string]int{}}
+func newScenarioScript(definition apiv1.Workflow, scenario terminalScenario) *scenarioScript {
+	script := &scenarioScript{
+		definition: definition,
+		scenario:   scenario,
+		tasks:      make(map[string]apiv1.Task, len(definition.Spec.Tasks)),
+		gates:      make(map[string]apiv1.Gate, len(definition.Spec.Gates)),
+		calls:      map[string]int{},
+		gateCalls:  map[string]int{},
+	}
+	for _, task := range definition.Spec.Tasks {
+		script.tasks[task.Name] = task
+	}
+	for _, gateDefinition := range definition.Spec.Gates {
+		script.gates[gateDefinition.Name] = gateDefinition
+	}
+	return script
 }
 
 func (s *scenarioScript) nextCall(key string) int {
@@ -428,132 +811,244 @@ func (s *scenarioScript) nextCall(key string) int {
 	return s.calls[key]
 }
 
+func (s *scenarioScript) nextGateOutcome(gateName string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	outcomes, ok := s.scenario.gateOutcomes[gateName]
+	if !ok {
+		return "", false
+	}
+	index := s.gateCalls[gateName]
+	if index >= len(outcomes) {
+		return "", false
+	}
+	s.gateCalls[gateName]++
+	return outcomes[index], true
+}
+
+func (s *scenarioScript) setCIOutcome(outcome string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ciOutcome = outcome
+}
+
+func (s *scenarioScript) currentCIOutcome() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ciOutcome
+}
+
 type stageScript struct {
 	outputs  map[string]any
 	exitCode int
 }
 
-func (s *scenarioScript) deterministic(stage string, inputs map[string]any) stageScript {
-	if failure, ok := s.scriptedFailure(stage); ok {
-		return failure
+func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (stageScript, error) {
+	task, ok := s.tasks[stage]
+	if !ok {
+		return stageScript{}, fmt.Errorf("workflow %q invoked unknown task %q", s.definition.Name, stage)
 	}
-
-	outputs := map[string]any{}
-	switch s.workflow {
-	case "backlog-curation":
-		if stage == "query-backlog" {
-			outputs["claimed-items"] = "fixture"
+	if err := validateThreadedInputs(task, inputs); err != nil {
+		return stageScript{}, err
+	}
+	outputs := expectedOutputs(task)
+	if err := s.threadRequiredValueHandoffs(task, inputs, outputs); err != nil {
+		return stageScript{}, err
+	}
+	if stage == s.scenario.escalationTask {
+		return failedStage(outputs, "ISSUE_OVER_SCOPE"), nil
+	}
+	if gateDefinition, desired, ok := s.desiredGateAfter(task); ok {
+		if gateDefinition.Automated == nil {
+			return stageScript{}, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
 		}
-	case "implementation":
-		switch stage {
-		case "query-backlog":
-			outputs["claimed-item"] = "fixture"
-		case "open-pr":
-			outputs["pull-request-url"] = "https://example.test/pull/73"
-			outputs["prNumber"] = "73"
-			outputs["opened"] = true
+		if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
+			return failedStage(outputs, "CONTRACT_FAILURE"), nil
 		}
-	case "merge-review":
-		switch stage {
-		case "pr-select":
-			outputs["number"] = contractNumber
-			outputs["head"] = "goobers/implementation/fixture"
-			outputs["base"] = "main"
-		case "gather-sibling-context":
-			outputs["selectedNumber"] = inputs["selectedNumber"]
-			outputs["selectedHeadSha"] = "head-sha"
-			outputs["selectedBaseSha"] = "base-sha"
-			outputs["reviewDigest"] = "sha256:review"
-			outputs["overlappingSiblingsCsv"] = ""
-			outputs["contractThreadedNumber"] = inputs["selectedNumber"]
-		case "elect-lander":
-			outputs["elected"] = true
-			outputs["selectedNumber"] = inputs["selectedNumber"]
-			outputs["selectedHeadSha"] = inputs["selectedHeadSha"]
-			outputs["selectedBaseSha"] = inputs["selectedBaseSha"]
-			outputs["reviewDigest"] = inputs["reviewDigest"]
-			outputs["overlappingSiblingsCsv"] = inputs["overlappingSiblings"]
-		case "apply-verdict":
-			outputs["selectedNumber"] = inputs["selectedNumber"]
-			outputs["selectedHeadSha"] = inputs["selectedHeadSha"]
-			outputs["selectedBaseSha"] = inputs["selectedBaseSha"]
-			outputs["decision"] = "pass"
-			if s.scenario == scenarioFailure {
-				outputs["decision"] = "fail"
-			}
-			outputs["verdictAuthor"] = "fixture-reviewer"
-		case "merge-pr":
-			outputs["selectedNumber"] = inputs["pullNumber"]
-			outputs["selectedHeadSha"] = inputs["headSha"]
-			outputs["merged"] = true
-			outputs["reason"] = ""
-			outputs["landOutcome"] = "merged"
-		case "queue-watch":
-			outputs["selectedNumber"] = inputs["pullNumber"]
-			outputs["queueOutcome"] = "merged"
-		}
-	case "pr-remediation":
-		switch stage {
-		case "update-behind-pr":
-			outputs["selectedNumber"] = contractNumber
-			outputs["needsFullRemediation"] = s.scenario != scenarioHappy
-		case "gather-pr-context":
-			outputs["selectedNumber"] = contractNumber
-			outputs["head"] = "goobers/implementation/fixture"
-			outputs["base"] = "main"
-			outputs["isBehindBase"] = true
-			outputs["hasSubstantiveFindings"] = true
-			outputs["hasFailingCI"] = false
-		case "rebase-pr":
-			outputs["selectedNumber"] = inputs["selectedNumber"]
-			outputs["head"] = inputs["head"]
-			outputs["needsAgent"] = s.scenario == scenarioEscalation
-		case "remediation-checkpoint":
-			outputs["continueRemediation"] = true
-			outputs["selectedNumber"] = inputs["selectedNumber"]
-			outputs["head"] = "goobers/implementation/fixture"
-			outputs["headSha"] = "head-sha"
-		}
-	case "work-nomination":
-		if stage == "gather-signals" {
-			outputs["candidate-findings"] = "fixture"
+		if err := shapeGateOutputs(outputs, *gateDefinition.Automated, desired); err != nil {
+			return stageScript{}, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
 		}
 	}
-	return stageScript{outputs: outputs}
+	return stageScript{outputs: outputs}, nil
 }
 
-func (s *scenarioScript) scriptedFailure(stage string) (stageScript, bool) {
-	var (
-		failingStage string
-		code         = "CONTRACT_FAILURE"
-	)
-	switch s.workflow {
-	case "backlog-curation":
-		failingStage = "query-backlog"
-	case "work-nomination", "tutor":
-		failingStage = "gather-signals"
-		if s.workflow == "tutor" && s.scenario == scenarioFailure {
-			failingStage = "validate-config"
-		}
-	case "merge-review":
-		if s.scenario == scenarioEscalation {
-			failingStage = "pr-select"
+func validateThreadedInputs(task apiv1.Task, inputs map[string]any) error {
+	for inputKey, outputKey := range task.InputsFrom {
+		if _, ok := inputs[inputKey]; !ok {
+			return fmt.Errorf("task %q inputsFrom %q did not resolve upstream output %q", task.Name, inputKey, outputKey)
 		}
 	}
-	if s.scenario == scenarioEscalation && failingStage != "" {
-		code = "ISSUE_OVER_SCOPE"
+	return nil
+}
+
+func (s *scenarioScript) threadRequiredValueHandoffs(task apiv1.Task, inputs, outputs map[string]any) error {
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != s.definition.Name || contract.consumer != task.Name {
+			continue
+		}
+		value, ok := inputs[contract.consumerInput]
+		if !ok {
+			return fmt.Errorf(
+				"required value handoff %s.%s -> %s.%s did not resolve input %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerInput,
+			)
+		}
+		if _, ok := outputs[contract.consumerOutput]; !ok {
+			return fmt.Errorf(
+				"required value handoff %s.%s -> %s.%s cannot emit undeclared output %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerOutput,
+			)
+		}
+		outputs[contract.consumerOutput] = value
 	}
-	if stage != failingStage || s.scenario == scenarioHappy {
-		return stageScript{}, false
+	return nil
+}
+
+func expectedOutputs(task apiv1.Task) map[string]any {
+	outputs := make(map[string]any, len(task.ExpectedOutputs))
+	for _, key := range task.ExpectedOutputs {
+		outputs[key] = contractOutputValue(key)
 	}
+	return outputs
+}
+
+func contractOutputValue(key string) any {
+	switch key {
+	case "number", "selectedNumber", "todoCount":
+		return contractNumber
+	case "opened", "elected", "merged", "needsAgent", "needsFullRemediation", "continueRemediation":
+		return true
+	case "prNumber":
+		return "73"
+	case "decision":
+		return "pass"
+	case "ciStatus":
+		return providers.CheckStatePassing
+	case "landOutcome", "queueOutcome":
+		return gate.OutcomeMerged
+	default:
+		return "contract-" + key
+	}
+}
+
+func failedStage(outputs map[string]any, code string) stageScript {
+	outputs[executor.OutputErrorCode] = code
+	outputs[executor.OutputErrorMessage] = "scripted wired-workflow contract outcome"
+	outputs[executor.OutputErrorRetryable] = false
 	return stageScript{
-		outputs: map[string]any{
-			executor.OutputErrorCode:      code,
-			executor.OutputErrorMessage:   "scripted contract outcome",
-			executor.OutputErrorRetryable: false,
-		},
+		outputs:  outputs,
 		exitCode: 1,
-	}, true
+	}
+}
+
+func (s *scenarioScript) desiredGateAfter(task apiv1.Task) (apiv1.Gate, string, bool) {
+	gateDefinition, ok := s.gates[task.Next]
+	if !ok || gateDefinition.Evaluator != apiv1.EvaluatorAutomated {
+		return apiv1.Gate{}, "", false
+	}
+	desired, ok := s.nextGateOutcome(gateDefinition.Name)
+	return gateDefinition, desired, ok
+}
+
+func shapeGateOutputs(outputs map[string]any, automated apiv1.AutomatedGate, desired string) error {
+	setDeclared := func(key string, value any) {
+		// Never invent a promised output: omitting expectedOutputs must make the
+		// real gate take the wrong path and fail the scenario precisely.
+		if _, ok := outputs[key]; ok {
+			outputs[key] = value
+		}
+	}
+	pass := desired == gate.OutcomePass
+	switch automated.Check {
+	case "status-equals", "ci-status":
+		return nil
+	case "output-equals":
+		key := automated.Params["key"]
+		value := automated.Params["equals"]
+		if pass {
+			setDeclared(key, contractScalar(value))
+		} else {
+			setDeclared(key, contractMismatch(value))
+		}
+	case "output-not-equals":
+		key := automated.Params["key"]
+		value := automated.Params["equals"]
+		if pass {
+			setDeclared(key, contractMismatch(value))
+		} else {
+			setDeclared(key, contractScalar(value))
+		}
+	case "output-numeric-gte":
+		threshold, err := strconv.ParseFloat(automated.Params["threshold"], 64)
+		if err != nil {
+			return err
+		}
+		if pass {
+			setDeclared(automated.Params["key"], threshold)
+		} else {
+			setDeclared(automated.Params["key"], threshold-1)
+		}
+	case "output-numeric-lte":
+		threshold, err := strconv.ParseFloat(automated.Params["threshold"], 64)
+		if err != nil {
+			return err
+		}
+		if pass {
+			setDeclared(automated.Params["key"], threshold)
+		} else {
+			setDeclared(automated.Params["key"], threshold+1)
+		}
+	case "output-numeric-lt":
+		threshold, err := strconv.ParseFloat(automated.Params["threshold"], 64)
+		if err != nil {
+			return err
+		}
+		if pass {
+			setDeclared(automated.Params["key"], threshold-1)
+		} else {
+			setDeclared(automated.Params["key"], threshold)
+		}
+	case "output-matches":
+		value := strings.Trim(automated.Params["pattern"], "^$")
+		value = strings.ReplaceAll(value, `\.`, ".")
+		if pass {
+			setDeclared(automated.Params["key"], value)
+		} else {
+			setDeclared(automated.Params["key"], "contract-non-match")
+		}
+	case "land-outcome":
+		// landOutcome is conditional and intentionally non-exhaustive in
+		// expectedOutputs, unlike the ordinary declared handoff keys above.
+		outputs["landOutcome"] = desired
+	case "queue-outcome":
+		setDeclared("queueOutcome", desired)
+	default:
+		return fmt.Errorf("unsupported automated check %q", automated.Check)
+	}
+	return nil
+}
+
+func contractScalar(value string) any {
+	switch value {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return value
+	}
+}
+
+func contractMismatch(value string) any {
+	if value == "true" {
+		return false
+	}
+	if value == "false" {
+		return true
+	}
+	return "contract-not-" + value
 }
 
 func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunRequest) error {
@@ -561,21 +1056,56 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 	call := s.nextCall(string(request.Mode) + ":" + stage)
 	switch request.Mode {
 	case harness.ModeInvoke:
+		task, ok := s.tasks[stage]
+		if !ok {
+			return fmt.Errorf("workflow %q invoked unknown agentic task %q", s.definition.Name, stage)
+		}
+		if err := validateThreadedInputs(task, request.Envelope.Inputs); err != nil {
+			return err
+		}
 		result := apiv1.ResultEnvelope{
 			Status:  apiv1.ResultSuccess,
 			Summary: "scripted fake-harness completion",
+			Outputs: expectedOutputs(task),
+		}
+		if err := s.threadRequiredValueHandoffs(task, request.Envelope.Inputs, result.Outputs); err != nil {
+			return err
+		}
+		if stage == s.scenario.escalationTask {
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{
+				Code: "ISSUE_OVER_SCOPE", Message: "scripted wired-workflow escalation", Retryable: false,
+			}
+		} else if gateDefinition, desired, ok := s.desiredGateAfter(task); ok {
+			if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
+				result.Status = apiv1.ResultFailure
+				result.Error = &apiv1.ErrorInfo{
+					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: false,
+				}
+			}
+			if err := shapeGateOutputs(result.Outputs, *gateDefinition.Automated, desired); err != nil {
+				return fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
+			}
 		}
 		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 			return err
 		}
 		return harness.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
-		decision := apiv1.VerdictPass
-		switch {
-		case s.scenario == scenarioFailure && (s.workflow == "implementation" || s.workflow == "merge-review"):
+		outcome, ok := s.nextGateOutcome(stage)
+		if !ok {
+			return fmt.Errorf("workflow %q unexpectedly evaluated unscripted gate %q", s.definition.Name, stage)
+		}
+		var decision apiv1.VerdictDecision
+		switch outcome {
+		case string(apiv1.VerdictPass):
+			decision = apiv1.VerdictPass
+		case string(apiv1.VerdictFail):
 			decision = apiv1.VerdictFail
-		case s.scenario == scenarioEscalation && (s.workflow == "implementation" || s.workflow == "pr-remediation"):
+		case string(apiv1.VerdictNeedsChanges):
 			decision = apiv1.VerdictNeedsChanges
+		default:
+			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
 		return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
@@ -595,21 +1125,59 @@ type scriptedDeterministic struct {
 
 var _ invoke.Deterministic = (*scriptedDeterministic)(nil)
 
-type contractPRPoller struct{}
+type contractPRPoller struct {
+	script *scenarioScript
+}
 
-func (contractPRPoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
-	return providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}, nil
+func (p contractPRPoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	state := providers.CheckStatePassing
+	if p.script.currentCIOutcome() == gate.OutcomeFail {
+		state = providers.CheckStateFailing
+	}
+	return providers.PullRequestPollResult{CheckState: state}, nil
 }
 
 // Run preserves built-in dispatch and substitutes only external shell command
 // effects. ShellExecutor still harvests each workflow's declared result file.
 func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	stage := stageName(env.TaskID)
+	if stage == d.script.scenario.escalationTask {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Summary: "scripted wired-workflow escalation",
+			Error: &apiv1.ErrorInfo{
+				Code: "ISSUE_OVER_SCOPE", Message: "scripted wired-workflow escalation", Retryable: false,
+			},
+		}, nil
+	}
 	if kind, _ := env.Inputs[executor.InputKind].(string); kind == executor.KindCIPoll {
+		task := d.script.tasks[stage]
+		gateDefinition, ok := d.script.gates[task.Next]
+		if !ok {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("CI-poll task %q does not feed a gate", stage)
+		}
+		outcome, ok := d.script.nextGateOutcome(gateDefinition.Name)
+		if !ok {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("CI-poll task %q has no scripted outcome for gate %q", stage, gateDefinition.Name)
+		}
+		if outcome == gate.OutcomeTimeout {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "scripted CI timeout",
+				Outputs: map[string]any{executor.OutputCIStatus: executor.CIStatusTimeout},
+				Error: &apiv1.ErrorInfo{
+					Code: "poll_timeout", Message: "scripted CI timeout", Retryable: true,
+				},
+			}, nil
+		}
+		d.script.setCIOutcome(outcome)
 		return d.builtins.Run(ctx, env, run)
 	}
 
-	stage := stageName(env.TaskID)
-	script := d.script.deterministic(stage, env.Inputs)
+	script, err := d.script.deterministic(stage, env.Inputs)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	payload, err := json.Marshal(script.outputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("marshal scripted result for %s: %w", stage, err)
@@ -669,7 +1237,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if err != nil {
 				return nil, err
 			}
-			ciPoll, err := executor.NewCIPollExecutor(contractPRPoller{}, rec)
+			ciPoll, err := executor.NewCIPollExecutor(contractPRPoller{script: script}, rec)
 			if err != nil {
 				return nil, err
 			}

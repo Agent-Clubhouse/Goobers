@@ -60,6 +60,13 @@ spec:
         - github:pr:write
         - github:issues:write
         - github:branch:delete
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
+        - delete-branch
       continueOnError: true
       next: pr-select
 
@@ -100,6 +107,8 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - flag-scope-drift
       expectedOutputs:
         # selectedNumber is threaded to apply-verdict's inputsFrom (#413) — its
         # omission here left the declared postcondition out of sync with the
@@ -163,6 +172,10 @@ spec:
       capabilities:
         - github:pr:write
         - github:pr:review
+      policyActions:
+        - publish-review
+        - route-verdict
+        - close-pr
       expectedOutputs:
         - selectedNumber
         - selectedHeadSha
@@ -253,6 +266,9 @@ spec:
         # satisfied acceptance criterion but never wired it, so cleanup failed
         # closed on every merge and run branches accumulated (#1075, feeds #553).
         - github:branch:delete
+      policyActions:
+        - merge-pr
+        - delete-branch
       expectedOutputs:
         # landOutcome ("merged"/"enqueued", issue #758) is deliberately NOT
         # listed here — like gather-sibling-context's cachedVerdictJson, it
@@ -306,6 +322,10 @@ spec:
         # queue-watch runs the same post-merge cleanupMergedBranch as merge-pr
         # and must be able to delete the merged head branch (#1075).
         - github:branch:delete
+      policyActions:
+        - watch-merge-queue
+        - route-queue-outcome
+        - delete-branch
       expectedOutputs:
         - selectedNumber
         # queueOutcome ("merged"/"evicted"/"timeout") is always present —
@@ -330,6 +350,12 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
       # Terminal after a successful merge.
 
     # #950: merge-gate's fail branch (merge-pr refused to land) records a
@@ -355,6 +381,9 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
+      policyActions:
+        - record-merge-refusal
+        - demote-pr
       # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:

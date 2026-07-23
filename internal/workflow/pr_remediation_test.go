@@ -117,6 +117,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Next; got != "implement" {
 		t.Errorf("gather-sibling-context next = %q, want implement", got)
 	}
+	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
+		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
 
 	implement, ok := m.Task("implement")
 	if !ok {

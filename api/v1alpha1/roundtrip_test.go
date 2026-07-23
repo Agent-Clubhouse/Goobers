@@ -81,11 +81,13 @@ func TestGooberRoundTrip(t *testing.T) {
 				"context": {Raw: []byte(`"long_context"`)},
 				"custom":  {Raw: []byte(`{"enabled":true,"limit":3}`)},
 			},
-			Capabilities: []string{"repo:push", "github:pr:write"},
-			Skills:       []string{"implement", "run-tests"},
-			Tools:        []string{"github", "shell"},
-			ScaleFactor:  1,
-			Workflows:    []string{"default-implement"},
+			Capabilities:             []string{"repo:push", "github:pr:write"},
+			PolicyActions:            []string{"modify-repository"},
+			ConditionalPolicyActions: []string{"open-or-update-pr"},
+			Skills:                   []string{"implement", "run-tests"},
+			Tools:                    []string{"github", "shell"},
+			ScaleFactor:              1,
+			Workflows:                []string{"default-implement"},
 		},
 	}
 	roundTripStable(t, g)
@@ -109,6 +111,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 				{
 					Name: "implement", Type: TaskAgentic, Goober: "coder",
 					Goal: "Implement the item.", Capabilities: []string{"repo:push", "github:pr:write"},
+					PolicyActions:   []string{"rework-pr"},
 					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
 					TimeoutSeconds:  1800,
 					Limits:          &Limits{MaxTokens: 2_000_000, MaxCostUSD: 5},

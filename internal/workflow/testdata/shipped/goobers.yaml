@@ -10,6 +10,9 @@ spec:
   capabilities:
     - repo:push
     - github:pr:write
+  policyActions:
+    - modify-repository
+    - open-or-update-pr
   workflows:
     - implementation
 ---
@@ -38,6 +41,10 @@ spec:
   harness: copilot
   capabilities:
     - github:issues:write
+  policyActions:
+    - close-issue
+    - comment-on-issue
+    - label-issue
   workflows:
     - backlog-curation
 ---
@@ -53,5 +60,9 @@ spec:
   capabilities:
     - github:issues:write
     - telemetry:read
+  policyActions:
+    - comment-on-issue
+    - create-issue
+    - label-issue
   workflows:
     - work-nomination

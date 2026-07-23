@@ -12,5 +12,9 @@ spec:
     - name: query-backlog
       type: deterministic
       goal: Claim the next deploy item.
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
       run:
         command: ["goobers", "backlog-query", "--claim"]

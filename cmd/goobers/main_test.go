@@ -261,6 +261,10 @@ spec:
     - name: query-backlog
       type: deterministic
       goal: Claim one backlog item.
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
       run:
         command: ["goobers", "backlog-query", "--claim"]
 `
