@@ -156,11 +156,18 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 		}
 		name := gate.Agentic.Goober
 		goober, ok := goobers[name]
-		if !ok || checkedGoobers[name] {
+		if !ok {
 			continue
 		}
-		problems = append(problems, gooberPolicyActionProblems(name, goober, known)...)
-		checkedGoobers[name] = true
+		if !checkedGoobers[name] {
+			problems = append(problems, gooberPolicyActionProblems(name, goober, known)...)
+			checkedGoobers[name] = true
+		}
+		for _, action := range append(append([]string(nil), goober.PolicyActions...), goober.ConditionalPolicyActions...) {
+			problems = append(problems, fmt.Sprintf(
+				"agentic gate %q invokes goober %q whose persona prescribes policy action %q, but agentic gates cannot opt into policy actions",
+				gate.Name, name, action))
+		}
 	}
 	return problems
 }

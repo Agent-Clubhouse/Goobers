@@ -974,6 +974,39 @@ func TestCompileValidatesAgenticGatePersonaActions(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsPolicyBearingAgenticGatePersonas(t *testing.T) {
+	cases := []struct {
+		name        string
+		policy      []string
+		conditional []string
+	}{
+		{name: "unconditional", policy: []string{"comment-on-issue"}},
+		{name: "conditional", conditional: []string{"comment-on-issue"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := gatedSpec()
+			goobers := map[string]apiv1.GooberSpec{
+				"reviewer": {
+					Capabilities:             []string{string(capability.AgentModel), string(capability.GitHubIssuesWrite)},
+					PolicyActions:            tc.policy,
+					ConditionalPolicyActions: tc.conditional,
+				},
+			}
+
+			_, err := compileAcknowledged(
+				Definition{Name: "policy", Version: 1, Spec: spec},
+				WithGoobers(goobers),
+			)
+			const want = `agentic gate "review" invokes goober "reviewer" whose persona prescribes policy action "comment-on-issue", but agentic gates cannot opt into policy actions`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Compile error = %v, want containing %q", err, want)
+			}
+		})
+	}
+}
+
 func TestCompileRejectsUnknownAndDuplicatePolicyActions(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
