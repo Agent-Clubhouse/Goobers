@@ -298,6 +298,10 @@ spec:
         workspace: scratch
       inputs:
         resultFile: "finding-response-validation.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - respond-to-findings
       next: finding-responses-gate
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
@@ -415,6 +419,9 @@ spec:
         - github:pr:write
         - github:issues:write
         - repo:push
+      policyActions:
+        - record-remediation-checkpoint
+        - escalate-pr
       next: "@escalate"
 
   gates:

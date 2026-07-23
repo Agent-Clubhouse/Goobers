@@ -155,6 +155,12 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if validateResponses.Inputs["resultFile"] != "finding-response-validation.json" {
 		t.Errorf("validate-finding-responses resultFile = %q, want finding-response-validation.json", validateResponses.Inputs["resultFile"])
 	}
+	if len(validateResponses.Capabilities) != 1 || validateResponses.Capabilities[0] != "github:issues:write" {
+		t.Errorf("validate-finding-responses capabilities = %v, want [github:issues:write]", validateResponses.Capabilities)
+	}
+	if len(validateResponses.PolicyActions) != 1 || validateResponses.PolicyActions[0] != "respond-to-findings" {
+		t.Errorf("validate-finding-responses policyActions = %v, want [respond-to-findings]", validateResponses.PolicyActions)
+	}
 	if validateResponses.Next != "finding-responses-gate" {
 		t.Errorf("validate-finding-responses next = %q, want finding-responses-gate", validateResponses.Next)
 	}
@@ -185,6 +191,14 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		invalidResponsesPark.Run.Command[1] != "remediation-checkpoint" ||
 		invalidResponsesPark.Run.Command[2] != "--escalate" {
 		t.Errorf("park-invalid-finding-responses command = %v, want goobers remediation-checkpoint --escalate <reason>", invalidResponsesPark.Run)
+	}
+	if len(invalidResponsesPark.PolicyActions) != 2 ||
+		invalidResponsesPark.PolicyActions[0] != "record-remediation-checkpoint" ||
+		invalidResponsesPark.PolicyActions[1] != "escalate-pr" {
+		t.Errorf(
+			"park-invalid-finding-responses policyActions = %v, want [record-remediation-checkpoint escalate-pr]",
+			invalidResponsesPark.PolicyActions,
+		)
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
