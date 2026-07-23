@@ -167,8 +167,24 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		responseGate.Automated.Check != "status-equals" {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
-	if responseGate.Branches["pass"] != "review" || responseGate.Branches["fail"] != "implement" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->review and fail->implement", responseGate.Branches)
+	if responseGate.Branches["pass"] != "review" ||
+		responseGate.Branches["fail"] != "implement" ||
+		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
+		t.Errorf("finding-responses-gate branches = %v, want pass->review, fail->implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+	}
+	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
+	if !ok {
+		t.Fatal("park-invalid-finding-responses not found")
+	}
+	if invalidResponsesPark.Next != TargetEscalate {
+		t.Errorf("park-invalid-finding-responses next = %q, want %q", invalidResponsesPark.Next, TargetEscalate)
+	}
+	if invalidResponsesPark.Run == nil ||
+		len(invalidResponsesPark.Run.Command) != 4 ||
+		invalidResponsesPark.Run.Command[0] != "goobers" ||
+		invalidResponsesPark.Run.Command[1] != "remediation-checkpoint" ||
+		invalidResponsesPark.Run.Command[2] != "--escalate" {
+		t.Errorf("park-invalid-finding-responses command = %v, want goobers remediation-checkpoint --escalate <reason>", invalidResponsesPark.Run)
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:

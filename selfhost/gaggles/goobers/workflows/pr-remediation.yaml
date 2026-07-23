@@ -400,6 +400,23 @@ spec:
       # failure.
       next: "@escalate"
 
+    - name: park-invalid-finding-responses
+      type: deterministic
+      goal: Park a PR whose implementer exhausted the finding-response validation repass budget.
+      run:
+        command:
+          [
+            "goobers",
+            "remediation-checkpoint",
+            "--escalate",
+            "the implementer exhausted the in-run repass budget without producing a complete response for every original merge-review finding",
+          ]
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      next: "@escalate"
+
   gates:
     # A completed API update is terminal. Every confirmed conflict, substantive
     # finding, failing check, or non-behind candidate enters the existing
@@ -449,6 +466,8 @@ spec:
     # A malformed or partial finding account is repairable agent output, not a
     # post-publication provider failure. Route its exact validation error back
     # to the implementer before spending review/CI work or moving the PR branch.
+    # If that repass budget is exhausted, park the PR before escalating so it
+    # cannot remain labeled needs-remediation and be selected again.
     - name: finding-responses-gate
       evaluator: automated
       automated:
@@ -456,6 +475,7 @@ spec:
       branches:
         pass: review
         fail: implement
+        escalate: park-invalid-finding-responses
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on
