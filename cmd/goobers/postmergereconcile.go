@@ -126,7 +126,8 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -135,10 +136,11 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	provider := newGitHubProvider(prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	issuesProvider := newGitHubProvider(issuesToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	report, err := reconcilePostMerges(ctx, provider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
+	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
 		if errors.As(err, &providerErr) {
@@ -154,7 +156,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 func reconcilePostMerges(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider, issuesProvider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	root string,
 	limit int,
@@ -221,7 +223,7 @@ func reconcilePostMerges(
 			if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
 				return err
 			}
-			actionErrs, err := reconcilePostMergeActions(ctx, provider, root, poll, key, &ledger, ledgerPath, stdout, stderr)
+			actionErrs, err := reconcilePostMergeActions(ctx, provider, issuesProvider, root, poll, key, &ledger, ledgerPath, stdout, stderr)
 			if err != nil {
 				return err
 			}
@@ -257,7 +259,7 @@ func reconcilePostMerges(
 
 func reconcilePostMergeActions(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider, issuesProvider *providers.GitHubProvider,
 	root string,
 	poll providers.PullRequestPollResult,
 	key string,
@@ -329,7 +331,7 @@ func reconcilePostMergeActions(
 		if entry.Actions.ClosedIssueNumbers[issueID] {
 			continue
 		}
-		if err := closeReferencedIssue(ctx, provider, entry.Repository, issueID, entry.PullNumber); err != nil {
+		if err := closeReferencedIssue(ctx, issuesProvider, entry.Repository, issueID, entry.PullNumber); err != nil {
 			wrapped := fmt.Errorf("close issue #%s: %w", issueID, err)
 			actionErrs = append(actionErrs, wrapped)
 			pf(stderr, "warning: late-merged pr #%s %v\n", entry.PullNumber, wrapped)

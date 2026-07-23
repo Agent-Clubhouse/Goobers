@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -66,8 +68,8 @@ var commandPolicyActions = map[string][]string{
 
 var commandArgumentPolicyActions = map[string]map[string][]string{
 	"backlog-query": {
-		"--claim":   {"claim-backlog-items"},
-		"--release": {"release-backlog-claim"},
+		"claim":   {"claim-backlog-items"},
+		"release": {"release-backlog-claim"},
 	},
 }
 
@@ -127,6 +129,38 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 					task.Name, task.Goober, action))
 			}
 		}
+		taskCapabilities := toSet(task.Capabilities)
+		for _, action := range goober.ConditionalPolicyActions {
+			if declared[action] {
+				continue
+			}
+			contract, ok := policyActionContracts[action]
+			if !ok {
+				continue
+			}
+			for _, required := range contract.requiredCapabilities {
+				if taskCapabilities[string(required)] {
+					problems = append(problems, fmt.Sprintf(
+						"task %q grants capability %q for goober %q conditional policy action %q, but policyActions does not declare it",
+						task.Name, required, task.Goober, action))
+				}
+			}
+		}
+	}
+	if goobers == nil {
+		return problems
+	}
+	for _, gate := range def.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.Agentic.Goober == "" {
+			continue
+		}
+		name := gate.Agentic.Goober
+		goober, ok := goobers[name]
+		if !ok || checkedGoobers[name] {
+			continue
+		}
+		problems = append(problems, gooberPolicyActionProblems(name, goober, known)...)
+		checkedGoobers[name] = true
 	}
 	return problems
 }
@@ -184,14 +218,30 @@ func policyCommand(task apiv1.Task) string {
 func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
 	actions := append([]string(nil), commandPolicyActions[command]...)
-	if task.Run == nil {
+	argumentActions := commandArgumentPolicyActions[command]
+	if task.Run == nil || len(argumentActions) == 0 {
 		return actions
 	}
-	for index, arg := range task.Run.Command {
-		if index < 2 {
-			continue
+
+	names := make([]string, 0, len(argumentActions))
+	for name := range argumentActions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	enabled := make(map[string]*bool, len(names))
+	for _, name := range names {
+		enabled[name] = fs.Bool(name, false, "")
+	}
+	if err := fs.Parse(task.Run.Command[2:]); err != nil {
+		return actions
+	}
+	for _, name := range names {
+		if *enabled[name] {
+			actions = append(actions, argumentActions[name]...)
 		}
-		actions = append(actions, commandArgumentPolicyActions[command][arg]...)
 	}
 	return actions
 }

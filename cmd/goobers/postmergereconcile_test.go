@@ -67,6 +67,39 @@ func TestReconcilePostMergeProcessesLateMerge(t *testing.T) {
 	}
 }
 
+func TestReconcilePostMergeUsesIssuesCredentialForReferencedIssue(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "Fixes #42", nil, nil)
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	root := postMergeReconcileEnv(t, server.URL)
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "pr-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesWrite)), "issues-token")
+	repo := postMergeTestRepo()
+	if err := recordPostMergeTimeout(root, repo, "20", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("record queue timeout: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	pollAuthorization := st.pollAuthorization
+	issueAuthorizations := append([]string(nil), st.issueAuthorization[42]...)
+	st.mu.Unlock()
+	if pollAuthorization != "Bearer pr-token" {
+		t.Fatalf("pull request authorization = %q, want PR credential", pollAuthorization)
+	}
+	if len(issueAuthorizations) == 0 {
+		t.Fatal("referenced issue received no requests")
+	}
+	for _, authorization := range issueAuthorizations {
+		if authorization != "Bearer issues-token" {
+			t.Fatalf("referenced issue authorization = %q, want issues credential", authorization)
+		}
+	}
+}
+
 func TestReconcilePostMergeLeavesUnmergedPullRequestPending(t *testing.T) {
 	st := newPostMergeServerState(20, "main", "Fixes #42", nil, []int{21})
 	st.merged = false

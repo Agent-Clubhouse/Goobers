@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -734,6 +735,58 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	}
 }
 
+func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantAction string
+	}{
+		{name: "long claim", args: []string{"--claim"}, wantAction: "claim-backlog-items"},
+		{name: "short claim", args: []string{"-claim"}, wantAction: "claim-backlog-items"},
+		{name: "long claim true", args: []string{"--claim=true"}, wantAction: "claim-backlog-items"},
+		{name: "short claim true", args: []string{"-claim=true"}, wantAction: "claim-backlog-items"},
+		{name: "claim before positional false", args: []string{"--claim", "false"}, wantAction: "claim-backlog-items"},
+		{name: "long release", args: []string{"--release"}, wantAction: "release-backlog-claim"},
+		{name: "short release", args: []string{"-release"}, wantAction: "release-backlog-claim"},
+		{name: "long release true", args: []string{"--release=true"}, wantAction: "release-backlog-claim"},
+		{name: "short release true", args: []string{"-release=true"}, wantAction: "release-backlog-claim"},
+		{name: "long claim false", args: []string{"--claim=false"}},
+		{name: "short claim false", args: []string{"-claim=false"}},
+		{name: "long release false", args: []string{"--release=false"}},
+		{name: "short release false", args: []string{"-release=false"}},
+		{name: "flags terminated", args: []string{"--", "--claim"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			command := append([]string{"goobers", "backlog-query"}, tc.args...)
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "query",
+				Tasks: []apiv1.Task{{
+					Name:         "query",
+					Type:         apiv1.TaskDeterministic,
+					Goal:         "query backlog",
+					Run:          &apiv1.DeterministicRun{Command: command},
+					Capabilities: []string{string(capability.GitHubIssuesWrite)},
+				}},
+			}
+
+			_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+			if tc.wantAction == "" {
+				if err != nil {
+					t.Fatalf("non-mutating boolean form should compile: %v", err)
+				}
+				return
+			}
+			want := fmt.Sprintf(`command "goobers backlog-query" prescribes policy action %q`, tc.wantAction)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Compile error = %v, want containing %q", err, want)
+			}
+		})
+	}
+}
+
 func TestCompileMutationCapabilityWithoutPrescribedAction(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
@@ -796,18 +849,6 @@ func TestCompileAgenticPersonaActionsAreLoadBearing(t *testing.T) {
 }
 
 func TestCompileConditionalPersonaActionRequiresTaskOptIn(t *testing.T) {
-	spec := apiv1.WorkflowSpec{
-		Gaggle: "web",
-		Start:  "nominate",
-		Tasks: []apiv1.Task{{
-			Name:          "nominate",
-			Type:          apiv1.TaskAgentic,
-			Goober:        "nominator",
-			Goal:          "file evidence-backed issues",
-			Capabilities:  []string{string(capability.GitHubIssuesWrite)},
-			PolicyActions: []string{"create-issue"},
-		}},
-	}
 	goobers := map[string]apiv1.GooberSpec{
 		"nominator": {
 			Capabilities:             []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove)},
@@ -816,21 +857,64 @@ func TestCompileConditionalPersonaActionRequiresTaskOptIn(t *testing.T) {
 		},
 	}
 
-	if _, err := compileAcknowledged(
-		Definition{Name: "policy", Version: 1, Spec: spec},
-		WithGoobers(goobers),
-	); err != nil {
-		t.Fatalf("disabled conditional persona action should compile: %v", err)
+	cases := []struct {
+		name          string
+		capabilities  []string
+		policyActions []string
+		wantErr       string
+	}{
+		{
+			name:          "disabled",
+			capabilities:  []string{string(capability.GitHubIssuesWrite)},
+			policyActions: []string{"create-issue"},
+		},
+		{
+			name:          "capability without action",
+			capabilities:  []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove)},
+			policyActions: []string{"create-issue"},
+			wantErr:       `task "nominate" grants capability "github:issues:approve" for goober "nominator" conditional policy action "approve-issue", but policyActions does not declare it`,
+		},
+		{
+			name:          "action without capability",
+			capabilities:  []string{string(capability.GitHubIssuesWrite)},
+			policyActions: []string{"create-issue", "approve-issue"},
+			wantErr:       `task "nominate" policy action "approve-issue" requires capability "github:issues:approve", but the task does not declare it`,
+		},
+		{
+			name:          "action and capability",
+			capabilities:  []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove)},
+			policyActions: []string{"create-issue", "approve-issue"},
+		},
 	}
 
-	spec.Tasks[0].PolicyActions = append(spec.Tasks[0].PolicyActions, "approve-issue")
-	_, err := compileAcknowledged(
-		Definition{Name: "policy", Version: 1, Spec: spec},
-		WithGoobers(goobers),
-	)
-	const want = `task "nominate" policy action "approve-issue" requires capability "github:issues:approve", but the task does not declare it`
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "nominate",
+				Tasks: []apiv1.Task{{
+					Name:          "nominate",
+					Type:          apiv1.TaskAgentic,
+					Goober:        "nominator",
+					Goal:          "file evidence-backed issues",
+					Capabilities:  tc.capabilities,
+					PolicyActions: tc.policyActions,
+				}},
+			}
+			_, err := compileAcknowledged(
+				Definition{Name: "policy", Version: 1, Spec: spec},
+				WithGoobers(goobers),
+			)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Compile: unexpected error %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -861,6 +945,32 @@ func TestCompilePersonaActionRequiresGooberCapability(t *testing.T) {
 	const want = `goober "curator" policy action "close-issue" requires capability "github:issues:write", but the goober does not grant it`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+}
+
+func TestCompileValidatesAgenticGatePersonaActions(t *testing.T) {
+	spec := gatedSpec()
+	goobers := map[string]apiv1.GooberSpec{
+		"reviewer": {
+			Capabilities:  []string{string(capability.AgentModel)},
+			PolicyActions: []string{"close-issue", "retarget-pr"},
+		},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	if err == nil {
+		t.Fatal("Compile should reject invalid policy actions on a gate-only goober")
+	}
+	for _, want := range []string{
+		`goober "reviewer" policy action "close-issue" requires capability "github:issues:write", but the goober does not grant it`,
+		`goober "reviewer" declares unknown policy action "retarget-pr"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Compile error = %v, want containing %q", err, want)
+		}
 	}
 }
 
