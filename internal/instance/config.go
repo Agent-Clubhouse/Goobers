@@ -164,10 +164,14 @@ type RepoRef struct {
 }
 
 const (
-	ADOAuthPAT              = "pat"
-	ADOAuthAzureCLI         = "azure-cli"
+	// ADOAuthPAT selects an env/file-backed personal access token.
+	ADOAuthPAT = "pat"
+	// ADOAuthAzureCLI selects the current local Azure CLI login.
+	ADOAuthAzureCLI = "azure-cli"
+	// ADOAuthWorkloadIdentity selects federated Azure workload identity.
 	ADOAuthWorkloadIdentity = "workload-identity"
-	ADOAuthManagedIdentity  = "managed-identity"
+	// ADOAuthManagedIdentity selects an Azure managed identity.
+	ADOAuthManagedIdentity = "managed-identity"
 )
 
 // ADOAuthConfig selects an Azure DevOps credential source without embedding

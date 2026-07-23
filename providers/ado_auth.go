@@ -276,14 +276,14 @@ func parseAzureCLIAccessToken(data []byte) (adoBearerToken, error) {
 		return adoBearerToken{}, fmt.Errorf("decode Azure CLI access token response: %w", err)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" {
-		return adoBearerToken{}, fmt.Errorf("Azure CLI access token response is missing accessToken")
+		return adoBearerToken{}, fmt.Errorf("azure CLI access token response is missing accessToken")
 	}
 	expiresAt, err := parseAzureCLIExpiry(payload.ExpiresUnix)
 	if err != nil || expiresAt.IsZero() {
 		expiresAt, err = parseAzureCLIExpiry(payload.ExpiresOn)
 	}
 	if err != nil || expiresAt.IsZero() {
-		return adoBearerToken{}, fmt.Errorf("Azure CLI access token response has an invalid expiry")
+		return adoBearerToken{}, fmt.Errorf("azure CLI access token response has an invalid expiry")
 	}
 	return adoBearerToken{token: payload.AccessToken, expiresAt: expiresAt}, nil
 }
