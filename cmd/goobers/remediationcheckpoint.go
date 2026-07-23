@@ -429,18 +429,25 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	var structuralCollisions []structuralCollision
 	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
-	if conflicted && !forced && attemptedHeadSHA != "" && attemptedHeadSHA == current.HeadSHA {
-		conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
+	if conflicted && !forced && attemptedHeadSHA != "" {
+		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
 		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+			return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
 		}
-		structuralCollisions, err = findStructuralCollisions(
-			ctx, provider, repo, *current, base, headPrefix, conflictLocations,
-			".", pushToken, providerInput("rebaseBaseSha", ""),
-		)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
+		current = &liveCurrent
+		if attemptedHeadSHA == current.HeadSHA {
+			conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			structuralCollisions, err = findStructuralCollisions(
+				ctx, provider, repo, *current, base, headPrefix, conflictLocations,
+				".", pushToken, providerInput("rebaseBaseSha", ""),
+			)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
+			}
 		}
 	}
 

@@ -492,7 +492,7 @@ func functionStructurallyChangedPaths(
 	similarity := sourceLineSimilarity(oldFunction.Lines, liveFunction.Lines)
 	largeBoundaryChange := oldSize >= 6 && delta*100 >= oldSize*35
 	return (largeBoundaryChange && similarity < 0.75) ||
-		(oldSize >= 10 && similarity < 0.35), nil
+		(oldSize >= 6 && similarity < 0.35), nil
 }
 
 func hydrateCurrentPatches(dir, base string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {

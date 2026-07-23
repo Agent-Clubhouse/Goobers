@@ -58,6 +58,7 @@ type remediationCheckpointServerState struct {
 
 	number             int
 	headSHA, baseSHA   string
+	listedHeadSHA      string
 	liveBaseSHA        string
 	state              string
 	merged             bool
@@ -93,13 +94,17 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		if currentState == "" {
 			currentState = "open"
 		}
+		listedHeadSHA := st.headSHA
+		if st.listedHeadSHA != "" {
+			listedHeadSHA = st.listedHeadSHA
+		}
 		out := make([]map[string]interface{}, 0, 1+len(st.siblings))
 		if (state == "" || state == "open") && currentState == "open" {
 			out = append(out, map[string]interface{}{
 				"number": st.number, "draft": false,
 				"state":    currentState,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
-				"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
+				"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": listedHeadSHA},
 				"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
 				"labels":   labelsJSON(st.labels),
 			})
@@ -657,7 +662,7 @@ func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidence(t *testing.
 	currentHeadSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
 
 	st := &remediationCheckpointServerState{
-		number: 77, headSHA: currentHeadSHA, baseSHA: baseSHA,
+		number: 77, headSHA: currentHeadSHA, listedHeadSHA: attemptedHeadSHA, baseSHA: baseSHA,
 		liveBaseSHA: mergeSHA, labels: []string{needsRemediationLabel},
 		files: []providers.ChangedFile{{
 			Path: "status.go", Status: "modified", Patch: structuralCollisionCurrentPatch,

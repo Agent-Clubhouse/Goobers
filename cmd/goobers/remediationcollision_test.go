@@ -131,6 +131,35 @@ func TestFunctionStructurallyChangedPathsFollowsRename(t *testing.T) {
 	}
 }
 
+func TestFunctionStructurallyChangedPathsDetectsSixLineCompleteRewrite(t *testing.T) {
+	dir := t.TempDir()
+	runGitT(t, dir, "init", "-b", "main")
+	runGitT(t, dir, "config", "user.name", "test")
+	runGitT(t, dir, "config", "user.email", "test@example.com")
+	oldSource := "package status\n\nfunc runStatus() {\n\ta()\n\tb()\n\tc()\n\td()\n\te()\n\tf()\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "status.go"), []byte(oldSource), 0o644); err != nil {
+		t.Fatalf("write old status.go: %v", err)
+	}
+	runGitT(t, dir, "add", "status.go")
+	runGitT(t, dir, "commit", "-m", "old function")
+	oldRevision := strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
+
+	newSource := "package status\n\nfunc runStatus() {\n\tone()\n\ttwo()\n\tthree()\n\tfour()\n\tfive()\n\tsix()\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "status.go"), []byte(newSource), 0o644); err != nil {
+		t.Fatalf("write rewritten status.go: %v", err)
+	}
+	runGitT(t, dir, "commit", "-am", "rewrite function")
+	newRevision := strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
+
+	changed, err := functionStructurallyChangedPaths(dir, oldRevision, newRevision, "status.go", "status.go", "runStatus")
+	if err != nil {
+		t.Fatalf("functionStructurallyChangedPaths: %v", err)
+	}
+	if !changed {
+		t.Fatal("complete rewrite of a six-line function was not structural")
+	}
+}
+
 func TestCommitIntroducedBetweenUsesFailedRebaseBase(t *testing.T) {
 	baseSHA, _, laterBaseSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
 
