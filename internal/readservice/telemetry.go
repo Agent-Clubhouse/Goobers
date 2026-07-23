@@ -149,13 +149,17 @@ type TelemetryErrorSignature struct {
 
 // TelemetryErrorsRequest filters and paginates recent errors.
 type TelemetryErrorsRequest struct {
-	Workflow   string
-	Gaggle     string
-	ErrorClass string
-	Since      time.Time
-	Until      time.Time
-	Limit      int
-	Cursor     string
+	Workflow         string
+	Gaggle           string
+	Stage            string
+	Code             string
+	ErrorClass       string
+	FilterCode       bool
+	FilterErrorClass bool
+	Since            time.Time
+	Until            time.Time
+	Limit            int
+	Cursor           string
 }
 
 // TelemetryErrorsPage contains newest-first error events and an opaque cursor.
@@ -396,13 +400,17 @@ func (s *Telemetry) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequ
 		return TelemetryErrorsPage{}, err
 	}
 	events, err := s.store.Errors(rollup.ErrorsRequest{
-		Workflow:   req.Workflow,
-		Gaggle:     req.Gaggle,
-		ErrorClass: req.ErrorClass,
-		Since:      req.Since,
-		Until:      req.Until,
-		Limit:      queryLimit,
-		Cursor:     cursor,
+		Workflow:         req.Workflow,
+		Gaggle:           req.Gaggle,
+		Stage:            req.Stage,
+		Code:             req.Code,
+		ErrorClass:       req.ErrorClass,
+		FilterCode:       req.FilterCode,
+		FilterErrorClass: req.FilterErrorClass,
+		Since:            req.Since,
+		Until:            req.Until,
+		Limit:            queryLimit,
+		Cursor:           cursor,
 	})
 	if err != nil {
 		return TelemetryErrorsPage{}, err
@@ -505,7 +513,7 @@ func decodeErrorsCursor(req TelemetryErrorsRequest) (*rollup.ErrorCursor, error)
 	}
 	var cursor telemetryErrorsCursor
 	if err := json.Unmarshal(data, &cursor); err != nil ||
-		cursor.RunID == "" || cursor.Filter == "" {
+		cursor.Sequence == 0 || cursor.Filter == "" {
 		return nil, fmt.Errorf("%w: cursor is invalid", ErrInvalidTelemetryRequest)
 	}
 	if cursor.Filter != telemetryErrorsFilter(req) {
@@ -525,17 +533,25 @@ func decodeErrorsCursor(req TelemetryErrorsRequest) (*rollup.ErrorCursor, error)
 
 func telemetryErrorsFilter(req TelemetryErrorsRequest) string {
 	data, _ := json.Marshal(struct {
-		Workflow   string `json:"workflow"`
-		Gaggle     string `json:"gaggle"`
-		ErrorClass string `json:"errorClass"`
-		Since      string `json:"since"`
-		Until      string `json:"until"`
+		Workflow         string `json:"workflow"`
+		Gaggle           string `json:"gaggle"`
+		Stage            string `json:"stage"`
+		Code             string `json:"code"`
+		ErrorClass       string `json:"errorClass"`
+		FilterCode       bool   `json:"filterCode"`
+		FilterErrorClass bool   `json:"filterErrorClass"`
+		Since            string `json:"since"`
+		Until            string `json:"until"`
 	}{
-		Workflow:   req.Workflow,
-		Gaggle:     req.Gaggle,
-		ErrorClass: req.ErrorClass,
-		Since:      formatCursorTime(req.Since),
-		Until:      formatCursorTime(req.Until),
+		Workflow:         req.Workflow,
+		Gaggle:           req.Gaggle,
+		Stage:            req.Stage,
+		Code:             req.Code,
+		ErrorClass:       req.ErrorClass,
+		FilterCode:       req.FilterCode,
+		FilterErrorClass: req.FilterErrorClass,
+		Since:            formatCursorTime(req.Since),
+		Until:            formatCursorTime(req.Until),
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

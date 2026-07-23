@@ -546,17 +546,21 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 
 	errorsResponse := httptest.NewRecorder()
-	errorsURL := TelemetryErrorsPath + "?workflow=implement&gaggle=core&class=timeout&limit=10&cursor=current"
+	errorsURL := TelemetryErrorsPath + "?workflow=implement&gaggle=core&stage=review&code=harness.crash&class=timeout&limit=10&cursor=current"
 	handler.ServeHTTP(errorsResponse, httptest.NewRequest(http.MethodGet, errorsURL, nil))
 	if errorsResponse.Code != http.StatusOK {
 		t.Fatalf("errors status = %d, body = %s", errorsResponse.Code, errorsResponse.Body)
 	}
 	wantErrorsReq := readservice.TelemetryErrorsRequest{
-		Workflow:   "implement",
-		Gaggle:     "core",
-		ErrorClass: "timeout",
-		Limit:      10,
-		Cursor:     "current",
+		Workflow:         "implement",
+		Gaggle:           "core",
+		Stage:            "review",
+		Code:             "harness.crash",
+		ErrorClass:       "timeout",
+		FilterCode:       true,
+		FilterErrorClass: true,
+		Limit:            10,
+		Cursor:           "current",
 	}
 	if reader.errorsReq != wantErrorsReq {
 		t.Fatalf("errors request = %+v, want %+v", reader.errorsReq, wantErrorsReq)
@@ -567,6 +571,22 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].Code != "failure" || page.NextCursor != "next" {
 		t.Fatalf("errors page = %+v", page)
+	}
+
+	unclassifiedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unclassifiedResponse, httptest.NewRequest(
+		http.MethodGet,
+		TelemetryErrorsPath+"?code=&class=",
+		nil,
+	))
+	if unclassifiedResponse.Code != http.StatusOK {
+		t.Fatalf("unclassified errors status = %d, body = %s", unclassifiedResponse.Code, unclassifiedResponse.Body)
+	}
+	if !reader.errorsReq.FilterCode ||
+		reader.errorsReq.Code != "" ||
+		!reader.errorsReq.FilterErrorClass ||
+		reader.errorsReq.ErrorClass != "" {
+		t.Fatalf("unclassified errors request = %+v", reader.errorsReq)
 	}
 }
 

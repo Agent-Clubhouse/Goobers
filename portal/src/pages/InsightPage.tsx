@@ -17,7 +17,7 @@ import {
   useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
-import { routeHash, type RunRouteFilters } from "../routing";
+import { routeHash, type ErrorRouteFilters, type RunRouteFilters } from "../routing";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
@@ -289,6 +289,7 @@ function FailureReasonBreakdown({
               </div>
               {snapshot.result.items.map((signature) => (
                 <FailureReasonRow
+                  filters={snapshot.filters}
                   key={`${signature.code}:${signature.errorClass}`}
                   signature={signature}
                 />
@@ -303,7 +304,13 @@ function FailureReasonBreakdown({
   );
 }
 
-function FailureReasonRow({ signature }: { signature: TelemetryErrorSignature }) {
+function FailureReasonRow({
+  filters,
+  signature,
+}: {
+  filters: ErrorRouteFilters;
+  signature: TelemetryErrorSignature;
+}) {
   const code = signature.code || "uncoded";
   const errorClass = signature.errorClass || "unknown";
   const example = signature.exampleRunId
@@ -324,20 +331,29 @@ function FailureReasonRow({ signature }: { signature: TelemetryErrorSignature })
       <strong className="error-signature-count">{signature.count}</strong>
       <time dateTime={signature.lastSeen}>{formatTimestamp(signature.lastSeen)}</time>
       <span className="error-signature-example">{example}</span>
-      {signature.exampleRunId ? <Icon name="chevron" size={15} /> : <span />}
+      <Icon name="chevron" size={15} />
     </>
   );
 
-  return signature.exampleRunId ? (
+  return (
     <a
-      aria-label={`Open example run ${signature.exampleRunId} for error ${code}`}
+      aria-label={`View ${signature.count} matching ${signature.count === 1 ? "error" : "errors"} for ${code}`}
       className="error-signature-row"
-      href={routeHash({ page: "run", id: signature.exampleRunId })}
+      href={routeHash({
+        page: "errors",
+        filters: {
+          gaggle: filters.gaggle,
+          workflow: filters.workflow,
+          stage: filters.stage,
+          code: signature.code,
+          errorClass: signature.errorClass,
+          since: filters.since,
+          until: filters.until,
+        },
+      })}
     >
       {content}
     </a>
-  ) : (
-    <div className="error-signature-row">{content}</div>
   );
 }
 

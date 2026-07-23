@@ -26,12 +26,27 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
-    expect(screen.getByText("unknown")).toBeInTheDocument();
+    expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("link", {
-        name: "Open example run 01JZ400FAILED for error harness.crash",
+        name: "View 2 matching errors for harness.crash",
       }),
-    ).toHaveAttribute("href", "#/run/01JZ400FAILED");
+    ).toHaveAttribute(
+      "href",
+      expect.stringMatching(
+        /^#\/errors\?code=harness\.crash&errorClass=unknown&since=.*&until=.*/,
+      ),
+    );
+    expect(
+      screen.getByRole("link", {
+        name: "View 1 matching error for scheduler.storage",
+      }),
+    ).toHaveAttribute(
+      "href",
+      expect.stringMatching(
+        /^#\/errors\?code=scheduler\.storage&errorClass=unknown&since=.*&until=.*/,
+      ),
+    );
     expect(screen.getAllByText("50.0%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P95").length).toBeGreaterThan(0);
@@ -116,6 +131,55 @@ describe("Insight page", () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it("drills into every matching run error while keeping the selected filters", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.selectOptions(
+      await screen.findByLabelText("Scope"),
+      screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
+    );
+    await user.click(
+      screen.getByRole("link", { name: "View 2 matching errors for harness.crash" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Matching errors" })).toBeInTheDocument();
+    expect(screen.getByText("Harness exited before producing a result envelope.")).toBeInTheDocument();
+    expect(screen.getByText("Harness process exited unexpectedly.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listTelemetryErrors).toHaveBeenCalledWith(
+        expect.objectContaining({
+          gaggle: "core",
+          workflow: "implementation",
+          stage: "implement",
+          code: "harness.crash",
+          errorClass: "unknown",
+          since: expect.stringMatching(/Z$/),
+          until: expect.stringMatching(/Z$/),
+        }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it("provides an inspectable drill-through for instance errors", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.click(
+      await screen.findByRole("link", {
+        name: "View 1 matching error for scheduler.storage",
+      }),
+    );
+
+    expect(await screen.findByText("Scheduler journal append failed.")).toBeInTheDocument();
+    expect(screen.getByText("Instance scheduler")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Open run .*scheduler.storage/ })).not.toBeInTheDocument();
   });
 
   it("gives each outcome number its exact run population", async () => {

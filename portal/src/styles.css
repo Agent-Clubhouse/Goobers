@@ -1324,6 +1324,63 @@ a.error-signature-row:hover {
   background: var(--surface);
 }
 
+.telemetry-errors {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.telemetry-error-header,
+.telemetry-error-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(120px, 0.65fr) minmax(170px, 0.9fr) minmax(130px, 0.7fr) 16px;
+}
+
+.telemetry-error-header {
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  padding: 9px 13px;
+  text-transform: uppercase;
+}
+
+.telemetry-error-row {
+  align-items: center;
+  color: inherit;
+  min-height: 68px;
+  padding: 10px 13px;
+  text-decoration: none;
+}
+
+.telemetry-error-row + .telemetry-error-row {
+  border-top: 1px solid var(--line);
+}
+
+a.telemetry-error-row:hover {
+  background: var(--surface);
+}
+
+.error-history-primary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.error-history-primary small {
+  color: var(--muted-strong);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.telemetry-error-row > span:not(.error-history-primary, .error-class-label),
+.telemetry-error-row time {
+  color: var(--muted-strong);
+  font-size: 10px;
+}
+
 .error-signature-code {
   display: grid;
   gap: 3px;
@@ -3588,6 +3645,16 @@ a.error-signature-row:hover {
 
   .error-signature-header > span:nth-child(n + 4),
   .error-signature-row > :nth-child(n + 4) {
+    display: none;
+  }
+
+  .telemetry-error-header,
+  .telemetry-error-row {
+    grid-template-columns: minmax(155px, 1fr) minmax(105px, 0.65fr) minmax(140px, 0.8fr) 16px;
+  }
+
+  .telemetry-error-header > span:nth-child(4),
+  .telemetry-error-row > :nth-child(4) {
     display: none;
   }
 

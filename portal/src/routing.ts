@@ -4,6 +4,7 @@ export type Route =
   | { page: "overview" }
   | { page: "workflows" }
   | { page: "runs"; filters?: RunRouteFilters }
+  | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight" }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
@@ -14,6 +15,16 @@ export interface RunRouteFilters {
   stage?: string;
   outcome?: OutcomeFilter;
   population?: StagePopulationFilter;
+  since?: string;
+  until?: string;
+}
+
+export interface ErrorRouteFilters {
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
+  code?: string;
+  errorClass?: string;
   since?: string;
   until?: string;
 }
@@ -50,6 +61,20 @@ export function parseRoute(hash = window.location.hash): Route {
     };
     return Object.values(filters).some(Boolean) ? { page: "runs", filters } : { page: "runs" };
   }
+  if (area === "errors") {
+    return {
+      page: "errors",
+      filters: {
+        gaggle: optionalQuery(search, "gaggle"),
+        workflow: optionalQuery(search, "workflow"),
+        stage: optionalQuery(search, "stage"),
+        code: exactOptionalQuery(search, "code"),
+        errorClass: exactOptionalQuery(search, "errorClass"),
+        since: optionalQuery(search, "since"),
+        until: optionalQuery(search, "until"),
+      },
+    };
+  }
   if (area === "insight") {
     return { page: "insight" };
   }
@@ -76,6 +101,16 @@ export function routeHash(route: Route): string {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
+  if (route.page === "errors") {
+    const search = new URLSearchParams();
+    for (const [name, value] of Object.entries(route.filters)) {
+      if (value !== undefined) {
+        search.set(name, value);
+      }
+    }
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return `#/errors${suffix}`;
+  }
   return `#/${route.page}`;
 }
 
@@ -86,6 +121,9 @@ export function activeArea(route: Route): PrimaryArea {
   if (route.page === "run") {
     return "runs";
   }
+  if (route.page === "errors") {
+    return "insight";
+  }
   return route.page;
 }
 
@@ -93,6 +131,10 @@ export type Navigate = (route: Route) => void;
 
 function optionalQuery(search: URLSearchParams, name: string): string | undefined {
   return search.get(name) || undefined;
+}
+
+function exactOptionalQuery(search: URLSearchParams, name: string): string | undefined {
+  return search.has(name) ? (search.get(name) ?? "") : undefined;
 }
 
 function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {

@@ -249,11 +249,22 @@ func TestTelemetryErrorsPaginatesAndBindsCursorToFilters(t *testing.T) {
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeTelemetryStore{errors: []rollup.ErrorEvent{
 		{Sequence: 3, RunID: "3", Workflow: "implement", Code: "third", OccurredAt: base.Add(3 * time.Hour)},
-		{Sequence: 2, RunID: "2", Workflow: "implement", Code: "second", OccurredAt: base.Add(2 * time.Hour)},
+		{Sequence: 2, RunID: "", Workflow: "", Code: "second", OccurredAt: base.Add(2 * time.Hour)},
 		{Sequence: 1, RunID: "1", Workflow: "implement", Code: "first", OccurredAt: base.Add(time.Hour)},
 	}}
 	service := &Telemetry{store: store}
-	req := TelemetryErrorsRequest{Workflow: "implement", Since: base, Until: base.Add(4 * time.Hour), Limit: 2}
+	req := TelemetryErrorsRequest{
+		Workflow:         "implement",
+		Gaggle:           "core",
+		Stage:            "review",
+		Code:             "harness.crash",
+		ErrorClass:       "unknown",
+		FilterCode:       true,
+		FilterErrorClass: true,
+		Since:            base,
+		Until:            base.Add(4 * time.Hour),
+		Limit:            2,
+	}
 
 	first, err := service.TelemetryErrors(context.Background(), req)
 	if err != nil {
@@ -262,7 +273,15 @@ func TestTelemetryErrorsPaginatesAndBindsCursorToFilters(t *testing.T) {
 	if len(first.Items) != 2 || first.Items[0].Code != "third" || first.Items[1].Code != "second" || first.NextCursor == "" {
 		t.Fatalf("first page = %+v", first)
 	}
-	if got := store.errorReqs[0]; got.Limit != 3 || got.Cursor != nil || got.Until != req.Until {
+	if got := store.errorReqs[0]; got.Limit != 3 ||
+		got.Cursor != nil ||
+		got.Gaggle != req.Gaggle ||
+		got.Stage != req.Stage ||
+		got.Code != req.Code ||
+		!got.FilterCode ||
+		got.ErrorClass != req.ErrorClass ||
+		!got.FilterErrorClass ||
+		got.Until != req.Until {
 		t.Fatalf("first store request = %+v", got)
 	}
 
@@ -275,7 +294,7 @@ func TestTelemetryErrorsPaginatesAndBindsCursorToFilters(t *testing.T) {
 		t.Fatalf("second page = %+v", second)
 	}
 	if got := store.errorReqs[1]; got.Cursor == nil ||
-		got.Cursor.RunID != "2" || got.Cursor.Sequence != 2 ||
+		got.Cursor.RunID != "" || got.Cursor.Sequence != 2 ||
 		got.Cursor.OrderTimestamp != formatCursorTime(base.Add(2*time.Hour)) {
 		t.Fatalf("second store cursor = %+v", got.Cursor)
 	}

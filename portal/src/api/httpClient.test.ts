@@ -127,6 +127,8 @@ describe("HttpDaemonClient", () => {
     await client.listTelemetryErrors({
       workflow: "implementation",
       gaggle: "core",
+      stage: "review",
+      code: "harness.crash",
       errorClass: "timeout",
       since: "2026-07-01T00:00:00Z",
       until: "2026-07-18T00:00:00Z",
@@ -148,7 +150,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/runs/run-1/artifacts/sha256%3Aabc",
       "/api/v1/telemetry/stats?workflow=implementation&gaggle=core&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z",
       "/api/v1/telemetry/error-signatures?workflow=implementation&gaggle=core&stage=review&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20",
-      "/api/v1/telemetry/errors?workflow=implementation&gaggle=core&class=timeout&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20&cursor=error-page",
+      "/api/v1/telemetry/errors?workflow=implementation&gaggle=core&stage=review&code=harness.crash&class=timeout&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20&cursor=error-page",
     ]);
   });
 

@@ -137,7 +137,7 @@ func parseTelemetryErrorSignaturesQuery(values url.Values) (readservice.Telemetr
 }
 
 func parseTelemetryErrorsQuery(values url.Values) (readservice.TelemetryErrorsRequest, error) {
-	if err := validateQueryValues(values, "workflow", "gaggle", "class", "since", "until", "limit", "cursor"); err != nil {
+	if err := validateQueryValues(values, "workflow", "gaggle", "stage", "code", "class", "since", "until", "limit", "cursor"); err != nil {
 		return readservice.TelemetryErrorsRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -159,13 +159,17 @@ func parseTelemetryErrorsQuery(values url.Values) (readservice.TelemetryErrorsRe
 		}
 	}
 	return readservice.TelemetryErrorsRequest{
-		Workflow:   values.Get("workflow"),
-		Gaggle:     values.Get("gaggle"),
-		ErrorClass: values.Get("class"),
-		Since:      since,
-		Until:      until,
-		Limit:      limit,
-		Cursor:     values.Get("cursor"),
+		Workflow:         values.Get("workflow"),
+		Gaggle:           values.Get("gaggle"),
+		Stage:            values.Get("stage"),
+		Code:             values.Get("code"),
+		ErrorClass:       values.Get("class"),
+		FilterCode:       values.Has("code"),
+		FilterErrorClass: values.Has("class"),
+		Since:            since,
+		Until:            until,
+		Limit:            limit,
+		Cursor:           values.Get("cursor"),
 	}, nil
 }
 

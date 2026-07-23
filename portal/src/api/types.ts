@@ -558,6 +558,8 @@ export interface TelemetryErrorSignature {
 }
 
 export interface TelemetryErrorsOptions extends TelemetryStatsOptions {
+  stage?: string;
+  code?: string;
   errorClass?: string;
   limit?: number;
   cursor?: string;

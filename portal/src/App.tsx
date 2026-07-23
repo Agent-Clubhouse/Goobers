@@ -8,6 +8,7 @@ import {
   useConfigurationWarnings,
 } from "./configurationWarnings";
 import { LiveDataProvider } from "./liveData";
+import { ErrorsPage } from "./pages/ErrorsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -110,6 +111,9 @@ function Portal({
         <RunsPage client={client} filters={route.filters} standalone={standalone} />
       )}
       {route.page === "insight" && <InsightPage client={client} standalone={standalone} />}
+      {route.page === "errors" && (
+        <ErrorsPage client={client} filters={route.filters} standalone={standalone} />
+      )}
       {route.page === "workflow" && route.gaggle && (
         <WorkflowPage
           client={client}

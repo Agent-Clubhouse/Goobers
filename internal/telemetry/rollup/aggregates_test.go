@@ -403,6 +403,18 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 	if len(deploy) != 1 || deploy[0].Code != "provider.rate_limit" || deploy[0].Count != 2 {
 		t.Fatalf("deploy signatures = %#v", deploy)
 	}
+
+	matching, err := db.Errors(ErrorsRequest{
+		Stage:      "deploy",
+		Code:       "provider.rate_limit",
+		FilterCode: true,
+	})
+	if err != nil {
+		t.Fatalf("Errors signature filtered: %v", err)
+	}
+	if len(matching) != 2 {
+		t.Fatalf("matching signature errors = %#v", matching)
+	}
 }
 
 func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
@@ -428,6 +440,22 @@ func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
 		signatures[0].Count != 1 ||
 		signatures[0].ExampleRunID != "" {
 		t.Fatalf("unclassified scheduler signatures = %#v", signatures)
+	}
+
+	errors, err := db.Errors(ErrorsRequest{
+		Code:             "",
+		ErrorClass:       "",
+		FilterCode:       true,
+		FilterErrorClass: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errors) != 1 ||
+		errors[0].RunID != "" ||
+		errors[0].Workflow != "" ||
+		errors[0].Message != "uncoded scheduler failure" {
+		t.Fatalf("unclassified scheduler errors = %#v", errors)
 	}
 }
 
