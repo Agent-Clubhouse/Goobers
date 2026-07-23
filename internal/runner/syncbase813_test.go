@@ -97,12 +97,19 @@ func TestRunnerSyncsConfiguredStageWithLatestBase(t *testing.T) {
 
 type conflictRemediatingDeterministic struct {
 	t                 *testing.T
-	remote            string
-	root              string
 	runDir            string
-	baseWork          string
 	implementAttempts int
 	localCIAttempts   int
+}
+
+type countingAutomated struct {
+	delegate invoke.Automated
+	calls    int
+}
+
+func (a *countingAutomated) Evaluate(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+	a.calls++
+	return a.delegate.Evaluate(ctx, gate, env)
 }
 
 func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -115,29 +122,6 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 			}
 			runGit(d.t, env.Workspace, "add", "README.md")
 			runGit(d.t, env.Workspace, "commit", "-m", "implement")
-
-			d.baseWork = filepath.Join(d.root, "conflicting-base-work")
-			runGit(d.t, "", "clone", d.remote, d.baseWork)
-			runGit(d.t, d.baseWork, "config", "user.email", "test@example.com")
-			runGit(d.t, d.baseWork, "config", "user.name", "test")
-			for i := 1; i <= 15; i++ {
-				branch := fmt.Sprintf("sibling-%02d", i)
-				runGit(d.t, d.baseWork, "checkout", "-b", branch, "main")
-				name := filepath.Join(d.baseWork, branch+".txt")
-				if err := os.WriteFile(name, []byte(branch+"\n"), 0o644); err != nil {
-					return apiv1.ResultEnvelope{}, err
-				}
-				runGit(d.t, d.baseWork, "add", filepath.Base(name))
-				runGit(d.t, d.baseWork, "commit", "-m", "open "+branch)
-				runGit(d.t, d.baseWork, "push", "origin", branch)
-			}
-			runGit(d.t, d.baseWork, "checkout", "main")
-			if err := os.WriteFile(filepath.Join(d.baseWork, "README.md"), []byte("base round 1\n"), 0o644); err != nil {
-				return apiv1.ResultEnvelope{}, err
-			}
-			runGit(d.t, d.baseWork, "add", "README.md")
-			runGit(d.t, d.baseWork, "commit", "-m", "advance base during local-ci")
-			runGit(d.t, d.baseWork, "push", "origin", "main")
 			break
 		}
 
@@ -174,14 +158,6 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 		}
 		runGit(d.t, env.Workspace, "add", "README.md")
 		runGit(d.t, env.Workspace, "commit", "-m", "resolve base conflict")
-		if d.implementAttempts == 2 {
-			if err := os.WriteFile(filepath.Join(d.baseWork, "README.md"), []byte("base round 2\n"), 0o644); err != nil {
-				return apiv1.ResultEnvelope{}, err
-			}
-			runGit(d.t, d.baseWork, "add", "README.md")
-			runGit(d.t, d.baseWork, "commit", "-m", "advance base again during local-ci")
-			runGit(d.t, d.baseWork, "push", "origin", "main")
-		}
 	case strings.HasSuffix(env.TaskID, ":local-ci"):
 		d.localCIAttempts++
 		content, err := os.ReadFile(filepath.Join(env.Workspace, "README.md"))
@@ -195,105 +171,244 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
-func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *testing.T) {
+const batchLoadPullRequests = 19
+
+type batchLoadRepo struct {
+	t           *testing.T
+	remote      string
+	runDir      string
+	pullHeads   []string
+	cloneCalls  int
+	maxLandings int
+	landedPulls int
+}
+
+func newBatchLoadRepo(t *testing.T, maxLandings int) *batchLoadRepo {
+	t.Helper()
 	remote := newFixtureRepo(t)
-	deterministic := &conflictRemediatingDeterministic{t: t, remote: remote, root: t.TempDir()}
-	r, runsDir := newWorktreeProvisioningTestRunner(t, remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-		return deterministic, nil
-	})
-	deterministic.runDir = filepath.Join(runsDir, "run-sync-conflict")
-	machine, err := workflow.Compile(workflow.Definition{
-		Name:    "implementation",
-		Version: 1,
-		Spec: apiv1.WorkflowSpec{
-			Gaggle: "acme-web",
-			Start:  "implement",
-			Tasks: []apiv1.Task{
-				{
-					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci",
-				},
-				{
-					Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "test",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, Next: "local-gate",
-				},
-			},
-			Gates: []apiv1.Gate{{
-				Name:      "local-gate",
-				Evaluator: apiv1.EvaluatorAutomated,
-				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
-				Branches: map[string]string{
-					"pass":                  workflow.TerminalComplete,
-					"fail":                  "implement",
-					workflow.BranchEscalate: workflow.TargetEscalate,
-				},
-			}},
-		},
-	}, workflow.WithPreviewFeatures(true))
-	if err != nil {
-		t.Fatalf("compile workflow: %v", err)
-	}
+	work := filepath.Join(t.TempDir(), "sibling-pulls")
+	runGit(t, "", "clone", remote, work)
+	runGit(t, work, "config", "user.email", "test@example.com")
+	runGit(t, work, "config", "user.name", "test")
 
-	result, err := r.Start(context.Background(), StartInput{
-		RunID:   "run-sync-conflict",
-		Machine: machine,
-		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	repo := &batchLoadRepo{t: t, remote: remote, maxLandings: maxLandings}
+	for i := 1; i <= batchLoadPullRequests; i++ {
+		branch := fmt.Sprintf("sibling-%02d", i)
+		runGit(t, work, "checkout", "-b", branch)
+		if err := os.WriteFile(filepath.Join(work, "README.md"), []byte(fmt.Sprintf("base round %d\n", i)), 0o644); err != nil {
+			t.Fatalf("write %s: %v", branch, err)
+		}
+		runGit(t, work, "add", "README.md")
+		runGit(t, work, "commit", "-m", "open "+branch)
+		head := gitOutput(t, work, "rev-parse", "HEAD")
+		repo.pullHeads = append(repo.pullHeads, head)
+		runGit(t, work, "push", "origin", "HEAD:refs/heads/"+branch)
+		runGit(t, work, "push", "origin", fmt.Sprintf("HEAD:refs/pull/%d/head", i))
 	}
-	if result.Phase != journal.PhaseCompleted {
-		t.Fatalf("phase = %s, want %s", result.Phase, journal.PhaseCompleted)
-	}
-	if deterministic.implementAttempts != 3 {
-		t.Fatalf("implement attempts = %d, want 3", deterministic.implementAttempts)
-	}
-	if deterministic.localCIAttempts != 1 {
-		t.Fatalf("local-ci executor attempts = %d, want 1 after repeated conflict remediation", deterministic.localCIAttempts)
-	}
+	return repo
+}
 
-	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-sync-conflict"))
-	if err != nil {
-		t.Fatalf("open journal: %v", err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("read events: %v", err)
-	}
-	var conflictCount int
-	var successfulCI bool
-	var retryAttempts []int
-	for _, event := range events {
-		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "run_failed" {
-			t.Fatalf("batch-load sync conflict terminated the run: %+v", event.Error)
+// cloneURL is called after stage.started and before worktree.Create fetches.
+// Landing the next sibling here makes the base move during local-ci
+// provisioning, rather than before the stage begins.
+func (r *batchLoadRepo) cloneURL(apiv1.RepoRef) (string, error) {
+	r.cloneCalls++
+	if r.cloneCalls%2 == 0 && r.landedPulls < r.maxLandings {
+		rd, err := journal.OpenRead(r.runDir)
+		if err != nil {
+			r.t.Fatalf("open active journal before sibling landing: %v", err)
 		}
-		if event.Stage == "local-ci" && event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-			t.Fatalf("base sync conflict was journaled as executor_error: %+v", event.Error)
+		events, err := rd.Events()
+		if err != nil {
+			r.t.Fatalf("read active journal before sibling landing: %v", err)
 		}
-		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
-			event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
-			conflictCount++
-		}
-		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
-			successfulCI = true
-		}
-		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind &&
-			event.Runner["failureCode"] == baseSyncConflictErrorCode {
-			if event.Runner[retryFailureClassKey] != string(journal.AttemptPolicy) {
-				t.Fatalf("retry failure class = %v, want %s", event.Runner[retryFailureClassKey], journal.AttemptPolicy)
+		var localCIStarts int
+		for _, event := range events {
+			if event.Type == journal.EventStageStarted && event.Stage == "local-ci" {
+				localCIStarts++
 			}
-			retryAttempts = append(retryAttempts, int(event.Runner["repassAttempt"].(float64)))
 		}
+		if localCIStarts != r.landedPulls+1 {
+			r.t.Fatalf("local-ci starts before sibling landing = %d, want %d", localCIStarts, r.landedPulls+1)
+		}
+		r.landedPulls++
+		pull := r.landedPulls
+		runGit(r.t, "", "--git-dir="+r.remote, "update-ref", "refs/heads/main", r.pullHeads[pull-1])
+		runGit(r.t, "", "--git-dir="+r.remote, "update-ref", "-d", fmt.Sprintf("refs/pull/%d/head", pull))
 	}
-	if conflictCount != 2 {
-		t.Fatalf("typed base-sync conflicts = %d, want 2", conflictCount)
+	return r.remote, nil
+}
+
+func (r *batchLoadRepo) openPulls() int {
+	out := gitOutput(r.t, "", "--git-dir="+r.remote, "for-each-ref", "--format=%(refname)", "refs/pull/")
+	if out == "" {
+		return 0
 	}
-	if !successfulCI {
-		t.Fatal("journal missing successful local-ci after remediation")
+	return len(strings.Split(out, "\n"))
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
-	if len(retryAttempts) != 2 || retryAttempts[0] != 1 || retryAttempts[1] != 2 {
-		t.Fatalf("journaled retry attempts = %v, want [1 2]", retryAttempts)
+	return strings.TrimSpace(string(out))
+}
+
+func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *testing.T) {
+	tests := []struct {
+		name              string
+		landings          int
+		wantPhase         journal.RunPhase
+		wantImplement     int
+		wantLocalCI       int
+		wantGateCalls     int
+		wantRetryAttempts []int
+	}{
+		{
+			name:              "converges_at_budget",
+			landings:          3,
+			wantPhase:         journal.PhaseCompleted,
+			wantImplement:     4,
+			wantLocalCI:       1,
+			wantGateCalls:     1,
+			wantRetryAttempts: []int{1, 2, 3},
+		},
+		{
+			name:              "escalates_after_budget",
+			landings:          4,
+			wantPhase:         journal.PhaseEscalated,
+			wantImplement:     4,
+			wantLocalCI:       0,
+			wantGateCalls:     0,
+			wantRetryAttempts: []int{1, 2, 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newBatchLoadRepo(t, tt.landings)
+			if got := repo.openPulls(); got != batchLoadPullRequests {
+				t.Fatalf("initial open sibling pull refs = %d, want %d", got, batchLoadPullRequests)
+			}
+			deterministic := &conflictRemediatingDeterministic{t: t}
+			r, runsDir := newWorktreeProvisioningTestRunner(t, repo.remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+				return deterministic, nil
+			})
+			automated := &countingAutomated{delegate: r.cfg.Automated}
+			r.cfg.Automated = automated
+			r.cfg.RepoCloneURL = repo.cloneURL
+			runID := "run-sync-conflict-" + tt.name
+			deterministic.runDir = filepath.Join(runsDir, runID)
+			repo.runDir = deterministic.runDir
+			machine, err := workflow.Compile(workflow.Definition{
+				Name:    "implementation",
+				Version: 1,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "acme-web",
+					Start:  "implement",
+					Tasks: []apiv1.Task{
+						{
+							Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+							Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci",
+						},
+						{
+							Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "test",
+							Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, Next: "local-gate",
+						},
+					},
+					Gates: []apiv1.Gate{{
+						Name:      "local-gate",
+						Evaluator: apiv1.EvaluatorAutomated,
+						Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+						Branches: map[string]string{
+							"pass":                  workflow.TerminalComplete,
+							"fail":                  "implement",
+							workflow.BranchEscalate: workflow.TargetEscalate,
+						},
+					}},
+				},
+			}, workflow.WithPreviewFeatures(true))
+			if err != nil {
+				t.Fatalf("compile workflow: %v", err)
+			}
+
+			result, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: machine,
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if result.Phase != tt.wantPhase {
+				t.Fatalf("phase = %s, want %s", result.Phase, tt.wantPhase)
+			}
+			if deterministic.implementAttempts != tt.wantImplement {
+				t.Fatalf("implement attempts = %d, want %d", deterministic.implementAttempts, tt.wantImplement)
+			}
+			if deterministic.localCIAttempts != tt.wantLocalCI {
+				t.Fatalf("local-ci executor attempts = %d, want %d", deterministic.localCIAttempts, tt.wantLocalCI)
+			}
+			if automated.calls != tt.wantGateCalls {
+				t.Fatalf("automated gate calls = %d, want %d; classified conflicts must take the known retry outcome", automated.calls, tt.wantGateCalls)
+			}
+			if got, want := repo.openPulls(), batchLoadPullRequests-tt.landings; got != want {
+				t.Fatalf("open sibling pull refs after %d landings = %d, want %d", tt.landings, got, want)
+			}
+
+			rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+			if err != nil {
+				t.Fatalf("open journal: %v", err)
+			}
+			events, err := rd.Events()
+			if err != nil {
+				t.Fatalf("read events: %v", err)
+			}
+			var conflictCount int
+			var successfulCI bool
+			var retryAttempts []int
+			for _, event := range events {
+				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "run_failed" {
+					t.Fatalf("batch-load sync conflict terminated the run fatally: %+v", event.Error)
+				}
+				if event.Stage == "local-ci" && event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+					t.Fatalf("base sync conflict was journaled as executor_error: %+v", event.Error)
+				}
+				if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
+					event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
+					conflictCount++
+				}
+				if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
+					successfulCI = true
+				}
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind &&
+					event.Runner["failureCode"] == baseSyncConflictErrorCode {
+					if event.Runner[retryFailureClassKey] != string(journal.AttemptPolicy) {
+						t.Fatalf("retry failure class = %v, want %s", event.Runner[retryFailureClassKey], journal.AttemptPolicy)
+					}
+					retryAttempts = append(retryAttempts, int(event.Runner["repassAttempt"].(float64)))
+				}
+			}
+			if conflictCount != tt.landings {
+				t.Fatalf("typed base-sync conflicts = %d, want %d", conflictCount, tt.landings)
+			}
+			if successfulCI != (tt.wantLocalCI > 0) {
+				t.Fatalf("successful local-ci = %t, want %t", successfulCI, tt.wantLocalCI > 0)
+			}
+			if len(retryAttempts) != len(tt.wantRetryAttempts) {
+				t.Fatalf("journaled retry attempts = %v, want %v", retryAttempts, tt.wantRetryAttempts)
+			}
+			for i := range retryAttempts {
+				if retryAttempts[i] != tt.wantRetryAttempts[i] {
+					t.Fatalf("journaled retry attempts = %v, want %v", retryAttempts, tt.wantRetryAttempts)
+				}
+			}
+		})
 	}
 }
