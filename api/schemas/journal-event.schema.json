@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, claim lifecycle/lock, and config.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -47,9 +47,12 @@
         "claim.force_released",
         "claim_lock_slow",
         "config.reloaded",
-        "config.reload.rejected"
+        "config.reload.rejected",
+        "daemon.started",
+        "daemon.clean_shutdown",
+        "daemon.dirty_restart"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, and gate.paused are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, and daemon.* are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -188,7 +191,7 @@
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
     "reason": {
-      "description": "Instance-journal only: short, stable explanation for a tick.skipped or workflow.starved decision.",
+      "description": "Instance-journal only: short, stable explanation for a scheduler decision or daemon lifecycle event.",
       "type": "string",
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },

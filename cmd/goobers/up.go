@@ -274,12 +274,22 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return 2
 	}
 	lockPath := filepath.Join(l.SchedulerDir(), "up.lock")
+	priorLock, err := readPriorDaemonLock(lockPath)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	defer release()
+	currentDaemon, err := readCurrentDaemonIdentity(lockPath)
+	if err != nil {
+		pf(stderr, "error: read current daemon lock: %v\n", err)
+		return 1
+	}
 	apiAddressPath := filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName)
 	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -299,6 +309,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer setup.Shutdown(context.Background())
+	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if err := journalValidationWarnings(setup.InstanceLog, setup.Validation.Warnings()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -796,6 +810,12 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
+	}
+	if runsDrained && schedulerDrained {
+		if err := journalDaemonCleanShutdown(setup.InstanceLog, currentDaemon); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

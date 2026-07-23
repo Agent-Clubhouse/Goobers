@@ -59,6 +59,10 @@
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
 | [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
 | [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
+| [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
+| [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
+| [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
+| [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
@@ -1186,6 +1190,102 @@ Usage: goobers scaffold goober [--force] <name> [path]
 Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
+~~~
+
+## `goobers service`
+
+install and manage the platform-supervised daemon
+
+~~~text
+Usage: goobers service <subcommand> [path]
+
+Install and manage the goobers daemon under the current platform's user
+supervisor: systemd on Linux, launchd on macOS, or the Windows Service
+Control Manager. The managed daemon runs `goobers up <path>`, receives the
+same graceful-shutdown trigger as a foreground daemon, and restarts after
+an unexpected exit with supervisor backoff.
+
+Subcommands:
+  install     install, enable, and start the service
+  uninstall   gracefully stop, disable, and remove the service
+  status      report whether the service is installed and running
+
+Run `goobers service install -h`, `goobers service uninstall -h`, or
+`goobers service status -h` for details. Default path is ".".
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service install
+$ goobers service status
+$ goobers service uninstall
+~~~
+
+## `goobers service install`
+
+install, enable, and start the supervised daemon
+
+~~~text
+Usage: goobers service install [path]
+
+Install, enable, and start the goobers daemon for the instance at <path>.
+Linux and macOS install a per-user service so provider credentials retain
+the current user's ownership. Windows installation must run from an
+elevated terminal. An existing installation is never overwritten; uninstall
+it first when changing the binary or instance path.
+
+Exit codes: 0 = installed and running, 1 = installation/start error,
+2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service install
+$ goobers service install ./instance
+~~~
+
+## `goobers service status`
+
+report whether the supervised daemon is installed and running
+
+~~~text
+Usage: goobers service status [--json] [path]
+
+Report the current platform supervisor, registration path (when applicable),
+and whether the goobers daemon is installed, loaded, and running.
+
+Exit codes: 0 = running, 1 = stopped/not installed/query error,
+2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service status
+$ goobers service status --json
+~~~
+
+## `goobers service uninstall`
+
+gracefully stop and remove the supervised daemon
+
+~~~text
+Usage: goobers service uninstall [path]
+
+Gracefully stop the managed daemon, disable it, and remove its supervisor
+registration. Uninstalling an absent service is a successful no-op.
+
+Exit codes: 0 = absent after the operation, 1 = stop/removal error,
+2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service uninstall
+$ goobers service uninstall ./instance
 ~~~
 
 ## `goobers set-milestone`

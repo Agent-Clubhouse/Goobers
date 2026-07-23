@@ -20,6 +20,7 @@ _goobers_completion()
             'lint:lint config via the single authoritative validation engine (alias for validate)'
             'config:inspect instance configuration and compare workflow definitions'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
+            'service:install and manage the platform-supervised daemon'
             'dashboard:serve and open the local operations portal'
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'
@@ -184,6 +185,13 @@ _goobers_completion()
         config)
             if (( CURRENT == 3 )); then
                 candidates=(diff show)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        service)
+            if (( CURRENT == 3 )); then
+                candidates=(install uninstall status)
                 _describe -V 'command' candidates
                 return
             fi

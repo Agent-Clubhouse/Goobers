@@ -6,6 +6,21 @@ resolves **DEP-Q6** (`docs/requirements/deployment.md`): tier 1–2 daemon
 supervision is **systemd** on Linux, **launchd** on macOS, and a **Windows
 Service** wrapper on Windows.
 
+Use the native CLI on an initialized instance:
+
+```sh
+goobers service install /absolute/path/to/instance
+goobers service status  /absolute/path/to/instance
+goobers service uninstall /absolute/path/to/instance
+```
+
+`install` registers, enables, and starts the daemon with crash restart and
+backoff configured. `uninstall` drives the graceful shutdown contract before
+removing the registration. `status --json` exposes the same state for scripts.
+An existing registration is not overwritten; uninstall it first when changing
+the binary or instance path. The platform sections below document the generated
+registration and its native supervisor commands for troubleshooting.
+
 **One shutdown contract, three triggers.** The daemon has a single
 graceful-shutdown path: cancel the root context, stop admitting work, drain
 in-flight runs (up to `drainGrace` = 30s + a 5s HTTP grace, see
@@ -35,7 +50,7 @@ fallback beyond that.
 Template: [`packaging/systemd/goobers.service`](../../packaging/systemd/goobers.service)
 (a **user** service — recommended, so it runs as you with your credentials).
 
-**Install / enable:**
+**Native equivalent of `goobers service install`:**
 
 ```sh
 mkdir -p ~/.config/systemd/user
@@ -71,7 +86,7 @@ unit in `/etc/systemd/system/`, add `User=`/`Group=`, and use `systemctl` withou
 Template: [`packaging/launchd/com.agent-clubhouse.goobers.plist`](../../packaging/launchd/com.agent-clubhouse.goobers.plist)
 (a per-user **LaunchAgent**).
 
-**Install / enable:**
+**Native equivalent of `goobers service install`:**
 
 ```sh
 cp packaging/launchd/com.agent-clubhouse.goobers.plist \
@@ -111,7 +126,8 @@ translates `SERVICE_CONTROL_STOP`/`SHUTDOWN` into the **same** context
 cancellation `SIGTERM` drives on unix — so the graceful drain is identical. Off
 Windows the handler is a no-op stub, so the unix signal path is untouched.
 
-**Install / enable** (from an elevated PowerShell or Command Prompt). First put
+Run `goobers service install <instance-root>` from an elevated PowerShell or
+Command Prompt. Its native equivalent is below. First put
 `goobers.exe` on disk — download and verify a release per the
 [Windows quickstart](quickstart-windows.md), placing it at
 `C:\Program Files\goobers\goobers.exe` (the path the service below references):
@@ -120,6 +136,8 @@ Windows the handler is a no-op stub, so the unix signal path is untouched.
 # Create the service (note the spaces after '=' in sc.exe syntax):
 sc.exe create goobers binPath= "\"C:\Program Files\goobers\goobers.exe\" up \"C:\ProgramData\goobers\instance\"" start= auto DisplayName= "Goobers daemon"
 sc.exe description goobers "Goobers agent-workforce daemon (scheduler + local runner)"
+sc.exe failure goobers reset= 86400 actions= restart/5000/restart/30000/restart/60000
+sc.exe failureflag goobers 1
 sc.exe start goobers
 ```
 
@@ -147,8 +165,12 @@ whose credentials the instance references.
 
 ---
 
-## Stage 2 (deferred): a `goobers service` subcommand
+## Dirty restart journal event
 
-A `goobers service install|uninstall|status` subcommand that writes/registers
-these units natively per platform is an explicitly deferred follow-up (see #639,
-"Stage 2"). Today's supported path is the documented, copy-in unit files above.
+Every daemon lifetime appends `daemon.started` and a successful graceful drain
+appends `daemon.clean_shutdown` to `scheduler/events.jsonl`. If the supervisor
+restarts Goobers after an abrupt termination, the persistent `scheduler/up.lock`
+has no matching clean-shutdown event. Startup then appends
+`daemon.dirty_restart` with reason
+`previous daemon lock remained without a clean-shutdown event` and includes the
+previous daemon identity under `runner`.

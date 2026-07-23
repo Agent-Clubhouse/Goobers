@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE INSTALL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service install \- install, enable, and start the supervised daemon
+.SH SYNOPSIS
+\fBgoobers service install\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service install [path]
+
+Install, enable, and start the goobers daemon for the instance at <path>.
+Linux and macOS install a per-user service so provider credentials retain
+the current user's ownership. Windows installation must run from an
+elevated terminal. An existing installation is never overwritten; uninstall
+it first when changing the binary or instance path.
+
+Exit codes: 0 = installed and running, 1 = installation/start error,
+2 = usage error or not an instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers service install
+goobers service install ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

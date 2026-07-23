@@ -270,6 +270,9 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventClaimLockSlow, Runner: map[string]any{"operation": "backlog-query.claim", "pid": 42, "waitDuration": "6s", "holdDuration": "1ms"}},
 		{Type: EventConfigReloaded, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("new"))}},
 		{Type: EventConfigReloadRejected, Error: &ErrorDetail{Code: "config_reload_rejected", Message: "invalid workflow"}, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("invalid"))}},
+		{Type: EventDaemonStarted, Runner: map[string]any{"pid": 42}},
+		{Type: EventDaemonCleanShutdown, Reason: "graceful shutdown completed", Runner: map[string]any{"pid": 42}},
+		{Type: EventDaemonDirtyRestart, Reason: "previous daemon lock remained without a clean-shutdown event", Runner: map[string]any{"pid": 42}},
 	} {
 		if err := log.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)

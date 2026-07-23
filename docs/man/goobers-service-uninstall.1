@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE UNINSTALL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service uninstall \- gracefully stop and remove the supervised daemon
+.SH SYNOPSIS
+\fBgoobers service uninstall\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service uninstall [path]
+
+Gracefully stop the managed daemon, disable it, and remove its supervisor
+registration. Uninstalling an absent service is a successful no-op.
+
+Exit codes: 0 = absent after the operation, 1 = stop/removal error,
+2 = usage error or not an instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers service uninstall
+goobers service uninstall ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

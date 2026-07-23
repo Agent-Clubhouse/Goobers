@@ -50,9 +50,9 @@ processes, and `goobers status` numbers that match a manual journal audit.
 
 ### UNOP-1 — Supervised daemon by default
 
-DEP-Q6 is resolved and the unit files ship (`packaging/systemd/`, `packaging/launchd/`,
-`internal/winsvc`; `docs/guides/supervision.md`) — but installing them is still a
-manual, documented procedure. Productize it:
+DEP-Q6 is resolved and the service surfaces ship (`packaging/systemd/`,
+`packaging/launchd/`, `internal/winsvc`; `docs/guides/supervision.md`). The
+productized lifecycle includes:
 
 - `goobers service install|uninstall|status` installing/managing the shipped platform
   unit (systemd / launchd / Windows service), wiring the existing graceful-shutdown
