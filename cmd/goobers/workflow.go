@@ -65,14 +65,16 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
+		printValidationIssues(stderr, report)
 		pf(stderr, "error: %v\n", err)
 		if errors.Is(err, instance.ErrInvalidConfig) {
 			return 1
 		}
 		return 2
 	}
+	printValidationWarnings(stderr, report.CLIWarnings())
 	for _, wf := range set.Workflows {
 		if wf.Name == name {
 			if *dot {

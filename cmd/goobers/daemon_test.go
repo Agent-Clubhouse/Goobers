@@ -589,9 +589,9 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	var wf *apiv1.Workflow
 	for i := range set.Workflows {
@@ -752,9 +752,9 @@ func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	var wf *apiv1.Workflow
 	for i := range set.Workflows {

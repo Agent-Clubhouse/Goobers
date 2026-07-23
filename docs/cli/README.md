@@ -1435,11 +1435,11 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]
+Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --check-harness additionally preflights every agent harness
+using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token and verifies authenticated git access. Exit codes: 0 = valid,

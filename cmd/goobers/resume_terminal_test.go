@@ -26,9 +26,9 @@ import (
 // checkpoint.
 func newStaleTerminalRun(t *testing.T, l instance.Layout, runID, workflowName string, finishedPhase journal.RunPhase, staleMachineState string) {
 	t.Helper()
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	var gaggle, digest string
 	found := false

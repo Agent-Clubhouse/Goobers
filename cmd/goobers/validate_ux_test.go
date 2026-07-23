@@ -129,6 +129,33 @@ func TestValidateCheckRepos(t *testing.T) {
 	}
 }
 
+func TestValidateStrictFailsOnWarnings(t *testing.T) {
+	root := initDeterministicDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n        image: alpine:3.20")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("advisory validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "run.image is not honored by the local runner") {
+		t.Fatalf("advisory validate did not render warning:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 1 {
+		t.Fatalf("strict validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"run.image is not honored by the local runner",
+		"config directory has 2 warning(s); --strict treats warnings as errors",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func replaceInFile(t *testing.T, path, old, replacement string) {
 	t.Helper()
 	raw, err := os.ReadFile(path)

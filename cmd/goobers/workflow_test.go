@@ -63,6 +63,22 @@ stages:
 	}
 }
 
+func TestWorkflowShowSurfacesValidationWarnings(t *testing.T) {
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(workflowShowFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runArgs(t, "workflow", "show", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("workflow show: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "has no schedule trigger; it will not fire autonomously") {
+		t.Fatalf("workflow show stderr did not surface validation warning: %q", stderr)
+	}
+}
+
 // workflowDOTFixture is workflowShowFixture's gate swapped from human to
 // automated (#706: human gates are rejected at compile time until durable
 // pause/resume ships, and --dot now compiles the workflow to build its
