@@ -100,6 +100,19 @@ func initAdjacentAdditionPRBranch(t *testing.T, prBranch string) (origin string)
 
 func initAttributedAdjacentAdditionPRBranch(t *testing.T, prBranch, attributes string) (origin string) {
 	t.Helper()
+	return initAdjacentConflictPRBranch(
+		t,
+		prBranch,
+		"items.yaml",
+		"items:\n  - existing\n",
+		"items:\n  - existing\n  - from-pr\n",
+		"items:\n  - existing\n  - from-base\n",
+		attributes,
+	)
+}
+
+func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incoming, upstream, attributes string) (origin string) {
+	t.Helper()
 	root := t.TempDir()
 	origin = filepath.Join(root, "origin.git")
 	runGitT(t, root, "init", "--bare", "-b", "main", origin)
@@ -108,30 +121,30 @@ func initAttributedAdjacentAdditionPRBranch(t *testing.T, prBranch, attributes s
 	runGitT(t, root, "clone", origin, work)
 	runGitT(t, work, "config", "user.name", "seed")
 	runGitT(t, work, "config", "user.email", "seed@example.com")
-	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n"), 0o644); err != nil {
-		t.Fatalf("write seed list: %v", err)
+	if err := os.WriteFile(filepath.Join(work, name), []byte(ancestor), 0o644); err != nil {
+		t.Fatalf("write seed conflict file: %v", err)
 	}
 	if attributes != "" {
 		if err := os.WriteFile(filepath.Join(work, ".gitattributes"), []byte(attributes), 0o644); err != nil {
 			t.Fatalf("write attributes: %v", err)
 		}
-		runGitT(t, work, "add", "items.yaml", ".gitattributes")
+		runGitT(t, work, "--literal-pathspecs", "add", "--", name, ".gitattributes")
 	} else {
-		runGitT(t, work, "add", "items.yaml")
+		runGitT(t, work, "--literal-pathspecs", "add", "--", name)
 	}
 	runGitT(t, work, "commit", "-m", "seed")
 	runGitT(t, work, "push", "origin", "main")
 
 	runGitT(t, work, "checkout", "-b", prBranch)
-	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n  - from-pr\n"), 0o644); err != nil {
-		t.Fatalf("write PR list addition: %v", err)
+	if err := os.WriteFile(filepath.Join(work, name), []byte(incoming), 0o644); err != nil {
+		t.Fatalf("write PR conflict addition: %v", err)
 	}
 	runGitT(t, work, "commit", "-am", "add PR item")
 	runGitT(t, work, "push", "origin", prBranch)
 
 	runGitT(t, work, "checkout", "main")
-	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n  - from-base\n"), 0o644); err != nil {
-		t.Fatalf("write base list addition: %v", err)
+	if err := os.WriteFile(filepath.Join(work, name), []byte(upstream), 0o644); err != nil {
+		t.Fatalf("write base conflict addition: %v", err)
 	}
 	runGitT(t, work, "commit", "-am", "add base item")
 	runGitT(t, work, "push", "origin", "main")
@@ -432,6 +445,94 @@ func TestRebasePRResolvesDistinctAdjacentAdditions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) || !strings.Contains(string(data), `"conflict":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false conflict=false", data)
+	}
+}
+
+func TestRebasePRResolvesLiteralPathspecFilename(t *testing.T) {
+	const prBranch = "goobers/impl/run-pathspec"
+	const name = "[id].tsx"
+	origin := initAdjacentConflictPRBranch(
+		t,
+		prBranch,
+		name,
+		"const items = [\n  \"existing\",\n]\n",
+		"const items = [\n  \"existing\",\n  \"from-pr\",\n]\n",
+		"const items = [\n  \"existing\",\n  \"from-base\",\n]\n",
+		"",
+	)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 62)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "62",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "clean rebase") {
+		t.Fatalf("stdout = %q, want literal path resolution to continue through the clean path", stdout)
+	}
+
+	const want = "const items = [\n  \"existing\",\n  \"from-base\",\n  \"from-pr\",\n]\n"
+	got, err := os.ReadFile(filepath.Join(wt.Path, name))
+	if err != nil {
+		t.Fatalf("read resolved pathspec filename: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("resolved pathspec filename = %q, want %q", got, want)
+	}
+}
+
+func TestRebasePRRejectsStructuralMarkerAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-structural"
+	const ancestor = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t)\n}\n"
+	const incoming = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t\t- fromPR()\n\t)\n}\n"
+	const upstream = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t\t- fromBase()\n\t)\n}\n"
+	origin := initAdjacentConflictPRBranch(t, prBranch, "logic.txt", ancestor, incoming, upstream, "")
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 63)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "63",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "needs agentic remediation") {
+		t.Fatalf("stdout = %q, want structural additions routed to agentic remediation", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want none after the aborted structural conflict", unmerged)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, "logic.txt"))
+	if err != nil {
+		t.Fatalf("read original PR structural file: %v", err)
+	}
+	if string(got) != incoming {
+		t.Fatalf("origin structural file = %q, want PR branch left untouched", got)
 	}
 }
 

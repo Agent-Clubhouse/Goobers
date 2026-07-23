@@ -642,7 +642,7 @@ Check out the selected PR's branch, attempt a rebase onto its base
 (force-with-lease is mandatory for the eventual push — never a bare
 push), and route on the result: a clean rebase with no substantive
 finding or failing CI force-pushes and clears goobers:needs-remediation;
-anything else (a conflict, substantive finding, or failing CI) needs the
+anything else (an unsafe conflict, substantive finding, or failing CI) needs the
 agentic remediation chain, reported via the needsAgent output for the
 workflow to route on. Requires selectedNumber/head/base
 (Task.InputsFrom gather-pr-context's own outputs) and

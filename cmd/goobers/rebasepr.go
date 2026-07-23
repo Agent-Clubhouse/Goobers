@@ -313,11 +313,18 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 			return rebaseConflictAbsent, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
 		}
 
-		add := exec.Command("git", "add", "--", resolution.path)
+		add := exec.Command("git", "--literal-pathspecs", "add", "--", resolution.path)
 		add.Dir = dir
 		if addOut, err := add.CombinedOutput(); err != nil {
 			return rebaseConflictAbsent, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
 		}
+	}
+	remaining, err := unmergedConflictFiles(dir)
+	if err != nil {
+		return rebaseConflictAbsent, err
+	}
+	if len(remaining) != 0 {
+		return rebaseConflictAbsent, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
 	}
 	return rebaseConflictResolved, nil
 }
@@ -521,8 +528,11 @@ func sameAdjacentList(ancestor []string, insertAt int, upstream, incoming string
 		return false
 	}
 	indent := leadingWhitespace(upstream)
-	if strings.HasPrefix(kind, "quoted ") &&
-		!hasQuotedListContainer(ancestor, insertAt, indent) {
+	if strings.HasPrefix(kind, "quoted ") {
+		if !hasQuotedListContainer(ancestor, insertAt, indent) {
+			return false
+		}
+	} else if !hasMarkerListContainer(ancestor, insertAt, indent) {
 		return false
 	}
 	for _, neighbor := range []int{insertAt - 1, insertAt} {
@@ -531,6 +541,24 @@ func sameAdjacentList(ancestor []string, insertAt int, upstream, incoming string
 			listEntryKind(ancestor[neighbor]) == kind {
 			return true
 		}
+	}
+	return false
+}
+
+func hasMarkerListContainer(ancestor []string, insertAt int, entryIndent string) bool {
+	if entryIndent == "" {
+		return false
+	}
+	for i := insertAt - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(ancestor[i])
+		if trimmed == "" {
+			continue
+		}
+		indent := leadingWhitespace(ancestor[i])
+		if len(indent) >= len(entryIndent) {
+			continue
+		}
+		return strings.HasPrefix(entryIndent, indent) && strings.HasSuffix(trimmed, ":")
 	}
 	return false
 }
