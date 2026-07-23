@@ -41,16 +41,18 @@ const (
 	contractHelperResultFile = "GOOBERS_SHIPPED_CONTRACT_RESULT_FILE"
 	contractHelperExitCode   = "GOOBERS_SHIPPED_CONTRACT_EXIT_CODE"
 	skipShippedContracts     = "GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS"
+	contractMaxRepasses      = 1
 	contractNumber           = float64(73)
 )
 
 type terminalScenario struct {
-	name           string
-	steps          []workflow.GraphEdge
-	gateOutcomes   map[string][]string
-	escalationTask string
-	escalationGate string
-	wantPhase      journal.RunPhase
+	name             string
+	steps            []workflow.GraphEdge
+	gateOutcomes     map[string][]string
+	escalationTask   string
+	escalationGate   string
+	repassEscalation *workflow.GraphEdge
+	wantPhase        journal.RunPhase
 }
 
 type valueHandoffContract struct {
@@ -501,6 +503,70 @@ func TestTerminalScenariosDiscoverInsertedLinearStages(t *testing.T) {
 	}
 }
 
+func TestTerminalScenariosDiscoverConsecutiveGateEscalation(t *testing.T) {
+	t.Parallel()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "consecutive-gates",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "fixture",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "implement",
+			Tasks: []apiv1.Task{
+				{Name: "implement", Type: apiv1.TaskAgentic, Goober: "fixture", Goal: "implement", Next: "validate"},
+				{Name: "validate", Type: apiv1.TaskAgentic, Goober: "fixture", Goal: "validate", Next: "validation-gate"},
+				{Name: "park", Type: apiv1.TaskAgentic, Goober: "fixture", Goal: "park", Next: workflow.TargetEscalate},
+			},
+			Gates: []apiv1.Gate{
+				{
+					Name:      "validation-gate",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+					Branches: map[string]string{
+						gate.OutcomePass:        "review",
+						gate.OutcomeFail:        "implement",
+						workflow.BranchEscalate: "park",
+					},
+				},
+				{
+					Name:      "review",
+					Evaluator: apiv1.EvaluatorAgentic,
+					Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+					Branches: map[string]string{
+						string(apiv1.VerdictPass):         workflow.TerminalComplete,
+						string(apiv1.VerdictNeedsChanges): "implement",
+						string(apiv1.VerdictFail):         "park",
+						workflow.BranchEscalate:           "park",
+					},
+				},
+			},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, scenario := range terminalScenarios(t, machine) {
+		if scenario.repassEscalation == nil || scenario.repassEscalation.Source != "review" {
+			continue
+		}
+		want := []string{string(apiv1.VerdictNeedsChanges), string(apiv1.VerdictNeedsChanges)}
+		if got := scenario.gateOutcomes["review"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("review outcomes = %v, want %v", got, want)
+		}
+		var validationPasses int
+		for _, edge := range scenario.steps {
+			if edge.Source == "validation-gate" && edge.Outcome == gate.OutcomePass {
+				validationPasses++
+			}
+		}
+		if validationPasses != 2 {
+			t.Fatalf("validation pass count = %d, want 2", validationPasses)
+		}
+		return
+	}
+	t.Fatal("no repass-exhaustion scenario found for review escalation")
+}
+
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
@@ -519,6 +585,7 @@ func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenar
 			t.Fatalf("workflow %q edge %s -> %s is unreachable",
 				graph.Name, selected.Source, selected.Target)
 		}
+		selectedIndex := len(path)
 		path = append(path, selected)
 		if selected.Terminal == "" {
 			suffix, ok := pathToTerminal(selected.Target, outgoing)
@@ -527,6 +594,25 @@ func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenar
 					graph.Name, selected.Source, selected.Target)
 			}
 			path = append(path, suffix...)
+		}
+		var repassEscalation *workflow.GraphEdge
+		if selected.Outcome == workflow.BranchEscalate {
+			precededByTask := false
+			if selectedIndex > 0 {
+				_, precededByTask = machine.Task(path[selectedIndex-1].Source)
+			}
+			if !precededByTask {
+				expanded, ok := repassEscalationPath(graph.Start, selected, outgoing)
+				if !ok {
+					t.Fatalf(
+						"workflow %q escalation gate %q has no preceding task or executable non-pass repass loop",
+						graph.Name, selected.Source,
+					)
+				}
+				path = expanded
+				edge := selected
+				repassEscalation = &edge
+			}
 		}
 		signature := pathSignature(path)
 		if seenPaths[signature] {
@@ -537,9 +623,10 @@ func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenar
 		scenario := terminalScenario{
 			name: fmt.Sprintf("%02d_%s_%s", len(scenarios)+1,
 				contractToken(selected.Source), contractToken(selected.Outcome)),
-			steps:        path,
-			gateOutcomes: map[string][]string{},
-			wantPhase:    phaseForTerminal(terminal.Terminal),
+			steps:            path,
+			gateOutcomes:     map[string][]string{},
+			repassEscalation: repassEscalation,
+			wantPhase:        phaseForTerminal(terminal.Terminal),
 		}
 		for stepIndex, edge := range path {
 			if edge.Outcome == "" {
@@ -567,7 +654,8 @@ func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenar
 	for _, edge := range graph.Edges {
 		covered := false
 		for _, scenario := range scenarios {
-			if containsEdge(scenario.steps, edge) {
+			if containsEdge(scenario.steps, edge) ||
+				(scenario.repassEscalation != nil && *scenario.repassEscalation == edge) {
 				covered = true
 				break
 			}
@@ -578,6 +666,42 @@ func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenar
 		}
 	}
 	return scenarios
+}
+
+func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
+	prefix, ok := pathToState(start, escalation.Source, outgoing)
+	if !ok {
+		return nil, false
+	}
+	for _, candidate := range outgoing[escalation.Source] {
+		if candidate.Outcome == gate.OutcomePass ||
+			candidate.Outcome == workflow.BranchEscalate ||
+			candidate.Terminal != "" {
+			continue
+		}
+		loopback, ok := pathToState(candidate.Target, escalation.Source, outgoing)
+		if !ok {
+			continue
+		}
+		path := append([]workflow.GraphEdge(nil), prefix...)
+		for range contractMaxRepasses {
+			path = append(path, candidate)
+			path = append(path, loopback...)
+		}
+		exhausted := candidate
+		exhausted.Target = escalation.Target
+		exhausted.Terminal = escalation.Terminal
+		path = append(path, exhausted)
+		if escalation.Terminal == "" {
+			suffix, ok := pathToTerminal(escalation.Target, outgoing)
+			if !ok {
+				continue
+			}
+			path = append(path, suffix...)
+		}
+		return path, true
+	}
+	return nil, false
 }
 
 func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
@@ -1281,7 +1405,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			)
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
-		MaxRepasses:            1,
+		MaxRepasses:            contractMaxRepasses,
 		GateGooberCapabilities: gateCapabilities,
 		Worktrees:              manager,
 		ScratchDir:             filepath.Join(instanceRoot, "scratch"),

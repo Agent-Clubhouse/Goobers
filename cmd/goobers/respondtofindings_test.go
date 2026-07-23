@@ -1,20 +1,34 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
 func seedRemediationResponseRun(t *testing.T, root, runID string, verdict apiv1.Verdict, responses string, published bool) {
+	t.Helper()
+	seedRemediationResponseRunState(t, root, runID, verdict, responses, &published)
+}
+
+func seedRemediationResponseRunBeforePush(t *testing.T, root, runID string, verdict apiv1.Verdict, responses string) {
+	t.Helper()
+	seedRemediationResponseRunState(t, root, runID, verdict, responses, nil)
+}
+
+func seedRemediationResponseRunState(t *testing.T, root, runID string, verdict apiv1.Verdict, responses string, published *bool) {
 	t.Helper()
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
@@ -43,14 +57,16 @@ func seedRemediationResponseRun(t *testing.T, root, runID string, verdict apiv1.
 	}); err != nil {
 		t.Fatalf("record implement result: %v", err)
 	}
-	if err := run.Append(journal.Event{
-		Type:    journal.EventStageFinished,
-		Stage:   "push-remediated",
-		Attempt: 1,
-		Status:  string(apiv1.ResultSuccess),
-		Outputs: map[string]any{"published": strconv.FormatBool(published)},
-	}); err != nil {
-		t.Fatalf("record push-remediated result: %v", err)
+	if published != nil {
+		if err := run.Append(journal.Event{
+			Type:    journal.EventStageFinished,
+			Stage:   "push-remediated",
+			Attempt: 1,
+			Status:  string(apiv1.ResultSuccess),
+			Outputs: map[string]any{"published": strconv.FormatBool(*published)},
+		}); err != nil {
+			t.Fatalf("record push-remediated result: %v", err)
+		}
 	}
 	if err := run.Close(); err != nil {
 		t.Fatalf("close remediation run journal: %v", err)
@@ -158,7 +174,7 @@ func TestRespondToFindingsRejectsIncompleteAccountBeforePosting(t *testing.T) {
 			{Severity: apiv1.SeverityWarning, Message: "second"},
 		},
 	}
-	root, server, _ := respondToFindingsFixture(t, verdict,
+	root, server, resultFile := respondToFindingsFixture(t, verdict,
 		`[{"finding":1,"disposition":"addressed","detail":"fixed the first"}]`, true)
 
 	code, stdout, stderr := runArgs(t, "respond-to-findings", root)
@@ -173,6 +189,169 @@ func TestRespondToFindingsRejectsIncompleteAccountBeforePosting(t *testing.T) {
 	if got := len(server.issues[77].comments); got != 0 {
 		t.Errorf("comments = %d, want none when validation fails", got)
 	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read validation failure result: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal validation failure result: %v", err)
+	}
+	if got := result["errorCode"]; got != errorCodeFindingResponsesInvalid {
+		t.Errorf("errorCode = %v, want %q", got, errorCodeFindingResponsesInvalid)
+	}
+}
+
+func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
+	const runID = "run-check"
+	verdict := apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{
+			{Severity: apiv1.SeverityError, Message: "first"},
+			{Severity: apiv1.SeverityWarning, Message: "second"},
+		},
+	}
+	tests := []struct {
+		name      string
+		responses string
+		wantCode  int
+		wantText  string
+	}{
+		{
+			name:      "complete",
+			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"second does not apply"}]`,
+			wantCode:  0,
+			wantText:  "validated complete finding response account for 2 finding(s)",
+		},
+		{
+			name:      "incomplete",
+			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"}]`,
+			wantCode:  1,
+			wantText:  "contains 1 response(s), want exactly 2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDemo(t)
+			t.Setenv("GOOBERS_RUN_ID", runID)
+			t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+			t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "finding-response-validation.json"))
+			seedRemediationResponseRunBeforePush(t, root, runID, verdict, tt.responses)
+
+			code, stdout, stderr := runArgs(t, "respond-to-findings", "--check", root)
+			if code != tt.wantCode {
+				t.Fatalf("code = %d, want %d; stdout = %q, stderr = %q", code, tt.wantCode, stdout, stderr)
+			}
+			if output := stdout + stderr; !strings.Contains(output, tt.wantText) {
+				t.Errorf("output = %q, want containing %q", output, tt.wantText)
+			}
+			data, err := os.ReadFile(providerInput("resultFile", remediationResponseArtifactName))
+			if err != nil {
+				t.Fatalf("read validation result: %v", err)
+			}
+			var result map[string]interface{}
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal validation result: %v", err)
+			}
+			if tt.wantCode == 0 && len(result) != 0 {
+				t.Errorf("success result = %v, want empty success object", result)
+			}
+		})
+	}
+}
+
+func TestRespondToFindingsCheckPassesDeclaredResultFileExecutorContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("helper process wrapper uses a POSIX shell")
+	}
+	const runID = "run-executor-check"
+	root := initDemo(t)
+	verdict := apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{
+			{Severity: apiv1.SeverityError, Message: "first"},
+			{Severity: apiv1.SeverityWarning, Message: "second"},
+		},
+	}
+	responses := `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"second does not apply"}]`
+	seedRemediationResponseRunBeforePush(t, root, runID, verdict, responses)
+
+	testBinary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nexec \"$GOOBERS_TEST_BINARY\" -test.run=^TestRespondToFindingsStageHelperProcess$ -- \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, _ := journal.DefaultScrubber()
+	injector, err := credentials.NewInjector(resolver, nil, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := executor.NewShellExecutor(injector, respondToFindingsTestRecorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell.InstanceRoot = root
+	shell.SelfBin = wrapper
+
+	result, err := shell.Run(
+		context.Background(),
+		apiv1.InvocationEnvelope{
+			TaskID:     "validate-finding-responses",
+			WorkflowID: "pr-remediation",
+			RunID:      runID,
+			Gaggle:     "goobers",
+			Workspace:  t.TempDir(),
+			Inputs: map[string]interface{}{
+				executor.InputResultFile: "finding-response-validation.json",
+			},
+		},
+		apiv1.DeterministicRun{
+			Command: []string{"goobers", "respond-to-findings", "--check"},
+			Env: map[string]string{
+				"GOOBERS_RESPOND_TO_FINDINGS_HELPER_PROCESS": "1",
+				"GOOBERS_TEST_BINARY":                        testBinary,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("execute validation stage: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("validation stage status = %q, want success: %+v", result.Status, result)
+	}
+	if len(result.Artifacts) != 3 {
+		t.Fatalf("validation stage artifacts = %d, want stdout, stderr, and declared result", len(result.Artifacts))
+	}
+}
+
+func TestRespondToFindingsStageHelperProcess(t *testing.T) {
+	if os.Getenv("GOOBERS_RESPOND_TO_FINDINGS_HELPER_PROCESS") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg != "--" {
+			continue
+		}
+		if i+2 >= len(os.Args) || os.Args[i+1] != "respond-to-findings" {
+			os.Exit(2)
+		}
+		os.Exit(runRespondToFindings(os.Args[i+2:], os.Stdout, os.Stderr))
+	}
+	os.Exit(2)
+}
+
+type respondToFindingsTestRecorder struct{}
+
+func (respondToFindingsTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
 
 func TestRespondToFindingsDoesNotPostWhenPushWasSkipped(t *testing.T) {

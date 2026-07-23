@@ -13,21 +13,25 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
 const (
-	findingResponsesOutput          = "findingResponses"
-	remediationResponseArtifactName = "remediation-response.json"
+	findingResponsesOutput           = "findingResponses"
+	errorCodeFindingResponsesInvalid = "finding_responses_invalid"
+	remediationResponseArtifactName  = "remediation-response.json"
 )
 
-const respondToFindingsHelp = "Usage: goobers respond-to-findings [path]\n\n" +
+const respondToFindingsHelp = "Usage: goobers respond-to-findings [--check] [path]\n\n" +
 	"Read the claimed PR's original remediation verdict and the latest\n" +
 	"implement stage's findingResponses output from this run's journal.\n" +
 	"Require exactly one addressed/declined disposition with a non-empty\n" +
 	"detail for every finding, post the resulting changelog to the PR, and\n" +
 	"write the complete structured response to the declared result file.\n" +
+	"With --check, only validate the response before publication; do not\n" +
+	"require push-remediated or post to the PR.\n" +
 	"Retries reconcile one run-scoped comment instead of appending duplicates.\n" +
 	"If push-remediated skipped a closed PR, records the unposted account\n" +
 	"without claiming those local changes landed.\n" +
@@ -60,6 +64,7 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("respond-to-findings", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "respond-to-findings")
+	checkOnly := fs.Bool("check", false, "validate the finding account without requiring publication or posting")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -78,25 +83,39 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	selectedNumber, ok, err := claimedPullRequestNumber(root)
-	if err != nil {
-		pf(stderr, "error: resolve claimed PR: %v\n", err)
-		return 1
-	}
-	if !ok {
-		pf(stderr, "error: run holds no PR claim, so there is no remediation thread to respond to\n")
-		return 1
+	selectedNumber := 0
+	if !*checkOnly {
+		var ok bool
+		selectedNumber, ok, err = claimedPullRequestNumber(root)
+		if err != nil {
+			pf(stderr, "error: resolve claimed PR: %v\n", err)
+			return 1
+		}
+		if !ok {
+			pf(stderr, "error: run holds no PR claim, so there is no remediation thread to respond to\n")
+			return 1
+		}
 	}
 
-	verdict, rawResponses, published, err := readRemediationResponseInputs(root, runID)
+	verdict, rawResponses, published, err := readRemediationResponseInputs(root, runID, !*checkOnly)
 	if err != nil {
 		pf(stderr, "error: read remediation response inputs from journal: %v\n", err)
 		return 1
 	}
 	responses, err := validateFindingResponses(verdict.Findings, rawResponses)
 	if err != nil {
-		pf(stderr, "error: validate %s: %v\n", findingResponsesOutput, err)
-		return 1
+		return failFindingResponseValidation(err, stderr)
+	}
+	if *checkOnly {
+		if err := writeProviderStageResult(
+			providerInput("resultFile", remediationResponseArtifactName),
+			map[string]interface{}{},
+		); err != nil {
+			pf(stderr, "error: write finding-response validation result: %v\n", err)
+			return 2
+		}
+		pf(stdout, "validated complete finding response account for %d finding(s)\n", len(responses))
+		return 0
 	}
 
 	result := remediationResponseResult{
@@ -147,6 +166,23 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func failFindingResponseValidation(validationErr error, stderr io.Writer) int {
+	message := fmt.Sprintf("validate %s: %v", findingResponsesOutput, validationErr)
+	pf(stderr, "error: %s\n", message)
+	resultFile := providerInput("resultFile", remediationResponseArtifactName)
+	if resultFile == "" {
+		return 1
+	}
+	if err := writeProviderStageResult(resultFile, map[string]interface{}{
+		executor.OutputErrorCode:      errorCodeFindingResponsesInvalid,
+		executor.OutputErrorMessage:   message,
+		executor.OutputErrorRetryable: false,
+	}); err != nil {
+		pf(stderr, "warning: write finding-response validation result %s: %v\n", resultFile, err)
+	}
+	return 1
+}
+
 func writeRemediationResponseResult(result remediationResponseResult, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", remediationResponseArtifactName)
 	data, err := json.MarshalIndent(result, "", "  ")
@@ -161,7 +197,7 @@ func writeRemediationResponseResult(result remediationResponseResult, stderr io.
 	return 0
 }
 
-func readRemediationResponseInputs(root, runID string) (apiv1.Verdict, string, bool, error) {
+func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, string, bool, error) {
 	runDir, err := runDirFor(layoutFor(root), runID)
 	if err != nil {
 		return apiv1.Verdict{}, "", false, err
@@ -206,11 +242,13 @@ func readRemediationResponseInputs(root, runID string) (apiv1.Verdict, string, b
 	if !implementFound {
 		return apiv1.Verdict{}, "", false, fmt.Errorf("no implement stage result found")
 	}
-	if !pushFound {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("no push-remediated stage result found")
-	}
-	if published != "true" && published != "false" {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
+	if requirePublication {
+		if !pushFound {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("no push-remediated stage result found")
+		}
+		if published != "true" && published != "false" {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
+		}
 	}
 
 	data, err := rd.ArtifactBytes(*contextRef)

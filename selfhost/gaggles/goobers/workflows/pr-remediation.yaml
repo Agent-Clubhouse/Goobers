@@ -284,7 +284,25 @@ spec:
       # re-selects it. (push-remediated independently refuses to publish a
       # branch that never moved, so this is defense in depth, not the only
       # guard.)
-      next: review
+      next: validate-finding-responses
+
+    # Validate the model-authored scalar while the run can still repass into
+    # implement. The terminal responder repeats the same validation after
+    # publication as defense in depth, but discovering a count mismatch there
+    # is too late to repair it without losing the whole remediation cycle.
+    - name: validate-finding-responses
+      type: deterministic
+      goal: Validate that the implementer accounted for every original merge-review finding before review and publication.
+      run:
+        command: ["goobers", "respond-to-findings", "--check"]
+        workspace: scratch
+      inputs:
+        resultFile: "finding-response-validation.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - respond-to-findings
+      next: finding-responses-gate
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
     # the PR's branch carrying the rework.
@@ -386,6 +404,26 @@ spec:
       # failure.
       next: "@escalate"
 
+    - name: park-invalid-finding-responses
+      type: deterministic
+      goal: Park a PR whose implementer exhausted the finding-response validation repass budget.
+      run:
+        command:
+          [
+            "goobers",
+            "remediation-checkpoint",
+            "--escalate",
+            "the implementer exhausted the in-run repass budget without producing a complete response for every original merge-review finding",
+          ]
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      policyActions:
+        - record-remediation-checkpoint
+        - escalate-pr
+      next: "@escalate"
+
   gates:
     # A completed API update is terminal. Every confirmed conflict, substantive
     # finding, failing check, or non-behind candidate enters the existing
@@ -431,6 +469,20 @@ spec:
       branches:
         pass: gather-sibling-context
         fail: ""
+
+    # A malformed or partial finding account is repairable agent output, not a
+    # post-publication provider failure. Route its exact validation error back
+    # to the implementer before spending review/CI work or moving the PR branch.
+    # If that repass budget is exhausted, park the PR before escalating so it
+    # cannot remain labeled needs-remediation and be selected again.
+    - name: finding-responses-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: review
+        fail: implement
+        escalate: park-invalid-finding-responses
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on

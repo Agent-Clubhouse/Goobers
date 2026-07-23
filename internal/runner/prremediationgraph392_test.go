@@ -31,6 +31,7 @@ type remediationGoober struct {
 	t                 *testing.T
 	mu                sync.Mutex
 	verdicts          []apiv1.VerdictDecision
+	invoked           int
 	reviewed          int
 	sawSiblingContext bool
 	// visitMu/visited are the SHARED dispatch log the deterministic stub also
@@ -48,7 +49,8 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	*g.visited = append(*g.visited, stage)
 	g.visitMu.Unlock()
 	g.mu.Lock()
-	n := g.reviewed
+	n := g.invoked
+	g.invoked++
 	for _, pointer := range env.ContextPointers {
 		if pointer.Name == "gather-sibling-context.artifact[0]" && pointer.Artifact != nil {
 			g.sawSiblingContext = true
@@ -125,8 +127,9 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 
 // visitRecordingDeterministic records the order stages were dispatched in and
 // serves each one canned outputs, standing in for the provider-chain CLIs
-// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated,
-// respond-to-findings) and for `make ci`.
+// (gather-pr-context, rebase-pr, remediation-checkpoint,
+// validate-finding-responses, push-remediated, respond-to-findings) and for
+// `make ci`.
 type visitRecordingDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
@@ -143,11 +146,20 @@ func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.Invocat
 	return (&stubDeterministic{rec: v.rec, byTask: v.byTask}).Run(ctx, env, dr)
 }
 
+type remediationWalkOptions struct {
+	maxRepasses      int
+	validationStatus apiv1.ResultStatus
+}
+
 // walkShippedPRRemediation drives one run of the real graph and returns the
 // terminal result plus the stage visit order. rebindTo is the branch
 // gather-pr-context reports (the selected PR's head).
-func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoober) (Result, []string, string) {
+func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoober, options ...remediationWalkOptions) (Result, []string, string) {
 	t.Helper()
+	opts := remediationWalkOptions{validationStatus: apiv1.ResultSuccess}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -187,14 +199,16 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
 			artifactMediaType: "application/json",
 		},
-		runID + ":local-ci": {status: apiv1.ResultSuccess},
+		runID + ":validate-finding-responses": {status: opts.validationStatus},
+		runID + ":local-ci":                   {status: apiv1.ResultSuccess},
 		runID + ":push-remediated": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
 		},
 		runID + ":respond-to-findings": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
 		},
-		runID + ":park-escalated": {status: apiv1.ResultSuccess},
+		runID + ":park-escalated":                 {status: apiv1.ResultSuccess},
+		runID + ":park-invalid-finding-responses": {status: apiv1.ResultSuccess},
 	}
 
 	r, err := New(Config{
@@ -205,6 +219,7 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			return goober, nil
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
+		MaxRepasses:            opts.maxRepasses,
 		GateGooberCapabilities: map[string][]string{"reviewer": {"agent:model"}},
 		Worktrees:              wtMgr,
 		ScratchDir:             filepath.Join(instanceRoot, "scratch"),
@@ -236,9 +251,10 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → gather-sibling-context → implement → [review pass] → local-ci
-// → [ci pass] → push-remediated → respond-to-findings, and complete. Before
-// #392 this run dead-ended at remediation-checkpoint.
+// [continue] → gather-sibling-context → implement → validate-finding-responses
+// → [response validation pass] → [review pass] → local-ci → [ci pass] →
+// push-remediated → respond-to-findings, and complete. Before #392 this run
+// dead-ended at remediation-checkpoint.
 func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	goober := &remediationGoober{t: t}
 	res, visited, _ := walkShippedPRRemediation(t, "prr-full", goober)
@@ -253,6 +269,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"remediation-checkpoint",
 		"gather-sibling-context",
 		"implement",
+		"validate-finding-responses",
 		"local-ci",
 		"push-remediated",
 		"respond-to-findings",
@@ -385,6 +402,39 @@ func TestShippedPRRemediationEscalatesOnReviewerFail(t *testing.T) {
 		if s == "push-remediated" {
 			t.Error("a reviewer-rejected remediation must never be published to the PR")
 		}
+	}
+}
+
+func TestShippedPRRemediationParksOnFindingResponseValidationExhaustion(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-invalid-responses", goober, remediationWalkOptions{
+		maxRepasses:      1,
+		validationStatus: apiv1.ResultFailure,
+	})
+
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseEscalated, visited)
+	}
+	if visited[len(visited)-1] != "park-invalid-finding-responses" {
+		t.Errorf("last stage = %q, want park-invalid-finding-responses", visited[len(visited)-1])
+	}
+	if goober.reviewed != 0 {
+		t.Errorf("reviewer invoked %d times, want 0 for invalid finding responses", goober.reviewed)
+	}
+	var implements, validations int
+	for _, stage := range visited {
+		switch stage {
+		case "implement":
+			implements++
+		case "validate-finding-responses":
+			validations++
+		}
+		if stage == "local-ci" || stage == "push-remediated" {
+			t.Errorf("invalid finding responses reached %s before parking", stage)
+		}
+	}
+	if implements != 2 || validations != 2 {
+		t.Errorf("implement/validation visits = %d/%d, want 2/2 before parking (visited: %v)", implements, validations, visited)
 	}
 }
 

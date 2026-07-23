@@ -993,13 +993,15 @@ $ goobers reset-rate-limit
 post a validated per-finding remediation response to the claimed PR (a workflow stage)
 
 ~~~text
-Usage: goobers respond-to-findings [path]
+Usage: goobers respond-to-findings [--check] [path]
 
 Read the claimed PR's original remediation verdict and the latest
 implement stage's findingResponses output from this run's journal.
 Require exactly one addressed/declined disposition with a non-empty
 detail for every finding, post the resulting changelog to the PR, and
 write the complete structured response to the declared result file.
+With --check, only validate the response before publication; do not
+require push-remediated or post to the PR.
 Retries reconcile one run-scoped comment instead of appending duplicates.
 If push-remediated skipped a closed PR, records the unposted account
 without claiming those local changes landed.
