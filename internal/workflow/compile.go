@@ -9,7 +9,7 @@ import (
 )
 
 type versionedInterpreter struct {
-	compile                     func(Definition, ...Option) (*Machine, error)
+	compile                     func(Definition, compileConfig) (*Machine, error)
 	checkWarnings               func(Definition) []string
 	checkReachability           func(Definition) []string
 	checkSchedules              func(Definition) []string
@@ -29,7 +29,7 @@ type versionedInterpreter struct {
 }
 
 var currentInterpreter = versionedInterpreter{
-	compile:                     vcurrent.Compile,
+	compile:                     compileCurrent,
 	checkWarnings:               vcurrent.CheckWarnings,
 	checkReachability:           vcurrent.CheckReachability,
 	checkSchedules:              vcurrent.CheckSchedules,
@@ -48,35 +48,58 @@ var currentInterpreter = versionedInterpreter{
 	gateLimits:                  vcurrent.GateLimits,
 }
 
+type compileConfig struct {
+	goobers              map[string]apiv1.GooberSpec
+	goobersSet           bool
+	knownChecks          []string
+	knownChecksSet       bool
+	knownHarnesses       []string
+	knownHarnessesSet    bool
+	allowPreviewFeatures bool
+	previewFeaturesSet   bool
+}
+
 // Option customizes compilation.
-type Option = vcurrent.Option
+type Option func(*compileConfig)
 
 // WithGoobers supplies goober definitions for capability admission.
 func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
-	return vcurrent.WithGoobers(goobers)
+	return func(config *compileConfig) {
+		config.goobers = goobers
+		config.goobersSet = true
+	}
 }
 
 // WithKnownChecks supplies the registered automated-check names.
 func WithKnownChecks(names []string) Option {
-	return vcurrent.WithKnownChecks(names)
+	return func(config *compileConfig) {
+		config.knownChecks = names
+		config.knownChecksSet = true
+	}
 }
 
 // WithKnownHarnesses supplies the registered agent harness names.
 func WithKnownHarnesses(names []string) Option {
-	return vcurrent.WithKnownHarnesses(names)
+	return func(config *compileConfig) {
+		config.knownHarnesses = names
+		config.knownHarnessesSet = true
+	}
 }
 
 // PreviewFeaturesAnnotation enables preview DSL features on an instance.
-const PreviewFeaturesAnnotation = vcurrent.PreviewFeaturesAnnotation
+const PreviewFeaturesAnnotation = "goobers.dev/allow-preview-features"
 
 // PreviewFeaturesEnabled reports whether annotations explicitly enable previews.
 func PreviewFeaturesEnabled(annotations map[string]string) bool {
-	return vcurrent.PreviewFeaturesEnabled(annotations)
+	return annotations[PreviewFeaturesAnnotation] == "true"
 }
 
 // WithPreviewFeatures applies preview-feature acknowledgement to compilation.
 func WithPreviewFeatures(enabled bool) Option {
-	return vcurrent.WithPreviewFeatures(enabled)
+	return func(config *compileConfig) {
+		config.allowPreviewFeatures = enabled
+		config.previewFeaturesSet = true
+	}
 }
 
 // Compile dispatches a pinned definition to its versioned interpreter.
@@ -85,7 +108,28 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %q: %w", def.Name, err)
 	}
-	return interpreter.compile(def, opts...)
+	config := compileConfig{}
+	for _, opt := range opts {
+		opt(&config)
+	}
+	return interpreter.compile(def, config)
+}
+
+func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
+	var opts []vcurrent.Option
+	if config.goobersSet {
+		opts = append(opts, vcurrent.WithGoobers(config.goobers))
+	}
+	if config.knownChecksSet {
+		opts = append(opts, vcurrent.WithKnownChecks(config.knownChecks))
+	}
+	if config.knownHarnessesSet {
+		opts = append(opts, vcurrent.WithKnownHarnesses(config.knownHarnesses))
+	}
+	if config.previewFeaturesSet {
+		opts = append(opts, vcurrent.WithPreviewFeatures(config.allowPreviewFeatures))
+	}
+	return vcurrent.Compile(def, opts...)
 }
 
 func interpreterForDefinition(def Definition) (*versionedInterpreter, error) {
@@ -116,7 +160,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	}
 
 	switch version {
-	case supportmatrix.CurrentDSLVersion:
+	case vcurrent.DSLVersion:
 		return &currentInterpreter, nil
 	default:
 		return nil, fmt.Errorf("DSL version %q is declared %s but has no interpreter", version, support.Level)

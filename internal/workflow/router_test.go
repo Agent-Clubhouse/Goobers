@@ -6,15 +6,14 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/supportmatrix"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 )
 
-func TestCompileDispatchesCurrentVersion(t *testing.T) {
+func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 	def := Definition{
 		Name:       "current",
 		Version:    1,
-		DSLVersion: supportmatrix.CurrentDSLVersion,
+		DSLVersion: vcurrent.DSLVersion,
 		Spec:       linearSpec(),
 	}
 
@@ -29,6 +28,80 @@ func TestCompileDispatchesCurrentVersion(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("router machine differs from v_current interpreter:\n got  %#v\n want %#v", got, want)
 	}
+}
+
+func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
+	t.Run("goobers and known harnesses", func(t *testing.T) {
+		def := Definition{
+			Name:       "harness",
+			Version:    1,
+			DSLVersion: vcurrent.DSLVersion,
+			Spec:       linearSpec(),
+		}
+		goobers := map[string]apiv1.GooberSpec{
+			"coder": {Role: "coder", Harness: apiv1.Harness("alternate")},
+		}
+
+		if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {
+			t.Fatalf("Compile with registered harness: %v", err)
+		}
+		if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses(nil)); err == nil ||
+			!strings.Contains(err.Error(), `unknown harness "alternate"`) {
+			t.Fatalf("Compile with empty harness registry error = %v, want unknown-harness diagnostic", err)
+		}
+	})
+
+	t.Run("known checks", func(t *testing.T) {
+		def := Definition{
+			Name:       "checks",
+			Version:    1,
+			DSLVersion: vcurrent.DSLVersion,
+			Spec: apiv1.WorkflowSpec{
+				Start: "gate",
+				Tasks: []apiv1.Task{{
+					Name: "sink",
+					Type: apiv1.TaskDeterministic,
+					Goal: "finish",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				}},
+				Gates: []apiv1.Gate{{
+					Name:      "gate",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: "custom"},
+					Branches:  map[string]string{"pass": "sink", "fail": "sink"},
+				}},
+			},
+		}
+
+		if _, err := Compile(def, WithKnownChecks([]string{"custom"})); err != nil {
+			t.Fatalf("Compile with registered check: %v", err)
+		}
+		if _, err := Compile(def, WithKnownChecks(nil)); err == nil ||
+			!strings.Contains(err.Error(), `unknown automated check "custom"`) {
+			t.Fatalf("Compile with empty check registry error = %v, want unknown-check diagnostic", err)
+		}
+	})
+
+	t.Run("preview features", func(t *testing.T) {
+		def := Definition{
+			Name:       "preview",
+			Version:    1,
+			DSLVersion: vcurrent.DSLVersion,
+			Spec: apiv1.WorkflowSpec{
+				Start: "build",
+				Tasks: []apiv1.Task{{
+					Name: "build",
+					Type: apiv1.TaskDeterministic,
+					Goal: "build",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+				}},
+			},
+		}
+
+		if _, err := Compile(def, WithPreviewFeatures(true)); err != nil {
+			t.Fatalf("Compile with preview opt-in: %v", err)
+		}
+	})
 }
 
 func TestCompileUnpinnedUsesCurrentInterpreterWithoutChangingDefinition(t *testing.T) {
@@ -87,7 +160,7 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 	def := Definition{
 		Name:       "runtime",
 		Version:    1,
-		DSLVersion: supportmatrix.CurrentDSLVersion,
+		DSLVersion: vcurrent.DSLVersion,
 		Spec: apiv1.WorkflowSpec{
 			Start: "poll",
 			Tasks: []apiv1.Task{{

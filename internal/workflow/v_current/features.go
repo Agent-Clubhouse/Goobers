@@ -592,7 +592,7 @@ func currentFeatures(sinceVersion string) []Feature {
 			Level:        level,
 			SinceVersion: sinceVersion,
 			DSLVersions: []DSLFeatureSupport{{
-				Version: supportmatrix.CurrentDSLVersion,
+				Version: DSLVersion,
 				Level:   level,
 			}},
 			History: []SupportTransition{{

@@ -6,6 +6,9 @@ package vcurrent
 
 import "github.com/goobers/goobers/internal/workflow/internal/model"
 
+// DSLVersion is the language version whose semantics this interpreter freezes.
+const DSLVersion = "1.4"
+
 // Definition is the shared versioned workflow snapshot.
 type Definition = model.Definition
 
