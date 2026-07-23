@@ -24,6 +24,8 @@ import type {
   RunPhase,
   RunSummary,
   StageAttemptStatus,
+  TelemetryErrorSignaturesOptions,
+  TelemetryErrorSignaturesResult,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -45,6 +47,7 @@ export interface DaemonFixtures {
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
   telemetryStats: TelemetryStatsResult;
+  telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
 }
 
@@ -186,11 +189,36 @@ export class FixtureDaemonClient implements DaemonClient {
     });
   }
 
+  getTelemetryErrorSignatures(
+    _request?: TelemetryErrorSignaturesOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryErrorSignaturesResult> {
+    return fixture(this.fixtures.telemetryErrorSignatures, options);
+  }
+
   listTelemetryErrors(
-    _request?: TelemetryErrorsOptions,
+    request?: TelemetryErrorsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage> {
-    return fixture(this.fixtures.telemetryErrors, options);
+    throwIfCancelled(options);
+    const offset = Number.parseInt(request?.cursor ?? "0", 10);
+    const start = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+    const limit = request?.limit ?? DEFAULT_RUN_LIMIT;
+    const items = this.fixtures.telemetryErrors.items.filter((item) => {
+      const run = this.fixtures.runs.runs.find((candidate) => candidate.id === item.runId);
+      return (
+        (!request?.gaggle || run?.gaggle === request.gaggle) &&
+        (!request?.workflow || item.workflow === request.workflow) &&
+        (!request?.stage || item.stage === request.stage) &&
+        (request?.code === undefined || item.code === request.code) &&
+        (request?.errorClass === undefined || item.errorClass === request.errorClass) &&
+        (!request?.since || Date.parse(item.occurredAt) >= Date.parse(request.since)) &&
+        (!request?.until || Date.parse(item.occurredAt) <= Date.parse(request.until))
+      );
+    });
+    const page = items.slice(start, start + limit);
+    const nextCursor = start + limit < items.length ? String(start + limit) : undefined;
+    return fixture(nextCursor ? { items: page, nextCursor } : { items: page }, options);
   }
 }
 

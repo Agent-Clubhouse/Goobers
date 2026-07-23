@@ -523,7 +523,7 @@ Most of Insight is a surfacing job over existing rollups:
 | Success/failure rate by workflow & stage | `/api/v1/telemetry/stats` (`successRate`, counts) | Exists, exposed |
 | Slowest stages (P50/P95/min/max/avg duration) | `/api/v1/telemetry/stats` (stage rows) | Exists, exposed |
 | AI credit/cost & tokens by stage/workflow | `stage_usage` (P50/P95 tokens, cost, retry-waste) via stats | Exists, exposed |
-| Failure-reason breakdown | `run_errors` + `TopErrorSignatures` rollup | Exists, **rollup unexposed** |
+| Failure-reason breakdown | `/api/v1/telemetry/error-signatures` (`run_errors` + `TopErrorSignatures`) | Exists, exposed |
 | Success/failure rate **per gaggle** (all gaggles at once) | `runs.gaggle` column | Exists, needs a thin `GROUP BY gaggle` query |
 
 Visualization follows the section 6 system and the repo's dataviz conventions:

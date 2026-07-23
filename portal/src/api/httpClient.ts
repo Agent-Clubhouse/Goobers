@@ -27,6 +27,8 @@ import type {
   RunDetail,
   RunList,
   RunListOptions,
+  TelemetryErrorSignaturesOptions,
+  TelemetryErrorSignaturesResult,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -53,6 +55,7 @@ const clientRoutes = {
   stageAttempts: apiRoutes.stageAttempts,
   runArtifact: apiRoutes.runArtifact,
   telemetryStats: apiRoutes.telemetryStats,
+  telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
   events: apiRoutes.events,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
@@ -290,6 +293,24 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
+  getTelemetryErrorSignatures(
+    request?: TelemetryErrorSignaturesOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryErrorSignaturesResult> {
+    return this.getJSON(
+      clientRoutes.telemetryErrorSignatures,
+      request && {
+        workflow: request.workflow,
+        gaggle: request.gaggle,
+        stage: request.stage,
+        since: request.since,
+        until: request.until,
+        limit: request.limit,
+      },
+      options,
+    );
+  }
+
   listTelemetryErrors(
     request?: TelemetryErrorsOptions,
     options?: RequestOptions,
@@ -299,6 +320,8 @@ export class HttpDaemonClient implements DaemonClient {
       request && {
         workflow: request.workflow,
         gaggle: request.gaggle,
+        stage: request.stage,
+        code: request.code,
         class: request.errorClass,
         since: request.since,
         until: request.until,

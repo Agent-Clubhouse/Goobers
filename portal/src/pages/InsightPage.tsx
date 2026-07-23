@@ -1,20 +1,24 @@
 import { useState } from "react";
 import type {
   DaemonClient,
+  TelemetryErrorSignature,
   TelemetryGaggleStats,
   TelemetryRunStats,
   TelemetryStageStats,
   TelemetryStatsOptions,
   TelemetryStatsResult,
 } from "../api/types";
+import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
+  type InsightErrorSignaturesSnapshot,
   type InsightSnapshot,
   type InsightWindow,
+  useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
-import { routeHash, type RunRouteFilters } from "../routing";
-import { formatDuration } from "../runDetailData";
+import { routeHash, type ErrorRouteFilters, type RunRouteFilters } from "../routing";
+import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
 type InsightScope =
@@ -50,7 +54,16 @@ export function InsightPage({
 }) {
   const [window, setWindow] = useState<InsightWindow>("7d");
   const [scopeKey, setScopeKey] = useState(scopeToKey({ kind: "instance" }));
+  const requestedScope = scopeFromKey(scopeKey);
+  const errorScope = errorSignatureScope(requestedScope);
   const query = useInsightStats(client, window);
+  const errorSignatures = useInsightErrorSignatures(
+    client,
+    window,
+    errorScope.gaggle,
+    errorScope.workflow,
+    errorScope.stage,
+  );
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -61,9 +74,7 @@ export function InsightPage({
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
-
   const snapshot = query.state.data;
-  const requestedScope = scopeFromKey(scopeKey);
   const availableScopes = scopeOptions(snapshot.stats);
   const scopes = availableScopes.some((option) => option.key === scopeToKey(requestedScope))
     ? availableScopes
@@ -75,8 +86,8 @@ export function InsightPage({
         <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
-          Success and latency diagnostics for the selected operational scope. Every metric opens
-          the runs behind it.
+          Success, failure-reason, and latency diagnostics for the selected operational scope.
+          Every metric opens the runs behind it.
         </p>
       </header>
 
@@ -117,15 +128,24 @@ export function InsightPage({
         </div>
       )}
 
-      <InsightContent scope={requestedScope} snapshot={snapshot} />
+      <InsightContent
+        errorSignatures={errorSignatures.state}
+        errorSignaturesRetry={errorSignatures.retry}
+        scope={requestedScope}
+        snapshot={snapshot}
+      />
     </>
   );
 }
 
 function InsightContent({
+  errorSignatures,
+  errorSignaturesRetry,
   scope,
   snapshot,
 }: {
+  errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
+  errorSignaturesRetry: () => void;
   scope: InsightScope;
   snapshot: InsightSnapshot;
 }) {
@@ -138,8 +158,21 @@ function InsightContent({
         (right.p95DurationMs ?? -1) - (left.p95DurationMs ?? -1) ||
         left.stage.localeCompare(right.stage),
     );
+  const hasOutcomes = Boolean(summary) || breakdown.length > 0;
+  const hasFailureReasons =
+    (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
+    errorSignatures.data.result.items.length > 0;
+  const failureReasonsFailed =
+    errorSignatures.status === "error" ||
+    (errorSignatures.status === "stale" && Boolean(errorSignatures.error));
 
-  if (!summary && breakdown.length === 0 && stages.length === 0) {
+  if (
+    !hasOutcomes &&
+    stages.length === 0 &&
+    !hasFailureReasons &&
+    !failureReasonsFailed &&
+    errorSignatures.status !== "loading"
+  ) {
     return (
       <section className="empty-state insight-empty">
         <span className="insight-empty-icon">
@@ -155,45 +188,172 @@ function InsightContent({
 
   return (
     <>
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Outcomes</p>
-            <h2>Success and failure</h2>
+      {hasOutcomes && (
+        <section className="content-section">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">Outcomes</p>
+              <h2>Success and failure</h2>
+            </div>
+            <span className="section-count">Terminal outcomes exclude other states</span>
           </div>
-          <span className="section-count">Terminal outcomes exclude other states</span>
-        </div>
-        <div className="insight-outcomes">
-          <div aria-hidden="true" className="insight-outcome-header">
-            <span>Scope</span>
-            <span>Success rate</span>
-            <span>Succeeded</span>
-            <span>Failed</span>
-            <span>Other</span>
-            <span>Total</span>
+          <div className="insight-outcomes">
+            <div aria-hidden="true" className="insight-outcome-header">
+              <span>Scope</span>
+              <span>Success rate</span>
+              <span>Succeeded</span>
+              <span>Failed</span>
+              <span>Other</span>
+              <span>Total</span>
+            </div>
+            {summary && <OutcomeRow emphasis metric={summary} />}
+            {breakdown.map((metric) => (
+              <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
+            ))}
           </div>
-          {summary && <OutcomeRow emphasis metric={summary} />}
-          {breakdown.map((metric) => (
-            <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
-          ))}
-        </div>
-      </section>
+        </section>
+      )}
 
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Latency</p>
-            <h2>Slowest stages</h2>
+      <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+
+      {(hasOutcomes || stages.length > 0) && (
+        <section className="content-section">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">Latency</p>
+              <h2>Slowest stages</h2>
+            </div>
+            <span className="section-count">Ordered by P95 duration</span>
           </div>
-          <span className="section-count">Ordered by P95 duration</span>
-        </div>
-        {stages.length === 0 ? (
-          <p className="inline-empty">No stage duration samples in this scope.</p>
-        ) : (
-          <StageDistributions filters={snapshot.filters} stages={stages} />
-        )}
-      </section>
+          {stages.length === 0 ? (
+            <p className="inline-empty">No stage duration samples in this scope.</p>
+          ) : (
+            <StageDistributions filters={snapshot.filters} stages={stages} />
+          )}
+        </section>
+      )}
     </>
+  );
+}
+
+function FailureReasonBreakdown({
+  retry,
+  state,
+}: {
+  retry: () => void;
+  state: QueryState<InsightErrorSignaturesSnapshot>;
+}) {
+  const snapshot = state.status === "ready" || state.status === "stale" ? state.data : undefined;
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Failures</p>
+          <h2>Failure reasons</h2>
+        </div>
+        <span className="section-count">Grouped by code + coarse class</span>
+      </div>
+      <p className="error-signature-description">
+        Error class is a coarse telemetry label and may be unknown.
+      </p>
+      {state.status === "loading" ? (
+        <p className="inline-empty">Loading failure reasons…</p>
+      ) : state.status === "error" ? (
+        <div className="inline-empty insight-inline-error" role="alert">
+          <span>Failure reasons could not be loaded.</span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      ) : (
+        <>
+          {state.status === "stale" && state.error && (
+            <div className="insight-inline-error" role="alert">
+              <span>
+                Failure reasons could not be refreshed. Showing the last successful breakdown.
+              </span>
+              <button className="text-button" onClick={retry} type="button">
+                Retry
+              </button>
+            </div>
+          )}
+          {snapshot && snapshot.result.items.length > 0 ? (
+            <div className="error-signatures">
+              <div aria-hidden="true" className="error-signature-header">
+                <span>Code</span>
+                <span>Coarse class</span>
+                <span>Count</span>
+                <span>Last seen</span>
+                <span>Matching example</span>
+                <span />
+              </div>
+              {snapshot.result.items.map((signature) => (
+                <FailureReasonRow
+                  filters={snapshot.filters}
+                  key={`${signature.code}:${signature.errorClass}`}
+                  signature={signature}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="inline-empty">No coded failures in this scope and time window.</p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function FailureReasonRow({
+  filters,
+  signature,
+}: {
+  filters: ErrorRouteFilters;
+  signature: TelemetryErrorSignature;
+}) {
+  const code = signature.code || "uncoded";
+  const errorClass = signature.errorClass || "unknown";
+  const example = signature.exampleRunId
+    ? [
+        signature.exampleStage,
+        signature.exampleAttempt ? `attempt ${signature.exampleAttempt}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "Instance event";
+  const content = (
+    <>
+      <span className="error-signature-code">
+        <strong>{code}</strong>
+        <small>{signature.count === 1 ? "1 occurrence" : `${signature.count} occurrences`}</small>
+      </span>
+      <span className="error-class-label">{errorClass}</span>
+      <strong className="error-signature-count">{signature.count}</strong>
+      <time dateTime={signature.lastSeen}>{formatTimestamp(signature.lastSeen)}</time>
+      <span className="error-signature-example">{example}</span>
+      <Icon name="chevron" size={15} />
+    </>
+  );
+
+  return (
+    <a
+      aria-label={`View ${signature.count} matching ${signature.count === 1 ? "error" : "errors"} for ${code}`}
+      className="error-signature-row"
+      href={routeHash({
+        page: "errors",
+        filters: {
+          gaggle: filters.gaggle,
+          workflow: filters.workflow,
+          stage: filters.stage,
+          code: signature.code,
+          errorClass: signature.errorClass,
+          since: filters.since,
+          until: filters.until,
+        },
+      })}
+    >
+      {content}
+    </a>
   );
 }
 
@@ -388,6 +548,23 @@ function scopeOption(scope: InsightScope): { key: string; label: string } {
         key: scopeToKey(scope),
         label: `Stage · ${scope.gaggle} / ${scope.workflow} / ${scope.stage}`,
       };
+  }
+}
+
+function errorSignatureScope(scope: InsightScope): {
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
+} {
+  switch (scope.kind) {
+    case "instance":
+      return {};
+    case "gaggle":
+      return { gaggle: scope.gaggle };
+    case "workflow":
+      return { gaggle: scope.gaggle, workflow: scope.workflow };
+    case "stage":
+      return { gaggle: scope.gaggle, workflow: scope.workflow, stage: scope.stage };
   }
 }
 

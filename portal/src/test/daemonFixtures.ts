@@ -539,7 +539,68 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
       models: [],
     },
-    telemetryErrors: { items: [] },
+    telemetryErrorSignatures: {
+      items: [
+        {
+          code: "harness.crash",
+          errorClass: "unknown",
+          count: 2,
+          lastSeen: "2026-07-18T04:00:00Z",
+          exampleRunId: "01JZ400FAILED",
+          exampleStage: "implement",
+          exampleAttempt: 1,
+        },
+        {
+          code: "provider.rate_limit",
+          errorClass: "provider-rate-limit",
+          count: 1,
+          lastSeen: "2026-07-18T03:00:00Z",
+          exampleRunId: "01JZ455ESCALATE",
+          exampleStage: "review",
+          exampleAttempt: 2,
+        },
+        {
+          code: "scheduler.storage",
+          errorClass: "unknown",
+          count: 1,
+          lastSeen: "2026-07-18T02:00:00Z",
+        },
+      ],
+    },
+    telemetryErrors: {
+      items: [
+        {
+          runId: "01JZ400FAILED",
+          workflow: "implementation",
+          stage: "implement",
+          attempt: 1,
+          code: "harness.crash",
+          errorClass: "unknown",
+          message: "Harness exited before producing a result envelope.",
+          occurredAt: "2026-07-18T04:00:00Z",
+        },
+        {
+          runId: "01JZ400FAILED",
+          workflow: "implementation",
+          stage: "implement",
+          attempt: 2,
+          code: "harness.crash",
+          errorClass: "unknown",
+          message: "Harness process exited unexpectedly.",
+          occurredAt: "2026-07-18T03:30:00Z",
+        },
+        {
+          runId: "",
+          workflow: "",
+          stage: "",
+          attempt: 0,
+          code: "scheduler.storage",
+          errorClass: "unknown",
+          message: "Scheduler journal append failed.",
+          occurredAt: "2026-07-18T02:00:00Z",
+        },
+      ],
+    },
   };
 }
 
@@ -600,5 +661,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: { gaggles: [], runs: [], stages: [], models: [] },
+    telemetryErrorSignatures: { items: [] },
+    telemetryErrors: { items: [] },
   };
 }

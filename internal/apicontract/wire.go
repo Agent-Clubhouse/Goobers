@@ -14,20 +14,21 @@ import (
 )
 
 type wireFixtures struct {
-	Health            readservice.Health               `json:"health"`
-	Instance          readservice.Instance             `json:"instance"`
-	Gaggles           readservice.GagglePage           `json:"gaggles"`
-	Goobers           readservice.GooberPage           `json:"goobers"`
-	Workflows         readservice.WorkflowPage         `json:"workflows"`
-	WorkflowDetail    readservice.WorkflowDetail       `json:"workflowDetail"`
-	Runs              readservice.RunList              `json:"runs"`
-	RunDetail         readservice.RunDetail            `json:"runDetail"`
-	RunEvents         readservice.EventList            `json:"runEvents"`
-	StageAttempts     readservice.AttemptList          `json:"stageAttempts"`
-	TelemetryStats    readservice.TelemetryStatsResult `json:"telemetryStats"`
-	TelemetryErrors   readservice.TelemetryErrorsPage  `json:"telemetryErrors"`
-	EventInvalidation Invalidation                     `json:"eventInvalidation"`
-	ErrorEnvelope     ErrorEnvelope                    `json:"errorEnvelope"`
+	Health                   readservice.Health                         `json:"health"`
+	Instance                 readservice.Instance                       `json:"instance"`
+	Gaggles                  readservice.GagglePage                     `json:"gaggles"`
+	Goobers                  readservice.GooberPage                     `json:"goobers"`
+	Workflows                readservice.WorkflowPage                   `json:"workflows"`
+	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
+	Runs                     readservice.RunList                        `json:"runs"`
+	RunDetail                readservice.RunDetail                      `json:"runDetail"`
+	RunEvents                readservice.EventList                      `json:"runEvents"`
+	StageAttempts            readservice.AttemptList                    `json:"stageAttempts"`
+	TelemetryStats           readservice.TelemetryStatsResult           `json:"telemetryStats"`
+	TelemetryErrorSignatures readservice.TelemetryErrorSignaturesResult `json:"telemetryErrorSignatures"`
+	TelemetryErrors          readservice.TelemetryErrorsPage            `json:"telemetryErrors"`
+	EventInvalidation        Invalidation                               `json:"eventInvalidation"`
+	ErrorEnvelope            ErrorEnvelope                              `json:"errorEnvelope"`
 }
 
 var wireFixtureTypes = []struct {
@@ -45,6 +46,7 @@ var wireFixtureTypes = []struct {
 	{name: "runEvents", scriptType: "EventList"},
 	{name: "stageAttempts", scriptType: "AttemptList"},
 	{name: "telemetryStats", scriptType: "TelemetryStatsResult"},
+	{name: "telemetryErrorSignatures", scriptType: "TelemetryErrorSignaturesResult"},
 	{name: "telemetryErrors", scriptType: "TelemetryErrorsPage"},
 	{name: "eventInvalidation", scriptType: "ModelInvalidation"},
 	{name: "errorEnvelope", scriptType: "ApiErrorEnvelope"},
@@ -441,6 +443,17 @@ func newWireFixtures() wireFixtures {
 				CopilotPremiumRequests: &modelPremiumRequests,
 				CostSamples:            3,
 				CostUSD:                &modelCostUSD,
+			}},
+		},
+		TelemetryErrorSignatures: readservice.TelemetryErrorSignaturesResult{
+			Items: []readservice.TelemetryErrorSignature{{
+				Code:           "stage_failed",
+				ErrorClass:     "unknown",
+				Count:          3,
+				LastSeen:       timestamp,
+				ExampleRunID:   "run-123",
+				ExampleStage:   "implement",
+				ExampleAttempt: 1,
 			}},
 		},
 		TelemetryErrors: readservice.TelemetryErrorsPage{

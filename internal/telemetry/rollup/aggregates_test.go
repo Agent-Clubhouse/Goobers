@@ -368,7 +368,14 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 	base := fixtureStart
 	seedStatsRun(t, runsDir, "1111111111111111cccccccccccccccc", "implement", "failed", base, true, "provider.rate_limit")
 	seedStatsRun(t, runsDir, "2222222222222222cccccccccccccccc", "implement", "failed", base.Add(time.Hour), true, "provider.rate_limit")
-	seedStatsRun(t, runsDir, "3333333333333333cccccccccccccccc", "implement", "failed", base.Add(2*time.Hour), true, "harness.crash")
+	reviewRunID := "3333333333333333cccccccccccccccc"
+	seedStatsRun(t, runsDir, reviewRunID, "implement", "failed", base.Add(2*time.Hour), true, "harness.crash")
+	reviewEventsPath := filepath.Join(runsDir, reviewRunID, fileEvents)
+	reviewEvents, err := os.ReadFile(reviewEventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, reviewEventsPath, strings.ReplaceAll(string(reviewEvents), `"stage":"deploy"`, `"stage":"review"`))
 
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
@@ -387,6 +394,68 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 	}
 	if top.ExampleRunID == "" || top.ExampleStage != "deploy" {
 		t.Fatalf("top signature missing example ref: %#v", top)
+	}
+
+	deploy, err := db.TopErrorSignatures(StatsRequest{Stage: "deploy"}, 10)
+	if err != nil {
+		t.Fatalf("TopErrorSignatures stage filtered: %v", err)
+	}
+	if len(deploy) != 1 || deploy[0].Code != "provider.rate_limit" || deploy[0].Count != 2 {
+		t.Fatalf("deploy signatures = %#v", deploy)
+	}
+
+	matching, err := db.Errors(ErrorsRequest{
+		Stage:      "deploy",
+		Code:       "provider.rate_limit",
+		FilterCode: true,
+	})
+	if err != nil {
+		t.Fatalf("Errors signature filtered: %v", err)
+	}
+	if len(matching) != 2 {
+		t.Fatalf("matching signature errors = %#v", matching)
+	}
+}
+
+func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "error", `"error":{"message":"uncoded scheduler failure"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatal(err)
+	}
+
+	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signatures) != 1 ||
+		signatures[0].Code != "" ||
+		signatures[0].ErrorClass != "" ||
+		signatures[0].Count != 1 ||
+		signatures[0].ExampleRunID != "" {
+		t.Fatalf("unclassified scheduler signatures = %#v", signatures)
+	}
+
+	errors, err := db.Errors(ErrorsRequest{
+		Code:             "",
+		ErrorClass:       "",
+		FilterCode:       true,
+		FilterErrorClass: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errors) != 1 ||
+		errors[0].RunID != "" ||
+		errors[0].Workflow != "" ||
+		errors[0].Message != "uncoded scheduler failure" {
+		t.Fatalf("unclassified scheduler errors = %#v", errors)
 	}
 }
 

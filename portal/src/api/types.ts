@@ -538,7 +538,28 @@ export interface TelemetryModelStats {
   costUSD?: number;
 }
 
+export interface TelemetryErrorSignaturesOptions extends TelemetryStatsOptions {
+  stage?: string;
+  limit?: number;
+}
+
+export interface TelemetryErrorSignaturesResult {
+  items: TelemetryErrorSignature[];
+}
+
+export interface TelemetryErrorSignature {
+  code: string;
+  errorClass: string;
+  count: number;
+  lastSeen: string;
+  exampleRunId?: string;
+  exampleStage?: string;
+  exampleAttempt?: number;
+}
+
 export interface TelemetryErrorsOptions extends TelemetryStatsOptions {
+  stage?: string;
+  code?: string;
   errorClass?: string;
   limit?: number;
   cursor?: string;
@@ -580,6 +601,10 @@ export interface DaemonClient {
     request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult>;
+  getTelemetryErrorSignatures(
+    request?: TelemetryErrorSignaturesOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryErrorSignaturesResult>;
   listTelemetryErrors(
     request?: TelemetryErrorsOptions,
     options?: RequestOptions,

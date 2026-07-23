@@ -24,6 +24,7 @@ describe("Go daemon wire contract", () => {
       "runEvents",
       "stageAttempts",
       "telemetryStats",
+      "telemetryErrorSignatures",
       "telemetryErrors",
       "eventInvalidation",
       "errorEnvelope",

@@ -36,4 +36,22 @@ describe("Insight routing", () => {
       },
     });
   });
+
+  it("round-trips an exact error signature including empty values", () => {
+    const route = {
+      page: "errors" as const,
+      filters: {
+        gaggle: "core tools",
+        workflow: "implementation/v2",
+        stage: "review gate",
+        code: "",
+        errorClass: "",
+        since: "2026-07-01T00:00:00Z",
+        until: "2026-07-08T00:00:00Z",
+      },
+    };
+
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(activeArea(route)).toBe("insight");
+  });
 });

@@ -73,6 +73,7 @@ function fixtures(): DaemonFixtures {
       },
     },
     telemetryStats: { gaggles: [], runs: [], stages: [], models: [] },
+    telemetryErrorSignatures: { items: [] },
     telemetryErrors: { items: [] },
   };
 }

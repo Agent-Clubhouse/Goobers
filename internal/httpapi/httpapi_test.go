@@ -20,9 +20,11 @@ import (
 type fakeReader struct {
 	health       readservice.Health
 	stats        readservice.TelemetryStatsResult
+	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
 	telemetryErr error
 	statsReq     readservice.TelemetryStatsRequest
+	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
 	runs         readservice.RunList
 	run          readservice.RunDetail
@@ -68,6 +70,11 @@ func (f *fakeReader) Health(context.Context) (readservice.Health, error) {
 func (f *fakeReader) TelemetryStats(_ context.Context, req readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	f.statsReq = req
 	return f.stats, f.telemetryErr
+}
+
+func (f *fakeReader) TelemetryErrorSignatures(_ context.Context, req readservice.TelemetryErrorSignaturesRequest) (readservice.TelemetryErrorSignaturesResult, error) {
+	f.signatureReq = req
+	return f.signatures, f.telemetryErr
 }
 
 func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
@@ -464,6 +471,14 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 			Runs:   []readservice.TelemetryRunStats{{Workflow: "implement", TotalRuns: 2, SuccessRate: &rate}},
 			Stages: []readservice.TelemetryStageStats{},
 		},
+		signatures: readservice.TelemetryErrorSignaturesResult{
+			Items: []readservice.TelemetryErrorSignature{{
+				Code:         "harness.crash",
+				ErrorClass:   "unknown",
+				Count:        3,
+				ExampleRunID: "run-1",
+			}},
+		},
 		errors: readservice.TelemetryErrorsPage{
 			Items:      []readservice.TelemetryError{{RunID: "run-1", Code: "failure"}},
 			NextCursor: "next",
@@ -502,18 +517,50 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 
+	signaturesResponse := httptest.NewRecorder()
+	signaturesURL := TelemetryErrorSignaturesPath + "?workflow=implement&gaggle=core&stage=review&since=" +
+		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339) + "&limit=10"
+	handler.ServeHTTP(signaturesResponse, httptest.NewRequest(http.MethodGet, signaturesURL, nil))
+	if signaturesResponse.Code != http.StatusOK {
+		t.Fatalf("error signatures status = %d, body = %s", signaturesResponse.Code, signaturesResponse.Body)
+	}
+	wantSignatureReq := readservice.TelemetryErrorSignaturesRequest{
+		Workflow: "implement",
+		Gaggle:   "core",
+		Stage:    "review",
+		Since:    since,
+		Until:    until,
+		Limit:    10,
+	}
+	if reader.signatureReq != wantSignatureReq {
+		t.Fatalf("error signatures request = %+v, want %+v", reader.signatureReq, wantSignatureReq)
+	}
+	var signatures readservice.TelemetryErrorSignaturesResult
+	if err := json.NewDecoder(signaturesResponse.Body).Decode(&signatures); err != nil {
+		t.Fatal(err)
+	}
+	if len(signatures.Items) != 1 ||
+		signatures.Items[0].Code != "harness.crash" ||
+		signatures.Items[0].ErrorClass != "unknown" {
+		t.Fatalf("error signatures = %+v", signatures)
+	}
+
 	errorsResponse := httptest.NewRecorder()
-	errorsURL := TelemetryErrorsPath + "?workflow=implement&gaggle=core&class=timeout&limit=10&cursor=current"
+	errorsURL := TelemetryErrorsPath + "?workflow=implement&gaggle=core&stage=review&code=harness.crash&class=timeout&limit=10&cursor=current"
 	handler.ServeHTTP(errorsResponse, httptest.NewRequest(http.MethodGet, errorsURL, nil))
 	if errorsResponse.Code != http.StatusOK {
 		t.Fatalf("errors status = %d, body = %s", errorsResponse.Code, errorsResponse.Body)
 	}
 	wantErrorsReq := readservice.TelemetryErrorsRequest{
-		Workflow:   "implement",
-		Gaggle:     "core",
-		ErrorClass: "timeout",
-		Limit:      10,
-		Cursor:     "current",
+		Workflow:         "implement",
+		Gaggle:           "core",
+		Stage:            "review",
+		Code:             "harness.crash",
+		ErrorClass:       "timeout",
+		FilterCode:       true,
+		FilterErrorClass: true,
+		Limit:            10,
+		Cursor:           "current",
 	}
 	if reader.errorsReq != wantErrorsReq {
 		t.Fatalf("errors request = %+v, want %+v", reader.errorsReq, wantErrorsReq)
@@ -524,6 +571,22 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].Code != "failure" || page.NextCursor != "next" {
 		t.Fatalf("errors page = %+v", page)
+	}
+
+	unclassifiedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unclassifiedResponse, httptest.NewRequest(
+		http.MethodGet,
+		TelemetryErrorsPath+"?code=&class=",
+		nil,
+	))
+	if unclassifiedResponse.Code != http.StatusOK {
+		t.Fatalf("unclassified errors status = %d, body = %s", unclassifiedResponse.Code, unclassifiedResponse.Body)
+	}
+	if !reader.errorsReq.FilterCode ||
+		reader.errorsReq.Code != "" ||
+		!reader.errorsReq.FilterErrorClass ||
+		reader.errorsReq.ErrorClass != "" {
+		t.Fatalf("unclassified errors request = %+v", reader.errorsReq)
 	}
 }
 
@@ -536,6 +599,7 @@ func TestTelemetryQueryErrorsAreStructured(t *testing.T) {
 		{name: "reversed window", path: TelemetryStatsPath + "?since=2026-07-02T00:00:00Z&until=2026-07-01T00:00:00Z"},
 		{name: "unknown parameter", path: TelemetryStatsPath + "?sort=recent"},
 		{name: "duplicate parameter", path: TelemetryStatsPath + "?workflow=a&workflow=b"},
+		{name: "invalid signature limit", path: TelemetryErrorSignaturesPath + "?limit=0"},
 		{name: "invalid limit", path: TelemetryErrorsPath + "?limit=0"},
 		{name: "oversized limit", path: TelemetryErrorsPath + "?limit=201"},
 	}

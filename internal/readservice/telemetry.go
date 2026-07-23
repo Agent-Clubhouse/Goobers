@@ -23,6 +23,7 @@ var (
 // TelemetryReader is the shared telemetry read boundary used by HTTP and CLI.
 type TelemetryReader interface {
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
+	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 }
 
@@ -120,15 +121,45 @@ type TelemetryModelStats struct {
 	CostUSD                *float64 `json:"costUSD,omitempty"`
 }
 
+// TelemetryErrorSignaturesRequest filters the recurring failure-reason rollup.
+type TelemetryErrorSignaturesRequest struct {
+	Workflow string
+	Gaggle   string
+	Stage    string
+	Since    time.Time
+	Until    time.Time
+	Limit    int
+}
+
+// TelemetryErrorSignaturesResult contains recurring errors ordered by frequency.
+type TelemetryErrorSignaturesResult struct {
+	Items []TelemetryErrorSignature `json:"items"`
+}
+
+// TelemetryErrorSignature is one recurring code and coarse error-class pair.
+type TelemetryErrorSignature struct {
+	Code           string    `json:"code"`
+	ErrorClass     string    `json:"errorClass"`
+	Count          int       `json:"count"`
+	LastSeen       time.Time `json:"lastSeen"`
+	ExampleRunID   string    `json:"exampleRunId,omitempty"`
+	ExampleStage   string    `json:"exampleStage,omitempty"`
+	ExampleAttempt int       `json:"exampleAttempt,omitempty"`
+}
+
 // TelemetryErrorsRequest filters and paginates recent errors.
 type TelemetryErrorsRequest struct {
-	Workflow   string
-	Gaggle     string
-	ErrorClass string
-	Since      time.Time
-	Until      time.Time
-	Limit      int
-	Cursor     string
+	Workflow         string
+	Gaggle           string
+	Stage            string
+	Code             string
+	ErrorClass       string
+	FilterCode       bool
+	FilterErrorClass bool
+	Since            time.Time
+	Until            time.Time
+	Limit            int
+	Cursor           string
 }
 
 // TelemetryErrorsPage contains newest-first error events and an opaque cursor.
@@ -151,6 +182,7 @@ type TelemetryError struct {
 
 type telemetryStore interface {
 	Stats(rollup.StatsRequest) (rollup.StatsResult, error)
+	TopErrorSignatures(rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
 	Errors(rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
 }
 
@@ -307,6 +339,45 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	return result, nil
 }
 
+// TelemetryErrorSignatures returns recurring failure reasons in frequency order.
+func (s *Telemetry) TelemetryErrorSignatures(ctx context.Context, req TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error) {
+	if err := validateWindow(req.Since, req.Until); err != nil {
+		return TelemetryErrorSignaturesResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return TelemetryErrorSignaturesResult{}, err
+	}
+	signatures, err := s.store.TopErrorSignatures(rollup.StatsRequest{
+		Workflow: req.Workflow,
+		Gaggle:   req.Gaggle,
+		Stage:    req.Stage,
+		Since:    req.Since,
+		Until:    req.Until,
+	}, req.Limit)
+	if err != nil {
+		return TelemetryErrorSignaturesResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return TelemetryErrorSignaturesResult{}, err
+	}
+
+	result := TelemetryErrorSignaturesResult{
+		Items: make([]TelemetryErrorSignature, 0, len(signatures)),
+	}
+	for _, signature := range signatures {
+		result.Items = append(result.Items, TelemetryErrorSignature{
+			Code:           signature.Code,
+			ErrorClass:     signature.ErrorClass,
+			Count:          signature.Count,
+			LastSeen:       signature.LastSeen,
+			ExampleRunID:   signature.ExampleRunID,
+			ExampleStage:   signature.ExampleStage,
+			ExampleAttempt: signature.ExampleAttempt,
+		})
+	}
+	return result, nil
+}
+
 // TelemetryErrors returns one deterministic page of newest-first errors.
 func (s *Telemetry) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequest) (TelemetryErrorsPage, error) {
 	if err := validateWindow(req.Since, req.Until); err != nil {
@@ -329,13 +400,17 @@ func (s *Telemetry) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequ
 		return TelemetryErrorsPage{}, err
 	}
 	events, err := s.store.Errors(rollup.ErrorsRequest{
-		Workflow:   req.Workflow,
-		Gaggle:     req.Gaggle,
-		ErrorClass: req.ErrorClass,
-		Since:      req.Since,
-		Until:      req.Until,
-		Limit:      queryLimit,
-		Cursor:     cursor,
+		Workflow:         req.Workflow,
+		Gaggle:           req.Gaggle,
+		Stage:            req.Stage,
+		Code:             req.Code,
+		ErrorClass:       req.ErrorClass,
+		FilterCode:       req.FilterCode,
+		FilterErrorClass: req.FilterErrorClass,
+		Since:            req.Since,
+		Until:            req.Until,
+		Limit:            queryLimit,
+		Cursor:           cursor,
 	})
 	if err != nil {
 		return TelemetryErrorsPage{}, err
@@ -376,6 +451,14 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		return TelemetryStatsResult{}, ErrTelemetryUnavailable
 	}
 	return s.telemetry.TelemetryStats(ctx, req)
+}
+
+// TelemetryErrorSignatures implements TelemetryReader for the daemon's full local service.
+func (s *Local) TelemetryErrorSignatures(ctx context.Context, req TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error) {
+	if s.telemetry == nil {
+		return TelemetryErrorSignaturesResult{}, ErrTelemetryUnavailable
+	}
+	return s.telemetry.TelemetryErrorSignatures(ctx, req)
 }
 
 // TelemetryErrors implements TelemetryReader for the daemon's full local service.
@@ -430,7 +513,7 @@ func decodeErrorsCursor(req TelemetryErrorsRequest) (*rollup.ErrorCursor, error)
 	}
 	var cursor telemetryErrorsCursor
 	if err := json.Unmarshal(data, &cursor); err != nil ||
-		cursor.RunID == "" || cursor.Filter == "" {
+		cursor.Sequence == 0 || cursor.Filter == "" {
 		return nil, fmt.Errorf("%w: cursor is invalid", ErrInvalidTelemetryRequest)
 	}
 	if cursor.Filter != telemetryErrorsFilter(req) {
@@ -450,17 +533,25 @@ func decodeErrorsCursor(req TelemetryErrorsRequest) (*rollup.ErrorCursor, error)
 
 func telemetryErrorsFilter(req TelemetryErrorsRequest) string {
 	data, _ := json.Marshal(struct {
-		Workflow   string `json:"workflow"`
-		Gaggle     string `json:"gaggle"`
-		ErrorClass string `json:"errorClass"`
-		Since      string `json:"since"`
-		Until      string `json:"until"`
+		Workflow         string `json:"workflow"`
+		Gaggle           string `json:"gaggle"`
+		Stage            string `json:"stage"`
+		Code             string `json:"code"`
+		ErrorClass       string `json:"errorClass"`
+		FilterCode       bool   `json:"filterCode"`
+		FilterErrorClass bool   `json:"filterErrorClass"`
+		Since            string `json:"since"`
+		Until            string `json:"until"`
 	}{
-		Workflow:   req.Workflow,
-		Gaggle:     req.Gaggle,
-		ErrorClass: req.ErrorClass,
-		Since:      formatCursorTime(req.Since),
-		Until:      formatCursorTime(req.Until),
+		Workflow:         req.Workflow,
+		Gaggle:           req.Gaggle,
+		Stage:            req.Stage,
+		Code:             req.Code,
+		ErrorClass:       req.ErrorClass,
+		FilterCode:       req.FilterCode,
+		FilterErrorClass: req.FilterErrorClass,
+		Since:            formatCursorTime(req.Since),
+		Until:            formatCursorTime(req.Until),
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

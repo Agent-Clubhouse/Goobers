@@ -35,6 +35,7 @@ const (
 type StatsRequest struct {
 	Workflow              string
 	Gaggle                string
+	Stage                 string
 	Model                 string
 	HarnessVersion        string
 	GroupByModel          bool
@@ -561,8 +562,7 @@ func runAgentJoin(req StatsRequest) (string, []any) {
 	), args
 }
 
-// ErrorEvent is one run_errors row joined with its run's workflow, for the
-// cross-run "recent errors" query.
+// ErrorEvent is one run or instance error returned by the recent-errors query.
 type ErrorEvent struct {
 	Sequence       uint64    `json:"-"`
 	OrderTimestamp string    `json:"-"`
@@ -576,16 +576,20 @@ type ErrorEvent struct {
 	OccurredAt     time.Time `json:"occurredAt"`
 }
 
-// ErrorsRequest filters the cross-run recent-errors query. Zero-value fields
-// are unfiltered. Limit <= 0 defaults to 50.
+// ErrorsRequest filters recent errors. Empty code/class values are exact when
+// their corresponding Filter field is true. Limit <= 0 defaults to 50.
 type ErrorsRequest struct {
-	Workflow   string
-	Gaggle     string
-	ErrorClass string
-	Since      time.Time
-	Until      time.Time
-	Limit      int
-	Cursor     *ErrorCursor
+	Workflow         string
+	Gaggle           string
+	Stage            string
+	Code             string
+	ErrorClass       string
+	FilterCode       bool
+	FilterErrorClass bool
+	Since            time.Time
+	Until            time.Time
+	Limit            int
+	Cursor           *ErrorCursor
 }
 
 // ErrorCursor is the exclusive keyset boundary for the deterministic
@@ -596,9 +600,9 @@ type ErrorCursor struct {
 	Sequence       uint64
 }
 
-// Errors returns recent errors across every run, newest first, each carrying
-// its run/stage reference (#24's "recent errors by class with run/stage
-// refs"). Filtering by ErrorClass also serves the mission brief's
+// Errors returns recent run and instance errors newest first. Run errors carry
+// their run/stage reference; instance errors leave those fields empty.
+// Filtering by ErrorClass also serves the mission brief's
 // "rate-limit events" surface: Errors(ErrorsRequest{ErrorClass:
 // string(telemetry.ErrorClassProviderRateLimit)}).
 func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
@@ -609,15 +613,23 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	var clauses []string
 	args := []any{}
 	if req.Workflow != "" {
-		clauses = append(clauses, "r.workflow = ?")
+		clauses = append(clauses, "e.workflow = ?")
 		args = append(args, req.Workflow)
 	}
 	if req.Gaggle != "" {
-		clauses = append(clauses, "r.gaggle = ?")
+		clauses = append(clauses, "e.gaggle = ?")
 		args = append(args, req.Gaggle)
 	}
-	if req.ErrorClass != "" {
-		clauses = append(clauses, "e.error_class = ?")
+	if req.Stage != "" {
+		clauses = append(clauses, "e.stage = ?")
+		args = append(args, req.Stage)
+	}
+	if req.FilterCode || req.Code != "" {
+		clauses = append(clauses, "COALESCE(e.code, '') = ?")
+		args = append(args, req.Code)
+	}
+	if req.FilterErrorClass || req.ErrorClass != "" {
+		clauses = append(clauses, "COALESCE(e.error_class, '') = ?")
 		args = append(args, req.ErrorClass)
 	}
 	if !req.Since.IsZero() {
@@ -631,8 +643,8 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	if req.Cursor != nil {
 		occurredAt := req.Cursor.OrderTimestamp
 		clauses = append(clauses, `(COALESCE(e.occurred_at, '') < ? OR
-			(COALESCE(e.occurred_at, '') = ? AND e.run_id < ?) OR
-			(COALESCE(e.occurred_at, '') = ? AND e.run_id = ? AND e.seq < ?))`)
+			(COALESCE(e.occurred_at, '') = ? AND COALESCE(e.run_id, '') < ?) OR
+			(COALESCE(e.occurred_at, '') = ? AND COALESCE(e.run_id, '') = ? AND e.seq < ?))`)
 		args = append(args,
 			occurredAt,
 			occurredAt, req.Cursor.RunID,
@@ -645,12 +657,11 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	}
 	args = append(args, limit)
 
-	query := fmt.Sprintf(`
-		SELECT e.run_id, r.workflow, e.stage, e.attempt, e.code, e.error_class, e.message, e.occurred_at, e.seq
-		FROM run_errors e
-		JOIN runs r ON r.run_id = e.run_id
+	query := fmt.Sprintf(telemetryErrorsCTE+`
+		SELECT e.run_id, e.workflow, e.stage, e.attempt, e.code, e.error_class, e.message, e.occurred_at, e.seq
+		FROM telemetry_errors e
 		%s
-		ORDER BY COALESCE(e.occurred_at, '') DESC, e.run_id DESC, e.seq DESC
+		ORDER BY COALESCE(e.occurred_at, '') DESC, COALESCE(e.run_id, '') DESC, e.seq DESC
 		LIMIT ?`, where)
 
 	rows, err := db.sql.Query(query, args...)
@@ -662,12 +673,13 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	var out []ErrorEvent
 	for rows.Next() {
 		var e ErrorEvent
-		var stage, class, message, occurredAt sql.NullString
+		var runID, workflow, stage, class, message, occurredAt sql.NullString
 		var attempt sql.NullInt64
-		if err := rows.Scan(&e.RunID, &e.Workflow, &stage, &attempt, &e.Code, &class, &message, &occurredAt, &e.Sequence); err != nil {
+		if err := rows.Scan(&runID, &workflow, &stage, &attempt, &e.Code, &class, &message, &occurredAt, &e.Sequence); err != nil {
 			return nil, fmt.Errorf("rollup: scan error event: %w", err)
 		}
-		e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
+		e.RunID, e.Workflow, e.Stage = runID.String, workflow.String, stage.String
+		e.ErrorClass, e.Message = class.String, message.String
 		e.OrderTimestamp = occurredAt.String
 		e.Attempt = int(attempt.Int64)
 		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
@@ -692,12 +704,12 @@ type ErrorSignature struct {
 
 const telemetryErrorsCTE = `
 	WITH telemetry_errors AS (
-		SELECT e.seq, e.code, e.error_class, e.occurred_at, e.run_id, e.stage, e.attempt,
+		SELECT e.seq, e.code, e.error_class, e.message, e.occurred_at, e.run_id, e.stage, e.attempt,
 		       r.workflow, r.gaggle
 		FROM run_errors e
 		JOIN runs r ON r.run_id = e.run_id
 		UNION ALL
-		SELECT s.seq, s.code, s.error_class, s.occurred_at, NULL, NULL, NULL,
+		SELECT s.seq, s.code, s.error_class, s.message, s.occurred_at, NULL, NULL, NULL,
 		       NULL, NULL
 		FROM scheduler_errors s
 	)`
@@ -710,7 +722,7 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 	if limit <= 0 {
 		limit = 20
 	}
-	where, args := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
+	where, args := errorSignaturesWhere(req)
 	query := fmt.Sprintf(telemetryErrorsCTE+`
 		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
 		FROM telemetry_errors e
@@ -744,10 +756,10 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		return nil, err
 	}
 
-	// The example row must respect the same workflow/window filter as the
+	// The example row must respect the same scope/window filter as the
 	// aggregate query above.
-	exampleWhere, exampleArgs := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
-	exampleFilter := "e.code = ? AND e.error_class = ?"
+	exampleWhere, exampleArgs := errorSignaturesWhere(req)
+	exampleFilter := "e.code = ? AND COALESCE(e.error_class, '') = ?"
 	if exampleWhere != "" {
 		exampleFilter = strings.TrimPrefix(exampleWhere, "WHERE ") + " AND " + exampleFilter
 	}
@@ -766,6 +778,15 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		sigs[i].ExampleRunID, sigs[i].ExampleStage, sigs[i].ExampleAttempt = runID.String, stage.String, int(attempt.Int64)
 	}
 	return sigs, nil
+}
+
+func errorSignaturesWhere(req StatsRequest) (string, []any) {
+	clauses, args := statsClauses("e.workflow", "e.gaggle", "e.occurred_at", req)
+	if req.Stage != "" {
+		clauses = append(clauses, "e.stage = ?")
+		args = append(args, req.Stage)
+	}
+	return whereClause(clauses), args
 }
 
 // ProviderMutationCount is the occurrence count of one (provider, kind,
