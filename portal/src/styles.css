@@ -2772,6 +2772,47 @@ a.telemetry-error-row:hover {
   border-style: dashed;
 }
 
+/* DASH-19: live run-state overlay on the canvas topology graph. State is
+   carried by the text label plus a border treatment, never by color alone. */
+.workflow-graph-node[data-run-state] .graph-node-state {
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.workflow-graph-node.run-node-state-running .graph-node-state {
+  color: var(--active);
+}
+.workflow-graph-node.run-node-state-completed .graph-node-state {
+  color: var(--success);
+}
+.workflow-graph-node.run-node-state-failed .graph-node-state,
+.workflow-graph-node.run-node-state-aborted .graph-node-state,
+.workflow-graph-node.run-node-state-escalated .graph-node-state {
+  color: var(--danger);
+}
+.workflow-graph-node.run-node-state-blocked .graph-node-state {
+  color: var(--warning);
+}
+.workflow-graph-node[data-run-state="pending"] {
+  border-style: dotted;
+}
+.workflow-graph-node[data-run-state="skipped"] {
+  border-style: dashed;
+  opacity: 0.5;
+}
+.workflow-graph-node[data-run-state="skipped"] .graph-node-state {
+  color: var(--muted);
+}
+
+/* The declared-but-untraversed edges recede so the executed path reads first. */
+.workflow-graph-edge-declared {
+  opacity: 0.3;
+}
+.workflow-graph-edge-traversed {
+  opacity: 1;
+  stroke: var(--active);
+  stroke-width: 2.5;
+}
+
 .run-node-state {
   font-size: 9px;
   font-weight: 760;

@@ -177,7 +177,7 @@ describe("run detail", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("group", { name: /pinned execution graph/ })).toHaveAttribute(
       "data-responsive-layout",
-      "compact-under-820",
+      "scroll-under-820",
     );
     expect(document.querySelector(".run-detail-workspace")).toHaveAttribute(
       "data-responsive-layout",
