@@ -53,6 +53,7 @@ _goobers_completion()
             'docs-churn:emit the docs-drift churn digest since the watermark (a connector stage)'
             'pr-select:select one eligible open PR for merge-review (a workflow stage)'
             'gather-sibling-context:load other open PRs as review evidence (a workflow stage)'
+            'gather-implement-context:load first-pass implementation review and hot-file context (a workflow stage)'
             'apply-verdict:publish a merge-review verdict as a native review (a workflow stage)'
             'elect-lander:elect the landing PR among a merge-review cohort (a workflow stage)'
             'update-behind-pr:API-update a clean behind-base PR, else route to remediation (a workflow stage)'

@@ -501,8 +501,12 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 
 	byTask := map[string]stubTaskResult{
 		runID + ":query-backlog": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"}},
-		runID + ":local-ci":      {status: apiv1.ResultSuccess},
-		runID + ":push-branch":   {status: apiv1.ResultSuccess},
+		runID + ":gather-implement-context": {
+			status: apiv1.ResultSuccess, artifactName: "implementation-context.json",
+			artifactData: []byte(`{"reviewerVerdictTaxonomy":{},"hotFileMap":{}}`), artifactMediaType: "application/json",
+		},
+		runID + ":local-ci":    {status: apiv1.ResultSuccess},
+		runID + ":push-branch": {status: apiv1.ResultSuccess},
 		runID + ":open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			// #947: open-pr emits opened=true on the happy path (claimed issue
 			// still open); open-pr-gate routes that to ci-poll.
@@ -549,7 +553,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out"}
+	want := []string{"query-backlog", "gather-implement-context", "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}

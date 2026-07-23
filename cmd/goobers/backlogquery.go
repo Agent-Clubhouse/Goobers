@@ -381,7 +381,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 					pf(stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", s, minPRs)
 				}
 			}
-			if touches, terr := openPRTouches(ctx, prProvider, repo); terr != nil {
+			if touches, terr := openPRTouches(ctx, prProvider, repo, ""); terr != nil {
 				pf(stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", terr)
 			} else {
 				reordered, deprioritized := partitionByContention(eligible, touches, minPRs)

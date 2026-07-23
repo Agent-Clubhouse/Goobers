@@ -5,6 +5,8 @@
 // line here. TestCLIVerbCoverage enforces that the two stay in sync.
 package main
 
+const gatherContextID = "gather-implement-context"
+
 // synopsisByID holds each command's verbatim entry in the top-level usage()
 // list, keyed by invocation-path id. usage() assembles these via the command
 // registry so the top-level surface cannot drift from per-command help (#1095).
@@ -56,6 +58,7 @@ var synopsisByID = map[string]string{
 	"docs-churn":             "  goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]\n                                emit the docs-drift churn digest since the watermark (a connector stage)\n",
 	"pr-select":              "  goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)\n",
 	"gather-sibling-context": "  goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)\n",
+	gatherContextID:          "  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)\n",
 	"apply-verdict":          "  goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)\n",
 	"elect-lander":           "  goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)\n",
 	"update-behind-pr":       "  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)\n",

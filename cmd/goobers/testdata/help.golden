@@ -72,6 +72,7 @@ Usage:
                                 emit the docs-drift churn digest since the watermark (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
+  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
   goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
@@ -87,7 +88,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942): invoked by the runner as a deterministic
@@ -97,6 +98,8 @@ workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
 environment variables the runner sets — see internal/executor/env.go —
 falling back to an optional trailing [path] argument (default ".") for
 standalone/manual invocation.
+gather-implement-context uses the same deterministic stage contract to supply
+first-pass review and hot-file evidence.
 
 ### help
 goobers — tier 1-2 local instance CLI
@@ -172,6 +175,7 @@ Usage:
                                 emit the docs-drift churn digest since the watermark (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
+  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
   goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
@@ -187,7 +191,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942): invoked by the runner as a deterministic
@@ -197,6 +201,8 @@ workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
 environment variables the runner sets — see internal/executor/env.go —
 falling back to an optional trailing [path] argument (default ".") for
 standalone/manual invocation.
+gather-implement-context uses the same deterministic stage contract to supply
+first-pass review and hot-file evidence.
 
 ### apply-verdict
 Usage: goobers apply-verdict [--gate name] [path]
@@ -436,6 +442,18 @@ With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
+
+### gather-implement-context
+Usage: goobers gather-implement-context [path]
+
+Emit bounded first-pass implementation context: the shipped merge-review
+verdict taxonomy and a hot-file map aggregated from currently-open goober
+pull requests plus exact base-sync conflict files journaled in the last 30
+days. The result is a workflow-stage artifact carried to implement
+through the runner's ordinary contextPointers path. maxHotFiles defaults
+to 100 and is capped at 500. Exit codes: 0 = context gathered (an empty
+hot-file map is valid), 1 = business/provider/journal error, 2 = usage/IO
+error.
 
 ### gather-pr-context
 Usage: goobers gather-pr-context [path]

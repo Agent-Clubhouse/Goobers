@@ -140,9 +140,9 @@ func partitionByContention(eligible []providers.WorkItem, touches []openPRTouch,
 // merge-review's sibling context uses). SkipCheckState avoids the two extra
 // check-state requests per PR that this caller has no use for. Any error is
 // returned to the caller, which treats it as best-effort (falls back to FIFO).
-func openPRTouches(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) ([]openPRTouch, error) {
+func openPRTouches(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, base string) ([]openPRTouch, error) {
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		return nil, err

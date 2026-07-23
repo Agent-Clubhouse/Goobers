@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATHER IMPLEMENT CONTEXT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gather-implement-context \- load first-pass implementation review and hot-file context (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gather-implement-context\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gather-implement-context [path]
+
+Emit bounded first-pass implementation context: the shipped merge-review
+verdict taxonomy and a hot-file map aggregated from currently-open goober
+pull requests plus exact base-sync conflict files journaled in the last 30
+days. The result is a workflow-stage artifact carried to implement
+through the runner's ordinary contextPointers path. maxHotFiles defaults
+to 100 and is capped at 500. Exit codes: 0 = context gathered (an empty
+hot-file map is valid), 1 = business/provider/journal error, 2 = usage/IO
+error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gather-implement-context
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
