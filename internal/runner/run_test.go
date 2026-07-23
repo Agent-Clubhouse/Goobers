@@ -29,6 +29,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+const runnerTestWaitTimeout = 15 * time.Second
+
 // fakeSpanStarter records every span opened, mirroring runner.SpanStarter's
 // three methods (issue #126). Returns the zero telemetry.Span throughout, so
 // its End/Succeed/Fail calls no-op exactly like a nil Telemetry would.
@@ -327,7 +329,7 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 			event.AttemptClass != journal.AttemptPolicy {
 			t.Fatalf("heartbeat event = %+v", event)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("heartbeat was not emitted after fake clock tick")
 	}
 	if interval != time.Minute {
@@ -405,13 +407,13 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 
 	select {
 	case <-blocker.started:
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("task did not start")
 	}
 	ticker.ticks <- time.Now()
 
 	runDir := filepath.Join(runsDir, "run-tolerated-heartbeat")
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(runnerTestWaitTimeout)
 	for {
 		rd, openErr := journal.OpenRead(runDir)
 		if openErr == nil {
@@ -436,7 +438,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 	var got startResult
 	select {
 	case got = <-resultCh:
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("run did not finish after task release")
 	}
 	if got.err != nil {
@@ -536,6 +538,13 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.autocrlf",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.safecrlf",
+		"GIT_CONFIG_VALUE_1=false",
+	)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
@@ -2136,7 +2145,7 @@ func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
 	}
 }
 
-func TestJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
+func TestConformanceJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
 	runsDir := t.TempDir()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-infra-tolerated-note"}, nil)
 	if err != nil {
@@ -2916,7 +2925,7 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 	start := time.Now()
 	cancel()
 
-	const bound = 8 * time.Second // comfortably under the un-interrupted 40s, comfortably over dispatch/scheduling noise
+	const bound = runnerTestWaitTimeout // comfortably under the un-interrupted 40s and over Windows scheduling noise
 	select {
 	case r := <-done:
 		if r.err == nil {
@@ -2966,7 +2975,7 @@ func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
 	// stages check and could fire before "implement" is ever dispatched.
 	select {
 	case <-blocker.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("blocking executor was never dispatched")
 	}
 
@@ -2991,7 +3000,7 @@ func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
 		if r.res.FinalState != "review" {
 			t.Fatalf("finalState = %q, want review (paused before the NEXT stage)", r.res.FinalState)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("Start did not return after the blocking call was released")
 	}
 
@@ -3074,11 +3083,11 @@ func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Mac
 	}
 }
 
-// TestRunnerResumeRetriesInterruptedAttempt is #17's crash/resume acceptance
+// TestConformanceRunnerResumeRetriesInterruptedAttempt is #17's crash/resume acceptance
 // scenario: a run interrupted mid-attempt resumes, journals the interrupted
 // attempt as a terminal infra-tagged failure (never silently re-run), and
 // continues the SAME attempt count against the task's own retry budget.
-func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
+func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	machine := retryFixtureMachine(t, 3)
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -4528,7 +4537,7 @@ func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
 
 	select {
 	case <-commenter.called:
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("NotifyEscalated's UpdateWorkItem was never dispatched")
 	}
 
@@ -4550,7 +4559,7 @@ func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
 		if r.res.Phase != journal.PhaseEscalated {
 			t.Fatalf("phase = %q, want escalated", r.res.Phase)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("Start did not return after the blocking notification was released")
 	}
 
@@ -5512,13 +5521,13 @@ func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
 
 	select {
 	case <-reviewer.started:
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("reviewer did not start")
 	}
 	gateTicker.ticks <- time.Now()
 
 	runDir := filepath.Join(instanceRoot, "runs", runID)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(runnerTestWaitTimeout)
 	for {
 		rd, openErr := journal.OpenRead(runDir)
 		if openErr == nil {
@@ -5542,7 +5551,7 @@ heartbeatObserved:
 	var got startResult
 	select {
 	case got = <-resultCh:
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("run did not finish after reviewer release")
 	}
 	if got.err != nil {

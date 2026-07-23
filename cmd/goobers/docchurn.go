@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // docs-churn is the docs-updater workflow's deterministic signal-gather stage
@@ -410,7 +411,7 @@ func writeDocsWatermark(path string, wm docsWatermark) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return durability.ReplaceFile(tmp, path)
 }
 
 // --- git plumbing ----------------------------------------------------------

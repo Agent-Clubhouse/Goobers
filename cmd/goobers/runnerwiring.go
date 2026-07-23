@@ -257,9 +257,12 @@ func buildEnvCapabilities() map[string]string {
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	adapter := &harness.CopilotAdapter{
-		Command:           []string{"copilot"},
-		AuthCheckArgs:     copilotAuthCheckArgs,
-		EnvCapabilities:   envCaps,
+		Command:         []string{"copilot"},
+		AuthCheckArgs:   copilotAuthCheckArgs,
+		EnvCapabilities: envCaps,
+		OptionalCredentialCapabilities: map[string]bool{
+			string(capability.AgentModel): true,
+		},
 		ExtraEnvAllowlist: envPassthrough,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
@@ -1100,7 +1103,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1165,9 +1168,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	// each goober to its declared grants for that lookup; only agentic gates
 	// consult it (task stages carry their own stage-level capabilities).
 	gateGooberCaps := make(map[string][]string, len(goobers))
+	agentProvenance := make(map[string]runner.AgentProvenance, len(goobers))
 	for name, spec := range goobers {
 		if len(spec.Capabilities) > 0 {
 			gateGooberCaps[name] = append([]string(nil), spec.Capabilities...)
+		}
+		harnessName := spec.Harness
+		if harnessName == "" {
+			harnessName = apiv1.HarnessCopilot
+		}
+		agentProvenance[name] = runner.AgentProvenance{
+			Model:          spec.Model,
+			HarnessVersion: harnessInfo[harnessName].Version,
 		}
 	}
 
@@ -1266,6 +1278,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
 			opts := []harness.Option{
 				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
 			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
@@ -1298,6 +1311,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		RunsDir:                l.RunsDir(),
 		RepoCloneURL:           repoCloneURL,
 		GateGooberCapabilities: gateGooberCaps,
+		AgentProvenance:        agentProvenance,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
@@ -1380,7 +1394,9 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		m, err := workflow.Compile(
-			workflow.Definition{Name: wf.Name, Version: workflowVersion, Spec: wf.Spec},
+			workflow.Definition{
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+			},
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),

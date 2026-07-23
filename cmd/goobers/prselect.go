@@ -67,7 +67,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token)
+	provider := newGitHubProvider(token, apiReadCacheOption(root))
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", providerBranchNamespace()+"implementation/")

@@ -88,6 +88,9 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	if len(all.Runs) != 2 {
 		t.Fatalf("len(Runs) = %d, want 2 (implement, nominate)", len(all.Runs))
 	}
+	if len(all.Gaggles) != 1 || all.Gaggles[0].Gaggle != "web" || all.Gaggles[0].TotalRuns != 4 {
+		t.Fatalf("gaggle stats = %#v", all.Gaggles)
+	}
 	var implement RunStats
 	for _, r := range all.Runs {
 		if r.Workflow == "implement" {
@@ -97,24 +100,35 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	if implement.TotalRuns != 3 || implement.CompletedRuns != 2 || implement.FailedRuns != 1 {
 		t.Fatalf("implement run stats = %#v", implement)
 	}
+	if implement.Gaggle != "web" {
+		t.Fatalf("implement gaggle = %q, want web", implement.Gaggle)
+	}
 	if got, want := implement.SuccessRate, 2.0/3.0; got != want {
 		t.Fatalf("implement SuccessRate = %v, want %v", got, want)
 	}
 
-	var buildStage, deployStage StageStats
+	var implementBuild, nominateBuild, deployStage StageStats
 	for _, s := range all.Stages {
-		switch s.Stage {
-		case "build":
-			buildStage = s
-		case "deploy":
+		switch {
+		case s.Workflow == "implement" && s.Stage == "build":
+			implementBuild = s
+		case s.Workflow == "nominate" && s.Stage == "build":
+			nominateBuild = s
+		case s.Workflow == "implement" && s.Stage == "deploy":
 			deployStage = s
 		}
 	}
-	if buildStage.TotalAttempts != 4 || buildStage.SucceededAttempts != 4 { // 3 implement + 1 nominate, all succeed
-		t.Fatalf("build stage stats = %#v", buildStage)
+	if implementBuild.TotalAttempts != 3 || implementBuild.SucceededAttempts != 3 {
+		t.Fatalf("implement build stage stats = %#v", implementBuild)
+	}
+	if nominateBuild.TotalAttempts != 1 || nominateBuild.SucceededAttempts != 1 {
+		t.Fatalf("nominate build stage stats = %#v", nominateBuild)
 	}
 	if deployStage.TotalAttempts != 1 || deployStage.FailedAttempts != 1 || deployStage.SuccessRate != 0 {
 		t.Fatalf("deploy stage stats = %#v", deployStage)
+	}
+	if deployStage.Gaggle != "web" || deployStage.Workflow != "implement" {
+		t.Fatalf("deploy stage identity = %#v", deployStage)
 	}
 
 	// Filtered by workflow: only implement's 3 runs / build+deploy stages.
@@ -170,6 +184,18 @@ func TestRebuildAllAndStatsFilterByGaggle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+
+	all, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Gaggles) != 2 ||
+		all.Gaggles[0].Gaggle != "alpha" ||
+		all.Gaggles[0].CompletedRuns != 1 ||
+		all.Gaggles[1].Gaggle != "beta" ||
+		all.Gaggles[1].FailedRuns != 1 {
+		t.Fatalf("all gaggle stats = %+v", all.Gaggles)
+	}
 
 	alpha, err := db.Stats(StatsRequest{Gaggle: "alpha"})
 	if err != nil {

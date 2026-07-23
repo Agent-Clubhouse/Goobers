@@ -135,7 +135,7 @@ type Platform struct {
 // mirrors the `go` directive in go.mod (the language version the module targets);
 // TestMinGoVersionMatchesGoMod guards the two against drift so the declared
 // surface can never quietly diverge from what the module actually compiles with.
-const minGoVersion = "1.26.0"
+const minGoVersion = "1.26.5"
 
 // platforms is the declared OS/arch support matrix. Linux and macOS are release
 // gates (primary CI + the self-host runner + developer machines); Windows is

@@ -212,6 +212,15 @@ func runCommand(t *testing.T, directory, name string, args ...string) string {
 	t.Helper()
 	command := exec.Command(name, args...)
 	command.Dir = directory
+	if name == "git" {
+		command.Env = append(os.Environ(),
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=core.autocrlf",
+			"GIT_CONFIG_VALUE_0=false",
+			"GIT_CONFIG_KEY_1=core.safecrlf",
+			"GIT_CONFIG_VALUE_1=false",
+		)
+	}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))

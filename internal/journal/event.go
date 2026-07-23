@@ -139,8 +139,8 @@ type Event struct {
 	// AttemptClass tags why a non-initial attempt exists. Normative iff the
 	// event is not a heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
-	// Actor identifies the operator who requested an auditable intervention,
-	// including stage reruns and terminal-run resumes. Normative.
+	// Actor identifies the human principal that requested an intervention —
+	// a stage.rerun.requested or a run.resumed action. Normative.
 	Actor string `json:"actor,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.

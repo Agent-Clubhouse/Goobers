@@ -35,34 +35,30 @@ in `instance.yaml`:
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
-| `agent:model` | *(Account permissions)* Copilot Requests: Read-only — **not** a repository permission | Copilot model authentication for any agentic (`copilot`-harness) stage. Sourced from its **own** token (a personal fine-grained PAT), injected as `COPILOT_GITHUB_TOKEN`; needs no repo/issue/PR access. See ["the `agent:model` token"](#agentic-copilot-harness-stages-the-agentmodel-token) below. |
+| `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use | Copilot model authentication for agentic stages. An existing per-user CLI sign-in is the local default; a configured PAT is injected as `COPILOT_GITHUB_TOKEN` for services/CI. |
 
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
 
-### Agentic (Copilot-harness) stages: the `agent:model` token
+### Agentic (Copilot-harness) stages: stored login or `agent:model` token
 
 The permissions above cover the ordinary GitHub API — issues, pull requests,
 contents. They are **not** sufficient for an **agentic** stage (any stage whose
 goober uses the `copilot` harness — curator, implementer, reviewer, nominator,
-analyst, config-author in the shipped gaggle). The GitHub Copilot CLI
-authenticates to its **model backend** with a token, and that requires a
-**separate fine-grained permission — "Copilot Requests" (Account permissions →
-Copilot Requests: Read-only)** — unrelated to any repo/issue/PR access. A PAT
-without it authenticates fine for deterministic stages (`backlog-query`,
-`open-pr`, `issue-close-out`) but **fails immediately at the first agentic
-stage** with `Authentication failed … ensure it has the 'Copilot Requests'
-permission` (#284) — even though claims, comments, and PRs all work.
+analyst, config-author in the shipped gaggle). The GitHub Copilot CLI authenticates to its model backend independently of
+repository credentials. For an interactive local daemon, first run `copilot`
+and sign in normally. Goobers passes only the profile-location variables needed
+to find that stored session; it does not copy ambient token variables.
 
-Goobers models model authentication as its own capability, **`agent:model`**,
-sourced from its **own** token and injected into the agentic subprocess as
-**`COPILOT_GITHUB_TOKEN`** (which the Copilot CLI prefers over `GH_TOKEN` for
-model auth). This is the multi-token model (#287–#289): one agentic stage can
-hold *two* tokens at once — `agent:model → COPILOT_GITHUB_TOKEN` for the model,
-and its repo/issue/PR grants → `GH_TOKEN` for the `github` tool — because they
-are distinct env vars that never clobber each other. Classic PATs (`ghp_`) are
-**not** accepted by the Copilot CLI at all; agentic stages require a
-fine-grained (v2) PAT regardless.
+For a headless Windows Service, CI runner, or dedicated account without a stored
+session, configure a separate fine-grained PAT with **Copilot Requests:
+Read-only**. A PAT without that account permission fails at the first agentic
+stage even when ordinary repository operations work.
+
+Goobers still models model access as **`agent:model`**. When no token grant is
+configured, the Copilot adapter uses the stored CLI session. When a grant is
+configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
+from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
 
 **Cross-org reality — why it must be a separate token.** "Copilot Requests" is
 an **account-level** permission: it can only be granted on a **personal**
@@ -84,9 +80,8 @@ both the repo permissions *and* Copilot Requests can back both capabilities —
 point `agent:model` and the repo grants at the same ref. The two-token split is
 mandatory only across the org boundary above.)
 
-Wire the tokens in `instance.yaml`: the repository-read token stays on the
-repo's `token:` ref, and each broader capability gets its own `credentials:`
-override.
+For local stored auth, omit the `agent:model` credentials entry. For headless
+use, wire the model token alongside the repository capability tokens:
 
 ```yaml
 repos:
@@ -115,6 +110,9 @@ entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
 Omit overrides for capabilities no selected workflow declares. Values are never
 inline — `token.env` or `token.file` only (`CFG-009`/`SEC-010`).
+
+Omitting only the `agent:model` entry opts into stored Copilot CLI
+authentication. Missing grants for repository capabilities remain errors.
 
 Verify before a live run: `goobers validate --check-harness` preflights the
 Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a

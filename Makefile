@@ -3,11 +3,11 @@
 
 # ---- Portability posture (#630) ---------------------------------------------
 # The fast and merge tiers (`make verify-fast` / `make ci` -> `go run
-# ./test/ci`) and the coverage gate (`make cover-check` -> `go run
-# ./test/coveragegate`) and stress tier (`make stress` -> `go run
-# ./test/stress`) are pure Go. They spawn only real toolchain binaries (go,
-# gofmt, git, npm, golangci-lint) and the freshly built goobers validator, never
-# bash/sh or a project shell script, so CI reproduces on any OS with a Go
+# ./test/ci`), the coverage gate (`make cover-check` -> `go run
+# ./test/coveragegate`), and the stress tier (`make stress` -> `go run
+# ./test/stress`) are pure Go. They spawn only real toolchain binaries
+# (go, gofmt, git, npm, golangci-lint) and the freshly built goobers validator,
+# never bash/sh or a project shell script, so CI reproduces on any OS with a Go
 # toolchain — Windows included: test/ci handles the .exe suffix, the cgo race
 # detector, and wrapping npm through cmd.exe.
 # There are no build/CI shell scripts in the tree, and a guard test enforces
@@ -45,9 +45,11 @@ STRESS_SEED         ?= 0
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
 SETUP_ENVTEST_VERSION  ?= release-0.19
+GOVULNCHECK_VERSION    ?= v1.6.0
 ENVTEST_K8S_VERSION    ?= 1.31.0
 CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
+GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 ## help: Show this help.
 .PHONY: help
@@ -105,6 +107,11 @@ test-envtest:
 test-e2e:
 	$(GO) test ./test/e2e -count=1
 
+## test-conformance: Run journal-contract conformance assertions in isolation.
+.PHONY: test-conformance
+test-conformance:
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -run '^TestConformance' -count=1 ./...
+
 ## sandbox-check: Require and exercise native sandbox confinement.
 .PHONY: sandbox-check
 sandbox-check:
@@ -147,6 +154,16 @@ vet:
 .PHONY: lint
 lint:
 	$(GOLANGCI_LINT) run
+
+## vulncheck: Scan reachable Go code for known vulnerabilities.
+.PHONY: vulncheck
+vulncheck:
+	$(GOVULNCHECK) ./...
+
+## deadcode: Report unreviewed unreachable production functions.
+.PHONY: deadcode
+deadcode:
+	$(GO) run ./test/deadcode -go $(GO)
 
 ## build: Build all cmd/* binaries into bin/.
 .PHONY: build
@@ -243,7 +260,7 @@ verify-fast:
 
 ## ci: Run the portable full Go, config, and portal gate (matches the pipeline).
 .PHONY: ci
-ci:
+ci: deadcode
 	$(GO) run ./test/ci
 
 ## stress: Repeat timing-sensitive packages under the race detector.
@@ -255,8 +272,8 @@ stress:
 
 ## verify-full: Run all merge, integration, platform, coverage, shipped-workflow, and stress gates.
 .PHONY: verify-full
-.NOTPARALLEL: verify-full
-verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation test-shipped-workflows stress
+verify-full:
+	$(GO) run ./test/ci full "$(MAKE)"
 
 ## clean: Remove build artifacts.
 .PHONY: clean

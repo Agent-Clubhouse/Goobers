@@ -314,6 +314,7 @@ var docSep = regexp.MustCompile(`(?m)^---\s*$`)
 type typeMeta struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
+	DSLVersion string `json:"dslVersion"`
 	Metadata   struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
@@ -321,11 +322,12 @@ type typeMeta struct {
 
 // loadedDoc is one parsed YAML document plus provenance.
 type loadedDoc struct {
-	file string
-	dir  string
-	kind string
-	name string
-	json []byte
+	file       string
+	dir        string
+	kind       string
+	name       string
+	dslVersion string
+	json       []byte
 }
 
 // ValidateDir validates every YAML object under root: schema-checks each, then
@@ -377,7 +379,8 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 				continue
 			}
 			docs = append(docs, loadedDoc{
-				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name, json: jb,
+				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
+				dslVersion: tm.DSLVersion, json: jb,
 			})
 		}
 		return nil
@@ -547,6 +550,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
+		w.DSLVersion = doc.dslVersion
 		identity := workflowIdentity{gaggle: w.Spec.Gaggle, name: w.Name}
 		ix.dupCheck(r, doc, "Workflow", w.Name, func() bool {
 			_, ok := ix.workflows[identity]
@@ -761,7 +765,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
 	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
-		wf.CheckWorkflowFeatureSupport(wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}, allowPreview))
+		wf.CheckWorkflowFeatureSupport(wf.Definition{
+			Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
+		}, allowPreview))
 
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {
@@ -837,7 +843,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// and the compiler stay in lockstep: reachability + loop-without-exit,
 	// schedule-expression validity, and capability/harness admission. These are
 	// checks the inline field-by-field pass above deliberately does not duplicate.
-	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 	for _, msg := range wf.CheckWarnings(def) {
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
@@ -876,6 +882,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// every election for a full build, and nothing static caught it. Also an
 	// error: the stage fails on every run, unconditionally.
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Bounded waits must finish before the executor can terminate their stage;
+	// command-specific clamps are modeled by the workflow check itself.
+	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings

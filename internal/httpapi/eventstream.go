@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -353,9 +352,13 @@ func readRunState(source journalSource, durable bool) (digest string, version fi
 		return "", fileVersion{}, err
 	}
 	defer func() {
-		err = errors.Join(err, file.Close())
+		err = errors.Join(err, closeObservedFile(file))
 	}()
 	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", fileVersion{}, err
+	}
+	info, err := file.Stat()
 	if err != nil {
 		return "", fileVersion{}, err
 	}
@@ -363,10 +366,6 @@ func readRunState(source journalSource, durable bool) (digest string, version fi
 		if err := syncObservedFile(file, path); err != nil {
 			return "", fileVersion{}, err
 		}
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return "", fileVersion{}, err
 	}
 	version = fileVersion{size: info.Size(), modTime: info.ModTime().UnixNano()}
 	return journal.Digest(data), version, nil
@@ -412,7 +411,7 @@ func lastCompleteRecordOffset(path string) (offset int64, err error) {
 		return 0, err
 	}
 	defer func() {
-		err = errors.Join(err, file.Close())
+		err = errors.Join(err, closeObservedFile(file))
 	}()
 	info, err := file.Stat()
 	if err != nil {
@@ -454,7 +453,7 @@ func readNewJournalEvents(path string, offset int64) (events []journal.Event, ne
 		return nil, offset, fmt.Errorf("http API: open event journal %q: %w", path, err)
 	}
 	defer func() {
-		err = errors.Join(err, file.Close())
+		err = errors.Join(err, closeObservedFile(file))
 	}()
 	info, err = file.Stat()
 	if err != nil {
@@ -496,22 +495,12 @@ func readNewJournalEvents(path string, offset int64) (events []journal.Event, ne
 	return events, offset + int64(len(complete)), nil
 }
 
-func syncObservedFile(file *os.File, path string) error {
-	if err := file.Sync(); err != nil {
-		return err
+func closeObservedFile(file *os.File) error {
+	err := file.Close()
+	if errors.Is(err, os.ErrInvalid) || errors.Is(err, os.ErrClosed) {
+		return nil
 	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
-			return nil
-		}
-		return err
-	}
-	return directory.Close()
+	return err
 }
 
 func invalidationFor(source journalSource, event journal.Event) (Invalidation, bool) {

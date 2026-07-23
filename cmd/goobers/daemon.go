@@ -75,6 +75,7 @@ type schedulerSetup struct {
 type schedulerDefinitions struct {
 	Set               *instance.ConfigSet
 	Validation        *validate.Report
+	HarnessPreflight  harnessPreflightInfo
 	Runner            *runner.Runner
 	Runners           map[string]*runner.Runner
 	Entries           []localscheduler.WorkflowEntry
@@ -169,6 +170,21 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
+	var instanceLog *journal.InstanceLog
+	defer func() {
+		if err == nil {
+			return
+		}
+		if tel != nil {
+			_ = tel.Shutdown(context.Background())
+		}
+		if rollupDB != nil {
+			_ = rollupDB.Close()
+		}
+		if instanceLog != nil {
+			_ = instanceLog.Close()
+		}
+	}()
 	if cfg.TelemetryEnabled() {
 		var otlpConfig instance.OTLPConfig
 		if cfg.Telemetry.OTLP != nil {
@@ -184,7 +200,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}
 
-	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
+	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
@@ -215,13 +231,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			return namespace, resolveErr
 		})
 	}); err != nil {
-		if tel != nil {
-			_ = tel.Shutdown(context.Background())
-		}
-		if rollupDB != nil {
-			_ = rollupDB.Close()
-		}
-		_ = instanceLog.Close()
 		return nil, err
 	}
 
@@ -235,19 +244,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
-	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier)
+	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
+		l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight,
+	)
 	if err != nil {
 		return nil, err
 	}
 	stableDigest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil || stableDigest != configDigest {
-		if tel != nil {
-			_ = tel.Shutdown(context.Background())
-		}
-		if rollupDB != nil {
-			_ = rollupDB.Close()
-		}
-		_ = instanceLog.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -335,7 +339,8 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows)
+	if err != nil {
 		return nil, err
 	}
 	repoRefs, err := repoRefsByWorkflow(set)
@@ -358,7 +363,10 @@ func buildSchedulerDefinitions(
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
-		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle])
+		rn, manager, err := buildRuntimeRunner(
+			scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -447,6 +455,7 @@ func buildSchedulerDefinitions(
 	return &schedulerDefinitions{
 		Set:               set,
 		Validation:        report,
+		HarnessPreflight:  harnessInfo,
 		Runner:            firstRunner,
 		Runners:           runners,
 		Entries:           entries,
@@ -467,6 +476,7 @@ func buildRetainedLegacyRunner(
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
+	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
 	retained, err := retainedLegacyRuntimeExists(l)
 	if err != nil || !retained {
@@ -474,7 +484,10 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{})
+	return buildRuntimeRunner(
+		l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota,
+		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
+	)
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -505,8 +518,11 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject)
+	runnerCfg, manager, err := buildRunnerConfig(
+		l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -591,6 +607,9 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 	if s.RollupDB != nil {
 		s.ingestSchedulerLog()
 		_ = s.RollupDB.Close()
+	}
+	if s.InstanceLog != nil {
+		_ = s.InstanceLog.Close()
 	}
 }
 
@@ -690,11 +709,11 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		return nil, nil, err
 	}
 	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+		entries, exists, err := readDirectory(runsDir)
+		if !exists {
+			continue
+		}
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return resumed, warned, fmt.Errorf("read runs directory: %w", err)
 		}
 		for _, e := range entries {
@@ -816,6 +835,20 @@ func waitDrained(wg *sync.WaitGroup, timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		scheduler.Wait()
 		close(done)
 	}()
 	select {

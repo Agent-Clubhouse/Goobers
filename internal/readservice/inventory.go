@@ -242,7 +242,9 @@ func newInventoryProjection(definitions *instance.ConfigSet, report *validate.Re
 			return nil, err
 		}
 		machine, err := workflow.Compile(
-			workflow.Definition{Name: def.Name, Version: currentWorkflowVersion, Spec: def.Spec},
+			workflow.Definition{
+				Name: def.Name, Version: currentWorkflowVersion, DSLVersion: def.DSLVersion, Spec: def.Spec,
+			},
 			workflow.WithGoobers(goobers[def.Spec.Gaggle]),
 			workflow.WithPreviewFeatures(
 				definitions.Manifest != nil && workflow.PreviewFeaturesEnabled(definitions.Manifest.Annotations),

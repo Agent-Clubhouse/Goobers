@@ -123,7 +123,9 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 	used := map[workflow.FeatureID]workflow.Feature{}
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		features, err := workflow.FeaturesForWorkflow(workflow.Definition{Name: wf.Name, Spec: wf.Spec})
+		features, err := workflow.FeaturesForWorkflow(workflow.Definition{
+			Name: wf.Name, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+		})
 		if err != nil {
 			pf(stderr, "error: workflow %q: %v\n", wf.Name, err)
 			return nil, 1

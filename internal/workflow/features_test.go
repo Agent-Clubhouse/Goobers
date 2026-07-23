@@ -109,28 +109,59 @@ func TestPreviewFeatureRequiresOptIn(t *testing.T) {
 	}
 }
 
-func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
+// TestCurrentFeatureClassification pins the #1196 fix: the canonical DSL
+// surface is GA (so guided-init and config-examples validate without a preview
+// opt-in), while only genuinely-unproven features (container-image stages,
+// deferred per #1102) remain preview. An earlier placeholder marked every
+// field preview, which made VER002 blanket-flag every standard field.
+func TestCurrentFeatureClassification(t *testing.T) {
 	features := AllFeatures()
 	if len(features) == 0 {
 		t.Fatal("feature registry is empty")
 	}
+	previewSeen := 0
 	for _, feature := range features {
-		if feature.Level != SupportPreview {
-			t.Errorf("feature %q level = %q, want %q", feature.ID, feature.Level, SupportPreview)
+		wantLevel := SupportGA
+		if feature.ID == featureStageImage {
+			wantLevel = SupportPreview
+			previewSeen++
+		}
+		if feature.Level != wantLevel {
+			t.Errorf("feature %q level = %q, want %q", feature.ID, feature.Level, wantLevel)
 		}
 		if feature.SinceVersion != initialFeatureSinceVersion {
-			t.Errorf("feature %q since-version = %q, want initial app version %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
+			t.Errorf("feature %q since-version = %q, want %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
 		}
 		if len(feature.DSLVersions) != 1 ||
-			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: SupportPreview}) {
-			t.Errorf("feature %q DSL versions = %+v", feature.ID, feature.DSLVersions)
+			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: wantLevel}) {
+			t.Errorf("feature %q DSL versions = %+v, want level %q", feature.ID, feature.DSLVersions, wantLevel)
 		}
-		wantHistory := []SupportTransition{{
-			Level:        SupportPreview,
-			SinceVersion: initialFeatureSinceVersion,
-		}}
+		wantHistory := []SupportTransition{{Level: wantLevel, SinceVersion: initialFeatureSinceVersion}}
 		if !slices.Equal(feature.History, wantHistory) {
 			t.Errorf("feature %q history = %+v, want %+v", feature.ID, feature.History, wantHistory)
+		}
+	}
+	// Guard the "don't lose the real check" invariant: at least one genuinely
+	// preview feature must remain so VER002 still has something to gate.
+	if previewSeen == 0 {
+		t.Error("no preview features remain — the preview gate would be inert")
+	}
+}
+
+// TestStandardFeaturesAreGA is the field-level regression for #1196: the
+// standard fields the issue reported as wrongly flagged must be GA.
+func TestStandardFeaturesAreGA(t *testing.T) {
+	for _, id := range []FeatureID{
+		featureTaskAgentic, featureGooberRole, featureGooberCapabilities,
+		featureWorkflowTriggers, featureStageShell, featureTaskRetry,
+	} {
+		feature, ok := LookupFeature(id)
+		if !ok {
+			t.Errorf("feature %q missing from registry", id)
+			continue
+		}
+		if feature.Level != SupportGA {
+			t.Errorf("standard feature %q level = %q, want GA (#1196)", id, feature.Level)
 		}
 	}
 }

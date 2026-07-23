@@ -16,7 +16,13 @@ import (
 
 // Vars are the exact ambient env var names carried through: PATH/HOME/TMPDIR
 // (required for the child, and anything it shells out to, e.g. `make`
-// invoking `go`, to locate its own toolchain); XDG_CONFIG_HOME/XDG_DATA_HOME
+// invoking `go`, to locate its own toolchain); Windows profile paths
+// (USERPROFILE/APPDATA/LOCALAPPDATA/HOMEDRIVE/HOMEPATH), required by
+// authenticated CLIs such as Copilot to find their existing per-user config;
+// Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
+// PSModulePath), required for Node CSPRNG initialization and PowerShell tool
+// execution;
+// XDG_CONFIG_HOME/XDG_DATA_HOME
 // (XDG base-directory tools); LANG (locale); SSL_CERT_FILE (custom CA
 // bundles behind a corporate proxy); HTTP_PROXY/HTTPS_PROXY/NO_PROXY; the
 // Go toolchain family (#248) — GOPATH/GOBIN/GOCACHE/GOMODCACHE (relocated
@@ -37,6 +43,8 @@ import (
 // switching to os.Environ() passthrough.
 var Vars = []string{
 	"PATH", "HOME", "TMPDIR",
+	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
 	"LANG",
 	"SSL_CERT_FILE",

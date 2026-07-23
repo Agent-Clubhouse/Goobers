@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/providers"
@@ -13,13 +14,13 @@ import (
 
 // InputKind is the env.Inputs key that selects which built-in deterministic
 // stage kind to run. Its absence means KindShell — the common case.
-const InputKind = "kind"
+const InputKind = boundedwait.InputKind
 
 // KindShell and KindCIPoll are the built-in deterministic-stage kinds
 // TaskExecutor dispatches. KindShell is the implicit default.
 const (
-	KindShell  = "shell"
-	KindCIPoll = "ci-poll"
+	KindShell  = boundedwait.KindShell
+	KindCIPoll = boundedwait.KindCIPoll
 )
 
 // TaskExecutor implements invoke.Deterministic and is the single dispatcher a

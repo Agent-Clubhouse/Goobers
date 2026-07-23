@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -152,7 +153,7 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 	}
 }
 
-func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
+func TestCopilotAdapterDoesNotUseAnotherGoobersGrantWhenStoredAuthIsAllowed(t *testing.T) {
 	t.Setenv("OTHER_GOOBER_TOKEN", "other-goober-token")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{
 		{Name: "other-goober", Env: "OTHER_GOOBER_TOKEN"},
@@ -172,11 +173,17 @@ func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
-	runner := &fakeProcessRunner{}
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
 	adapter := &CopilotAdapter{
-		Command:         []string{"copilot"},
-		Runner:          runner,
-		EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
 	}
 	_, err = adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace, "agent:model"),
@@ -184,11 +191,97 @@ func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
 		CompletionPath: DefaultResultPath,
 		Credentials:    creds,
 	})
+	if err != nil {
+		t.Fatalf("Run with stored auth fallback: %v", err)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if entry == "COPILOT_GITHUB_TOKEN=other-goober-token" {
+			t.Fatalf("another goober's grant leaked into subprocess env: %v", runner.lastReq.Env)
+		}
+	}
+}
+
+func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
+	t.Setenv("USERPROFILE", `C:\Users\operator`)
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth: %v", err)
+	}
+	hasProfile := false
+	for _, entry := range runner.lastReq.Env {
+		if entry == `USERPROFILE=C:\Users\operator` {
+			hasProfile = true
+		}
+	}
+	if !hasProfile {
+		t.Fatalf("stored-auth profile location missing from env: %v", runner.lastReq.Env)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") {
+			t.Fatalf("unexpected model token injected during stored auth: %v", runner.lastReq.Env)
+		}
+	}
+}
+
+func TestCopilotAdapterStillFailsClosedForMissingRequiredCredential(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"github:issues:write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"github:issues:write": "GH_TOKEN"},
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(t.TempDir(), "github:issues:write"),
+		Workspace:      t.TempDir(),
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
 	if !errors.Is(err, credentials.ErrNoCredentialForCapability) {
 		t.Fatalf("Run error = %v, want ErrNoCredentialForCapability", err)
 	}
 	if len(runner.lastReq.Command) != 0 {
-		t.Fatalf("Copilot subprocess ran with another goober's grant: %+v", runner.lastReq)
+		t.Fatalf("subprocess ran without required credential: %+v", runner.lastReq)
 	}
 }
 
@@ -229,11 +322,13 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		t.Fatalf("transcript = %q", out.Transcript)
 	}
 
-	// The command was built as Command + PromptFlag + prompt text + extras.
-	if len(runner.lastReq.Command) < 3 || runner.lastReq.Command[0] != "copilot" || runner.lastReq.Command[1] != defaultPromptFlag {
+	// The command contains PromptFlag + prompt text + extras. On Windows the
+	// base command is the PowerShell npm shim rather than bare "copilot".
+	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
 		t.Fatalf("unexpected command: %v", runner.lastReq.Command)
 	}
-	promptText := runner.lastReq.Command[2]
+	promptText := runner.lastReq.Command[promptIndex+1]
 	if !strings.Contains(promptText, "You are a coder.") {
 		t.Fatalf("prompt missing instructions: %q", promptText)
 	}
@@ -608,7 +703,7 @@ func TestCopilotAdapterEmptyWorkspaceIsConfigError(t *testing.T) {
 
 func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 	adapter := &CopilotAdapter{}
-	if err := adapter.Preflight(context.Background()); err == nil {
+	if _, err := adapter.Preflight(context.Background()); err == nil {
 		t.Fatal("expected Preflight to fail with no command configured")
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{Workspace: t.TempDir(), CompletionPath: DefaultResultPath})
@@ -619,7 +714,7 @@ func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 
 func TestCopilotAdapterPreflightMissingBinary(t *testing.T) {
 	adapter := &CopilotAdapter{Command: []string{"definitely-not-a-real-copilot-cli-binary"}}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected Preflight to fail for a binary not on PATH")
 	}
@@ -629,17 +724,31 @@ func TestCopilotAdapterPreflightMissingBinary(t *testing.T) {
 }
 
 func TestCopilotAdapterPreflightSucceeds(t *testing.T) {
-	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner}
-	if err := adapter.Preflight(context.Background()); err != nil {
+	info, err := adapter.Preflight(context.Background())
+	if err != nil {
 		t.Fatalf("Preflight: %v", err)
+	}
+	if info.Version != "copilot version 1.2.3" {
+		t.Fatalf("Preflight version = %q", info.Version)
+	}
+}
+
+func TestCopilotAdapterPreflightRequiresVersionOutput(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command: []string{"echo"},
+		Runner:  &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+	}
+	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "returned no version") {
+		t.Fatalf("Preflight error = %v", err)
 	}
 }
 
 func TestCopilotAdapterPreflightNonZeroExit(t *testing.T) {
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 1}}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected Preflight to fail on non-zero exit")
 	}
@@ -679,7 +788,7 @@ func TestCopilotAdapterRun_PassesMaxTranscriptBytesThrough(t *testing.T) {
 // preflight — the case a version-only check misses (GBO-011).
 func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	runner := &fakeProcessRunner{
-		result: ProcessResult{ExitCode: 0}, // --version succeeds
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}, // --version succeeds
 		act: func(req ProcessRequest) error {
 			for _, a := range req.Command {
 				if a == "auth" { // the auth probe fails: signed out
@@ -690,7 +799,7 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 		},
 	}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
-	err := adapter.Preflight(context.Background())
+	_, err := adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected preflight to fail when the sign-in probe fails")
 	}
@@ -705,9 +814,9 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	adapter := &CopilotAdapter{
 		Command:       []string{"echo"},
 		AuthCheckArgs: []string{"auth", "status"},
-		Runner:        &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+		Runner:        &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}},
 	}
-	if err := adapter.Preflight(context.Background()); err != nil {
+	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight should pass when signed in: %v", err)
 	}
 }
@@ -718,11 +827,11 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 func TestCopilotAdapterPreflightNoAuthProbeByDefault(t *testing.T) {
 	calls := 0
 	runner := &fakeProcessRunner{
-		result: ProcessResult{ExitCode: 0},
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
 		act:    func(ProcessRequest) error { calls++; return nil },
 	}
 	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner} // no AuthCheckArgs
-	if err := adapter.Preflight(context.Background()); err != nil {
+	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	if calls != 1 {

@@ -119,6 +119,7 @@ goobers completion fish | source  # fish
 make verify-fast # pre-push format, vet, and Go build tier
 make ci          # merge gate (Go + config + portal)
 make verify-full # merge plus integration, platform, and coverage gates
+make vulncheck   # scan reachable Go code for known vulnerabilities
 ```
 
 CI runs the same merge-tier implementation on every PR to `main`. See the

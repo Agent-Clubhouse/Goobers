@@ -39,6 +39,8 @@ type FakeAdapter struct {
 	// PreflightErr, if set, is returned by Preflight — lets tests simulate a
 	// harness that isn't installed/signed in.
 	PreflightErr error
+	// Version is returned by Preflight. Empty defaults to AdapterName.
+	Version string
 }
 
 // Name returns the adapter's registry name.
@@ -49,9 +51,16 @@ func (f *FakeAdapter) Name() string {
 	return "fake"
 }
 
-// Preflight returns PreflightErr (nil by default — the fake is always "ready").
-func (f *FakeAdapter) Preflight(ctx context.Context) error {
-	return f.PreflightErr
+// Preflight returns PreflightErr or the fake's deterministic version.
+func (f *FakeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if f.PreflightErr != nil {
+		return PreflightInfo{}, f.PreflightErr
+	}
+	version := f.Version
+	if version == "" {
+		version = f.Name()
+	}
+	return PreflightInfo{Version: version}, nil
 }
 
 // Run simulates one harness session: invoke Act (if set) against the

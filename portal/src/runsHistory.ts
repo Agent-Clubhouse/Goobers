@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
-import type { DaemonClient, RunPhase, RunSummary } from "./api/types";
+import type { DaemonClient, RunListOptions, RunPhase, RunSummary } from "./api/types";
 import { useLiveData } from "./liveData";
 
 export type RunsFilter = "all" | "active" | "attention" | "complete";
@@ -32,13 +32,22 @@ export interface RunsHistoryQuery {
   state: QueryState<RunsHistory>;
 }
 
+export type RunHistoryScope = Pick<
+  RunListOptions,
+  "gaggle" | "workflow" | "stage" | "outcome" | "population" | "since" | "until"
+>;
+
 interface RunsStream {
   phase: RunPhase | undefined;
   cursor: string | undefined; // undefined = not yet requested
   exhausted: boolean;
 }
 
-export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHistoryQuery {
+export function useRunsHistory(
+  client: DaemonClient,
+  filter: RunsFilter,
+  scope: RunHistoryScope = {},
+): RunsHistoryQuery {
   const [state, setState] = useState<QueryState<RunsHistory>>({ status: "loading" });
   const request = useRef<AbortController | undefined>(undefined);
   const streams = useRef<RunsStream[]>([]);
@@ -75,7 +84,7 @@ export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHi
         : { status: "loading" },
     );
 
-    return advanceStreams(client, streams.current, controller.signal).then(
+    return advanceStreams(client, streams.current, scope, controller.signal).then(
       (fetched) => {
         if (controller.signal.aborted) {
           return true;
@@ -91,7 +100,7 @@ export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHi
         return false;
       },
     );
-  }, [client, filter, isFresh, publish]);
+  }, [client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   const loadMore = useCallback(() => {
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
@@ -102,7 +111,7 @@ export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHi
     loadingMore.current = true;
     publish(isFresh());
 
-    void advanceStreams(client, streams.current, controller.signal).then(
+    void advanceStreams(client, streams.current, scope, controller.signal).then(
       (fetched) => {
         if (controller.signal.aborted) {
           return;
@@ -118,7 +127,7 @@ export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHi
         }
       },
     );
-  }, [client, isFresh, publish]);
+  }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   useEffect(() => {
     const unsubscribe = subscribe(["run"], refresh);
@@ -149,6 +158,7 @@ export function useRunsHistory(client: DaemonClient, filter: RunsFilter): RunsHi
 async function advanceStreams(
   client: DaemonClient,
   streams: RunsStream[],
+  scope: RunHistoryScope,
   signal: AbortSignal,
 ): Promise<RunSummary[]> {
   const pages = await Promise.all(
@@ -157,7 +167,7 @@ async function advanceStreams(
         return [] as RunSummary[];
       }
       const page = await client.listRuns(
-        { phase: stream.phase, cursor: stream.cursor, limit: RUNS_PAGE_SIZE },
+        { ...scope, phase: stream.phase, cursor: stream.cursor, limit: RUNS_PAGE_SIZE },
         { signal },
       );
       stream.cursor = page.nextCursor;

@@ -56,7 +56,7 @@ func runGitOutputT(t *testing.T, dir string, args ...string) string {
 // origin, not just the worktree's local git state.
 func branchExistsOnOrigin(t *testing.T, originDir, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branch)
+	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "rev-parse", "--verify", "refs/heads/"+branch)
 	cmd.Dir = originDir
 	return cmd.Run() == nil
 }

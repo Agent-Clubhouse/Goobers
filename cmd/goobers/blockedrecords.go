@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -35,12 +36,6 @@ type blockedRecord struct {
 	Stage      string                  `json:"stage,omitempty"`
 	Reason     string                  `json:"reason,omitempty"`
 	RecordedAt time.Time               `json:"recordedAt"`
-}
-
-type parkedDependency struct {
-	ItemID             string
-	Blockers           []string
-	repositoryIdentity string
 }
 
 const maxBlockedCyclePaths = 3
@@ -373,7 +368,7 @@ func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := durability.ReplaceFile(tmp, path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 	return nil
@@ -726,28 +721,12 @@ func refreshBlockedEligibility(
 	return filtered, err
 }
 
-func listParkedDependencies(l instance.Layout) ([]parkedDependency, error) {
+func listParkedDependencies(l instance.Layout) ([]blockedListRecord, error) {
 	recs, err := loadBlockedRecords(blockedRecordsPath(l))
 	if err != nil {
 		return nil, err
 	}
-	parked := make([]parkedDependency, 0, len(recs))
-	for recordKey, rec := range recs {
-		blockers := append([]string(nil), rec.Blockers...)
-		sort.Strings(blockers)
-		parked = append(parked, parkedDependency{
-			ItemID:             blockedRecordItemID(recordKey, rec),
-			Blockers:           blockers,
-			repositoryIdentity: blockedRepositoryIdentity(rec.Repository),
-		})
-	}
-	sort.Slice(parked, func(i, j int) bool {
-		if parked[i].ItemID != parked[j].ItemID {
-			return parked[i].ItemID < parked[j].ItemID
-		}
-		return parked[i].repositoryIdentity < parked[j].repositoryIdentity
-	})
-	return parked, nil
+	return blockedListRecords(recs), nil
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's

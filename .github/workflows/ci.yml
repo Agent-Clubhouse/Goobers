@@ -1,15 +1,18 @@
 name: CI
 
 # Goobers control-plane and portal CI — the enforced merge gate.
-# Runs the portable Go CI entrypoint (Go fmt/vet/build/test/lint + portal
-# build/test) on Ubuntu and macOS on every PR to main, push to main, and
-# merge-group build. See CONTRIBUTING.md's validation tier contract and test/ci
-# for the authoritative full-gate step list.
+# Runs dead-code analysis plus the portable Go CI entrypoint (Go
+# fmt/vet/build/test/lint + portal build/test) on Ubuntu and macOS on every PR
+# to main, push to main, and merge-group build. See CONTRIBUTING.md's validation
+# tier contract, the Makefile's deadcode target, and test/ci for the
+# authoritative full-gate step list.
 #
 # Windows is gated too, as a required compile smoke (go build + go vet for
 # windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
-# gated on #630). All three legs must be green for the required `make ci` check
-# to pass; see the windows-smoke and required-ci jobs below.
+# gated on #630). The platform legs, the vulnerability scan, and the dedicated
+# journal-conformance job must all be green for the required `make ci` check to
+# pass; see the conformance, windows-smoke, vulnerability-scan, and required-ci
+# jobs below.
 
 on:
   push:
@@ -21,6 +24,7 @@ on:
 
 # Least privilege: CI only needs to read the checkout.
 permissions:
+  actions: read
   contents: read
 
 # One in-flight run per ref; newer pushes cancel stale runs.
@@ -48,7 +52,7 @@ jobs:
           # reachable SemVer tag, so shallow history would erase its baseline.
           fetch-depth: 0
 
-      # Track the toolchain declared in go.mod (currently go 1.26) rather than a
+      # Track the toolchain declared in go.mod (currently go 1.26.5) rather than a
       # hardcoded version, so CI can't drift from the module's `go` directive.
       # setup-go scopes its module/build cache key by runner OS and architecture.
       - name: Set up Go
@@ -73,10 +77,62 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Find previous main timing run
+        id: previous-timing
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {data} = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "ci.yml",
+              branch: "main",
+              status: "success",
+              per_page: 20,
+            });
+            const previous = data.workflow_runs.find(
+              run => run.id !== context.runId,
+            );
+            return previous ? String(previous.id) : "";
+          result-encoding: string
+
+      - name: Download previous timing artifact
+        if: ${{ steps.previous-timing.outputs.result != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          name: test-timings-${{ runner.os }}
+          path: previous-test-timings
+          run-id: ${{ steps.previous-timing.outputs.result }}
+          github-token: ${{ github.token }}
+
+      - name: Dead-code analysis
+        run: make deadcode
+
       # Portable implementation of the documented `make ci` merge tier. The
-      # Make target delegates here on Unix without a second implementation.
+      # Make target composes the deadcode target above with this entrypoint.
+
       - name: Portable CI
+        env:
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
         run: go run ./test/ci
+
+      - name: Report test timing budget
+        if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
+        run: >-
+          go run ./test/testtiming report
+          -budget .github/test-timing-budgets.json
+          -current test-timings/unit-${{ runner.os }}.json
+          -previous previous-test-timings/unit-${{ runner.os }}.json
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-timings-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.json
+          if-no-files-found: warn
 
       # Parity with the ADO pipeline's coverage publish (informational; the
       # coverage *gate* is `make cover-check`, part of `verify-full` but
@@ -117,20 +173,38 @@ jobs:
       - name: Run strict integration tier
         run: make test-integration-strict
 
-  # Windows joins CI as a REQUIRED, GREEN compile smoke (#633) — deliberately not
+  conformance:
+    name: journal conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Enforce the journal conformance contract
+        run: make test-conformance
+
+  # Windows joins CI as a REQUIRED, GREEN runtime smoke (#633) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
   # to remove: that one published a red check the Goobers merge flow (which has no
   # notion of an advisory check, see #961) read as a hard block. This one is
   # different in kind — it actually passes. It cross-checks that the whole tree
-  # BUILDS and VETS for Windows (native windows/amd64 on a real runner), which is
+  # builds and vets for Windows, then runs focused native-runtime regressions,
   # green as of #623's proc Job-Object impl + the build-tags on the unix-only
   # commands/tests. That makes it safe to gate on: it only reds on a real,
-  # fixable Windows compile break — the drift #1091 exists to stop — never as an
-  # expected-red. It is compile-only (build + vet, no tests): upgrading it to the
-  # full `make ci` (running the suite on Windows) is gated on #630 and tracked in
-  # #633's definition of done.
+  # fixable Windows regression — never as an expected-red. The complete suite
+  # remains a later step; these tests exercise the platform seams and Windows
+  # runtime paths that compile-only coverage previously missed.
   windows-smoke:
-    name: windows compile smoke (go build · go vet)
+    name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -157,6 +231,27 @@ jobs:
       - name: go vet (windows/amd64)
         run: go vet ./...
 
+      - name: Windows platform runtime
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+
+      - name: Windows credential files
+        run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
+
+      - name: Windows containment and journals
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+
+      - name: Windows worktree and event stream
+        env:
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.safecrlf
+          GIT_CONFIG_VALUE_1: "false"
+        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit|TestSyncObservedFileDoesNotBlockAtomicReplacement'
+
+      - name: Windows CLI runtime
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
+
   shipped-workflows:
     name: shipped workflow contracts
     runs-on: ubuntu-latest
@@ -176,28 +271,54 @@ jobs:
       - name: Exercise shipped workflows through the local runner
         run: make test-shipped-workflows
 
+  vulnerability-scan:
+    name: Go vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Scan reachable Go code
+        run: make vulncheck
+
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [ci, windows-smoke, shipped-workflows]
+    needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify required platform gates
+      - name: Verify required gates
         env:
           MATRIX_RESULT: ${{ needs.ci.result }}
+          VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
           SHIPPED_WORKFLOWS_RESULT: ${{ needs.shipped-workflows.result }}
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
         run: |
           if [ "$MATRIX_RESULT" != "success" ]; then
             echo "A required platform gate (ubuntu/macos make ci) did not pass."
             exit 1
           fi
           if [ "$WINDOWS_RESULT" != "success" ]; then
-            echo "The windows compile smoke (go build + go vet) did not pass."
+            echo "The Windows build/vet/runtime gate did not pass."
             exit 1
           fi
           if [ "$SHIPPED_WORKFLOWS_RESULT" != "success" ]; then
             echo "The shipped workflow contract suite did not pass."
+            exit 1
+          fi
+          if [ "$VULNCHECK_RESULT" != "success" ]; then
+            echo "The Go vulnerability scan did not pass."
+            exit 1
+          fi
+          if [ "$CONFORMANCE_RESULT" != "success" ]; then
+            echo "The journal conformance gate did not pass."
             exit 1
           fi
 

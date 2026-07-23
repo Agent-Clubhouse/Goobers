@@ -26,24 +26,30 @@ type TelemetryReader interface {
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 }
 
-// TelemetryStatsRequest filters workflow and stage aggregates.
+// TelemetryStatsRequest filters workflow/stage aggregates and selects optional
+// model and harness-version cohort dimensions.
 type TelemetryStatsRequest struct {
-	Workflow string
-	Gaggle   string
-	Since    time.Time
-	Until    time.Time
+	Workflow              string
+	Gaggle                string
+	Model                 string
+	HarnessVersion        string
+	GroupByModel          bool
+	GroupByHarnessVersion bool
+	Since                 time.Time
+	Until                 time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Runs   []TelemetryRunStats   `json:"runs"`
-	Stages []TelemetryStageStats `json:"stages"`
+	Gaggles []TelemetryGaggleStats `json:"gaggles"`
+	Runs    []TelemetryRunStats    `json:"runs"`
+	Stages  []TelemetryStageStats  `json:"stages"`
+	Models  []TelemetryModelStats  `json:"models"`
 }
 
-// TelemetryRunStats is the run aggregate for one workflow. Optional metrics
-// are absent when no matching run has produced the underlying measurement.
-type TelemetryRunStats struct {
-	Workflow      string   `json:"workflow"`
+// TelemetryGaggleStats is the run aggregate for one gaggle.
+type TelemetryGaggleStats struct {
+	Gaggle        string   `json:"gaggle"`
 	TotalRuns     int      `json:"totalRuns"`
 	CompletedRuns int      `json:"completedRuns"`
 	FailedRuns    int      `json:"failedRuns"`
@@ -54,9 +60,30 @@ type TelemetryRunStats struct {
 	MaxDurationMs *int64   `json:"maxDurationMs,omitempty"`
 }
 
+// TelemetryRunStats is the run aggregate for one workflow. Optional metrics
+// are absent when no matching run has produced the underlying measurement.
+type TelemetryRunStats struct {
+	Gaggle         string   `json:"gaggle"`
+	Workflow       string   `json:"workflow"`
+	Model          string   `json:"model,omitempty"`
+	HarnessVersion string   `json:"harnessVersion,omitempty"`
+	TotalRuns      int      `json:"totalRuns"`
+	CompletedRuns  int      `json:"completedRuns"`
+	FailedRuns     int      `json:"failedRuns"`
+	OtherRuns      int      `json:"otherRuns"`
+	SuccessRate    *float64 `json:"successRate,omitempty"`
+	AvgDurationMs  *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs  *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs  *int64   `json:"maxDurationMs,omitempty"`
+}
+
 // TelemetryStageStats is the attempt aggregate for one stage.
 type TelemetryStageStats struct {
+	Gaggle               string   `json:"gaggle"`
+	Workflow             string   `json:"workflow"`
 	Stage                string   `json:"stage"`
+	Model                string   `json:"model,omitempty"`
+	HarnessVersion       string   `json:"harnessVersion,omitempty"`
 	TotalAttempts        int      `json:"totalAttempts"`
 	SucceededAttempts    int      `json:"succeededAttempts"`
 	FailedAttempts       int      `json:"failedAttempts"`
@@ -77,6 +104,20 @@ type TelemetryStageStats struct {
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+}
+
+// TelemetryModelStats is observed usage totaled by model.
+type TelemetryModelStats struct {
+	Model                  string   `json:"model"`
+	UsageSamples           int      `json:"usageSamples"`
+	InputTokenSamples      int      `json:"inputTokenSamples"`
+	InputTokens            *int64   `json:"inputTokens,omitempty"`
+	OutputTokenSamples     int      `json:"outputTokenSamples"`
+	OutputTokens           *int64   `json:"outputTokens,omitempty"`
+	PremiumRequestSamples  int      `json:"premiumRequestSamples"`
+	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
+	CostSamples            int      `json:"costSamples"`
+	CostUSD                *float64 `json:"costUSD,omitempty"`
 }
 
 // TelemetryErrorsRequest filters and paginates recent errors.
@@ -135,10 +176,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		return TelemetryStatsResult{}, err
 	}
 	stats, err := s.store.Stats(rollup.StatsRequest{
-		Workflow: req.Workflow,
-		Gaggle:   req.Gaggle,
-		Since:    req.Since,
-		Until:    req.Until,
+		Workflow:              req.Workflow,
+		Gaggle:                req.Gaggle,
+		Model:                 req.Model,
+		HarnessVersion:        req.HarnessVersion,
+		GroupByModel:          req.GroupByModel,
+		GroupByHarnessVersion: req.GroupByHarnessVersion,
+		Since:                 req.Since,
+		Until:                 req.Until,
 	})
 	if err != nil {
 		return TelemetryStatsResult{}, err
@@ -148,12 +193,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Runs:   make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages: make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
 	}
-	for _, stat := range stats.Runs {
-		item := TelemetryRunStats{
-			Workflow:      stat.Workflow,
+	for _, stat := range stats.Gaggles {
+		item := TelemetryGaggleStats{
+			Gaggle:        stat.Gaggle,
 			TotalRuns:     stat.TotalRuns,
 			CompletedRuns: stat.CompletedRuns,
 			FailedRuns:    stat.FailedRuns,
@@ -167,11 +214,36 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
 			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
 		}
+		result.Gaggles = append(result.Gaggles, item)
+	}
+	for _, stat := range stats.Runs {
+		item := TelemetryRunStats{
+			Gaggle:         stat.Gaggle,
+			Workflow:       stat.Workflow,
+			Model:          stat.Model,
+			HarnessVersion: stat.HarnessVersion,
+			TotalRuns:      stat.TotalRuns,
+			CompletedRuns:  stat.CompletedRuns,
+			FailedRuns:     stat.FailedRuns,
+			OtherRuns:      stat.OtherRuns,
+		}
+		if stat.CompletedRuns+stat.FailedRuns > 0 {
+			item.SuccessRate = float64Pointer(stat.SuccessRate)
+		}
+		if stat.HasDuration {
+			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
+			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
+			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+		}
 		result.Runs = append(result.Runs, item)
 	}
 	for _, stat := range stats.Stages {
 		item := TelemetryStageStats{
+			Gaggle:             stat.Gaggle,
+			Workflow:           stat.Workflow,
 			Stage:              stat.Stage,
+			Model:              stat.Model,
+			HarnessVersion:     stat.HarnessVersion,
 			TotalAttempts:      stat.TotalAttempts,
 			SucceededAttempts:  stat.SucceededAttempts,
 			FailedAttempts:     stat.FailedAttempts,
@@ -208,6 +280,29 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
 		}
 		result.Stages = append(result.Stages, item)
+	}
+	for _, stat := range stats.Models {
+		item := TelemetryModelStats{
+			Model:                 stat.Model,
+			UsageSamples:          stat.UsageSamples,
+			InputTokenSamples:     stat.InputTokenSamples,
+			OutputTokenSamples:    stat.OutputTokenSamples,
+			PremiumRequestSamples: stat.PremiumRequestSamples,
+			CostSamples:           stat.CostSamples,
+		}
+		if stat.HasInputTokens {
+			item.InputTokens = int64Pointer(stat.InputTokens)
+		}
+		if stat.HasOutputTokens {
+			item.OutputTokens = int64Pointer(stat.OutputTokens)
+		}
+		if stat.HasPremiumRequests {
+			item.CopilotPremiumRequests = float64Pointer(stat.CopilotPremiumRequests)
+		}
+		if stat.HasCost {
+			item.CostUSD = float64Pointer(stat.CostUSD)
+		}
+		result.Models = append(result.Models, item)
 	}
 	return result, nil
 }

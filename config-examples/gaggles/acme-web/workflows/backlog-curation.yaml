@@ -83,11 +83,14 @@ spec:
     # Without this stage a curation run's claim sat held for the full lease
     # (up to 6h, #235) even though curation's own work on the item finished
     # immediately, locking implementation out of exactly the item curation
-    # just readied (#234). No capabilities: a pure ledger operation, no
-    # provider/credential access needed.
+    # just readied (#234). The issues capability lets release remove the
+    # provider-visible goobers:claimed mirror before freeing the ledger lease,
+    # so curation does not leak stale claim labels (#1003).
     - name: release-claim
       type: deterministic
-      goal: Release this run's claim ledger lease now that curation is done.
+      goal: Clear the provider claim marker and release this run's claim ledger lease.
       run:
         command: ["goobers", "backlog-query", "--release"]
+      capabilities:
+        - github:issues:write
       # Terminal: no `next`.

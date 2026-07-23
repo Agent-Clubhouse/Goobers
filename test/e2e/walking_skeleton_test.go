@@ -106,6 +106,13 @@ func runSkeletonGit(t *testing.T, dir string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.autocrlf",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.safecrlf",
+		"GIT_CONFIG_VALUE_1=false",
+	)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
@@ -129,7 +136,7 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 				// Matches config-examples/gaggles/acme-web/workflows/implementation.yaml's
 				// real "implement" task (#27) — a modest retry budget beyond
 				// the crash boundary a mid-attempt kill consumes (see
-				// TestWalkingSkeletonCrashResume). MaxAttempts=1 (the
+				// TestConformanceWalkingSkeletonCrashResume). MaxAttempts=1 (the
 				// no-Retry default) would make ANY mid-attempt crash
 				// unresumable by design (internal/runner/resume.go
 				// fail-closed contract) — a real agentic task budgets for
@@ -330,7 +337,7 @@ func newSkeletonRunnerWithSpanCapture(
 // Retry.MaxAttempts, tagging the next attempt AttemptPolicy; a well-formed
 // ResultEnvelope{Status: failure} is NOT retried — it's a completed, failed
 // attempt). Used to exercise a genuine stage-level policy retry in
-// TestWalkingSkeletonLocalRunnerDeterministicJournal's conformance comparison.
+// TestConformanceWalkingSkeletonLocalRunnerDeterministicJournal's comparison.
 type dispatchFailure struct{ err error }
 
 func resultPayload(status apiv1.ResultStatus, summary string) apiv1.ResultEnvelope {
@@ -366,13 +373,13 @@ func skeletonStartInput(runID string, machine *workflow.Machine) runner.StartInp
 	}
 }
 
-// TestWalkingSkeletonLocalRunnerCompletesWithRepass is the headline walking
+// TestConformanceWalkingSkeletonLocalRunnerCompletesWithRepass is the headline walking
 // skeleton (issue #29): a single item runs through the real local runner
 // across a multi-stage workflow with a gate repass (reviewer requests
 // changes once, then approves), asserting on the JOURNAL — not on runner
 // internals — per the acceptance criteria: event sequence, digests verify,
 // state.json terminal, artifacts resolvable, spans present.
-func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
+func TestConformanceWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 	machine := skeletonMachine(t)
 	coderAct := func(int) interface{} { return resultPayload(apiv1.ResultSuccess, "implemented") }
 	reviewerAct := func(call int) interface{} {
@@ -785,7 +792,7 @@ func TestWalkingSkeletonLocalRunnerGateFailAborts(t *testing.T) {
 	}
 }
 
-// TestWalkingSkeletonLocalRunnerDeterministicJournal is the conformance seed
+// TestConformanceWalkingSkeletonLocalRunnerDeterministicJournal is the conformance seed
 // (docs/ARCHITECTURE.md §3.3): two independent runs of the identical
 // definition, with the SAME pinned RunID (§3.3's conformance comparison is
 // apples-to-apples over identical caller-supplied inputs, not two arbitrary
@@ -809,7 +816,7 @@ func TestWalkingSkeletonLocalRunnerGateFailAborts(t *testing.T) {
 // conformance harness (ARCHITECTURE §3.3, issue #40) extends to diff the two
 // runners' journals against shared fixtures, through this same
 // ConformanceView — not a bespoke comparator.
-func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
+func TestConformanceWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 	machine := skeletonMachine(t)
 	coderAct := func(call int) interface{} {
 		if call == 1 {
@@ -951,7 +958,7 @@ func simulateSkeletonCrashMidImplement(t *testing.T, runsDir string, machine *wo
 	}
 }
 
-// TestWalkingSkeletonCrashResume is #29's crash/resume acceptance scenario,
+// TestConformanceWalkingSkeletonCrashResume is #29's crash/resume acceptance scenario,
 // now that internal/runner Deliverable B (#17) has landed: kill the runner
 // mid-attempt on "implement", restart against a fresh Runner (a real
 // process restart constructs a new one), and Resume from the journal's
@@ -960,11 +967,11 @@ func simulateSkeletonCrashMidImplement(t *testing.T, runsDir string, machine *wo
 // (§17) — before the runner continues the SAME attempt count against
 // "implement"'s own retry budget, then the run rejoins the ordinary
 // walking-skeleton machine (review passes, local-ci runs, completes) exactly
-// as internal/runner's own TestRunnerResumeRetriesInterruptedAttempt proves
+// as internal/runner's own TestConformanceRunnerResumeRetriesInterruptedAttempt proves
 // at the runner-unit level — this test proves the same contract holds
 // end-to-end through the real multi-stage/gate skeleton, asserting on the
 // journal per this file's convention.
-func TestWalkingSkeletonCrashResume(t *testing.T) {
+func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 	machine := skeletonMachine(t)
 	coderAct := func(int) interface{} { return resultPayload(apiv1.ResultSuccess, "implemented") }
 	reviewerAct := func(int) interface{} { return verdictPayload(apiv1.VerdictPass, "looks good") }

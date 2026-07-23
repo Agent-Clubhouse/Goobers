@@ -284,4 +284,44 @@ DROP TABLE stage_usage_v6;
 CREATE INDEX idx_stage_attempts_run ON stage_attempts(run_id);
 CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
 `,
+	// v8 (issue #1193): model and harness version are span attributes on every
+	// agentic task and reviewer gate. Index them in a satellite table keyed to
+	// the source span; task rows also retain stage-attempt traversal identity so
+	// aggregate queries do not collapse repasses that restart attempt numbers.
+	`
+CREATE TABLE IF NOT EXISTS agent_invocations (
+	run_id          TEXT NOT NULL,
+	span_id         TEXT NOT NULL,
+	kind            TEXT NOT NULL,
+	stage           TEXT NOT NULL,
+	traversal       INTEGER,
+	attempt         INTEGER,
+	model           TEXT NOT NULL,
+	harness_version TEXT NOT NULL,
+	PRIMARY KEY (run_id, span_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_run ON agent_invocations(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_attempt ON agent_invocations(run_id, stage, traversal);
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_model_version ON agent_invocations(model, harness_version);
+`,
+	// v9 (issue #1208): preserve the model dimension without changing
+	// stage_usage's one-row-per-attempt aggregate contract. Existing attempts
+	// remain explicitly unmeasured by model because no rows are backfilled.
+	`
+CREATE TABLE IF NOT EXISTS stage_model_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	model                    TEXT NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	PRIMARY KEY (run_id, stage, traversal, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_model_usage_run ON stage_model_usage(run_id);
+`,
 }

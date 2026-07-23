@@ -127,7 +127,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import "testing"
 func TestIntegrationTool(t *testing.T) { t.Log("no external dependency") }`,
-			wantError: "has no testdep.Require declaration",
+			wantError: "has no testdep.Require or testdep.RequireEnv declaration",
 		},
 		{
 			name: "dynamic declaration",
@@ -153,7 +153,19 @@ func TestIntegrationTool(t *testing.T) {
 	t.Log("setup")
 	testdep.Require(t, "sh")
 }`,
-			wantError: "must call testdep.Require as their first statement",
+			wantError: "must call testdep.Require or testdep.RequireEnv as their first statement",
+		},
+		{
+			name: "env gate names nothing",
+			source: `package fixture
+import (
+	"testing"
+	"github.com/goobers/goobers/internal/testdep"
+)
+func TestIntegrationTool(t *testing.T) {
+	testdep.RequireEnv(t)
+}`,
+			wantError: "testdep.RequireEnv must name at least one variable",
 		},
 		{
 			name: "wrong test prefix",
@@ -181,10 +193,31 @@ func TestTool(t *testing.T) {
 	}
 }
 
+func TestIntegrationDependencyGuardAllowsRequireEnvOnlyFile(t *testing.T) {
+	source := `package fixture
+import (
+	"testing"
+	"github.com/goobers/goobers/internal/testdep"
+)
+func TestIntegrationTool(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_LIVE_SMOKE")
+}`
+	dependencies, violations, err := inspectIntegrationFile("fixture_test.go", []byte(source))
+	if err != nil {
+		t.Fatalf("inspectIntegrationFile: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("violations = %v, want none — RequireEnv alone must satisfy the first-statement + declaration checks", violations)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf("dependencies = %v, want none — RequireEnv names are environment variables, not tool dependencies", dependencies)
+	}
+}
+
 func TestValidateInventory(t *testing.T) {
 	if err := validateInventory(map[string]bool{
-		"bash": true, "bwrap": true, "dirname": true, "head": true,
-		"mkdir": true, "sh": true, "sleep": true, "yes": true,
+		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true,
+		"head": true, "mkdir": true, "sh": true, "sleep": true, "yes": true,
 	}); err != nil {
 		t.Fatalf("validateInventory exact match: %v", err)
 	}
@@ -197,7 +230,9 @@ func TestValidateInventory(t *testing.T) {
 		`dependency "unknown" is required`,
 		`inventory dependency "bash" is not required`,
 		`inventory dependency "bwrap" is not required`,
+		`inventory dependency "copilot" is not required`,
 		`inventory dependency "dirname" is not required`,
+		`inventory dependency "dotnet" is not required`,
 		`inventory dependency "head" is not required`,
 		`inventory dependency "mkdir" is not required`,
 		`inventory dependency "sleep" is not required`,

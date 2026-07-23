@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // EnsureGaggleRuntime creates the runs and workcopies directories for gaggle.
@@ -240,7 +242,7 @@ func migrateLegacyDir(legacy, scoped string) error {
 	if err := os.MkdirAll(filepath.Dir(scoped), 0o755); err != nil {
 		return fmt.Errorf("create migration parent for %s: %w", scoped, err)
 	}
-	if err := os.Rename(legacy, scoped); err != nil {
+	if err := durability.Move(legacy, scoped); err != nil {
 		return fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
 	}
 	return nil

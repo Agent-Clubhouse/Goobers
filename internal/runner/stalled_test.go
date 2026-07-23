@@ -477,7 +477,7 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 
 	select {
 	case <-handlerStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("run did not enter blocked handler")
 	}
 
@@ -640,7 +640,7 @@ func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T
 	for i := 0; i < 2; i++ {
 		select {
 		case ticker.ticks <- time.Now():
-		case <-time.After(time.Second):
+		case <-time.After(runnerTestWaitTimeout):
 			t.Fatal("heartbeat goroutine did not receive idle tick")
 		}
 	}
@@ -729,7 +729,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 
 	select {
 	case <-reviewer.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("agentic reviewer did not start")
 	}
 	timeout := 20 * time.Millisecond
@@ -737,7 +737,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	reviewer.progress <- struct{}{}
 	select {
 	case <-reviewer.reported:
-	case <-time.After(time.Second):
+	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("agentic reviewer did not report progress")
 	}
 

@@ -186,6 +186,13 @@ type FailedOutcome struct {
 // item.
 type FailedHandler func(ctx context.Context, o FailedOutcome) error
 
+// AgentProvenance identifies the configured model and preflighted harness
+// version for spans emitted before an agent executor is resolved or invoked.
+type AgentProvenance struct {
+	Model          string
+	HarnessVersion string
+}
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -275,6 +282,9 @@ type Config struct {
 	// declared grants can never exceed them, so this needs no separate admission
 	// check (the compiler already validated the goober's grants, #74).
 	GateGooberCapabilities map[string][]string
+	// AgentProvenance resolves a goober name to the model and preflighted harness
+	// version attached when its task or reviewer-gate span is created.
+	AgentProvenance map[string]AgentProvenance
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
@@ -2004,6 +2014,11 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 		Attempt:         attempt,
 		AttemptKind:     attemptKind,
 	}
+	if t.Type == apiv1.TaskAgentic {
+		provenance := r.cfg.AgentProvenance[t.Goober]
+		attrs.Model = provenance.Model
+		attrs.HarnessVersion = provenance.HarnessVersion
+	}
 	if in.Item != nil {
 		attrs.ItemID = in.Item.ID
 		attrs.ItemURL = in.Item.URL
@@ -2581,6 +2596,12 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 		RunID:           in.RunID,
 		GateID:          g.Name,
 		GooberID:        gooberName,
+		Agentic:         g.Evaluator == apiv1.EvaluatorAgentic,
+	}
+	if attrs.Agentic {
+		provenance := r.cfg.AgentProvenance[gooberName]
+		attrs.Model = provenance.Model
+		attrs.HarnessVersion = provenance.HarnessVersion
 	}
 	if in.Item != nil {
 		attrs.ItemID = in.Item.ID

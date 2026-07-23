@@ -77,7 +77,7 @@ _goobers_completion()
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
-                stats) flags+=" --json --workflow --gaggle --since --until --rebuild" ;;
+                stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
             esac
             ;;

@@ -12,8 +12,8 @@ import (
 )
 
 // verifyPrivate reads the file's security descriptor and rejects the file
-// unless its DACL grants access only to the owner and the tolerated system
-// principals SYSTEM and Administrators (see the package doc for the rationale).
+// unless its DACL grants access only to the owner, current user, and tolerated
+// system principals SYSTEM and Administrators (see the package doc).
 // Unix mode bits are never consulted — on NTFS they are synthesized from the
 // read-only attribute and cannot express real access. Fails closed on any
 // error reading or parsing the descriptor.
@@ -54,16 +54,15 @@ func verifyPrivate(path string) error {
 		return fmt.Errorf("%w: %s: cannot resolve tolerated system SIDs: %w", ErrNotPrivate, path, err)
 	}
 
-	// Walk the ACEs directly: x/sys/windows exposes the raw ACL header and ACE
-	// layout but no iterator. Only ACCESS_ALLOWED aces can expose the secret; a
-	// DENY ace merely restricts, and object aces (types 5/6) do not occur on
-	// file DACLs. Any allow ace granting a non-tolerated trustee any access is
-	// an exposure.
-	ace := unsafe.Pointer(uintptr(unsafe.Pointer(dacl)) + unsafe.Sizeof(windows.ACL{}))
+	// Only ACCESS_ALLOWED aces can expose the secret; a DENY ace merely
+	// restricts. GetAce avoids unsafe pointer arithmetic over the
+	// variable-length ACL, which is invalid under the race detector's checkptr.
 	for i := uint16(0); i < dacl.AceCount; i++ {
-		header := (*windows.ACE_HEADER)(ace)
-		if header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
-			allowed := (*windows.ACCESS_ALLOWED_ACE)(ace)
+		var allowed *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &allowed); err != nil {
+			return fmt.Errorf("%w: %s: cannot read ACE %d: %w", ErrNotPrivate, path, i, err)
+		}
+		if allowed.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
 			if allowed.Mask != 0 {
 				sid := (*windows.SID)(unsafe.Pointer(&allowed.SidStart))
 				if !sidIn(sid, tolerated) {
@@ -73,15 +72,20 @@ func verifyPrivate(path string) error {
 				}
 			}
 		}
-		ace = unsafe.Pointer(uintptr(ace) + uintptr(header.AceSize))
 	}
 	return nil
 }
 
 // toleratedSIDs is the set of trustees permitted in a private file's DACL: the
-// file's owner plus the always-privileged local principals NT AUTHORITY\SYSTEM
-// and BUILTIN\Administrators.
+// file's owner and current user plus the always-privileged local principals
+// NT AUTHORITY\SYSTEM and BUILTIN\Administrators. Corporate Windows policy can
+// make Administrators the owner while granting the creating user an explicit
+// ACE, so owner alone does not reliably identify the user who must read it.
 func toleratedSIDs(owner *windows.SID) ([]*windows.SID, error) {
+	currentUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return nil, err
@@ -90,7 +94,7 @@ func toleratedSIDs(owner *windows.SID) ([]*windows.SID, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []*windows.SID{owner, system, admins}, nil
+	return []*windows.SID{owner, currentUser.User.Sid, system, admins}, nil
 }
 
 func sidIn(sid *windows.SID, set []*windows.SID) bool {

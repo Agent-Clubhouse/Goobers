@@ -2,12 +2,12 @@ package worktree
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // status records why a worktree's marker is on disk, distinguishing an
@@ -74,7 +74,7 @@ func writeMarker(path string, m marker) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("worktree: close marker: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := durability.ReplaceFile(tmp, path); err != nil {
 		return fmt.Errorf("worktree: commit marker: %w", err)
 	}
 	if err := fsyncDir(dir); err != nil {
@@ -91,20 +91,7 @@ func writeMarker(path string, m marker) error {
 // write itself already landed, just without the extra durability guarantee)
 // rather than turning every worktree.Create into a hard failure on those
 // systems — anything else is a real error and is surfaced.
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
+func fsyncDir(dir string) error { return durability.SyncDir(dir) }
 
 func readMarker(path string) (marker, error) {
 	data, err := os.ReadFile(path)

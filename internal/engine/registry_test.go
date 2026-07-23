@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 func TestVersionPinning(t *testing.T) {
@@ -91,9 +93,94 @@ func TestRegisterInvalidRejected(t *testing.T) {
 	}
 }
 
+func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
+	r := NewRegistryWithPreviewFeatures(true)
+	if _, err := r.RegisterDefinition(wf.Definition{
+		Name: "flow", DSLVersion: "1.4", Spec: linearSpec(),
+	}); err != nil {
+		t.Fatalf("RegisterDefinition: %v", err)
+	}
+	def, ok := r.Latest("flow")
+	if !ok {
+		t.Fatal("registered definition not found")
+	}
+	if def.DSLVersion != "1.4" {
+		t.Fatalf("definition dslVersion = %q, want 1.4", def.DSLVersion)
+	}
+	in, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
+	if err != nil {
+		t.Fatalf("StartInput: %v", err)
+	}
+	if in.DSLVersion != "1.4" {
+		t.Fatalf("run input dslVersion = %q, want 1.4", in.DSLVersion)
+	}
+}
+
+func TestConcurrentRegistrationAssignsMonotonicVersions(t *testing.T) {
+	const registrations = 100
+
+	r := NewRegistryWithPreviewFeatures(true)
+	start := make(chan struct{})
+	results := make(chan int, registrations)
+	errs := make(chan error, registrations)
+
+	var wg sync.WaitGroup
+	for range registrations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			version, err := r.Register("flow", linearSpec())
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- version
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("Register: %v", err)
+	}
+
+	seen := make(map[int]bool, registrations)
+	for version := range results {
+		if seen[version] {
+			t.Errorf("version %d returned more than once", version)
+		}
+		seen[version] = true
+	}
+	for version := 1; version <= registrations; version++ {
+		if !seen[version] {
+			t.Errorf("version %d was not returned", version)
+		}
+		def, ok := r.Get("flow", version)
+		if !ok {
+			t.Errorf("version %d was not stored", version)
+			continue
+		}
+		if def.Version != version {
+			t.Errorf("stored version at index %d = %d", version, def.Version)
+		}
+	}
+
+	latest, ok := r.Latest("flow")
+	if !ok {
+		t.Fatal("latest definition not found")
+	}
+	if latest.Version != registrations {
+		t.Errorf("latest version = %d, want %d", latest.Version, registrations)
+	}
+}
+
 func TestRegisterPreviewFeaturesRequiresOptIn(t *testing.T) {
 	r := NewRegistry()
-	if _, err := r.Register("flow", linearSpec()); err == nil {
+	if _, err := r.Register("flow", previewSpec()); err == nil {
 		t.Fatal("expected preview workflow registration without opt-in to fail")
 	}
 }

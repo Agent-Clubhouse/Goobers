@@ -2,7 +2,7 @@
 // checks for issue #12 that are GitHub-specific (ADO reaches parity in V1, BL-033):
 // the exactly-one-winner claim guarantee (WF-031) and rate-limit backoff +
 // telemetry. These run black-box against a mocked GitHub API.
-package providers_contract
+package providerscontract
 
 import (
 	"context"
@@ -28,6 +28,9 @@ type githubIssueBackend struct {
 func (b *githubIssueBackend) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]string{"login": "goobers"})
+	})
 	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		defer b.mu.Unlock()

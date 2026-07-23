@@ -79,6 +79,7 @@ func TestRedactRefusesWhenNothingChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	defer func() { _ = run.Close() }()
 	ref, err := run.RecordArtifact("clean.txt", []byte("nothing secret here"))
 	if err != nil {
 		t.Fatalf("RecordArtifact: %v", err)
@@ -160,6 +161,7 @@ func TestRedactRejectsEscapingBlobPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	defer func() { _ = run.Close() }()
 
 	// A file OUTSIDE the run dir (a sibling under root). run dir is root/<RunID>,
 	// so "../outside.txt" from the run dir resolves to root/outside.txt.
@@ -185,6 +187,14 @@ func TestRedactRejectsEscapingBlobPath(t *testing.T) {
 	}
 	if !bytes.Equal(after, outsideContent) {
 		t.Fatalf("Redact modified a file outside the run dir: %q", after)
+	}
+}
+
+func TestContainedBlobPathRejectsRootedAndVolumePaths(t *testing.T) {
+	for _, path := range []string{"/rooted", `\rooted`, `C:\rooted`, `\\server\share\blob`} {
+		if _, err := containedBlobPath(t.TempDir(), path); err == nil {
+			t.Errorf("containedBlobPath(%q) unexpectedly succeeded", path)
+		}
 	}
 }
 

@@ -75,9 +75,9 @@ func ConformanceView(events []Event) []NormativeEvent {
 func projectNormative(e Event) NormativeEvent {
 	ne := NormativeEvent{
 		Schema: e.Schema, Type: e.Type, Branch: e.Branch, Stage: e.Stage,
-		Attempt: e.Attempt, AttemptClass: e.AttemptClass, Gate: e.Gate,
+		Attempt: e.Attempt, AttemptClass: e.AttemptClass,
 		Actor: e.Actor, InstructionAddendum: e.InstructionAddendum,
-		Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
+		Gate: e.Gate, Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
 	}

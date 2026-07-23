@@ -118,14 +118,19 @@ admin can touch.
    cp selfhost/instance.yaml.example ~/goobers-instance/instance.yaml
    ```
 
-4. **Set the token** (never inline it into `instance.yaml` — the loader
-   rejects that, `CFG-009`/`SEC-010`):
+4. **Sign in and set repository tokens** (never inline them into
+   `instance.yaml` — the loader rejects that, `CFG-009`/`SEC-010`):
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=ghp_...
    export GOOBERS_GITHUB_REVIEW_TOKEN=github_pat_...
-   export GOOBERS_COPILOT_TOKEN=github_pat_...
+   copilot # sign in once; the local daemon reuses this stored session
    ```
+
+   For a headless service or CI account, configure the commented
+   `agent:model` entry in `instance.yaml` and set
+   `GOOBERS_COPILOT_TOKEN` to a fine-grained PAT with Copilot Requests:
+   Read-only.
 
 5. **Validate before starting anything:**
 

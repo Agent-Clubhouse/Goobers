@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -96,7 +97,7 @@ func saveSiblingCache(schedulerDir string, entries map[string]siblingCacheEntry)
 			_ = os.Remove(tmpName)
 			return err
 		}
-		return os.Rename(tmpName, path)
+		return durability.ReplaceFile(tmpName, path)
 	})
 }
 

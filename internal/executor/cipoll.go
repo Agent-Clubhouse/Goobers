@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -79,7 +80,7 @@ const (
 	// integer count of seconds.
 	InputPollIntervalSec    = "pollIntervalSeconds"
 	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
-	InputPollTimeoutSec     = "pollTimeoutSeconds"
+	InputPollTimeoutSec     = boundedwait.InputPollTimeout
 )
 
 // Default poll cadence for CIPollExecutor: capped exponential backoff and an
@@ -89,8 +90,7 @@ const (
 const (
 	DefaultPollInterval    = 15 * time.Second
 	DefaultMaxPollInterval = 2 * time.Minute
-	DefaultPollTimeout     = 30 * time.Minute
-	ciPollResultMargin     = time.Second
+	DefaultPollTimeout     = boundedwait.DefaultPollTimeout
 )
 
 // DefaultMaxConsecutivePollErrors bounds how many transient poll errors
@@ -155,25 +155,12 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	}
 	if env.Limits.MaxDurationSeconds > 0 {
 		stageBudget := time.Duration(env.Limits.MaxDurationSeconds) * time.Second
-		pollBudget := ciPollBudget(stageBudget)
+		pollBudget := boundedwait.CIPollBudget(stageBudget)
 		if cfg.Timeout <= 0 || cfg.Timeout > pollBudget {
 			cfg.Timeout = pollBudget
 		}
 	}
 	return cfg, nil
-}
-
-// ciPollBudget leaves time for a typed timeout result to cross the stage
-// boundary before the runner's enclosing wall-clock limit expires.
-func ciPollBudget(stage time.Duration) time.Duration {
-	margin := ciPollResultMargin
-	if margin >= stage {
-		margin = stage / 10
-	}
-	if budget := stage - margin; budget > 0 {
-		return budget
-	}
-	return stage / 2
 }
 
 // durationInput parses key's declared value as a time.ParseDuration string

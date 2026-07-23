@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
@@ -761,7 +762,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 
 	pln(stdout, "shutting down: draining in-flight runs...")
-	if waitDrained(&wg, drainGrace) {
+	runsDrained := waitDrained(&wg, drainGrace)
+	schedulerDrained := runsDrained && waitSchedulerDrained(sched, drainGrace)
+	if runsDrained && schedulerDrained {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
@@ -791,7 +794,7 @@ func publishDaemonAPIAddress(path, address string) error {
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close daemon API address file: %w", err)
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := durability.ReplaceFile(tempPath, path); err != nil {
 		return fmt.Errorf("publish daemon API address: %w", err)
 	}
 	removeTemp = false

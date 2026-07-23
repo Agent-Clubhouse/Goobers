@@ -242,6 +242,7 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	if err != nil {
 		t.Fatalf("create journal: %v", err)
 	}
+	defer func() { _ = run.Close() }()
 	verdictData, err := json.Marshal(apiv1.Verdict{
 		Decision: apiv1.VerdictFail,
 		Summary:  reason,
@@ -317,6 +318,7 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create journal: %v", err)
 	}
+	defer func() { _ = run.Close() }()
 	if err := run.Append(journal.Event{
 		Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "park-needs-human",
 		Runner: map[string]any{"escalated": true, "repassAttempt": 4},
@@ -342,6 +344,7 @@ func TestIssueCloseOutReasonUsesNonRetryableTaskSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create journal: %v", err)
 	}
+	defer func() { _ = run.Close() }()
 	const summary = "The issue combines unrelated changes and must be decomposed."
 	if err := run.Append(journal.Event{
 		Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultFailure),

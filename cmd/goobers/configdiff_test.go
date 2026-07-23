@@ -120,10 +120,11 @@ func replaceConfigDiffFixture(t *testing.T, path, old, replacement string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(data), old) != 1 {
-		t.Fatalf("%s contains %q %d times, want exactly once", path, old, strings.Count(string(data), old))
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.Count(content, old) != 1 {
+		t.Fatalf("%s contains %q %d times, want exactly once", path, old, strings.Count(content, old))
 	}
-	data = []byte(strings.Replace(string(data), old, replacement, 1))
+	data = []byte(strings.Replace(content, old, replacement, 1))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

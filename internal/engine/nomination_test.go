@@ -338,6 +338,13 @@ func runNominationGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.autocrlf",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.safecrlf",
+		"GIT_CONFIG_VALUE_1=false",
+	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}

@@ -81,7 +81,7 @@
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "actor": {
-      "description": "Operator identity for an auditable intervention such as stage.rerun.requested or run.resumed.",
+      "description": "Operator identity for an auditable intervention such as stage.rerun.requested.",
       "type": "string",
       "minLength": 1,
       "x-conformance": "normative"
@@ -115,6 +115,12 @@
     "status": {
       "description": "Terminal status for run.finished / stage.finished, or the prior terminal phase for run.resumed.",
       "type": "string",
+      "x-conformance": "normative"
+    },
+    "actor": {
+      "description": "Human principal that requested a run.resumed action.",
+      "type": "string",
+      "minLength": 1,
       "x-conformance": "normative"
     },
     "workflowVersion": {

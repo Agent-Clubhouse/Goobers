@@ -16,6 +16,8 @@ export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalat
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
 export type AttemptClass = "initial" | "policy" | "infra";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
+export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
+export type StagePopulationFilter = "attempts" | "measured";
 export type ValidationSeverity = "error" | "warning";
 export type ValidationWarningCode = "VER001" | "VER002" | "VER003" | "MODEL002";
 export type UpdateModel = "instance" | "run" | "workflow";
@@ -285,8 +287,13 @@ export interface RunTrigger {
 export interface RunListOptions {
   gaggle?: string;
   workflow?: string;
+  stage?: string;
+  outcome?: OutcomeFilter;
+  population?: StagePopulationFilter;
   phase?: RunPhase;
   trigger?: RunTriggerKind;
+  since?: string;
+  until?: string;
   limit?: number;
   cursor?: string;
 }
@@ -461,11 +468,26 @@ export interface TelemetryStatsOptions {
 }
 
 export interface TelemetryStatsResult {
+  gaggles: TelemetryGaggleStats[];
   runs: TelemetryRunStats[];
   stages: TelemetryStageStats[];
+  models: TelemetryModelStats[];
+}
+
+export interface TelemetryGaggleStats {
+  gaggle: string;
+  totalRuns: number;
+  completedRuns: number;
+  failedRuns: number;
+  otherRuns: number;
+  successRate?: number;
+  avgDurationMs?: number;
+  minDurationMs?: number;
+  maxDurationMs?: number;
 }
 
 export interface TelemetryRunStats {
+  gaggle: string;
   workflow: string;
   totalRuns: number;
   completedRuns: number;
@@ -478,6 +500,8 @@ export interface TelemetryRunStats {
 }
 
 export interface TelemetryStageStats {
+  gaggle: string;
+  workflow: string;
   stage: string;
   totalAttempts: number;
   succeededAttempts: number;
@@ -499,6 +523,19 @@ export interface TelemetryStageStats {
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
+}
+
+export interface TelemetryModelStats {
+  model: string;
+  usageSamples: number;
+  inputTokenSamples: number;
+  inputTokens?: number;
+  outputTokenSamples: number;
+  outputTokens?: number;
+  premiumRequestSamples: number;
+  copilotPremiumRequests?: number;
+  costSamples: number;
+  costUSD?: number;
 }
 
 export interface TelemetryErrorsOptions extends TelemetryStatsOptions {

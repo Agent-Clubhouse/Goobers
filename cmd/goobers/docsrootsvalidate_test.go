@@ -27,8 +27,9 @@ func demoWithDocsRoots(t *testing.T, roots []string) string {
 	for _, r := range roots {
 		block.WriteString("    - " + r + "\n")
 	}
-	updated := strings.Replace(string(raw), "  start: query-backlog\n", block.String(), 1)
-	if updated == string(raw) {
+	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	updated := strings.Replace(normalized, "  start: query-backlog\n", block.String(), 1)
+	if updated == normalized {
 		t.Fatalf("demo workflow did not contain the expected start line:\n%s", raw)
 	}
 	if err := os.WriteFile(wfPath, []byte(updated), 0o644); err != nil {

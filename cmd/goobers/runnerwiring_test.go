@@ -287,6 +287,9 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
 	}
+	if !copilot.OptionalCredentialCapabilities[string(capability.AgentModel)] {
+		t.Fatal("agent:model must allow stored Copilot CLI authentication when no token grant is configured")
+	}
 	if len(copilot.AuthCheckArgs) == 0 {
 		t.Fatal("registered Copilot adapter is missing its authentication preflight")
 	}
@@ -387,9 +390,10 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflowDefinition := func(gaggle string) apiv1.Workflow {
+	workflowDefinition := func(gaggle, dslVersion string) apiv1.Workflow {
 		return apiv1.Workflow{
 			ObjectMeta: metav1.ObjectMeta{Name: "deploy"},
+			DSLVersion: dslVersion,
 			Spec: apiv1.WorkflowSpec{
 				Gaggle:   gaggle,
 				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
@@ -412,8 +416,8 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"}}},
 		},
 		Workflows: []apiv1.Workflow{
-			workflowDefinition("alpha"),
-			workflowDefinition("beta"),
+			workflowDefinition("alpha", "1.4"),
+			workflowDefinition("beta", "1.5"),
 		},
 	}
 
@@ -429,6 +433,10 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	beta := localscheduler.WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}
 	if len(machines) != 2 || machines[alpha] == nil || machines[beta] == nil {
 		t.Fatalf("compiled machines = %+v", machines)
+	}
+	if machines[alpha].Def.DSLVersion != "1.4" || machines[beta].Def.DSLVersion != "1.5" {
+		t.Fatalf("compiled machine DSL versions = alpha %q, beta %q",
+			machines[alpha].Def.DSLVersion, machines[beta].Def.DSLVersion)
 	}
 	if len(refs) != 2 || refs[alpha].Name != "alpha" || refs[beta].Name != "beta" {
 		t.Fatalf("workflow repo refs = %+v", refs)

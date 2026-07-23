@@ -3,12 +3,15 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -100,6 +103,11 @@ type CopilotAdapter struct {
 	// present in the invocation's declared+granted set — ever reach the
 	// subprocess environment (capability enforcement, GBO-052).
 	EnvCapabilities map[string]string
+	// OptionalCredentialCapabilities names capabilities whose credential may
+	// be omitted because the CLI can use an existing authenticated user session.
+	// A configured grant still resolves and injects normally; only the absence
+	// of a grant is tolerated. Other capabilities remain fail-closed.
+	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
 	// VersionArgs are the args used to preflight-check the CLI responds
@@ -184,15 +192,14 @@ func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSO
 }
 
 // Preflight verifies the Copilot CLI binary is on PATH and responds to a
-// version check, returning an actionable error otherwise (GBO-011; wired into
-// `goobers validate --check-harness`).
-func (c *CopilotAdapter) Preflight(ctx context.Context) error {
+// version check, returning its reported version on success.
+func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
-		return fmt.Errorf("harness: copilot-cli: no command configured")
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
 			"and sign in before running agentic stages", bin)
 	}
 	args := c.VersionArgs
@@ -205,24 +212,38 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	// explicitly the same way Run's credentialEnv does.
 	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv(c.ExtraEnvAllowlist)})
 	if err != nil {
-		return fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("harness: copilot-cli: %q %v exited %d — check it is installed and signed in", bin, args, res.ExitCode)
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v exited %d — check it is installed and signed in", bin, args, res.ExitCode)
+	}
+	version := firstOutputLine(res.Transcript)
+	if version == "" {
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
+		command := resolveCopilotCommand(c.Command)
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
-			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
+			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
 		}
 		if res.ExitCode != 0 {
-			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) exited %d — the CLI appears signed out; run the Copilot CLI and sign in", bin, c.AuthCheckArgs, res.ExitCode)
+			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) exited %d — the CLI appears signed out; run the Copilot CLI and sign in", bin, c.AuthCheckArgs, res.ExitCode)
 		}
 	}
-	return nil
+	return PreflightInfo{Version: version}, nil
+}
+
+func firstOutputLine(output []byte) string {
+	for line := range strings.SplitSeq(string(output), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func (c *CopilotAdapter) runner() ProcessRunner {
@@ -271,7 +292,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	argv := append(append([]string{}, c.Command...), flag, prompt)
+	argv := append(resolveCopilotCommand(c.Command), flag, prompt)
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -316,6 +337,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
+			out.ModelUsage = native.modelUsage
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema
@@ -368,6 +390,10 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		}
 		token, err := req.Credentials.Token(ctx, capability)
 		if err != nil {
+			if c.OptionalCredentialCapabilities[capability] &&
+				errors.Is(err, credentials.ErrNoCredentialForCapability) {
+				continue
+			}
 			return nil, fmt.Errorf("harness: copilot-cli: resolve %s: %w", capability, err)
 		}
 		env = append(env, envVar+"="+token)

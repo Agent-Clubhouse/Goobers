@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -142,9 +143,39 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 	return rollup.Open(l.TelemetryDB())
 }
 
-const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
+const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
 	"Success rate and duration aggregates per workflow and per stage,\n" +
-	"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n"
+	"across every run (default path \".\"). Agent filters retain matching agentic\n" +
+	"stage attempts; a run that used multiple grouped cohorts appears in each.\n" +
+	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
+
+type telemetryGroupBy struct {
+	model          bool
+	harnessVersion bool
+}
+
+func (g *telemetryGroupBy) String() string {
+	var values []string
+	if g.model {
+		values = append(values, "model")
+	}
+	if g.harnessVersion {
+		values = append(values, "harness-version")
+	}
+	return strings.Join(values, ",")
+}
+
+func (g *telemetryGroupBy) Set(value string) error {
+	switch value {
+	case "model":
+		g.model = true
+	case "harness-version":
+		g.harnessVersion = true
+	default:
+		return fmt.Errorf("unknown group dimension %q (allowed: model, harness-version)", value)
+	}
+	return nil
+}
 
 func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
@@ -152,6 +183,10 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
+	model := fs.String("model", "", "filter to one model id")
+	harnessVersion := fs.String("harness-version", "", "filter to one harness version")
+	var groupBy telemetryGroupBy
+	fs.Var(&groupBy, "group-by", "group by model or harness-version; repeat to group by both")
 	sinceValue := fs.String("since", "", "include runs started at or after this RFC3339 timestamp")
 	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
@@ -187,10 +222,14 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, err := queries.TelemetryStats(context.Background(), readservice.TelemetryStatsRequest{
-		Workflow: *workflow,
-		Gaggle:   *gaggle,
-		Since:    since,
-		Until:    until,
+		Workflow:              *workflow,
+		Gaggle:                *gaggle,
+		Model:                 *model,
+		HarnessVersion:        *harnessVersion,
+		GroupByModel:          groupBy.model,
+		GroupByHarnessVersion: groupBy.harnessVersion,
+		Since:                 since,
+		Until:                 until,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -209,25 +248,53 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	pln(stdout, "WORKFLOW STATS")
-	pf(stdout, "%-24s  %6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
-		"WORKFLOW", "TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%-16s  %-24s  ", "GAGGLE", "WORKFLOW")
+	writeTelemetryCohortColumns(stdout, groupBy, "MODEL", "HARNESS VERSION")
+	pf(stdout, "%6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
+		"TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, r := range result.Runs {
-		pf(stdout, "%-24s  %6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
-			r.Workflow, r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
+		pf(stdout, "%-16s  %-24s  ", r.Gaggle, r.Workflow)
+		writeTelemetryCohortColumns(stdout, groupBy, r.Model, r.HarnessVersion)
+		pf(stdout, "%6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
+			r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
 			formatTelemetryRate(r.SuccessRate), formatTelemetryFloat(r.AvgDurationMs),
 			formatTelemetryInt(r.MinDurationMs), formatTelemetryInt(r.MaxDurationMs))
 	}
 
 	pln(stdout, "\nSTAGE STATS")
-	pf(stdout, "%-16s  %9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
-		"STAGE", "ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%-16s  %-24s  %-16s  ", "GAGGLE", "WORKFLOW", "STAGE")
+	writeTelemetryCohortColumns(stdout, groupBy, "MODEL", "HARNESS VERSION")
+	pf(stdout, "%9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
+		"ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, s := range result.Stages {
-		pf(stdout, "%-16s  %9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
-			s.Stage, s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
+		pf(stdout, "%-16s  %-24s  %-16s  ", s.Gaggle, s.Workflow, s.Stage)
+		writeTelemetryCohortColumns(stdout, groupBy, s.Model, s.HarnessVersion)
+		pf(stdout, "%9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
+			s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
 			formatTelemetryRate(s.SuccessRate), formatTelemetryFloat(s.AvgDurationMs),
 			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs))
 	}
 	return 0
+}
+
+// writeTelemetryCohortColumns prints the optional model/harness-version cohort
+// columns after the fixed gaggle/workflow(/stage) identity columns, in the
+// same call for both header labels and data rows (formatTelemetryDimension is
+// a no-op passthrough for the non-empty literal header labels).
+func writeTelemetryCohortColumns(w io.Writer, groupBy telemetryGroupBy, model, harnessVersion string) {
+	if groupBy.model {
+		pf(w, "%-24s  ", formatTelemetryDimension(model))
+	}
+	if groupBy.harnessVersion {
+		pf(w, "%-24s  ", formatTelemetryDimension(harnessVersion))
+	}
+}
+
+func formatTelemetryDimension(value string) string {
+	if value == "" {
+		return "(unspecified)"
+	}
+	return value
 }
 
 const telemetryErrorsHelp = "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]\n\n" +

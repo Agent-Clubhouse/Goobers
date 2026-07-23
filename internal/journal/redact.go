@@ -109,10 +109,19 @@ func containedBlobPath(dir, relPath string) (string, error) {
 		return "", errors.New("journal: empty blob path")
 	}
 	clean := filepath.Clean(relPath)
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if rootedOrVolumeBoundBlobPath(relPath) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("journal: blob path %q escapes the run directory", relPath)
 	}
 	return filepath.Join(dir, clean), nil
+}
+
+func rootedOrVolumeBoundBlobPath(path string) bool {
+	return filepath.IsAbs(path) ||
+		filepath.VolumeName(path) != "" ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, `\`) ||
+		(len(path) >= 2 && path[1] == ':' &&
+			((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')))
 }
 
 // verifyBlobDigest re-reads the blob at ref.Path (relative to dir) and confirms

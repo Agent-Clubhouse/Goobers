@@ -24,6 +24,7 @@ func TestReleaseClaimsForRunReleasesAllOwnedClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = log.Close() })
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {

@@ -315,7 +315,7 @@ func TestRepositoryStressWiring(t *testing.T) {
 	root := filepath.Join("..", "..")
 	assertFileContains(t, filepath.Join(root, "Makefile"),
 		"run ./test/stress",
-		"verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation test-shipped-workflows stress",
+		`run ./test/ci full "$(MAKE)"`,
 	)
 	assertFileContains(t, filepath.Join(root, "test", "stress", "packages.txt"),
 		"./internal/localscheduler",

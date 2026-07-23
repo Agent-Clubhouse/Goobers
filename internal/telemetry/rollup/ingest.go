@@ -59,7 +59,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -433,7 +433,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 }
 
 func deleteSpan(tx *sql.Tx, runID, spanID string) error {
-	for _, table := range []string{"span_events", "span_business_status"} {
+	for _, table := range []string{"span_events", "span_business_status", "agent_invocations"} {
 		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
 			return fmt.Errorf("rollup: clear %s for span %s: %w", table, spanID, err)
 		}
@@ -472,6 +472,9 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
 			}
 		}
+		if err := insertAgentInvocation(tx, runID, s); err != nil {
+			return err
+		}
 		if err := insertStageUsage(tx, runID, s); err != nil {
 			return err
 		}
@@ -491,6 +494,49 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 	return nil
 }
 
+func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
+	model, hasModel := span.Attributes[telemetry.AttrModel]
+	harnessVersion, hasHarnessVersion := span.Attributes[telemetry.AttrHarnessVersion]
+	if !hasModel && !hasHarnessVersion {
+		return nil
+	}
+	if !hasModel || !hasHarnessVersion {
+		return fmt.Errorf("rollup: agent span %s has incomplete model/harness version provenance", span.SpanID)
+	}
+	if span.Kind != telemetry.SpanKindTask && span.Kind != telemetry.SpanKindGate {
+		return fmt.Errorf("rollup: span %s carries agent provenance but has kind %q", span.SpanID, span.Kind)
+	}
+	stage := span.Attributes[telemetry.AttrStage]
+	if stage == "" {
+		return fmt.Errorf("rollup: agent span %s has no %s attribute", span.SpanID, telemetry.AttrStage)
+	}
+
+	var traversal, attempt sql.NullInt64
+	if span.Kind == telemetry.SpanKindTask {
+		attemptNumber, err := strconv.Atoi(span.Attributes[telemetry.AttrAttemptNumber])
+		if err != nil || attemptNumber < 1 {
+			return fmt.Errorf("rollup: agent span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, span.Attributes[telemetry.AttrAttemptNumber])
+		}
+		traversalNumber, matched, err := matchingTraversalForSpan(tx, runID, stage, attemptNumber, span)
+		if err != nil {
+			return err
+		}
+		if matched {
+			traversal = sql.NullInt64{Int64: int64(traversalNumber), Valid: true}
+		}
+		attempt = sql.NullInt64{Int64: int64(attemptNumber), Valid: true}
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO agent_invocations (
+			run_id, span_id, kind, stage, traversal, attempt, model, harness_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, span.SpanID, span.Kind, stage, traversal, attempt, model, harnessVersion); err != nil {
+		return fmt.Errorf("rollup: insert agent invocation %s: %w", span.SpanID, err)
+	}
+	return nil
+}
+
 func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
 	// Agentic gates use the same harness as tasks, so they also carry usage
 	// attributes. Gates have no stage-attempt identity and are intentionally
@@ -501,23 +547,43 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 	stage := span.Attributes[telemetry.AttrStage]
 	attemptText := span.Attributes[telemetry.AttrAttemptNumber]
 	attempt, attemptErr := strconv.Atoi(attemptText)
-	input, hasInput, err := usageInt64(span, telemetry.AttrGenAIUsageInputTokens)
+	input, hasInput, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrGenAIUsageInputTokens)
 	if err != nil {
 		return err
 	}
-	output, hasOutput, err := usageInt64(span, telemetry.AttrGenAIUsageOutputTokens)
+	output, hasOutput, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrGenAIUsageOutputTokens)
 	if err != nil {
 		return err
 	}
-	premium, hasPremium, err := usageFloat64(span, telemetry.AttrCopilotPremiumRequests)
+	premium, hasPremium, err := usageFloat64(span.SpanID, span.Attributes, telemetry.AttrCopilotPremiumRequests)
 	if err != nil {
 		return err
 	}
-	cost, hasCost, err := usageFloat64(span, telemetry.AttrUsageCostUSD)
+	cost, hasCost, err := usageFloat64(span.SpanID, span.Attributes, telemetry.AttrUsageCostUSD)
 	if err != nil {
 		return err
 	}
-	if !hasInput && !hasOutput && !hasPremium && !hasCost {
+	models, err := modelUsageFromSpan(span)
+	if err != nil {
+		return err
+	}
+	hasAggregate := hasInput || hasOutput || hasPremium || hasCost
+	if len(models) == 0 && hasAggregate {
+		if model := span.Attributes[telemetry.AttrGenAIResponseModel]; model != "" {
+			models = append(models, modelUsageRecord{
+				model:      model,
+				input:      input,
+				hasInput:   hasInput,
+				output:     output,
+				hasOutput:  hasOutput,
+				premium:    premium,
+				hasPremium: hasPremium,
+				cost:       cost,
+				hasCost:    hasCost,
+			})
+		}
+	}
+	if !hasAggregate && len(models) == 0 {
 		return nil
 	}
 	if span.Kind != telemetry.SpanKindTask {
@@ -534,32 +600,110 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 		return err
 	}
 
-	result, err := tx.Exec(`
-		INSERT INTO stage_usage (
-			run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
-		)
-		SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?
-		FROM stage_attempts
-		WHERE run_id = ? AND stage = ? AND traversal = ? AND attempt = ?`,
-		nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
-		nullableFloat64(premium, hasPremium), nullableFloat64(cost, hasCost),
-		runID, stage, traversal, attempt)
-	if err != nil {
-		return fmt.Errorf("rollup: insert usage for stage %s traversal %d: %w", stage, traversal, err)
+	if hasAggregate {
+		result, err := tx.Exec(`
+			INSERT INTO stage_usage (
+				run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
+			)
+			SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?
+			FROM stage_attempts
+			WHERE run_id = ? AND stage = ? AND traversal = ? AND attempt = ?`,
+			nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
+			nullableFloat64(premium, hasPremium), nullableFloat64(cost, hasCost),
+			runID, stage, traversal, attempt)
+		if err != nil {
+			return fmt.Errorf("rollup: insert usage for stage %s traversal %d: %w", stage, traversal, err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rollup: inspect usage update for stage %s traversal %d: %w", stage, traversal, err)
+		}
+		if updated != 1 {
+			return fmt.Errorf("rollup: usage span %s has no matching stage %s traversal %d", span.SpanID, stage, traversal)
+		}
 	}
-	updated, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rollup: inspect usage update for stage %s traversal %d: %w", stage, traversal, err)
-	}
-	if updated != 1 {
-		return fmt.Errorf("rollup: usage span %s has no matching stage %s traversal %d", span.SpanID, stage, traversal)
+	for _, model := range models {
+		if _, err := tx.Exec(`
+			INSERT INTO stage_model_usage (
+				run_id, stage, traversal, attempt, model, input_tokens, output_tokens,
+				copilot_premium_requests, cost_usd
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			runID, stage, traversal, attempt, model.model,
+			nullableInt64(model.input, model.hasInput),
+			nullableInt64(model.output, model.hasOutput),
+			nullableFloat64(model.premium, model.hasPremium),
+			nullableFloat64(model.cost, model.hasCost)); err != nil {
+			return fmt.Errorf("rollup: insert model usage for stage %s traversal %d model %s: %w", stage, traversal, model.model, err)
+		}
 	}
 	return nil
 }
 
+type modelUsageRecord struct {
+	model               string
+	input, output       int64
+	premium, cost       float64
+	hasInput, hasOutput bool
+	hasPremium, hasCost bool
+}
+
+func modelUsageFromSpan(span telemetry.SpanRecord) ([]modelUsageRecord, error) {
+	var out []modelUsageRecord
+	seen := make(map[string]struct{})
+	for _, event := range span.Events {
+		if event.Name != telemetry.GenAIModelUsageEventName {
+			continue
+		}
+		model := event.Attributes[telemetry.AttrGenAIResponseModel]
+		if model == "" {
+			return nil, fmt.Errorf("rollup: span %s has model usage event without %s", span.SpanID, telemetry.AttrGenAIResponseModel)
+		}
+		if _, duplicate := seen[model]; duplicate {
+			return nil, fmt.Errorf("rollup: span %s has duplicate model usage for %q", span.SpanID, model)
+		}
+		seen[model] = struct{}{}
+		input, hasInput, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrGenAIUsageInputTokens)
+		if err != nil {
+			return nil, err
+		}
+		output, hasOutput, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrGenAIUsageOutputTokens)
+		if err != nil {
+			return nil, err
+		}
+		premium, hasPremium, err := usageFloat64(span.SpanID, event.Attributes, telemetry.AttrCopilotPremiumRequests)
+		if err != nil {
+			return nil, err
+		}
+		cost, hasCost, err := usageFloat64(span.SpanID, event.Attributes, telemetry.AttrUsageCostUSD)
+		if err != nil {
+			return nil, err
+		}
+		if !hasInput && !hasOutput && !hasPremium && !hasCost {
+			return nil, fmt.Errorf("rollup: span %s has unmeasured model usage for %q", span.SpanID, model)
+		}
+		out = append(out, modelUsageRecord{
+			model: model, input: input, hasInput: hasInput, output: output, hasOutput: hasOutput,
+			premium: premium, hasPremium: hasPremium, cost: cost, hasCost: hasCost,
+		})
+	}
+	return out, nil
+}
+
 func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, error) {
+	traversal, matched, err := matchingTraversalForSpan(tx, runID, stage, attempt, span)
+	if err != nil {
+		return 0, err
+	}
+	if !matched {
+		return 0, fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
+	}
+	return traversal, nil
+}
+
+func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, bool, error) {
 	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
-		return 0, fmt.Errorf("rollup: usage span %s has invalid time window", span.SpanID)
+		return 0, false, fmt.Errorf("rollup: span %s has invalid time window", span.SpanID)
 	}
 	rows, err := tx.Query(`
 		SELECT traversal, started_at
@@ -567,7 +711,7 @@ func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span te
 		WHERE run_id = ? AND stage = ? AND attempt = ?
 		ORDER BY traversal`, runID, stage, attempt)
 	if err != nil {
-		return 0, fmt.Errorf("rollup: query traversal for usage span %s: %w", span.SpanID, err)
+		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -576,49 +720,46 @@ func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span te
 		var candidate int
 		var startedAtText sql.NullString
 		if err := rows.Scan(&candidate, &startedAtText); err != nil {
-			return 0, fmt.Errorf("rollup: scan traversal for usage span %s: %w", span.SpanID, err)
+			return 0, false, fmt.Errorf("rollup: scan traversal for span %s: %w", span.SpanID, err)
 		}
 		startedAt, err := parseTime(startedAtText)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		if startedAt.Before(span.StartTime) || startedAt.After(span.EndTime) {
 			continue
 		}
 		if traversal != 0 {
-			return 0, fmt.Errorf("rollup: usage span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
+			return 0, false, fmt.Errorf("rollup: span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
 		}
 		traversal = candidate
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("rollup: iterate traversals for usage span %s: %w", span.SpanID, err)
+		return 0, false, fmt.Errorf("rollup: iterate traversals for span %s: %w", span.SpanID, err)
 	}
-	if traversal == 0 {
-		return 0, fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
-	}
-	return traversal, nil
+	return traversal, traversal != 0, nil
 }
 
-func usageInt64(span telemetry.SpanRecord, name string) (int64, bool, error) {
-	raw, ok := span.Attributes[name]
+func usageInt64(spanID string, attrs map[string]string, name string) (int64, bool, error) {
+	raw, ok := attrs[name]
 	if !ok {
 		return 0, false, nil
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, name, raw)
+		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", spanID, name, raw)
 	}
 	return value, true, nil
 }
 
-func usageFloat64(span telemetry.SpanRecord, name string) (float64, bool, error) {
-	raw, ok := span.Attributes[name]
+func usageFloat64(spanID string, attrs map[string]string, name string) (float64, bool, error) {
+	raw, ok := attrs[name]
 	if !ok {
 		return 0, false, nil
 	}
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
-		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, name, raw)
+		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", spanID, name, raw)
 	}
 	return value, true, nil
 }

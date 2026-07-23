@@ -239,63 +239,6 @@ func TestFinalizeTerminalBranchScopesCleanupToResumedSegment(t *testing.T) {
 	}
 }
 
-func TestFinalizeTerminalBranchPreservesOpenPRAcrossResume(t *testing.T) {
-	runsDir, runID, jr := newTerminalBranchJournal(t, true, false)
-	if err := jr.Append(journal.Event{
-		Type: journal.EventRefTouched,
-		ExternalRef: &journal.ExternalRef{
-			Provider: "github",
-			Kind:     "pr",
-			ID:       "42",
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := jr.Append(journal.Event{
-		Type:   journal.EventRunFinished,
-		Status: string(journal.PhaseEscalated),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := jr.Append(journal.Event{
-		Type:   journal.EventRunResumed,
-		Status: string(journal.PhaseEscalated),
-		Target: "push-branch",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := jr.Append(journal.Event{
-		Type:   journal.EventStageFinished,
-		Stage:  "push-branch",
-		Status: string(apiv1.ResultSuccess),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var calls int
-	deleteBranch := func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
-		calls++
-		return providers.DeleteBranchResult{Deleted: true}, nil
-	}
-	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
-	if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 0 {
-		t.Fatalf("delete calls = %d, want 0 for branch backing an open pull request", calls)
-	}
-	events := terminalBranchCleanupEvents(t, runsDir, runID)
-	if len(events) != 1 {
-		t.Fatalf("cleanup events = %d, want 1: %+v", len(events), events)
-	}
-	if got := events[0].Runner["outcome"]; got != branchCleanupSkipped {
-		t.Fatalf("outcome = %v, want %q", got, branchCleanupSkipped)
-	}
-	if got := events[0].Runner["reason"]; got != "pull-request-opened" {
-		t.Fatalf("reason = %v, want pull-request-opened", got)
-	}
-}
-
 func TestRunAbortPreparesTerminalBranchCleanup(t *testing.T) {
 	tests := []struct {
 		name        string

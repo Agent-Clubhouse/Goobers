@@ -42,6 +42,24 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 		if !mapsEqual(got.metrics, wantMetrics) {
 			t.Fatalf("usage metrics = %#v, want %#v", got.metrics, wantMetrics)
 		}
+		if len(got.modelUsage) != 2 {
+			t.Fatalf("model usage = %#v, want two models", got.modelUsage)
+		}
+		first, second := got.modelUsage[0], got.modelUsage[1]
+		if first.Model != "a-model" ||
+			first.InputTokens == nil || *first.InputTokens != 8 ||
+			first.OutputTokens == nil || *first.OutputTokens != 3 ||
+			first.CopilotPremiumRequests == nil || *first.CopilotPremiumRequests != 0.5 ||
+			first.CostUSD == nil || *first.CostUSD != 0.00000001 {
+			t.Fatalf("a-model usage = %#v", first)
+		}
+		if second.Model != "z-model" ||
+			second.InputTokens == nil || *second.InputTokens != 20 ||
+			second.OutputTokens == nil || *second.OutputTokens != 10 ||
+			second.CopilotPremiumRequests == nil || *second.CopilotPremiumRequests != 1.5 ||
+			second.CostUSD == nil || *second.CostUSD != 0.00000002 {
+			t.Fatalf("z-model usage = %#v", second)
+		}
 	}
 }
 
@@ -54,6 +72,9 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 	}
 	if absent.metrics != nil {
 		t.Fatalf("absent usage produced metrics: %#v", absent.metrics)
+	}
+	if absent.modelUsage != nil {
+		t.Fatalf("absent usage produced model metrics: %#v", absent.modelUsage)
 	}
 
 	zero, ok := convertCopilotSessionEvents(strings.NewReader(
@@ -73,6 +94,13 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 			t.Errorf("zero metric %q = %v, present=%v", name, value, present)
 		}
 	}
+	if len(zero.modelUsage) != 1 ||
+		zero.modelUsage[0].InputTokens == nil || *zero.modelUsage[0].InputTokens != 0 ||
+		zero.modelUsage[0].OutputTokens == nil || *zero.modelUsage[0].OutputTokens != 0 ||
+		zero.modelUsage[0].CopilotPremiumRequests == nil || *zero.modelUsage[0].CopilotPremiumRequests != 0 ||
+		zero.modelUsage[0].CostUSD == nil || *zero.modelUsage[0].CostUSD != 0 {
+		t.Fatalf("zero model usage = %#v", zero.modelUsage)
+	}
 }
 
 func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
@@ -85,11 +113,25 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name   string
-		native []byte
-		want   map[string]float64
+		name          string
+		native        []byte
+		want          map[string]float64
+		wantModels    string
+		wantSpanModel string
 	}{
-		{name: "known session fixture", native: native, want: want},
+		{name: "known session fixture", native: native, want: want, wantModels: "a-model,z-model"},
+		{
+			name:   "single model",
+			native: []byte(`{"type":"session.shutdown","data":{"modelMetrics":{"gpt-5.4":{"requests":{"cost":0.5},"usage":{"inputTokens":1,"outputTokens":2},"totalNanoAiu":1000}}}}` + "\n"),
+			want: map[string]float64{
+				telemetry.AttrGenAIUsageInputTokens:  1,
+				telemetry.AttrGenAIUsageOutputTokens: 2,
+				telemetry.AttrCopilotPremiumRequests: 0.5,
+				telemetry.AttrUsageCostUSD:           0.00000001,
+			},
+			wantModels:    "gpt-5.4",
+			wantSpanModel: "gpt-5.4",
+		},
 		{name: "usage unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,16 +200,36 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 				t.Fatalf("exported spans = %d, want 1", len(spans))
 			}
 			gotSpan := make(map[string]float64, 4)
+			var spanModel string
 			for _, attr := range spans[0].Attributes() {
 				switch string(attr.Key) {
 				case telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens:
 					gotSpan[string(attr.Key)] = float64(attr.Value.AsInt64())
 				case telemetry.AttrCopilotPremiumRequests, telemetry.AttrUsageCostUSD:
 					gotSpan[string(attr.Key)] = attr.Value.AsFloat64()
+				case telemetry.AttrGenAIResponseModel:
+					spanModel = attr.Value.AsString()
 				}
 			}
 			if !mapsEqual(gotSpan, tc.want) {
 				t.Fatalf("span metrics = %#v, want %#v", gotSpan, tc.want)
+			}
+			if spanModel != tc.wantSpanModel {
+				t.Fatalf("span model = %q, want %q", spanModel, tc.wantSpanModel)
+			}
+			var models []string
+			for _, event := range spans[0].Events() {
+				if event.Name != telemetry.GenAIModelUsageEventName {
+					continue
+				}
+				for _, attr := range event.Attributes {
+					if string(attr.Key) == telemetry.AttrGenAIResponseModel {
+						models = append(models, attr.Value.AsString())
+					}
+				}
+			}
+			if strings.Join(models, ",") != tc.wantModels {
+				t.Fatalf("span model usage = %q, want %q", strings.Join(models, ","), tc.wantModels)
 			}
 		})
 	}

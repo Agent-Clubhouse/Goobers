@@ -138,11 +138,6 @@ func (h *apiHandler) shutdown() {
 	}
 }
 
-// NewRouter constructs an empty API router.
-func NewRouter(authorizer Authorizer) (*Router, error) {
-	return newRouter(NullAuthenticator{}, authorizer)
-}
-
 func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, error) {
 	if authenticator == nil {
 		return nil, errors.New("http API authenticator is required")
@@ -321,12 +316,25 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 
 func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 	query := request.URL.Query()
+	since, err := parseOptionalTime(query.Get("since"), "since")
+	if err != nil {
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
+	}
+	until, err := parseOptionalTime(query.Get("until"), "until")
+	if err != nil {
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
+	}
 	options := readservice.RunListOptions{
-		Gaggle:   query.Get("gaggle"),
-		Workflow: query.Get("workflow"),
-		Phase:    readservice.RunPhase(query.Get("phase")),
-		Trigger:  readservice.TriggerKind(query.Get("trigger")),
-		Cursor:   query.Get("cursor"),
+		Gaggle:          query.Get("gaggle"),
+		Workflow:        query.Get("workflow"),
+		Stage:           query.Get("stage"),
+		Outcome:         readservice.OutcomeFilter(query.Get("outcome")),
+		StagePopulation: readservice.StagePopulation(query.Get("population")),
+		Phase:           readservice.RunPhase(query.Get("phase")),
+		Trigger:         readservice.TriggerKind(query.Get("trigger")),
+		Since:           since,
+		Until:           until,
+		Cursor:          query.Get("cursor"),
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

@@ -22,12 +22,6 @@ type Scrubber interface {
 	Scrub(b []byte) []byte
 }
 
-// ScrubberFunc adapts a function to Scrubber.
-type ScrubberFunc func([]byte) []byte
-
-// Scrub implements Scrubber.
-func (f ScrubberFunc) Scrub(b []byte) []byte { return f(b) }
-
 // nopScrubber is the default when no scrubber is configured. It is deliberately
 // distinct from "no redaction is required": a run always has a Scrubber, and the
 // nop is only used by tests and by callers that have proven their inputs carry

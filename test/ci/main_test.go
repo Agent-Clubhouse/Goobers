@@ -43,7 +43,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	metadata := buildMetadata{version: "v1.2.3", commit: "abcdef0", date: "2026-07-20T12:00:00Z"}
 
-	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux")
+	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux", "")
 	var got []string
 	for _, current := range gotChecks {
 		got = append(got, current.label)
@@ -98,14 +98,14 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 
 	buildCheck := gotChecks[6]
-	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
+	if got := filepath.ToSlash(strings.Join(buildCheck.args, " ")); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
 		t.Fatalf("goobers build args = %q", got)
 	}
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, versionPackage+".Version=v1.2.3") {
 		t.Fatalf("goobers build args missing metadata: %q", got)
 	}
 	validateCheck := gotChecks[7]
-	if got := strings.Join(validateCheck.args, " "); got != "run ./test/configvalidate bin/goobers" {
+	if got := filepath.ToSlash(strings.Join(validateCheck.args, " ")); got != "run ./test/configvalidate bin/goobers" {
 		t.Fatalf("validate-configs args = %q", got)
 	}
 }
@@ -123,6 +123,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 		},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 	fast := fastChecks(mergeChecks)
 
@@ -155,6 +156,52 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	}
 }
 
+func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
+	t.Parallel()
+	got := fullChecks("custom-make")
+	want := []string{
+		"ci",
+		"test-integration-strict",
+		"test-e2e",
+		"test-conformance",
+		"test-envtest",
+		"cover-check",
+		"sandbox-check",
+		"linux-node-validation",
+		"test-shipped-workflows",
+		"stress",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("full checks = %d, want %d", len(got), len(want))
+	}
+	for i, current := range got {
+		if current.label != want[i] || current.command != "custom-make" ||
+			!reflect.DeepEqual(current.args, []string{want[i]}) {
+			t.Fatalf("full check %d = %#v, want custom-make %s", i, current, want[i])
+		}
+	}
+
+	tick := int64(0)
+	now := func() time.Time {
+		current := time.Unix(tick, 0)
+		tick++
+		return current
+	}
+	exec := &fakeExecutor{}
+	var stdout, stderr bytes.Buffer
+	if err := executeChecksAt(exec, got, &stdout, &stderr, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != len(want) {
+		t.Fatalf("executed %d full checks, want %d", len(exec.calls), len(want))
+	}
+	for _, label := range want {
+		if !strings.Contains(stdout.String(), "<== "+label+" (elapsed 1s)") {
+			t.Errorf("stdout missing elapsed %s target:\n%s", label, &stdout)
+		}
+	}
+}
+
 func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 	t.Parallel()
 	got := checks(
@@ -162,11 +209,12 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"windows",
+		"",
 	)
-	if args := strings.Join(got[5].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
+	if args := filepath.ToSlash(strings.Join(got[5].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
-	if args := strings.Join(got[6].args, " "); args != "run ./test/configvalidate bin/goobers.exe" {
+	if args := filepath.ToSlash(strings.Join(got[6].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {
@@ -187,6 +235,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 	var labels []string
 	for _, current := range got {
@@ -208,6 +257,7 @@ func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 
 	var diffIdx, buildIdx = -1, -1
@@ -348,6 +398,58 @@ func TestExecuteChecksRunsAllSuccessfulChecks(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		nil,
+		toolchain{goCommand: "go", npmCommand: "npm", gitCommand: "git"},
+		buildMetadata{},
+		"linux",
+		"test-timings/unit-Linux.json",
+	)
+	for _, current := range got {
+		if current.label != "test" {
+			continue
+		}
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./..."
+		if args := strings.Join(current.args, " "); args != want {
+			t.Fatalf("timed test args = %q, want %q", args, want)
+		}
+		return
+	}
+	t.Fatal("checks do not include the test step")
+}
+
+func TestExecuteChecksPrintsElapsedPerTarget(t *testing.T) {
+	t.Parallel()
+	times := []time.Time{
+		time.Unix(0, 0),
+		time.Unix(1, 250_000_000),
+		time.Unix(2, 0),
+		time.Unix(4, 500_000_000),
+	}
+	next := 0
+	now := func() time.Time {
+		value := times[next]
+		next++
+		return value
+	}
+	var stdout, stderr bytes.Buffer
+	if err := executeChecksAt(
+		&fakeExecutor{},
+		[]check{{label: "fmt-check"}, {label: "vet"}},
+		&stdout,
+		&stderr,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "<== fmt-check (elapsed 1.25s)") ||
+		!strings.Contains(stdout.String(), "<== vet (elapsed 2.5s)") {
+		t.Fatalf("stdout missing elapsed targets:\n%s", &stdout)
 	}
 }
 

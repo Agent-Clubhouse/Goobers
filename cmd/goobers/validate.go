@@ -142,7 +142,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 
 	// api/validate's cross-reference checks (above) mirror most of
 	// workflow.Compile's own semantic analysis (CheckReachability/
-	// CheckSchedules/CheckGateOutcomes/CheckAdmission), but this is the one
+	// CheckSchedules/CheckGateOutcomes/CheckWorkflowAdmission), but this is the one
 	// point that actually calls Compile with the same options `up`/`run` use
 	// at daemon startup — including WithKnownChecks, which nothing else here
 	// validates (#124). A config that fails this would also fail to start
@@ -429,7 +429,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		err = adapter.Preflight(ctx)
+		_, err = adapter.Preflight(ctx)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)

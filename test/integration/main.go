@@ -245,7 +245,7 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 		if function.Body == nil || len(function.Body.List) == 0 ||
 			!isRequireStatement(function.Body.List[0], testdepAliases) {
 			violations = append(violations, fmt.Sprintf(
-				"%s: integration tests must call testdep.Require as their first statement",
+				"%s: integration tests must call testdep.Require or testdep.RequireEnv as their first statement",
 				files.Position(function.Name.Pos()),
 			))
 		}
@@ -272,32 +272,57 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 		if selector.Sel.Name == "Skip" || selector.Sel.Name == "Skipf" || selector.Sel.Name == "SkipNow" {
 			violations = append(violations, fmt.Sprintf("%s: raw test skip is forbidden in the integration tier; use testdep.Require", position))
 		}
-		if receiver == nil || !testdepAliases[receiver.Name] || selector.Sel.Name != "Require" {
+		if receiver == nil || !testdepAliases[receiver.Name] {
+			return true
+		}
+		// Require names tool dependencies that feed the declared-inventory check;
+		// RequireEnv names environment variables and is exempt from that check.
+		var collectDependencies bool
+		switch selector.Sel.Name {
+		case "Require":
+			collectDependencies = true
+		case "RequireEnv":
+			collectDependencies = false
+		default:
 			return true
 		}
 
 		requireCalls++
 		if len(call.Args) < 2 {
-			violations = append(violations, fmt.Sprintf("%s: testdep.Require must name at least one dependency", position))
+			if collectDependencies {
+				violations = append(violations, fmt.Sprintf("%s: testdep.Require must name at least one dependency", position))
+			} else {
+				violations = append(violations, fmt.Sprintf("%s: testdep.RequireEnv must name at least one variable", position))
+			}
 			return true
 		}
 		for _, argument := range call.Args[1:] {
 			literal, ok := argument.(*ast.BasicLit)
 			if !ok || literal.Kind != token.STRING {
-				violations = append(violations, fmt.Sprintf("%s: testdep.Require dependencies must be string literals", files.Position(argument.Pos())))
+				if collectDependencies {
+					violations = append(violations, fmt.Sprintf("%s: testdep.Require dependencies must be string literals", files.Position(argument.Pos())))
+				} else {
+					violations = append(violations, fmt.Sprintf("%s: testdep.RequireEnv variables must be string literals", files.Position(argument.Pos())))
+				}
 				continue
 			}
 			name, err := strconv.Unquote(literal.Value)
 			if err != nil || name == "" {
-				violations = append(violations, fmt.Sprintf("%s: invalid testdep.Require dependency %s", files.Position(argument.Pos()), literal.Value))
+				if collectDependencies {
+					violations = append(violations, fmt.Sprintf("%s: invalid testdep.Require dependency %s", files.Position(argument.Pos()), literal.Value))
+				} else {
+					violations = append(violations, fmt.Sprintf("%s: invalid testdep.RequireEnv variable %s", files.Position(argument.Pos()), literal.Value))
+				}
 				continue
 			}
-			dependencies = append(dependencies, name)
+			if collectDependencies {
+				dependencies = append(dependencies, name)
+			}
 		}
 		return true
 	})
 	if requireCalls == 0 {
-		violations = append(violations, fmt.Sprintf("%s: integration-tagged file has no testdep.Require declaration", filePath))
+		violations = append(violations, fmt.Sprintf("%s: integration-tagged file has no testdep.Require or testdep.RequireEnv declaration", filePath))
 	}
 	return dependencies, violations, nil
 }
@@ -312,7 +337,7 @@ func isRequireStatement(statement ast.Stmt, aliases map[string]bool) bool {
 		return false
 	}
 	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Require" {
+	if !ok || (selector.Sel.Name != "Require" && selector.Sel.Name != "RequireEnv") {
 		return false
 	}
 	receiver, ok := selector.X.(*ast.Ident)

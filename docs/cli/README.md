@@ -117,13 +117,15 @@ provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it.
 
-With --release, releases every claim this run holds in the local ledger
-(issue #234: a workflow that only reads/labels an item, never opening a
-PR or closing the issue — e.g. backlog-curation — must release its own
-claim explicitly, since issue-close-out's release is reached only by the
-implementation workflow). Idempotent: releasing claims this run does not
-hold (already released, e.g. re-run after a crash) is a no-op success, not
-an error. --claim and --release are mutually exclusive.
+With --release, removes the provider-visible claim marker and then releases
+every claim this run holds in the local ledger (issues #234/#1003). A
+workflow that only reads/labels an item, never opening a PR or closing the
+issue — e.g. backlog-curation — must release its own claim explicitly,
+since issue-close-out's release is reached only by implementation. Claims
+require github:issues:write so the label mirror stays symmetric with the
+ledger. Idempotent: releasing claims this run does not hold (already
+released, e.g. re-run after a crash) is a no-op success, not an error.
+--claim and --release are mutually exclusive.
 
 With --claim, contested-file dispatch awareness (#1085) deprioritizes
 claiming an issue whose referenced files are already contested by
@@ -170,7 +172,7 @@ safely remove one blocked-item record, under claims.lock
 Usage: goobers blocked clear <item-id> [path]
 
 Remove one scheduler/blocked.json record by item id (e.g. "955" or
-"pr/955"), or by the repository-scoped key shown by `blocked list`
+"pr/955"), or by the owner/repo#N ref shown by `blocked list`
 when the id is ambiguous. Default path is ".". Exit codes: 0 =
 cleared, 1 = no unique record, 2 = usage/IO error.
 ~~~
@@ -188,10 +190,11 @@ print the learned blocked-item ledger (scheduler/blocked.json)
 ~~~text
 Usage: goobers blocked list [--json] [path]
 
-Print the current scheduler/blocked.json records (item id, repository,
-record key, blockers, stage, reason, recordedAt), snapshotted under
-claims.lock. Default path is ".". Exit codes: 0 = printed, 2 =
-usage/IO error.
+Print one dependency line per scheduler/blocked.json record, snapshotted
+under claims.lock. A single-repository ledger uses #N (or PR #N); when
+multiple repositories are present, refs use owner/repo#N. --json emits a
+stable ordered array with ref, kind (issue or pull_request), and blockedBy.
+Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1312,10 +1315,12 @@ $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00
 success rate and duration aggregates per workflow and stage
 
 ~~~text
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and per stage,
-across every run (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+across every run (default path "."). Agent filters retain matching agentic
+stage attempts; a run that used multiple grouped cohorts appears in each.
+Exit codes: 0 = OK, 2 = usage/IO error.
 ~~~
 
 **Examples**

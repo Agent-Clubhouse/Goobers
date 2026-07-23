@@ -44,7 +44,7 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 	if err := yaml.Unmarshal(raw, &w); err != nil {
 		t.Fatalf("unmarshal %s: %v", file, err)
 	}
-	return Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	return Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 }
 
 // goldenDigests pins the compiled content digest of each shipped workflow. A
@@ -55,7 +55,7 @@ var goldenDigests = map[string]string{
 	// #401: await-ci explicitly declares the github:pr:write capability used
 	// to poll the pull request's checks.
 	"implementation.yaml":   "sha256:3c0fb6f9133f0df14b208acfdaf6d96173dfd8a24771ce521035862ece080761",
-	"backlog-curation.yaml": "sha256:99bf677d0976f720638d16fe95cf88802da632011bf5e7e1d2ca0c0dabf99bd8",
+	"backlog-curation.yaml": "sha256:268e996fa834f22c854680b2084cdeb054a437bed5d3546ea0755e19c86af151",
 	"work-nomination.yaml":  "sha256:68692fb377f3140fa66033eec2fe00bfb0033b08c39783b370223622180a81e9",
 }
 
@@ -130,5 +130,22 @@ func TestDigestChangesWithContent(t *testing.T) {
 	}
 	if m1.Digest() == m2.Digest() {
 		t.Error("expected digest to change when task goal changes")
+	}
+}
+
+func TestDigestIncludesDSLVersionWhenPresent(t *testing.T) {
+	unversioned := Definition{Name: "x", Version: 1, Spec: linearSpec()}
+	m1, err := compileAcknowledged(unversioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versioned := unversioned
+	versioned.DSLVersion = "1.4"
+	m2, err := compileAcknowledged(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1.Digest() == m2.Digest() {
+		t.Fatal("expected dslVersion to be retained in the compiled definition digest")
 	}
 }

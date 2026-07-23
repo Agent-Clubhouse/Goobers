@@ -303,11 +303,11 @@ func replay2ndRun(t *testing.T, replay func(t *testing.T) []Event) []NormativeEv
 	return out
 }
 
-// TestMonotonicSeq covers both the happy path (a real journal's seq values,
+// TestConformanceMonotonicSeq covers both the happy path (a real journal's seq values,
 // which are always exactly 1..N per appendEvent's increment-then-assign
 // contract) and the failure modes a hand-built or corrupted Event slice could
 // exhibit: a gap, a duplicate, and reordering.
-func TestMonotonicSeq(t *testing.T) {
+func TestConformanceMonotonicSeq(t *testing.T) {
 	valid := []Event{{Seq: 1}, {Seq: 2}, {Seq: 3}}
 	if err := MonotonicSeq(valid); err != nil {
 		t.Errorf("MonotonicSeq(valid) = %v, want nil", err)

@@ -9,6 +9,7 @@ import {
 } from "./configurationWarnings";
 import { LiveDataProvider } from "./liveData";
 import { OverviewPage } from "./pages/OverviewPage";
+import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
@@ -105,7 +106,10 @@ function Portal({
         />
       )}
       {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-      {route.page === "runs" && <RunsPage client={client} standalone={standalone} />}
+      {route.page === "runs" && (
+        <RunsPage client={client} filters={route.filters} standalone={standalone} />
+      )}
+      {route.page === "insight" && <InsightPage client={client} standalone={standalone} />}
       {route.page === "workflow" && route.gaggle && (
         <WorkflowPage
           client={client}

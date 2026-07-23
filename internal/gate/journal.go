@@ -31,6 +31,29 @@ func recordStart(j Journal, gateName string, repassAttempt int) error {
 	})
 }
 
+// recordEvaluatorRetry journals one failed, retryable gate-evaluator attempt
+// (#765): a transient evaluator error the Evaluator will retry within the gate's
+// declared RetryPolicy bound. Before #765 a transient reviewer-harness failure
+// left no gate journal record at all — the reviewer error short-circuited out
+// of Evaluate before recordVerdict, leaving only a dangling gate.started marker.
+// It mirrors the runner's per-attempt stage-retry journaling: a generic
+// EventError annotated (Runner namespace) with the 1-based attempt number and an
+// "infra" retry class, so the retried attempt is visible in `goobers trace`.
+func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) error {
+	if j == nil {
+		return nil
+	}
+	return j.Append(journal.Event{
+		Type:  journal.EventError,
+		Gate:  gateName,
+		Error: &journal.ErrorDetail{Code: "evaluator_transient", Message: err.Error()},
+		Runner: map[string]any{
+			"evaluatorAttempt":  attempt,
+			"retryFailureClass": "infra",
+		},
+	})
+}
+
 // recordVerdict journals one gate evaluation as a gate.evaluated event: Gate,
 // Verdict (the outcome string), Target, and Escalated are the flat,
 // conformance-normative fields §4 relies on. The repass attempt count and a

@@ -551,8 +551,22 @@ export const goWireFixtures = {
     ]
   },
   "telemetryStats": {
+    "gaggles": [
+      {
+        "gaggle": "core",
+        "totalRuns": 4,
+        "completedRuns": 3,
+        "failedRuns": 1,
+        "otherRuns": 0,
+        "successRate": 0.75,
+        "avgDurationMs": 120000.5,
+        "minDurationMs": 100000,
+        "maxDurationMs": 140001
+      }
+    ],
     "runs": [
       {
+        "gaggle": "core",
         "workflow": "implementation",
         "totalRuns": 4,
         "completedRuns": 3,
@@ -566,6 +580,8 @@ export const goWireFixtures = {
     ],
     "stages": [
       {
+        "gaggle": "core",
+        "workflow": "implementation",
         "stage": "implement",
         "totalAttempts": 4,
         "succeededAttempts": 3,
@@ -587,6 +603,20 @@ export const goWireFixtures = {
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
         "retryWasteCostUSD": 0.75
+      }
+    ],
+    "models": [
+      {
+        "model": "gpt-5.4",
+        "usageSamples": 3,
+        "inputTokenSamples": 3,
+        "inputTokens": 36000,
+        "outputTokenSamples": 3,
+        "outputTokens": 12000,
+        "premiumRequestSamples": 3,
+        "copilotPremiumRequests": 3,
+        "costSamples": 3,
+        "costUSD": 1.5
       }
     ]
   },
