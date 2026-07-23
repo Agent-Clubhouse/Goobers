@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func withValidationIssues(t *testing.T, issues ...validate.Issue) {
@@ -102,6 +103,26 @@ func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 	}
 	if strings.Join(upWarnings, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("up warnings = %#v, want %#v", upWarnings, want)
+	}
+
+	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journaled []map[string]any
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == "config.validation.warning" {
+			journaled = append(journaled, event.Runner)
+		}
+	}
+	if len(journaled) != 2 {
+		t.Fatalf("journaled config warnings = %+v, want 2", journaled)
+	}
+	if journaled[0]["code"] != string(validate.WarningDeprecatedFeature) ||
+		journaled[0]["scope"] != "a-deprecated.yaml Workflow/legacy-flow" ||
+		journaled[1]["code"] != string(validate.WarningPreviewFeature) ||
+		journaled[1]["scope"] != "z-preview.yaml Workflow/preview-flow" {
+		t.Fatalf("journaled config warnings = %+v", journaled)
 	}
 }
 

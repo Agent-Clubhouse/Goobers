@@ -2,6 +2,9 @@ package instance
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,8 +130,68 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 }
 
 func TestLoadConfigDirMissingDir(t *testing.T) {
-	_, _, err := LoadConfigDir("../../does/not/exist")
+	set, report, err := LoadConfigDir("../../does/not/exist")
 	if err == nil {
-		t.Fatal("expected an error for a missing config directory")
+		t.Fatalf("expected an error for a missing config directory, got set=%+v report=%+v", set, report)
+	}
+}
+
+func TestCallersDoNotDiscardConfigReports(t *testing.T) {
+	root := filepath.Clean("../..")
+	loaders := map[string]bool{
+		"LoadConfigDir":                 true,
+		"LoadConfigSource":              true,
+		"LoadConfigDirForComparison":    true,
+		"LoadConfigSourceForComparison": true,
+		"loadConfigDirectory":           true,
+		"configLoader":                  true,
+	}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok || len(assignment.Lhs) < 2 || len(assignment.Rhs) != 1 {
+				return true
+			}
+			call, ok := assignment.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var name string
+			switch function := call.Fun.(type) {
+			case *ast.Ident:
+				name = function.Name
+			case *ast.SelectorExpr:
+				name = function.Sel.Name
+			}
+			if !loaders[name] {
+				return true
+			}
+			identifier, ok := assignment.Lhs[1].(*ast.Ident)
+			if ok && identifier.Name == "_" {
+				t.Errorf("%s: config validation report returned by %s is discarded", fset.Position(identifier.Pos()), name)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

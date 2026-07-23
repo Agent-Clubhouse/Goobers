@@ -287,6 +287,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer setup.Shutdown(context.Background())
+	if err := journalValidationWarnings(setup.InstanceLog, setup.Validation.Warnings()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)

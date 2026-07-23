@@ -1032,6 +1032,9 @@ func TestWorkflowWarningPreservesLegacyCLIRepresentation(t *testing.T) {
 	if got := issue.CLIString(); got != "WARNING Workflow/deploy: configuration uses a compatibility path" {
 		t.Fatalf("CLIString() = %q", got)
 	}
+	if got := cliWarning.String(); got != "WARNING Workflow/deploy: configuration uses a compatibility path" {
+		t.Fatalf("CLI warning String() = %q", got)
+	}
 	cliIssue := report.CLIReport().Issues[0]
 	if cliIssue.Code != "" || cliIssue.File != "" || cliIssue.Gaggle != "" {
 		t.Fatalf("CLI report issue = %+v, want legacy JSON provenance", cliIssue)

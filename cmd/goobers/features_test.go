@@ -48,8 +48,8 @@ func TestFeaturesUsedListsInstanceSubset(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if !strings.Contains(stderr, "has no schedule trigger; it will not fire autonomously") {
+		t.Fatalf("stderr = %q, want config validation warning", stderr)
 	}
 
 	known := map[string]bool{}

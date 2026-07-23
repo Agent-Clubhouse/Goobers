@@ -62,8 +62,9 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return nil, 2
 	}
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
 	if err != nil {
+		printValidationIssues(stderr, report)
 		if errors.Is(err, instance.ErrInvalidConfig) {
 			pf(stderr, "error: instance config failed validation: %v\n", err)
 			return nil, 1
@@ -71,6 +72,7 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 		pf(stderr, "error: %v\n", err)
 		return nil, 2
 	}
+	printValidationWarnings(stderr, report.CLIWarnings())
 
 	used := map[workflow.FeatureID]workflow.Feature{}
 	for i := range set.Workflows {
