@@ -440,17 +440,17 @@ func buildSchedulerDefinitions(
 			Workflow:        wf.Name,
 			WorkflowVersion: machine.Def.Version,
 			WorkflowDigest:  machine.Digest(),
-			GooberDigest:    gooberDigests[identity],
 			Gaggle:          wf.Spec.Gaggle,
 			Readiness:       wf.Spec.Readiness,
 			Schedules:       scheds,
 			Signals:         sigs,
 			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
-			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, gooberDigest: gooberDigests[identity], requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:         repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 		})
+		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
 
 	var firstRunner *runner.Runner
@@ -645,7 +645,6 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 type trackedStarter struct {
 	r            *runner.Runner
 	machine      *workflow.Machine
-	gooberDigest string
 	requiredCaps []string
 	wg           *sync.WaitGroup
 	l            instance.Layout
@@ -663,7 +662,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:                req.RunID,
 		Machine:              s.machine,
-		GooberDigest:         s.gooberDigest,
+		GooberDigest:         req.GooberDigest,
 		Gaggle:               req.Gaggle,
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,

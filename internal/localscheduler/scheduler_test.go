@@ -1227,7 +1227,11 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	spans.mu.Unlock()
 	starter.mu.Lock()
 	startedRunID := starter.starts[0].RunID
+	startedGooberDigest := starter.starts[0].GooberDigest
 	starter.mu.Unlock()
+	if startedGooberDigest != "sha256:goobers" {
+		t.Fatalf("starter goober digest = %q, want %q", startedGooberDigest, "sha256:goobers")
+	}
 	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" ||
 		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
 		got.GooberDigest != "sha256:goobers" ||

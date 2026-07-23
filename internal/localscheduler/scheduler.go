@@ -967,6 +967,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	go func() {
 		defer s.dispatches.Done()
 		defer s.ReleaseRun(runID, entry.Workflow)
+		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,
