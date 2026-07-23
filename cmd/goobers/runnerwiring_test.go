@@ -350,7 +350,7 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := compiledMachines(
+			_, _, err := compiledMachines(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
@@ -423,7 +423,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, err := compiledMachines(set, map[string]apiv1.GooberSpec{}, nil)
+	machines, _, err := compiledMachines(set, map[string]apiv1.GooberSpec{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,9 +483,10 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := definitions.Runners[identity.Gaggle].Start(context.Background(), runner.StartInput{
-			RunID:   runID,
-			Machine: definitions.Machines[identity],
-			Gaggle:  identity.Gaggle,
+			RunID:        runID,
+			Machine:      definitions.Machines[identity],
+			GooberDigest: definitions.GooberDigests[identity],
+			Gaggle:       identity.Gaggle,
 		})
 		if err != nil || result.Phase != journal.PhaseCompleted {
 			t.Fatalf("start %s run %d: phase=%s err=%v", identity.Gaggle, i, result.Phase, err)
@@ -531,7 +532,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := compiledMachines(set, goobers, firstInstructions)
+	first, firstDigests, err := compiledMachines(set, goobers, firstInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,12 +544,12 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := compiledMachines(set, goobers, secondInstructions)
+	second, secondDigests, err := compiledMachines(set, goobers, secondInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first[identity].GooberDigest() == second[identity].GooberDigest() {
-		t.Fatalf("goober digest did not change with instruction content: %s", first[identity].GooberDigest())
+	if firstDigests[identity] == secondDigests[identity] {
+		t.Fatalf("goober digest did not change with instruction content: %s", firstDigests[identity])
 	}
 	if first[identity].Digest() != second[identity].Digest() {
 		t.Fatalf("workflow digest changed with instruction content: %s != %s", first[identity].Digest(), second[identity].Digest())

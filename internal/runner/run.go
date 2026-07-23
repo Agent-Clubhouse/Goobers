@@ -386,6 +386,8 @@ type StartInput struct {
 	// workflow definition all pass the same *workflow.Machine; different
 	// workflows pass different ones — this Runner is not bound to one.
 	Machine *workflow.Machine
+	// GooberDigest pins the resolved execution identity used by this run.
+	GooberDigest string
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string
 	// Trigger is what started the run (manual/schedule/signal/item).
@@ -505,7 +507,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Workflow:        in.Machine.Def.Name,
 		WorkflowVersion: in.Machine.Def.Version,
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
+		GooberDigest:    in.GooberDigest,
 		Gaggle:          in.Gaggle,
 		Trigger:         in.Trigger,
 	}, inputs, journal.WithScrubber(scrubber))
@@ -592,7 +594,7 @@ func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Conte
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
+		GooberDigest:    in.GooberDigest,
 		RunID:           in.RunID,
 	}
 	if in.Item != nil {
@@ -2095,7 +2097,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
+		GooberDigest:    in.GooberDigest,
 		RunID:           in.RunID,
 		TaskID:          t.Name,
 		TaskType:        string(t.Type),
@@ -2715,7 +2717,7 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
 		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.Machine.GooberDigest(),
+		GooberDigest:    in.GooberDigest,
 		RunID:           in.RunID,
 		GateID:          g.Name,
 		GooberID:        gooberName,

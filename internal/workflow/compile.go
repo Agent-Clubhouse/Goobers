@@ -14,7 +14,6 @@ import (
 
 type options struct {
 	goobers              map[string]apiv1.GooberSpec
-	gooberInstructions   map[string]string
 	knownChecks          map[string]bool
 	knownHarnesses       map[string]bool
 	allowPreviewFeatures *bool
@@ -32,14 +31,6 @@ type Option func(*options)
 // time, since capability/harness admission happens at config-validation time.
 func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 	return func(o *options) { o.goobers = goobers }
-}
-
-// WithGooberInstructions supplies resolved instruction content, keyed by
-// goober name. When present, Compile computes the effective goober digest from
-// the participating goobers' instruction content, skills, model, and harness
-// configuration. The path stored in GooberSpec.Instructions is not hashed.
-func WithGooberInstructions(instructions map[string]string) Option {
-	return func(o *options) { o.gooberInstructions = instructions }
 }
 
 // WithKnownChecks supplies the names of every automated check actually
@@ -222,13 +213,6 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
 	}
 	m.digest = digest
-	if o.gooberInstructions != nil {
-		gooberDigest, err := computeGooberDigest(def, o.goobers, o.gooberInstructions)
-		if err != nil {
-			return nil, fmt.Errorf("digest workflow %q goobers: %w", def.Name, err)
-		}
-		m.gooberDigest = gooberDigest
-	}
 	return m, nil
 }
 
@@ -582,91 +566,7 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 // and map keys sorted) and hashes the bytes, so semantically identical
 // definitions digest identically regardless of YAML formatting.
 func computeDigest(def Definition) (string, error) {
-	return computeCanonicalDigest(def)
-}
-
-type effectiveGoober struct {
-	Name           string                     `json:"name"`
-	Instructions   string                     `json:"instructions"`
-	Skills         []string                   `json:"skills,omitempty"`
-	Model          string                     `json:"model,omitempty"`
-	Harness        string                     `json:"harness"`
-	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
-}
-
-func computeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (string, error) {
-	names := participatingGoobers(def)
-	effective := make([]effectiveGoober, 0, len(names))
-	for _, name := range names {
-		spec, ok := goobers[name]
-		if !ok {
-			return "", fmt.Errorf("participating goober %q is not defined", name)
-		}
-		content, ok := instructions[name]
-		if !ok {
-			return "", fmt.Errorf("participating goober %q has no resolved instructions", name)
-		}
-		harness := spec.Harness
-		if harness == "" {
-			harness = apiv1.HarnessCopilot
-		}
-		options := make(map[string]json.RawMessage, len(spec.HarnessOptions))
-		for key, value := range spec.HarnessOptions {
-			if !json.Valid(value.Raw) {
-				return "", fmt.Errorf("participating goober %q harness option %q is not valid JSON", name, key)
-			}
-			options[key] = append(json.RawMessage(nil), value.Raw...)
-		}
-		if len(options) == 0 {
-			options = nil
-		}
-		effective = append(effective, effectiveGoober{
-			Name:           name,
-			Instructions:   content,
-			Skills:         canonicalSet(spec.Skills),
-			Model:          spec.Model,
-			Harness:        string(harness),
-			HarnessOptions: options,
-		})
-	}
-	return computeCanonicalDigest(effective)
-}
-
-func participatingGoobers(def Definition) []string {
-	names := map[string]struct{}{}
-	for _, task := range def.Spec.Tasks {
-		if task.Type == apiv1.TaskAgentic && task.Goober != "" {
-			names[task.Goober] = struct{}{}
-		}
-	}
-	for _, gate := range def.Spec.Gates {
-		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil && gate.Agentic.Goober != "" {
-			names[gate.Agentic.Goober] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(names))
-	for name := range names {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func canonicalSet(values []string) []string {
-	set := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		set[value] = struct{}{}
-	}
-	out := make([]string, 0, len(set))
-	for value := range set {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func computeCanonicalDigest(value any) (string, error) {
-	b, err := json.Marshal(value)
+	b, err := json.Marshal(def)
 	if err != nil {
 		return "", err
 	}

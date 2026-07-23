@@ -16,6 +16,7 @@ import (
 type RerunStageInput struct {
 	RunID               string
 	Machine             *workflow.Machine
+	GooberDigest        string
 	RepoRef             apiv1.RepoRef
 	Stage               string
 	Actor               string
@@ -86,8 +87,8 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
 			return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
 		}
-		if id.GooberDigest != "" && id.GooberDigest != in.Machine.GooberDigest() {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.Machine.GooberDigest())
+		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
+			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
 		}
 		events, err := rd.Events()
 		if err != nil {
@@ -121,12 +122,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		}
 
 		startIn := StartInput{
-			RunID:   in.RunID,
-			Machine: in.Machine,
-			Gaggle:  id.Gaggle,
-			Trigger: id.Trigger,
-			RepoRef: in.RepoRef,
-			Item:    item,
+			RunID:        in.RunID,
+			Machine:      in.Machine,
+			GooberDigest: in.GooberDigest,
+			Gaggle:       id.Gaggle,
+			Trigger:      id.Trigger,
+			RepoRef:      in.RepoRef,
+			Item:         item,
 		}
 		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)

@@ -31,6 +31,8 @@ type ResumeInput struct {
 	// detail) and finalized like any other terminal run, releasing its
 	// claims — see refuseResume.
 	Machine *workflow.Machine
+	// GooberDigest is the current resolved execution identity.
+	GooberDigest string
 	// RepoRef is the target repository every stage worktree branches from —
 	// the same value originally passed to Start.
 	RepoRef apiv1.RepoRef
@@ -39,11 +41,12 @@ type ResumeInput struct {
 // ResumeFromTerminalInput describes an explicit human action that reopens an
 // escalated or failed run at a chosen workflow state.
 type ResumeFromTerminalInput struct {
-	RunID   string
-	Machine *workflow.Machine
-	RepoRef apiv1.RepoRef
-	Target  string
-	Actor   string
+	RunID        string
+	Machine      *workflow.Machine
+	GooberDigest string
+	RepoRef      apiv1.RepoRef
+	Target       string
+	Actor        string
 }
 
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
@@ -157,11 +160,11 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		if id.Workflow != in.Machine.Def.Name ||
 			id.WorkflowVersion != in.Machine.Def.Version ||
 			id.WorkflowDigest != in.Machine.Digest() ||
-			(id.GooberDigest != "" && id.GooberDigest != in.Machine.GooberDigest()) {
+			(id.GooberDigest != "" && id.GooberDigest != in.GooberDigest) {
 			return Result{}, fmt.Errorf(
 				"runner: run %q is pinned to workflow %q version %d digest %q and goober digest %q, cannot terminal-resume against %q version %d digest %q and goober digest %q (WF-016)",
 				in.RunID, id.Workflow, id.WorkflowVersion, id.WorkflowDigest, id.GooberDigest,
-				in.Machine.Def.Name, in.Machine.Def.Version, in.Machine.Digest(), in.Machine.GooberDigest(),
+				in.Machine.Def.Name, in.Machine.Def.Version, in.Machine.Digest(), in.GooberDigest,
 			)
 		}
 		if _, task := in.Machine.Task(in.Target); !task {
@@ -182,7 +185,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		}
 
 		return r.resumeOwned(ctx, ResumeInput{
-			RunID: in.RunID, Machine: in.Machine, RepoRef: in.RepoRef,
+			RunID: in.RunID, Machine: in.Machine, GooberDigest: in.GooberDigest, RepoRef: in.RepoRef,
 		}, jr, registrar, dir)
 	})
 }
@@ -246,9 +249,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
-	if id.GooberDigest != "" && id.GooberDigest != in.Machine.GooberDigest() {
+	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
-			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.Machine.GooberDigest()))
+			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
 	}
 	if resumed, ok := latestRunResume(events); ok &&
 		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
@@ -381,12 +384,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		}
 	}
 	startIn := StartInput{
-		RunID:   in.RunID,
-		Machine: in.Machine,
-		Gaggle:  id.Gaggle,
-		Trigger: id.Trigger,
-		RepoRef: in.RepoRef,
-		Item:    item,
+		RunID:        in.RunID,
+		Machine:      in.Machine,
+		GooberDigest: in.GooberDigest,
+		Gaggle:       id.Gaggle,
+		Trigger:      id.Trigger,
+		RepoRef:      in.RepoRef,
+		Item:         item,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again

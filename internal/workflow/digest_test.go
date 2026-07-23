@@ -166,32 +166,32 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			"reasoningEffort": {Raw: []byte(`"high"`)},
 		},
 	}
-	compile := func(spec apiv1.GooberSpec, instructions string) *Machine {
+	digest := func(spec apiv1.GooberSpec, instructions string) string {
 		t.Helper()
-		machine, err := compileAcknowledged(
+		value, err := ComputeGooberDigest(
 			def,
-			WithGoobers(map[string]apiv1.GooberSpec{
+			map[string]apiv1.GooberSpec{
 				"coder": spec,
 				"unused": {
 					Instructions: "unused.md",
 					Model:        "unrelated",
 				},
-			}),
-			WithGooberInstructions(map[string]string{
+			},
+			map[string]string{
 				"coder":  instructions,
 				"unused": "unused instructions",
-			}),
+			},
 		)
 		if err != nil {
-			t.Fatalf("compile: %v", err)
+			t.Fatalf("compute digest: %v", err)
 		}
-		if machine.GooberDigest() == "" {
+		if value == "" {
 			t.Fatal("empty goober digest")
 		}
-		return machine
+		return value
 	}
 
-	original := compile(base, "original instructions")
+	original := digest(base, "original instructions")
 	for _, tc := range []struct {
 		name         string
 		spec         apiv1.GooberSpec
@@ -222,12 +222,9 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 		}(), instructions: "original instructions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			changed := compile(tc.spec, tc.instructions)
-			if changed.GooberDigest() == original.GooberDigest() {
-				t.Fatalf("goober digest did not change: %s", changed.GooberDigest())
-			}
-			if changed.Digest() != original.Digest() {
-				t.Fatalf("workflow digest changed with goober identity: %s != %s", changed.Digest(), original.Digest())
+			changed := digest(tc.spec, tc.instructions)
+			if changed == original {
+				t.Fatalf("goober digest did not change: %s", changed)
 			}
 		})
 	}
@@ -235,8 +232,8 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	reordered := base
 	reordered.Instructions = "renamed.md"
 	reordered.Skills = []string{"go", "testing", "go"}
-	equivalent := compile(reordered, "original instructions")
-	if equivalent.GooberDigest() != original.GooberDigest() {
-		t.Fatalf("path or set ordering changed goober digest: %s != %s", equivalent.GooberDigest(), original.GooberDigest())
+	equivalent := digest(reordered, "original instructions")
+	if equivalent != original {
+		t.Fatalf("path or set ordering changed goober digest: %s != %s", equivalent, original)
 	}
 }

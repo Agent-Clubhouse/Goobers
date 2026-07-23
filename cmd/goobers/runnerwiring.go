@@ -1381,13 +1381,13 @@ func knownAutomatedCheckNames() []string {
 // registry-assigned (per-name monotonic, WF-016); no registry is wired at the
 // instance level yet, so this pins version 1 for every workflow, matching
 // run.go's existing limitation until a follow-up introduces one.
-func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 	adapterRegistry, err := buildHarnessRegistry(nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	gooberNames := make([]string, 0, len(goobers))
 	for name := range goobers {
@@ -1401,10 +1401,11 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			harnessName = apiv1.HarnessCopilot
 		}
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+			return nil, nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
 		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
+	gooberDigests := make(map[localscheduler.WorkflowIdentity]string, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		options := []workflow.Option{
@@ -1413,21 +1414,27 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
 		}
-		if instructions != nil {
-			options = append(options, workflow.WithGooberInstructions(instructions))
+		def := workflow.Definition{
+			Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
 		}
 		m, err := workflow.Compile(
-			workflow.Definition{
-				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
-			},
+			def,
 			options...,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
+			return nil, nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
 		}
-		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
+		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
+		if instructions != nil {
+			digest, err := workflow.ComputeGooberDigest(def, goobers, instructions)
+			if err != nil {
+				return nil, nil, fmt.Errorf("digest workflow %q goobers: %w", wf.Name, err)
+			}
+			gooberDigests[identity] = digest
+		}
+		machines[identity] = m
 	}
-	return machines, nil
+	return machines, gooberDigests, nil
 }
 
 // repoRefsByWorkflow resolves each workflow's RepoRef via its Gaggle's

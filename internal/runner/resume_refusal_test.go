@@ -216,7 +216,6 @@ func TestRunnerResumeGooberDigestMismatchFailsBeforeDispatch(t *testing.T) {
 		workflow.WithGoobers(map[string]apiv1.GooberSpec{
 			"coder": {Instructions: "coder.md", Harness: apiv1.HarnessCopilot},
 		}),
-		workflow.WithGooberInstructions(map[string]string{"coder": "new instructions"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -229,7 +228,7 @@ func TestRunnerResumeGooberDigestMismatchFailsBeforeDispatch(t *testing.T) {
 	det := &countingDeterministic{}
 	r, _, _ := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
 	res, err := r.Resume(context.Background(), ResumeInput{
-		RunID: runID, Machine: machine,
+		RunID: runID, Machine: machine, GooberDigest: "sha256:new-goober",
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
 	if err != nil {
