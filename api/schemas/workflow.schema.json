@@ -76,11 +76,11 @@
         "type": {
           "type": "string",
           "enum": ["manual", "backlog-item", "schedule", "signal", "webhook"],
-          "description": "Trigger kind. backlog-item is reserved for V1 and has no V0 runtime consumer; webhook requires GitHub event names in events."
+          "description": "Trigger kind. backlog-item fans out scheduler runs from the provider's eligible-item count; webhook requires GitHub event names in events."
         },
         "selector": {
           "type": "object",
-          "description": "Reserved for V1 backlog-item routing; accepted by the V0 schema but not consumed at runtime.",
+          "description": "For backlog-item triggers, selector keys are required labels and values are ignored; full k8s-style selector matching remains V1.",
           "additionalProperties": { "type": "string" }
         },
         "schedule": { "type": "string" },
