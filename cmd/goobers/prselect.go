@@ -38,7 +38,9 @@ const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
 // concurrent merge-review and pr-remediation runs cannot select it together.
 const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"Select at most one open, non-draft, green-CI goober-authored PR for\n" +
-	"merge-review to evaluate this cycle (a workflow stage). Writes the\n" +
+	"merge-review to evaluate this cycle (a workflow stage). Before selection,\n" +
+	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
+	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url to the declared\n" +
 	"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
@@ -93,16 +95,40 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
 	defer cancelBlockerScan()
 	siblingBlocked := make(map[int]bool)
+	liveSiblingBlockers := make(map[int][]int)
 	blockedDependents := make(map[int]int)
 	for _, pr := range prs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
+		liveSiblingBlockers[pr.Number] = blockers
 		siblingBlocked[pr.Number] = len(blockers) > 0
 		for _, blocker := range blockers {
 			blockedDependents[blocker]++
 		}
+	}
+	couplings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, prs, siblingBlocked)
+	if err != nil {
+		return failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
+	}
+	for _, coupling := range couplings {
+		changed, ferr := flagFoundationCoupling(
+			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
+		)
+		if ferr != nil {
+			return failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), ferr, "selected-pr.json")
+		}
+		if !changed {
+			continue
+		}
+		liveSiblingBlockers[coupling.dependent.Number] = append(
+			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
+		)
+		siblingBlocked[coupling.dependent.Number] = true
+		blockedDependents[coupling.foundation.Number]++
+		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
+			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
 	}
 
 	var eligible []providers.PullRequestSummary

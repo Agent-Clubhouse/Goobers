@@ -846,7 +846,9 @@ select one eligible open PR for merge-review (a workflow stage)
 Usage: goobers pr-select [path]
 
 Select at most one open, non-draft, green-CI goober-authored PR for
-merge-review to evaluate this cycle (a workflow stage). Writes the
+merge-review to evaluate this cycle (a workflow stage). Before selection,
+park narrower PRs behind open PRs that clearly dominate a shared-file
+rewrite or deletion. Writes the
 selected PR's number/head/base/headSha/baseSha/url to the declared
 result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 2 = usage/IO error.
