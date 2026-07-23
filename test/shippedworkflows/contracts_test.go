@@ -445,6 +445,62 @@ func TestRequiredValueHandoffNamesMissingOrMisthreadedMapping(t *testing.T) {
 	}
 }
 
+func TestTerminalScenariosDiscoverInsertedLinearStages(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		stages []string
+	}{
+		{
+			name:   "implementation",
+			stages: []string{"query-backlog", "gather-implement-context", "implement"},
+		},
+		{
+			name:   "backlog-curation",
+			stages: []string{"query-backlog", "surface-duplicates", "curate", "release-claim"},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tasks := make([]apiv1.Task, 0, len(test.stages))
+			for index, stage := range test.stages {
+				task := apiv1.Task{
+					Name: stage, Type: apiv1.TaskAgentic, Goober: "fixture", Goal: stage,
+				}
+				if index+1 < len(test.stages) {
+					task.Next = test.stages[index+1]
+				}
+				tasks = append(tasks, task)
+			}
+			machine, err := workflow.Compile(workflow.Definition{
+				Name: test.name,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle:   "fixture",
+					Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+					Start:    test.stages[0],
+					Tasks:    tasks,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scenarios := terminalScenarios(t, machine)
+			if len(scenarios) != 1 {
+				t.Fatalf("terminal scenarios = %d, want one linear path", len(scenarios))
+			}
+			var got []string
+			for _, edge := range scenarios[0].steps {
+				got = append(got, edge.Source)
+			}
+			if !reflect.DeepEqual(got, test.stages) {
+				t.Fatalf("terminal scenario stages = %v, want %v", got, test.stages)
+			}
+		})
+	}
+}
+
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
