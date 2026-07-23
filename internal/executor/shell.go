@@ -227,6 +227,7 @@ var providerStageResultFiles = map[string]string{
 	"reconcile-post-merge":   "reconcile-post-merge-result.json",
 	"remediation-checkpoint": "checkpoint-result.json",
 	"respond-to-findings":    "remediation-response.json",
+	"set-milestone":          "milestone-result.json",
 	"update-behind-pr":       "update-behind-result.json",
 }
 

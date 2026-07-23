@@ -674,8 +674,8 @@ type ListWorkItemsRequest struct {
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label
-// add/remove, open/close, and an optional comment. Fields left nil/empty are
-// unchanged, so callers touch only what they intend to.
+// add/remove, open/close, milestone assignment, and an optional comment. Fields
+// left nil/empty are unchanged, so callers touch only what they intend to.
 type UpdateWorkItemRequest struct {
 	Repository   RepositoryRef `json:"repository"`
 	ID           string        `json:"id"`
@@ -683,6 +683,8 @@ type UpdateWorkItemRequest struct {
 	Body         *string       `json:"body,omitempty"`
 	AddLabels    []string      `json:"addLabels,omitempty"`
 	RemoveLabels []string      `json:"removeLabels,omitempty"`
+	// Milestone, when set, assigns an existing provider milestone by number.
+	Milestone *int `json:"milestone,omitempty"`
 	// State, when set, opens or closes the item ("open" or "closed").
 	State   string `json:"state,omitempty"`
 	Comment string `json:"comment,omitempty"`

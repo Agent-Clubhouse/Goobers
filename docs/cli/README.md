@@ -59,6 +59,7 @@
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
 | [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
 | [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
+| [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
@@ -1182,6 +1183,26 @@ Usage: goobers scaffold goober [--force] <name> [path]
 Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
+~~~
+
+## `goobers set-milestone`
+
+assign an existing milestone to an issue (a workflow stage)
+
+~~~text
+Usage: goobers set-milestone --item ID --milestone N [path]
+
+Assign an existing GitHub milestone number to an issue. Task inputs itemID
+and milestone provide the same workflow-stage configuration as the flags.
+Requires the github:milestones:write capability; github:issues:write alone
+does not authorize this command. Exit codes: 0 = assigned, 1 = business or
+provider error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers set-milestone --item 1227 --milestone 22
 ~~~
 
 ## `goobers signal`

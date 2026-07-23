@@ -55,6 +55,8 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers set-milestone --item ID --milestone N [path]
+                                assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
@@ -81,7 +83,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -150,6 +152,8 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers set-milestone --item ID --milestone N [path]
+                                assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
@@ -176,7 +180,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -770,6 +774,15 @@ Usage: goobers scaffold goober [--force] <name> [path]
 Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
+
+### set-milestone
+Usage: goobers set-milestone --item ID --milestone N [path]
+
+Assign an existing GitHub milestone number to an issue. Task inputs itemID
+and milestone provide the same workflow-stage configuration as the flags.
+Requires the github:milestones:write capability; github:issues:write alone
+does not authorize this command. Exit codes: 0 = assigned, 1 = business or
+provider error, 2 = usage/IO error.
 
 ### signal
 Usage: goobers signal <name> [path]

@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SET MILESTONE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers set-milestone \- assign an existing milestone to an issue (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers set-milestone\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers set-milestone --item ID --milestone N [path]
+
+Assign an existing GitHub milestone number to an issue. Task inputs itemID
+and milestone provide the same workflow-stage configuration as the flags.
+Requires the github:milestones:write capability; github:issues:write alone
+does not authorize this command. Exit codes: 0 = assigned, 1 = business or
+provider error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers set-milestone --item 1227 --milestone 22
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

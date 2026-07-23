@@ -41,6 +41,7 @@ _goobers_completion()
             'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'
             'open-pr:open or update the run'\''s PR (a workflow stage)'
             'issue-close-out:comment + close out the claimed issue (a workflow stage)'
+            'set-milestone:assign an existing milestone to an issue (a workflow stage)'
             'merge-pr:conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)'
             'record-merge-refusal:record a merge refusal and demote a persistently-stuck lander (a workflow stage)'
             'merge-queue-poll:watch an enqueued PR until merged or evicted (a workflow stage)'

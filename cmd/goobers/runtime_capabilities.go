@@ -313,6 +313,10 @@ func init() {
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).
 			withExamples("goobers issue-close-out"),
+		command("set-milestone", apicontract.ActionWorkflowExecution, runSetMilestone).
+			withSynopsis(synopsisByID["set-milestone"]).
+			withHelp("assign an existing milestone to an issue (a workflow stage)", setMilestoneHelp).
+			withExamples("goobers set-milestone --item 1227 --milestone 22"),
 		command("merge-pr", apicontract.ActionWorkflowExecution, runMergePR).
 			withSynopsis(synopsisByID["merge-pr"]).
 			withHelp("conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)", mergePRHelp).

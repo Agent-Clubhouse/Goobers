@@ -31,6 +31,7 @@ type fakeIssue struct {
 	commentTypes   []string
 	commentTimes   []time.Time
 	assignee       string
+	milestone      int
 	children       []int
 }
 
@@ -307,8 +308,9 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		writeFakeJSON(w, issueJSON(issue))
 	case len(parts) == 1 && r.Method == http.MethodPatch:
 		var body struct {
-			Labels *[]string `json:"labels"`
-			State  string    `json:"state"`
+			Labels    *[]string `json:"labels"`
+			State     string    `json:"state"`
+			Milestone *int      `json:"milestone"`
 		}
 		decodeFakeJSON(r, &body)
 		if body.Labels != nil {
@@ -316,6 +318,9 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		if body.State != "" {
 			issue.state = body.State
+		}
+		if body.Milestone != nil {
+			issue.milestone = *body.Milestone
 		}
 		writeFakeJSON(w, issueJSON(issue))
 	case len(parts) == 2 && parts[1] == "sub_issues" && r.Method == http.MethodGet:
@@ -621,6 +626,12 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	}
 	if issue.assignee != "" {
 		out["assignees"] = []map[string]string{{"login": issue.assignee}}
+	}
+	if issue.milestone > 0 {
+		out["milestone"] = map[string]interface{}{
+			"id": issue.milestone, "number": issue.milestone,
+			"title": fmt.Sprintf("Milestone %d", issue.milestone),
+		}
 	}
 	return out
 }

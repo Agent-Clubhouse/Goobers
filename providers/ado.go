@@ -552,7 +552,7 @@ func (p *ADOProvider) ListComments(context.Context, RepositoryRef, string) ([]Co
 	return nil, errADOBacklogV1
 }
 
-// UpdateWorkItem reaches parity in V1 (BL-033).
+// UpdateWorkItem, including milestone assignment, reaches parity in V1 (BL-033).
 func (p *ADOProvider) UpdateWorkItem(context.Context, UpdateWorkItemRequest) (WorkItem, error) {
 	return WorkItem{}, errADOBacklogV1
 }
