@@ -22,7 +22,12 @@ func seedRemediationResponseRun(t *testing.T, root, runID string, verdict apiv1.
 	if err != nil {
 		t.Fatalf("create remediation run journal: %v", err)
 	}
-	contextData, err := json.Marshal(remediationContextArtifact{Verdict: &verdict})
+	contextData, err := json.Marshal(apiv1.RemediationBrief{
+		Schema: apiv1.RemediationBriefVersion,
+		GatherPRContext: apiv1.RemediationPRContext{
+			Verdict: &verdict,
+		},
+	})
 	if err != nil {
 		t.Fatalf("marshal remediation context: %v", err)
 	}
