@@ -218,6 +218,8 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - flag-scope-drift
       expectedOutputs:
         - selectedNumber
       next: implement

@@ -107,6 +107,8 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - flag-scope-drift
       expectedOutputs:
         # selectedNumber is threaded to apply-verdict's inputsFrom (#413) — its
         # omission here left the declared postcondition out of sync with the

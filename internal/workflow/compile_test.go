@@ -735,6 +735,39 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	}
 }
 
+func TestCompileGatherSiblingContextRequiresScopeDriftAction(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "gather",
+		Tasks: []apiv1.Task{{
+			Name:         "gather",
+			Type:         apiv1.TaskDeterministic,
+			Goal:         "gather sibling context",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "gather-sibling-context"}},
+			Capabilities: []string{string(capability.GitHubPRWrite)},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `command "goobers gather-sibling-context" prescribes policy action "flag-scope-drift" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"flag-scope-drift"}
+	spec.Tasks[0].Capabilities = nil
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `policy action "flag-scope-drift" requires capability "github:pr:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared scope-drift action and capability should compile: %v", err)
+	}
+}
+
 func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 	cases := []struct {
 		name       string

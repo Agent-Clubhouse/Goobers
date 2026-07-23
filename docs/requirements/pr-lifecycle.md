@@ -376,9 +376,9 @@ goober lacks the canonical grant.
 
 The audit below covers all six shipped self-host workflows and conditional
 mutation modes exposed by policy-bearing built-in commands. Read-only stages
-(`gather-signals`, PR/context selection, CI polling, validation, local tests)
-and the `analyst` and `reviewer` personas prescribe no external mutation and
-therefore have no action row.
+(`gather-signals`, `pr-select`, `gather-pr-context`, CI polling, validation,
+local tests) and the `analyst` and `reviewer` personas prescribe no external
+mutation and therefore have no action row.
 
 | Action | Workflow / task | Required capability | Status |
 |---|---|---|---|
@@ -397,6 +397,7 @@ therefore have no action row.
 | Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
 | Route a verdict to merge-ready, remediation, sibling-blocked, or escalation (`route-verdict`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
 | Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` | Covered |
 | Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` | Covered |
 | Route an evicted or timed-out queue entry to remediation (`route-queue-outcome`) | `merge-review/queue-watch` | `github:issues:write` | Covered |

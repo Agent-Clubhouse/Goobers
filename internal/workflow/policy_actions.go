@@ -30,6 +30,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"edit-issue":                    {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":                   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"fan-out-remediation":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"flag-scope-drift":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -53,6 +54,7 @@ var policyActionContracts = map[string]policyActionContract{
 
 var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
+	"gather-sibling-context": {"flag-scope-drift"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
 	"merge-queue-poll":       {"watch-merge-queue", "route-queue-outcome", "delete-branch"},

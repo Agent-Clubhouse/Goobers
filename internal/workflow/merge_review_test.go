@@ -106,6 +106,13 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if got := prSelect.Inputs["headPrefix"]; got != "goobers/implementation/" {
 				t.Errorf("pr-select headPrefix = %q, want goobers/implementation/", got)
 			}
+			gatherSiblings, ok := m.Task("gather-sibling-context")
+			if !ok {
+				t.Fatal("gather-sibling-context task not found")
+			}
+			if want := []string{"flag-scope-drift"}; !reflect.DeepEqual(gatherSiblings.PolicyActions, want) {
+				t.Errorf("gather-sibling-context policyActions = %v, want %v", gatherSiblings.PolicyActions, want)
+			}
 
 			review, ok := m.Gate("review")
 			if !ok {
