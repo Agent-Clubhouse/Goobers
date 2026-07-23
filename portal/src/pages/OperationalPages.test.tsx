@@ -27,6 +27,26 @@ describe("operational overview", () => {
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
 
+  it("reports a stale scheduler heartbeat as unhealthy", async () => {
+    const fixtures = emptyDaemonFixtures();
+    fixtures.health = {
+      ...fixtures.health,
+      healthy: false,
+      freshness: {
+        ...fixtures.health.freshness,
+        lastSchedulerTickAt: "2026-07-18T19:57:00Z",
+        lastTickAgeMillis: 180_000,
+      },
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is unhealthy." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
+    expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
+  });
+
   it("groups canonical phases and places attention rows before aggregate counts", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 

@@ -204,6 +204,7 @@ func newWireFixtures() wireFixtures {
 			APIVersion:    readservice.APIVersion,
 			SchemaVersion: readservice.SchemaVersion,
 			Ready:         true,
+			Healthy:       true,
 			Instance: readservice.InstanceIdentity{
 				Name:        "fixture",
 				Environment: apiv1.EnvironmentDev,
@@ -212,6 +213,8 @@ func newWireFixtures() wireFixtures {
 				ObservedAt:          timestamp,
 				DefinitionsLoadedAt: startedAt,
 				JournalUpdatedAt:    nil,
+				LastSchedulerTickAt: &startedAt,
+				LastTickAgeMillis:   int64Pointer(timestamp.Sub(startedAt).Milliseconds()),
 			},
 		},
 		Instance: readservice.Instance{
@@ -505,4 +508,8 @@ func newWireFixtures() wireFixtures {
 			},
 		},
 	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }

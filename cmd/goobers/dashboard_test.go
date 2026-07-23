@@ -21,6 +21,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
@@ -126,6 +127,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 			APIVersion:    readservice.APIVersion,
 			SchemaVersion: readservice.SchemaVersion,
 			Ready:         true,
+			Healthy:       true,
 		}); err != nil {
 			t.Errorf("encode health response: %v", err)
 		}
@@ -177,6 +179,37 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	standalone.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("standalone health status = %d, body = %q", response.Code, response.Body.String())
+	}
+}
+
+func TestPrepareDashboardAPIFallsBackWhenDaemonTicksAreStale(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	release, err := acquireDaemonLock(lockPath, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := daemonstate.Refresh(lockPath, time.Now().Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := api.close(); err != nil {
+			t.Errorf("close dashboard API: %v", err)
+		}
+	}()
+	if api.mode != dashboardModeStandalone {
+		t.Fatalf("mode = %q, want standalone for stale daemon heartbeat", api.mode)
 	}
 }
 
@@ -249,6 +282,7 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 			APIVersion:    readservice.APIVersion,
 			SchemaVersion: readservice.SchemaVersion,
 			Ready:         true,
+			Healthy:       true,
 		}); err != nil {
 			t.Errorf("encode health response: %v", err)
 		}

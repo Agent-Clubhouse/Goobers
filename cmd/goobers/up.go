@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -255,6 +256,16 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	startupConfig, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		pf(stderr, "error: invalid instance.yaml: %v\n", err)
+		return 1
+	}
+	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
 	// must fail fast with a clear message, not silently race the first.
@@ -262,7 +273,8 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root)
+	lockPath := filepath.Join(l.SchedulerDir(), "up.lock")
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -306,6 +318,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		Definitions: setup.Definitions,
 		Validation:  setup.Validation,
 		Telemetry:   setup.RollupDB,
+		SchedulerHeartbeat: func() (time.Time, error) {
+			return daemonstate.Read(lockPath)
+		},
+		LivenessTimeout: livenessTimeout,
 	}, ready.Load)
 	if err != nil {
 		pf(stderr, "error: initialize read service: %v\n", err)
@@ -407,6 +423,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
+	opts = append(opts, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+		return daemonstate.Refresh(lockPath, tickAt)
+	}))
 	// #353: start the open-PR-count refresher and wire it as the MaxOpenPRs cap's
 	// counter. Runs on its own interval/context under the daemon's WaitGroup, so
 	// Admit reads a cached count (never a network call under the tick lock) and
@@ -678,6 +697,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
+	schedulerFailed := false
 	apiFailed := false
 	webhookFailed := false
 	configFailed := false
@@ -762,6 +782,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
+		schedulerFailed = true
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
@@ -773,7 +794,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
 	}
-	if apiFailed || webhookFailed || configFailed {
+	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
 	return 0

@@ -76,6 +76,7 @@ func (r standaloneDashboardReader) Health(ctx context.Context) (readservice.Heal
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
 		Ready:         true,
+		Healthy:       true,
 		Instance:      r.identity,
 		Freshness: readservice.Freshness{
 			ObservedAt:          time.Now().UTC(),
@@ -250,11 +251,14 @@ func listenDashboard(port dashboardPort) (net.Listener, error) {
 }
 
 func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *instance.Config, errorLog *log.Logger) (dashboardAPI, error) {
-	running, _, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
+	running, _, liveness, err := inspectDaemonLiveness(
+		filepath.Join(layout.SchedulerDir(), "up.lock"),
+		time.Now(),
+	)
 	if err != nil {
 		return dashboardAPI{}, err
 	}
-	if running {
+	if running && liveness.Healthy {
 		target, err := waitForDashboardDaemon(ctx, layout, config.APIListenAddress())
 		if err != nil {
 			return dashboardAPI{}, err
@@ -301,6 +305,8 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configu
 						lastErr = decodeErr
 					case !health.Ready:
 						lastErr = errors.New("daemon API is not ready")
+					case !health.Healthy:
+						lastErr = errors.New("daemon scheduler heartbeat is stale")
 					case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
 						lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
 							health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)

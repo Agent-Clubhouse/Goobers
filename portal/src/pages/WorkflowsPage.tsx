@@ -64,7 +64,9 @@ function WorkflowInventory({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              {snapshot.health.ready
+              {!standalone && !snapshot.health.healthy
+                ? "The daemon scheduler heartbeat is stale. Check the daemon before relying on live operations."
+                : snapshot.health.ready
                 ? standalone
                   ? "The instance is ready. Provision a gaggle to make its workflows and goobers visible here."
                   : "The daemon is ready. Provision a gaggle to make its workflows and goobers visible here."

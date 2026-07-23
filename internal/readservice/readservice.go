@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -47,6 +48,7 @@ type Health struct {
 	APIVersion    string           `json:"apiVersion"`
 	SchemaVersion string           `json:"schemaVersion"`
 	Ready         bool             `json:"ready"`
+	Healthy       bool             `json:"healthy"`
 	Instance      InstanceIdentity `json:"instance"`
 	Freshness     Freshness        `json:"freshness"`
 }
@@ -62,15 +64,19 @@ type Freshness struct {
 	ObservedAt          time.Time  `json:"observedAt"`
 	DefinitionsLoadedAt time.Time  `json:"definitionsLoadedAt"`
 	JournalUpdatedAt    *time.Time `json:"journalUpdatedAt"`
+	LastSchedulerTickAt *time.Time `json:"lastSchedulerTickAt"`
+	LastTickAgeMillis   *int64     `json:"lastTickAgeMillis"`
 }
 
 // LocalSources are the three local projections behind the shared service.
 type LocalSources struct {
-	Layout      instance.Layout
-	Config      *instance.Config
-	Definitions *instance.ConfigSet
-	Validation  *validate.Report
-	Telemetry   *rollup.DB
+	Layout             instance.Layout
+	Config             *instance.Config
+	Definitions        *instance.ConfigSet
+	Validation         *validate.Report
+	Telemetry          *rollup.DB
+	SchedulerHeartbeat func() (time.Time, error)
+	LivenessTimeout    time.Duration
 }
 
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
@@ -152,22 +158,40 @@ func (s *Local) Health(ctx context.Context) (Health, error) {
 		return Health{}, fmt.Errorf("read instance journal freshness: %w", err)
 	}
 
+	observedAt := s.now().UTC()
 	journalUpdatedAt := info.ModTime().UTC()
 	definitions := s.definitions.Load()
 	ref := definitions.set.Manifest.Spec.Instance
+	healthy := true
+	var lastSchedulerTickAt *time.Time
+	var lastTickAgeMillis *int64
+	if s.sources.SchedulerHeartbeat != nil {
+		lastTickAt, err := s.sources.SchedulerHeartbeat()
+		if err != nil {
+			return Health{}, fmt.Errorf("read scheduler heartbeat: %w", err)
+		}
+		liveness := daemonstate.Evaluate(observedAt, lastTickAt, s.sources.LivenessTimeout)
+		healthy = liveness.Healthy
+		lastSchedulerTickAt = &liveness.LastTickAt
+		ageMillis := liveness.Age.Milliseconds()
+		lastTickAgeMillis = &ageMillis
+	}
 
 	return Health{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
 		Ready:         s.ready(),
+		Healthy:       healthy,
 		Instance: InstanceIdentity{
 			Name:        ref.Name,
 			Environment: ref.Environment,
 		},
 		Freshness: Freshness{
-			ObservedAt:          s.now().UTC(),
+			ObservedAt:          observedAt,
 			DefinitionsLoadedAt: definitions.loadedAt,
 			JournalUpdatedAt:    &journalUpdatedAt,
+			LastSchedulerTickAt: lastSchedulerTickAt,
+			LastTickAgeMillis:   lastTickAgeMillis,
 		},
 	}, nil
 }

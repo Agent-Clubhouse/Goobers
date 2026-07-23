@@ -64,6 +64,9 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	if !got.Ready {
 		t.Fatal("health should report ready")
 	}
+	if !got.Healthy {
+		t.Fatal("health without a daemon heartbeat should remain healthy")
+	}
 	if got.Instance.Name != "clubhouse" || got.Instance.Environment != apiv1.EnvironmentDev {
 		t.Fatalf("instance = %+v", got.Instance)
 	}
@@ -75,6 +78,44 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	}
 	if !got.Freshness.DefinitionsLoadedAt.Equal(eventTime) {
 		t.Fatalf("definitionsLoadedAt = %s, want %s", got.Freshness.DefinitionsLoadedAt, eventTime.UTC())
+	}
+}
+
+func TestLocalHealthReportsStaleSchedulerHeartbeat(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lastTickAt := time.Date(2026, time.July, 23, 9, 0, 0, 0, time.UTC)
+	service, err := NewLocal(LocalSources{
+		Layout:      l,
+		Definitions: testDefinitions(),
+		SchedulerHeartbeat: func() (time.Time, error) {
+			return lastTickAt, nil
+		},
+		LivenessTimeout: time.Minute,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return lastTickAt.Add(2 * time.Minute) }
+
+	got, err := service.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Ready || got.Healthy {
+		t.Fatalf("health = %+v, want ready but unhealthy", got)
+	}
+	if got.Freshness.LastSchedulerTickAt == nil || !got.Freshness.LastSchedulerTickAt.Equal(lastTickAt) {
+		t.Fatalf("lastSchedulerTickAt = %v, want %s", got.Freshness.LastSchedulerTickAt, lastTickAt)
+	}
+	if got.Freshness.LastTickAgeMillis == nil || *got.Freshness.LastTickAgeMillis != 120_000 {
+		t.Fatalf("lastTickAgeMillis = %v, want 120000", got.Freshness.LastTickAgeMillis)
 	}
 }
 

@@ -53,6 +53,7 @@ function Overview({
 }) {
   const groups = overview.groups;
   const emptyInstance = overview.gaggleCount === 0;
+  const healthy = standalone || overview.health.healthy;
 
   return (
     <>
@@ -64,6 +65,8 @@ function Overview({
               ? overview.health.ready
                 ? "Instance is ready."
                 : "Instance data is loading."
+            : !healthy
+              ? "Daemon is unhealthy."
               : overview.health.ready
                 ? "Daemon is ready."
                 : "Daemon is starting."
@@ -129,7 +132,9 @@ function Overview({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              {overview.health.ready
+              {!healthy
+                ? "The daemon scheduler heartbeat is stale. Check the daemon before relying on live operations."
+                : overview.health.ready
                 ? standalone
                   ? "The instance is ready for provisioned gaggle, goober, and workflow definitions."
                   : "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
@@ -170,28 +175,43 @@ function InstanceStrip({
   overview: OperationalOverview;
   standalone: boolean;
 }) {
+  const healthy = standalone || overview.health.healthy;
+  const tickAge = overview.health.freshness.lastTickAgeMillis;
+  const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
   return (
     <section
       aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
       className="instance-strip"
     >
       <div>
-        <span aria-hidden="true" className={overview.health.ready ? "live-mark" : "live-mark pending"} />
+        <span
+          aria-hidden="true"
+          className={healthy && overview.health.ready ? "live-mark" : "live-mark pending"}
+        />
         <strong>
           {standalone
             ? overview.health.ready
               ? "Local instance loaded"
               : "Local instance not ready"
-            : overview.health.ready
-              ? "Daemon ready"
-              : "Daemon starting"}
+            : !healthy
+              ? "Daemon unhealthy"
+              : overview.health.ready
+                ? "Daemon ready"
+                : "Daemon starting"}
         </strong>
-        <span>
-          observed{" "}
-          <time dateTime={overview.health.freshness.observedAt}>
-            {formatTimestamp(overview.health.freshness.observedAt)}
-          </time>
-        </span>
+        {!standalone && tickAge !== null && lastTickAt !== null ? (
+          <span>
+            last scheduler tick {formatDuration(tickAge)} ago at{" "}
+            <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>
+          </span>
+        ) : (
+          <span>
+            observed{" "}
+            <time dateTime={overview.health.freshness.observedAt}>
+              {formatTimestamp(overview.health.freshness.observedAt)}
+            </time>
+          </span>
+        )}
       </div>
       <dl>
         <div>
