@@ -5,10 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
-
-const pruningDirSuffix = ".telemetry-pruning"
 
 // Rebuild derives telemetry.db from scratch by wiping any existing rollup at
 // dbPath and re-ingesting every run directory under runsDir plus the instance
@@ -70,7 +67,7 @@ func runDirs(runsDir string) ([]string, error) {
 	}
 	var dirs []string
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasSuffix(e.Name(), pruningDirSuffix) {
+		if !e.IsDir() {
 			continue
 		}
 		dir := filepath.Join(runsDir, e.Name())

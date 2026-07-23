@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -16,7 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const stagingSuffix = ".telemetry-pruning"
+const stagingDirName = ".telemetry-pruning"
 
 // Policy is the resolved retention policy. A run is eligible when either bound
 // is exceeded, provided the run is terminal.
@@ -101,7 +100,7 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 			return nil, fmt.Errorf("telemetry retention: read %s: %w", root, err)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || strings.HasSuffix(entry.Name(), stagingSuffix) {
+			if !entry.IsDir() {
 				continue
 			}
 			dir := filepath.Join(root, entry.Name())
@@ -183,7 +182,13 @@ func pruneOne(candidate Result, db *rollup.DB) (bool, error) {
 		return false, nil
 	}
 
-	staged := candidate.RunDir + stagingSuffix
+	staged := stagedRunDir(candidate.RunDir)
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		return false, errors.Join(
+			fmt.Errorf("telemetry retention: create staging directory for run %s: %w", candidate.RunID, err),
+			journal.ClearPruneReservation(candidate.RunDir),
+		)
+	}
 	if err := os.Rename(candidate.RunDir, staged); err != nil {
 		clearErr := journal.ClearPruneReservation(candidate.RunDir)
 		if errors.Is(err, fs.ErrNotExist) && clearErr == nil {
@@ -210,27 +215,49 @@ func pruneOne(candidate Result, db *rollup.DB) (bool, error) {
 	return true, nil
 }
 
+func stagedRunDir(runDir string) string {
+	runRoot := filepath.Dir(runDir)
+	return filepath.Join(stagingRoot(runRoot), filepath.Base(runDir))
+}
+
+func stagingRoot(runRoot string) string {
+	return filepath.Join(filepath.Dir(runRoot), stagingDirName)
+}
+
 func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 	for _, root := range runRoots {
-		entries, err := os.ReadDir(root)
+		stagedRoot := stagingRoot(root)
+		entries, err := os.ReadDir(stagedRoot)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("telemetry retention: read %s for interrupted prunes: %w", root, err)
+			return fmt.Errorf("telemetry retention: read %s for interrupted prunes: %w", stagedRoot, err)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || !strings.HasSuffix(entry.Name(), stagingSuffix) {
+			if !entry.IsDir() {
 				continue
 			}
-			dir := filepath.Join(root, entry.Name())
-			runID := strings.TrimSuffix(entry.Name(), stagingSuffix)
+			dir := filepath.Join(stagedRoot, entry.Name())
+			runID := entry.Name()
 			// DeleteRun commits before RemoveAll begins, so a staged directory
 			// whose run.yaml was already unlinked only needs idempotent cleanup.
-			if reader, openErr := journal.OpenRead(dir); openErr == nil {
-				if identity, identityErr := reader.Identity(); identityErr == nil {
-					runID = identity.RunID
+			reader, openErr := journal.OpenRead(dir)
+			if openErr == nil {
+				phase, phaseErr := reader.Phase()
+				if phaseErr != nil {
+					return fmt.Errorf("telemetry retention: read staged run %s phase: %w", runID, phaseErr)
 				}
+				if phase == journal.PhaseRunning {
+					return fmt.Errorf("telemetry retention: staged run %s is not terminal", runID)
+				}
+				identity, identityErr := reader.Identity()
+				if identityErr != nil {
+					return fmt.Errorf("telemetry retention: read staged run %s identity: %w", runID, identityErr)
+				}
+				runID = identity.RunID
+			} else if !errors.Is(openErr, fs.ErrNotExist) {
+				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
 			}
 			if err := db.DeleteRun(runID); err != nil {
 				return fmt.Errorf("telemetry retention: finish rollup prune for run %s: %w", runID, err)

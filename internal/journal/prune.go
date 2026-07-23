@@ -9,6 +9,9 @@ import (
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
+// ErrPruneReserved reports that telemetry pruning has claimed a run journal.
+var ErrPruneReserved = errors.New("journal: run reserved for telemetry pruning")
+
 // ReserveTerminalForPrune prevents a terminal journal from being resumed while
 // telemetry pruning moves and removes it. A live or paused run is not reserved.
 func ReserveTerminalForPrune(dir string) (bool, error) {
@@ -37,6 +40,38 @@ func ReserveTerminalForPrune(dir string) (bool, error) {
 	}
 	if err := WriteFileAtomic(filepath.Join(dir, filePruning), []byte("reserved\n"), 0o644); err != nil {
 		return false, fmt.Errorf("journal: write telemetry pruning reservation: %w", err)
+	}
+	return true, nil
+}
+
+// WithPruneProtection serializes a journal read with telemetry pruning. The
+// callback runs while the per-run lock is held and is not called after pruning
+// has reserved the journal.
+func WithPruneProtection(dir string, fn func() error) error {
+	lock, err := acquireJournalLock(dir, "telemetry ingest")
+	if err != nil {
+		return err
+	}
+	defer releaseJournalLock(lock)
+
+	reserved, err := PruneReserved(dir)
+	if err != nil {
+		return err
+	}
+	if reserved {
+		return fmt.Errorf("%w: %s", ErrPruneReserved, dir)
+	}
+	return fn()
+}
+
+// PruneReserved reports whether a run journal contains a durable prune
+// reservation.
+func PruneReserved(dir string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(dir, filePruning)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("journal: inspect telemetry pruning reservation: %w", err)
 	}
 	return true, nil
 }

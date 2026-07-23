@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -18,6 +19,12 @@ import (
 // TEL-032) and the per-run primitive Rebuild uses to rederive the whole store
 // from the journals (the rollup is derived state, never the source of truth).
 func (db *DB) IngestRun(runDir string) error {
+	return journal.WithPruneProtection(runDir, func() error {
+		return db.ingestRun(runDir)
+	})
+}
+
+func (db *DB) ingestRun(runDir string) error {
 	identity, err := readRunIdentity(runDir)
 	if err != nil {
 		return err
