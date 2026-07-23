@@ -257,9 +257,12 @@ func buildEnvCapabilities() map[string]string {
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	adapter := &harness.CopilotAdapter{
-		Command:           []string{"copilot"},
-		AuthCheckArgs:     copilotAuthCheckArgs,
-		EnvCapabilities:   envCaps,
+		Command:         []string{"copilot"},
+		AuthCheckArgs:   copilotAuthCheckArgs,
+		EnvCapabilities: envCaps,
+		OptionalCredentialCapabilities: map[string]bool{
+			string(capability.AgentModel): true,
+		},
 		ExtraEnvAllowlist: envPassthrough,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {

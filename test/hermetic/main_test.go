@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseInvocationPreservesConfiguredGoCommand(t *testing.T) {
@@ -67,6 +68,25 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 	if err := linkTool(ambientGo, configuredGo); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			err := os.Remove(configuredGo)
+			if err == nil || os.IsNotExist(err) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("remove configured Go executable: %v", err)
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+	goroot, err := exec.Command(ambientGo, "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatalf("resolve ambient GOROOT: %v", err)
+	}
+	t.Setenv("GOROOT", strings.TrimSpace(string(goroot)))
 
 	tools, _, err := resolveTools(configuredGo)
 	if err != nil {

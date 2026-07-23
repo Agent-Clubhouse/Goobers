@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,7 +47,7 @@ func TestGenerateGroupsHistoryAndUsesCuratedFile(t *testing.T) {
 		},
 	}
 	readFile := func(path string) ([]byte, error) {
-		if path != ".github/release-notes/v1.2.0.md" {
+		if filepath.ToSlash(path) != ".github/release-notes/v1.2.0.md" {
 			t.Fatalf("read path = %q", path)
 		}
 		return []byte("A curated overview.\n"), nil

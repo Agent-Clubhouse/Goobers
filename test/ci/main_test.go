@@ -98,14 +98,14 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 
 	buildCheck := gotChecks[6]
-	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
+	if got := filepath.ToSlash(strings.Join(buildCheck.args, " ")); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
 		t.Fatalf("goobers build args = %q", got)
 	}
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, versionPackage+".Version=v1.2.3") {
 		t.Fatalf("goobers build args missing metadata: %q", got)
 	}
 	validateCheck := gotChecks[7]
-	if got := strings.Join(validateCheck.args, " "); got != "run ./test/configvalidate bin/goobers" {
+	if got := filepath.ToSlash(strings.Join(validateCheck.args, " ")); got != "run ./test/configvalidate bin/goobers" {
 		t.Fatalf("validate-configs args = %q", got)
 	}
 }
@@ -211,10 +211,10 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		"windows",
 		"",
 	)
-	if args := strings.Join(got[5].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
+	if args := filepath.ToSlash(strings.Join(got[5].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
-	if args := strings.Join(got[6].args, " "); args != "run ./test/configvalidate bin/goobers.exe" {
+	if args := filepath.ToSlash(strings.Join(got[6].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {

@@ -1,5 +1,7 @@
 //go:build windows
 
+// Package winsvc adapts the goobers daemon's context-cancellation shutdown path
+// to the Windows Service Control Manager.
 package winsvc
 
 import (

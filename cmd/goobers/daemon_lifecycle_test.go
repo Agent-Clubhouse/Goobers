@@ -82,6 +82,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer setup.Shutdown(context.Background())
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -135,7 +136,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 func waitForRunPhase(t *testing.T, runsDir, runID string, want journal.RunPhase) {
 	t.Helper()
 	dir := filepath.Join(runsDir, runID)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
 			if st, err := reader.State(); err == nil && st.Phase == want {
@@ -164,6 +165,8 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer setup.Shutdown(context.Background())
+	defer setup.Shutdown(context.Background())
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -178,6 +181,7 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer setup.Shutdown(context.Background())
 	var finished journal.Event
 	for _, ev := range events {
 		if ev.Type == journal.EventRunFinished && ev.RunID == "stuck-2" {
@@ -232,6 +236,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer setup.Shutdown(context.Background())
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)

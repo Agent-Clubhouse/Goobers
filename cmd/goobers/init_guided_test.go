@@ -42,7 +42,8 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"Pull-request PAT permissions: Pull requests: Read and write; Contents: Read and write.",
 		"Implementation CI polling also requires: Checks: Read-only; Commit statuses: Read-only.",
 		"Repository push PAT permissions: Contents: Read and write.",
-		"Copilot PAT permissions: Copilot Requests: Read-only; no repository access.",
+		"Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.",
+		"For a headless service/CI account",
 		"Author workflows:",
 		"docs/guides/dsl-authoring-skill.md",
 		"Make custom agent stages:",
@@ -68,7 +69,6 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		string(capability.GitHubIssuesWrite): "GOOBERS_GITHUB_ISSUES_TOKEN",
 		string(capability.GitHubPRWrite):     "GOOBERS_GITHUB_PR_TOKEN",
 		string(capability.RepoPush):          "GOOBERS_GITHUB_PUSH_TOKEN",
-		string(capability.AgentModel):        "GOOBERS_COPILOT_TOKEN",
 	}
 	if len(cfg.Credentials) != len(wantCredentials) {
 		t.Fatalf("guided credentials = %+v, want %v", cfg.Credentials, wantCredentials)
@@ -103,7 +103,7 @@ func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) 
 	}
 	if opts.RepoTokenEnv != "GOOBERS_GITHUB_REPO_TOKEN" ||
 		opts.WorkTrackingTokenEnv != "GOOBERS_GITHUB_ISSUES_TOKEN" ||
-		opts.CopilotTokenEnv != "GOOBERS_COPILOT_TOKEN" {
+		opts.CopilotTokenEnv != "" {
 		t.Fatalf("unexpected common token refs: %+v", opts)
 	}
 	if opts.PullRequestTokenEnv != "" || opts.RepoPushTokenEnv != "" {

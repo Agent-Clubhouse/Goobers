@@ -2,14 +2,14 @@ package journal
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // writeContent scrubs data, content-addresses it, and writes it to dir/relPath,
@@ -71,7 +71,7 @@ func writeStateAtomic(dir string, st State) error {
 	if err := writeFileSynced(tmp, b, 0o644); err != nil {
 		return fmt.Errorf("journal: write state temp: %w", err)
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, fileState)); err != nil {
+	if err := durability.ReplaceFile(tmp, filepath.Join(dir, fileState)); err != nil {
 		return fmt.Errorf("journal: commit state.json: %w", err)
 	}
 	return fsyncDir(dir)
@@ -93,7 +93,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := writeFileSynced(tmp, data, perm); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := durability.ReplaceFile(tmp, path); err != nil {
 		return err
 	}
 	return fsyncDir(filepath.Dir(path))
@@ -121,21 +121,10 @@ func fsyncDir(dir string) error {
 	if fsyncDisabled() {
 		return nil
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		// Directory fsync is unsupported on some platforms/filesystems (EINVAL or
-		// ENOTSUP) — tolerate exactly that. Any other sync failure is a genuine
-		// durability problem and must surface, not be swallowed.
-		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
-			return nil
-		}
+	if err := durability.SyncDir(dir); err != nil {
 		return fmt.Errorf("journal: fsync dir %s: %w", dir, err)
 	}
-	return d.Close()
+	return nil
 }
 
 // sortedKeys returns the keys of m in deterministic order, so input snapshots

@@ -773,6 +773,13 @@ func runGitCommand(dir string, args ...string) error {
 	if dir != "" {
 		command.Dir = dir
 	}
+	command.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.autocrlf",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.safecrlf",
+		"GIT_CONFIG_VALUE_1=false",
+	)
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output

@@ -102,6 +102,7 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer setup.Shutdown(context.Background())
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -101,6 +103,11 @@ type CopilotAdapter struct {
 	// present in the invocation's declared+granted set — ever reach the
 	// subprocess environment (capability enforcement, GBO-052).
 	EnvCapabilities map[string]string
+	// OptionalCredentialCapabilities names capabilities whose credential may
+	// be omitted because the CLI can use an existing authenticated user session.
+	// A configured grant still resolves and injects normally; only the absence
+	// of a grant is tolerated. Other capabilities remain fail-closed.
+	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
 	// VersionArgs are the args used to preflight-check the CLI responds
@@ -218,7 +225,8 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
+		command := resolveCopilotCommand(c.Command)
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
 		}
@@ -284,7 +292,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	argv := append(append([]string{}, c.Command...), flag, prompt)
+	argv := append(resolveCopilotCommand(c.Command), flag, prompt)
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -382,6 +390,10 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		}
 		token, err := req.Credentials.Token(ctx, capability)
 		if err != nil {
+			if c.OptionalCredentialCapabilities[capability] &&
+				errors.Is(err, credentials.ErrNoCredentialForCapability) {
+				continue
+			}
 			return nil, fmt.Errorf("harness: copilot-cli: resolve %s: %w", capability, err)
 		}
 		env = append(env, envVar+"="+token)

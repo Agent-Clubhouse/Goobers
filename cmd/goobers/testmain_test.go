@@ -68,6 +68,7 @@ func TestMain(m *testing.M) {
 	}
 
 	disableGitFsyncForTests()
+	disableGitLineEndingConversionForTests()
 	disableJournalFsyncForTests()
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
@@ -113,6 +114,15 @@ func TestJournalFsyncDisabledForSuite(t *testing.T) {
 // — the latter makes git print a "deprecated" warning to stderr that pollutes
 // the combined output callers like gatherPRContext parse.
 func disableGitFsyncForTests() {
+	appendGitConfigForTests("core.fsync", "none")
+}
+
+func disableGitLineEndingConversionForTests() {
+	appendGitConfigForTests("core.autocrlf", "false")
+	appendGitConfigForTests("core.safecrlf", "false")
+}
+
+func appendGitConfigForTests(key, value string) {
 	n := 0
 	if existing := os.Getenv("GIT_CONFIG_COUNT"); existing != "" {
 		if parsed, err := strconv.Atoi(existing); err == nil && parsed > 0 {
@@ -123,8 +133,8 @@ func disableGitFsyncForTests() {
 	// never do; TestGitFsyncDisabledForSuite verifies the config actually reached
 	// a git child regardless, so an explicit discard matches the suite's
 	// os.Setenv convention (see main_test.go) without a meaningless error path.
-	_ = os.Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(n), "core.fsync")
-	_ = os.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(n), "none")
+	_ = os.Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(n), key)
+	_ = os.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(n), value)
 	_ = os.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(n+1))
 }
 

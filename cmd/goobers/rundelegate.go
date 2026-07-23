@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // rundelegate.go implements #343: when a short-lived `goobers run` process
@@ -99,7 +100,7 @@ func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err e
 	}
 	requestID = strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
 	finalPath := filepath.Join(reqDir, requestID+requestSuffix)
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("delegate: publish trigger request: %w", err)
 	}
@@ -175,8 +176,8 @@ var triggerDelegationTimeout = 30 * time.Second
 // doc comment in scheduler.go).
 func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, now func() time.Time) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
-	entries, err := os.ReadDir(reqDir)
-	if os.IsNotExist(err) {
+	entries, exists, err := readDirectory(reqDir)
+	if !exists {
 		return nil
 	}
 	if err != nil {

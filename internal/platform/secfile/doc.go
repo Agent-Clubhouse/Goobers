@@ -21,10 +21,11 @@
 // implementation reads the security descriptor (GetNamedSecurityInfo) and
 // inspects the discretionary ACL directly, never the mode.
 //
-// # Windows tolerance decision: SYSTEM and Administrators are allowed
+// # Windows tolerance decision: current user, SYSTEM, and Administrators are allowed
 //
 // The Windows check rejects the file if its DACL grants access to any SID
-// other than the file's owner, NT AUTHORITY\SYSTEM, or BUILTIN\Administrators.
+// other than the file's owner, current user, NT AUTHORITY\SYSTEM, or
+// BUILTIN\Administrators.
 // SYSTEM and Administrators are deliberately TOLERATED: on a default Windows
 // install these principals already have de-facto access to every file (SYSTEM
 // runs the kernel; Administrators can take ownership or enable SeBackupPrivilege

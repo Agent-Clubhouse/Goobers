@@ -179,10 +179,12 @@ func validateGuidedOptions(opts GuidedOptions) error {
 			value: opts.RepoPushTokenEnv,
 		})
 	}
-	tokenEnvs = append(tokenEnvs, guidedTokenEnv{
-		label: "Copilot token environment variable",
-		value: opts.CopilotTokenEnv,
-	})
+	if opts.CopilotTokenEnv != "" {
+		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+			label: "Copilot token environment variable",
+			value: opts.CopilotTokenEnv,
+		})
+	}
 	for _, tokenEnv := range tokenEnvs {
 		if !ValidGuidedTokenEnvName(tokenEnv.value) {
 			return fmt.Errorf("%s must name a valid environment variable; do not provide a token value", tokenEnv.label)
@@ -235,10 +237,12 @@ func guidedConfig(opts GuidedOptions) *Config {
 			Token:      TokenRef{Env: opts.RepoPushTokenEnv},
 		})
 	}
-	credentials = append(credentials, CredentialGrant{
-		Capability: string(capability.AgentModel),
-		Token:      TokenRef{Env: opts.CopilotTokenEnv},
-	})
+	if opts.CopilotTokenEnv != "" {
+		credentials = append(credentials, CredentialGrant{
+			Capability: string(capability.AgentModel),
+			Token:      TokenRef{Env: opts.CopilotTokenEnv},
+		})
+	}
 	cfg := &Config{
 		APIVersion: ConfigAPIVersion,
 		Kind:       ConfigKind,

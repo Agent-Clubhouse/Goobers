@@ -219,8 +219,11 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 		}
 	}
 
-	pln(stdout, "Copilot PAT permissions: Copilot Requests: Read-only; no repository access.")
-	copilotTokenEnv, err := p.ask("Copilot Requests PAT environment variable", "GOOBERS_COPILOT_TOKEN", instance.ValidGuidedTokenEnvName)
+	pln(stdout, "Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.")
+	pln(stdout, "For a headless service/CI account, enter an environment variable holding a Copilot Requests: Read-only PAT.")
+	copilotTokenEnv, err := p.ask("Optional Copilot Requests PAT environment variable", "", func(value string) bool {
+		return value == "" || instance.ValidGuidedTokenEnvName(value)
+	})
 	if err != nil {
 		return instance.GuidedOptions{}, err
 	}

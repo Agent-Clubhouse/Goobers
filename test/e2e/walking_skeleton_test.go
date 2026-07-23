@@ -106,6 +106,13 @@ func runSkeletonGit(t *testing.T, dir string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.autocrlf",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.safecrlf",
+		"GIT_CONFIG_VALUE_1=false",
+	)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {

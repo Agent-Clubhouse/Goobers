@@ -32,6 +32,7 @@ package executor
 import (
 	"context"
 	"encoding/base64"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -264,13 +265,14 @@ func TestIsolationConformance_WorktreeAndRemotesReferenceOnlyOwnGaggle(t *testin
 	// Neither can name a path into the other's tree.
 	aWork, bWork := aLayout.WorkcopiesDir(), bLayout.WorkcopiesDir()
 	aRuns, bRuns := aLayout.RunsDir(), bLayout.RunsDir()
+	aWorkSlash, bWorkSlash := filepath.ToSlash(aWork), filepath.ToSlash(bWork)
 	if aWork == bWork || aRuns == bRuns {
 		t.Fatalf("per-gaggle runtime roots collide: workcopies %q/%q runs %q/%q", aWork, bWork, aRuns, bRuns)
 	}
-	if strings.HasPrefix(aWork, bWork+"/") || strings.HasPrefix(bWork, aWork+"/") {
+	if strings.HasPrefix(aWorkSlash, bWorkSlash+"/") || strings.HasPrefix(bWorkSlash, aWorkSlash+"/") {
 		t.Fatalf("one gaggle's workcopies dir nests inside the other's: %q vs %q", aWork, bWork)
 	}
-	if !strings.Contains(aWork, "/gaggles/"+gaggleAName+"/") {
+	if !strings.Contains(aWorkSlash, "/gaggles/"+gaggleAName+"/") {
 		t.Fatalf("gaggle A workcopies %q is not scoped under its own gaggle dir", aWork)
 	}
 	if strings.Contains(aWork, gaggleBName) || strings.Contains(aRuns, gaggleBName) {
@@ -283,7 +285,7 @@ func TestIsolationConformance_WorktreeAndRemotesReferenceOnlyOwnGaggle(t *testin
 	// (The per-(gaggle,repo) credentialed URL routing itself becomes assertable
 	// here once MGV-5 (#1012) lands the routing function; today the provable
 	// invariant is the disjoint per-gaggle on-disk root asserted above.)
-	if !strings.HasPrefix(aWork, aLayout.GagglesDir()+"/"+gaggleAName+"/") {
+	if !strings.HasPrefix(aWorkSlash, filepath.ToSlash(aLayout.GagglesDir())+"/"+gaggleAName+"/") {
 		t.Fatalf("gaggle A workcopies %q escaped its own gaggle root", aWork)
 	}
 
