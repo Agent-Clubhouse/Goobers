@@ -8,6 +8,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestFeatureRegistryLookup(t *testing.T) {
@@ -131,6 +132,10 @@ func TestCurrentFeatureClassification(t *testing.T) {
 		if feature.SinceVersion != initialFeatureSinceVersion {
 			t.Errorf("feature %q since-version = %q, want %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
 		}
+		if len(feature.DSLVersions) != 1 ||
+			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: wantLevel}) {
+			t.Errorf("feature %q DSL versions = %+v, want level %q", feature.ID, feature.DSLVersions, wantLevel)
+		}
 		wantHistory := []SupportTransition{{Level: wantLevel, SinceVersion: initialFeatureSinceVersion}}
 		if !slices.Equal(feature.History, wantHistory) {
 			t.Errorf("feature %q history = %+v, want %+v", feature.ID, feature.History, wantHistory)
@@ -157,6 +162,21 @@ func TestStandardFeaturesAreGA(t *testing.T) {
 		}
 		if feature.Level != SupportGA {
 			t.Errorf("standard feature %q level = %q, want GA (#1196)", id, feature.Level)
+		}
+	}
+}
+
+func TestFeaturesAtDSLVersion(t *testing.T) {
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		features, err := FeaturesAtDSLVersion(AllFeatures(), version.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(features) == 0 {
+			t.Errorf("DSL version %q has no feature-registry coverage", version.Version)
+		}
+		if version.Version == supportmatrix.CurrentDSLVersion && len(features) != len(AllFeatures()) {
+			t.Fatalf("features for current DSL version = %d, want %d", len(features), len(AllFeatures()))
 		}
 	}
 }

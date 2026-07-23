@@ -41,42 +41,51 @@ type releaseNotesData struct {
 	Version         string
 	PreviousRelease string
 	Delta           featureDelta
+	SupportDelta    string
 }
 
-func writeReleaseMetadata(version, previousPath, outDir string) (notesPath, snapshotPath string, err error) {
+func writeReleaseMetadata(version, previousFeaturePath, previousSupportPath, outDir string) (notesPath string, snapshotPaths []string, err error) {
 	current, err := newFeatureSnapshot(version, workflow.AllFeatures())
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 
 	var previous *featureSnapshot
-	if previousPath != "" {
-		snapshot, err := readFeatureSnapshot(previousPath)
+	if previousFeaturePath != "" {
+		snapshot, err := readFeatureSnapshot(previousFeaturePath)
 		if err != nil {
-			return "", "", fmt.Errorf("read previous feature snapshot: %w", err)
+			return "", nil, fmt.Errorf("read previous feature snapshot: %w", err)
 		}
 		previous = &snapshot
 	}
 
-	notes, err := renderReleaseNotes(current, previous)
+	supportNotes, supportJSON, err := supportReleaseMetadata(version, previousSupportPath)
 	if err != nil {
-		return "", "", fmt.Errorf("render release notes: %w", err)
+		return "", nil, err
+	}
+	notes, err := renderReleaseNotes(current, previous, supportNotes)
+	if err != nil {
+		return "", nil, fmt.Errorf("render release notes: %w", err)
 	}
 	snapshotJSON, err := json.MarshalIndent(current, "", "  ")
 	if err != nil {
-		return "", "", fmt.Errorf("encode feature snapshot: %w", err)
+		return "", nil, fmt.Errorf("encode feature snapshot: %w", err)
 	}
 	snapshotJSON = append(snapshotJSON, '\n')
 
-	snapshotPath = filepath.Join(outDir, featureSnapshotFile)
-	if err := os.WriteFile(snapshotPath, snapshotJSON, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", snapshotPath, err)
+	featureSnapshotPath := filepath.Join(outDir, featureSnapshotFile)
+	if err := os.WriteFile(featureSnapshotPath, snapshotJSON, 0o644); err != nil {
+		return "", nil, fmt.Errorf("write %s: %w", featureSnapshotPath, err)
+	}
+	supportSnapshotPath := filepath.Join(outDir, supportSnapshotFile)
+	if err := os.WriteFile(supportSnapshotPath, supportJSON, 0o644); err != nil {
+		return "", nil, fmt.Errorf("write %s: %w", supportSnapshotPath, err)
 	}
 	notesPath = filepath.Join(outDir, releaseNotesFile)
 	if err := os.WriteFile(notesPath, []byte(notes), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", notesPath, err)
+		return "", nil, fmt.Errorf("write %s: %w", notesPath, err)
 	}
-	return notesPath, snapshotPath, nil
+	return notesPath, []string{featureSnapshotPath, supportSnapshotPath}, nil
 }
 
 func newFeatureSnapshot(release string, features []workflow.Feature) (featureSnapshot, error) {
@@ -171,9 +180,10 @@ func sortFeatures(features []workflow.Feature) {
 	})
 }
 
-func renderReleaseNotes(current featureSnapshot, previous *featureSnapshot) (string, error) {
+func renderReleaseNotes(current featureSnapshot, previous *featureSnapshot, supportDelta string) (string, error) {
 	data := releaseNotesData{
-		Version: current.Release,
+		Version:      current.Release,
+		SupportDelta: strings.TrimSpace(supportDelta),
 	}
 	if previous != nil {
 		data.PreviousRelease = previous.Release
