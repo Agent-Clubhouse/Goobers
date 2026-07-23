@@ -505,7 +505,7 @@ answerable today:
 - What is the success/failure rate of my instance, a gaggle, a workflow, a stage?
 - For the stages that fail or escalate, what are the main reasons?
 - Which stages are the slowest?
-- Which goober/agentic stages consume the most AI credits?
+- Which goober/agentic stages incur the most AI cost?
 
 These are diagnostic, not decorative. Add an **Insight** destination (fourth
 primary alongside Overview / Workflows / Runs) that answers them. The distinction
@@ -522,7 +522,7 @@ Most of Insight is a surfacing job over existing rollups:
 |---|---|---|
 | Success/failure rate by workflow & stage | `/api/v1/telemetry/stats` (`successRate`, counts) | Exists, exposed |
 | Slowest stages (P50/P95/min/max/avg duration) | `/api/v1/telemetry/stats` (stage rows) | Exists, exposed |
-| AI credit/cost & tokens by stage/workflow | `stage_usage` (P50/P95 tokens, cost, retry-waste) via stats | Exists, exposed |
+| AI cost & tokens by stage/workflow | `stage_usage` (P50/P95 tokens, nanoAIU-derived USD cost, retry-waste) via stats | Exists, exposed |
 | Failure-reason breakdown | `/api/v1/telemetry/error-signatures` (`run_errors` + `TopErrorSignatures`) | Exists, exposed |
 | Success/failure rate **per gaggle** (all gaggles at once) | `runs.gaggle` column | Exists, needs a thin `GROUP BY gaggle` query |
 
@@ -539,12 +539,17 @@ capture before they can be surfaced:
   code - only run `status='escalated'`, a gate `escalated:true` flag, and free-text
   `state.Reason`. "Top reasons runs escalated," as a category, needs a coded cause
   on the escalation event and a telemetry column. This also sharpens 12.3.
-- **Per-model token/cost attribution.** `stage_usage` records tokens and cost but
+- **Per-model token/cost attribution.** `stage_usage` records tokens and
+  nanoAIU-derived cost but
   the harness transcript **sums across models and discards model identity**, and
-  there is no model column. "Which model/goober burned credits" needs the model
+  there is no model column. "Which model/goober incurred cost" needs the model
   dimension captured at ingest. Note also that usage today is sourced from the
   Copilot harness transcript; non-Copilot runners leave usage null, which the
   Insight views must show as "unmeasured," never as zero.
+
+Insight reports `AttrUsageCostUSD`, derived from Copilot `TotalNanoAIU`, as its
+sole usage-cost figure. Premium-request quota values remain available only as a
+legacy wire-contract field and are not presented as credits or cost.
 
 ## 14. Read-path performance - lists must not rescan the journal
 
@@ -601,7 +606,7 @@ views that already have data.
 | Deterministic replay scrubber over live events | DASH-22 | DASH-19 | Portal interaction slice |
 | Insight destination: success/failure rate + slowest stages | DASH-23 | - | Portal page slice |
 | Failure-reason breakdown (surface `TopErrorSignatures`) | DASH-24 | DASH-23 | Go telemetry route + portal |
-| AI credit/cost & token analytics by stage/workflow | DASH-25 | DASH-23 | Portal page slice |
+| AI cost & token analytics by stage/workflow | DASH-25 | DASH-23 | Portal page slice |
 | Capture: per-model token/cost attribution | DASH-26 | - | Go telemetry capture |
 | Capture: structured escalation-cause code | DASH-27 | - | Go journal/telemetry capture |
 

@@ -1289,7 +1289,7 @@ summary:focus-visible {
   display: grid;
   gap: 14px;
   grid-template-columns:
-    minmax(175px, 1fr) repeat(3, minmax(145px, 0.8fr))
+    minmax(175px, 1fr) repeat(2, minmax(145px, 0.8fr))
     minmax(210px, 1.1fr);
 }
 
@@ -3445,7 +3445,7 @@ a.telemetry-error-row:hover {
   .usage-row {
     gap: 10px;
     grid-template-columns:
-      minmax(150px, 1fr) repeat(3, minmax(120px, 0.8fr))
+      minmax(150px, 1fr) repeat(2, minmax(120px, 0.8fr))
       minmax(175px, 1fr);
   }
 
