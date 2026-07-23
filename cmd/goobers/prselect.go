@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -78,7 +78,14 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, os.Getenv(executor.TriggerRefEnvVar))
+	now := time.Now().UTC()
+	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
+	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
+	if err != nil {
+		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
+		return 1
+	}
+	prs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -144,17 +151,29 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		}
 		eligible = append(eligible, pr)
 	}
+	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
+	if err != nil {
+		pf(stderr, "error: update PR fairness state: %v\n", err)
+		return 1
+	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
 	}
-
-	sort.Slice(eligible, func(i, j int) bool {
-		left, right := blockedDependents[eligible[i].Number], blockedDependents[eligible[j].Number]
-		if left != right {
-			return left > right
+	eligible, priorities, fairness := rankEligiblePullRequests(
+		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
+	)
+	if observation.CurrentRunHasLiveClaim {
+		if len(observation.CurrentRunClaimEligible) == 0 {
+			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
 		}
-		return eligible[i].Number < eligible[j].Number
-	})
+		eligible, priorities, _ = rankEligiblePullRequests(
+			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
+		)
+	}
+	if len(eligible) == 0 {
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	}
+
 	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
@@ -164,15 +183,26 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
+	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
+		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
+		return 1
+	}
+	priority := priorities[selected.Number]
 
 	resultFile := providerInput("resultFile", "selected-pr.json")
 	data, err := json.Marshal(map[string]string{
-		"number":  strconv.Itoa(selected.Number),
-		"head":    selected.Head,
-		"base":    selected.Base,
-		"headSha": selected.HeadSHA,
-		"baseSha": selected.BaseSHA,
-		"url":     selected.URL,
+		"number":                 strconv.Itoa(selected.Number),
+		"head":                   selected.Head,
+		"base":                   selected.Base,
+		"headSha":                selected.HeadSHA,
+		"baseSha":                selected.BaseSHA,
+		"url":                    selected.URL,
+		"eligibleSince":          priority.EligibleSince.Format(time.RFC3339Nano),
+		"eligibleWaitSeconds":    strconv.FormatInt(int64(priority.Wait/time.Second), 10),
+		"agingBoost":             strconv.FormatInt(priority.AgingBoost, 10),
+		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
+		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
+		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
@@ -184,12 +214,26 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
+	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
+		priority.Wait.Round(time.Second),
+		fairness.MaxWait.Round(time.Second),
+		priority.StarvationGuarded,
+		noneIfEmpty(joinPRNumbers(fairness.Starved)),
+	)
 	return 0
 }
 
-func pullRequestsForSelection(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, base, headPrefix, triggerRef string) ([]providers.PullRequestSummary, error) {
+func pullRequestsForSelection(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	base string,
+	headPrefix string,
+	triggerRef string,
+	completeness prSelectSnapshotCompleteness,
+) ([]providers.PullRequestSummary, error) {
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if !targeted {
+	if !targeted || completeness == prSelectCompleteSnapshot {
 		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 			Repository: repo, Base: base, HeadPrefix: headPrefix,
 		})
