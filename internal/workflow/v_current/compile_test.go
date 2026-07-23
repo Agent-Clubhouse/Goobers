@@ -1,4 +1,4 @@
-package workflow
+package vcurrent
 
 import (
 	"fmt"
@@ -53,93 +53,6 @@ func TestCompileValid(t *testing.T) {
 	}
 	if _, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
 		t.Fatalf("gated: %v", err)
-	}
-}
-
-func TestCompileFeatureSupportLevels(t *testing.T) {
-	original := currentFeatureRegistry
-	t.Cleanup(func() { currentFeatureRegistry = original })
-
-	tests := []struct {
-		name           string
-		level          SupportLevel
-		allowPreview   bool
-		wantError      bool
-		wantDiagnostic string
-	}{
-		{name: "ga", level: SupportGA},
-		{name: "preview opted in", level: SupportPreview, allowPreview: true},
-		{
-			name:           "preview not opted in",
-			level:          SupportPreview,
-			wantError:      true,
-			wantDiagnostic: `DSL feature "workflow.spec.gaggle" is preview and requires explicit instance opt-in`,
-		},
-		{name: "deprecated", level: SupportDeprecated},
-		{
-			name:           "removed",
-			level:          SupportRemoved,
-			allowPreview:   true,
-			wantError:      true,
-			wantDiagnostic: `DSL feature "workflow.spec.gaggle" was removed; v1.9.0 was the last supporting version`,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			features := original.All()
-			for i := range features {
-				features[i].Level = SupportGA
-				features[i].SinceVersion = "v1.0.0"
-				features[i].Replacement = ""
-				features[i].RemovalTargetVersion = ""
-				features[i].LastSupportingVersion = ""
-				features[i].History = []SupportTransition{
-					{Level: SupportPreview, SinceVersion: initialFeatureSinceVersion},
-					{Level: SupportGA, SinceVersion: "v1.0.0"},
-				}
-				if features[i].ID != featureWorkflowGaggle {
-					continue
-				}
-				features[i].Level = tc.level
-				switch tc.level {
-				case SupportPreview:
-					features[i].SinceVersion = initialFeatureSinceVersion
-					features[i].History = features[i].History[:1]
-				case SupportDeprecated:
-					features[i].SinceVersion = "v1.1.0"
-					features[i].Replacement = featureWorkflowDisplayName
-					features[i].RemovalTargetVersion = "v2.0.0"
-					features[i].History = append(features[i].History,
-						SupportTransition{Level: SupportDeprecated, SinceVersion: "v1.1.0"})
-				case SupportRemoved:
-					features[i].SinceVersion = "v1.2.0"
-					features[i].LastSupportingVersion = "v1.9.0"
-					features[i].History = append(features[i].History,
-						SupportTransition{Level: SupportDeprecated, SinceVersion: "v1.1.0"},
-						SupportTransition{Level: SupportRemoved, SinceVersion: "v1.2.0"})
-				}
-			}
-			registry, err := NewFeatureRegistry(features)
-			if err != nil {
-				t.Fatalf("NewFeatureRegistry: %v", err)
-			}
-			currentFeatureRegistry = registry
-
-			_, err = Compile(
-				Definition{Name: "linear", Version: 1, Spec: linearSpec()},
-				WithPreviewFeatures(tc.allowPreview))
-
-			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), tc.wantDiagnostic) {
-					t.Fatalf("Compile error = %v, want diagnostic containing %q", err, tc.wantDiagnostic)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-		})
 	}
 }
 
@@ -1539,27 +1452,5 @@ func TestAdmissionSkippedWithoutGoobers(t *testing.T) {
 	}
 	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("runner path should not run admission, got %v", err)
-	}
-}
-
-func TestBranchTarget(t *testing.T) {
-	g := apiv1.Gate{Branches: map[string]string{"pass": "next", "fail": TargetAbort}}
-	if target, ok := BranchTarget(g, "pass"); !ok || target != "next" {
-		t.Errorf("pass -> %q,%v; want next,true", target, ok)
-	}
-	if target, ok := BranchTarget(g, "fail"); !ok || target != TargetAbort {
-		t.Errorf("fail -> %q,%v; want @abort,true", target, ok)
-	}
-	if _, ok := BranchTarget(g, "unknown"); ok {
-		t.Error("unknown outcome should not resolve to a branch")
-	}
-}
-
-func TestIsReservedTarget(t *testing.T) {
-	if !IsReservedTarget(TargetAbort) || !IsReservedTarget(TargetEscalate) {
-		t.Error("abort/escalate should be reserved")
-	}
-	if IsReservedTarget("") || IsReservedTarget("some-state") {
-		t.Error("empty/state names are not reserved")
 	}
 }
