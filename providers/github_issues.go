@@ -297,19 +297,19 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 		}
 	}
 
+	if req.Comment != "" {
+		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
+			return WorkItem{}, err
+		}
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+
 	if labelsChanged(req) {
 		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
 			return WorkItem{}, err
 		}
 		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
 		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
 	}
 
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
@@ -439,6 +439,74 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	return final, nil
 }
 
+// ReconcileOrphanedWorkItemClaim closes any historical provider claim epoch,
+// removes the requested drifted labels, and records why the ledger-authoritative
+// reconciliation changed the issue.
+func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
+	ctx context.Context,
+	repo RepositoryRef,
+	id string,
+	removeLabels []string,
+	comment string,
+) (WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return WorkItem{}, err
+	}
+	if id == "" {
+		return WorkItem{}, fmt.Errorf("issue id is required")
+	}
+	if strings.TrimSpace(comment) == "" {
+		return WorkItem{}, fmt.Errorf("reconciliation comment is required")
+	}
+	removesClaimLabel := false
+	for _, label := range removeLabels {
+		if label == LabelClaimed {
+			removesClaimLabel = true
+			break
+		}
+	}
+	if !removesClaimLabel {
+		removeLabels = append(removeLabels, LabelClaimed)
+	}
+
+	winner, claimed, err := p.claimWinner(ctx, repo, id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	before, err := p.GetWorkItem(ctx, repo, id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	body := comment
+	if claimed {
+		body = claimReleaseBreadcrumb(winner) + "\n\n" + comment
+	}
+	if err := p.postComment(ctx, repo, id, body); err != nil {
+		return WorkItem{}, err
+	}
+	if err := p.applyLabelChanges(ctx, repo, id, nil, removeLabels); err != nil {
+		return WorkItem{}, err
+	}
+	final, err := p.GetWorkItem(ctx, repo, id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(repo, id),
+		URL:       final.URL,
+		Operation: "claim-reconcile",
+		Fields: map[string]FieldDigest{
+			"claim":  {Before: digestString("orphaned"), After: digestString("released")},
+			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
+			"comment": {
+				After: digestString(body),
+			},
+		},
+	})
+	return final, nil
+}
+
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
 func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
@@ -538,11 +606,12 @@ type githubComment struct {
 
 func mapGitHubComment(c githubComment) Comment {
 	return Comment{
-		ID:        strconv.FormatInt(c.ID, 10),
-		Author:    c.User.Login,
-		Body:      c.Body,
-		CreatedAt: c.CreatedAt,
-		URL:       c.HTMLURL,
+		ID:         strconv.FormatInt(c.ID, 10),
+		Author:     c.User.Login,
+		AuthorType: c.User.Type,
+		Body:       c.Body,
+		CreatedAt:  c.CreatedAt,
+		URL:        c.HTMLURL,
 	}
 }
 

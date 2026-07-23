@@ -177,6 +177,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	if *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation" {
+		if err := reconcileBacklogMetadata(ctx, l, issueProvider, repo, trustLabel, time.Now); err != nil {
+			return failProviderStage(stderr, "reconcile backlog metadata", err, "claimed-items.json")
+		}
+	}
+
 	var (
 		prProvider *providers.GitHubProvider
 		openIssues map[string]bool

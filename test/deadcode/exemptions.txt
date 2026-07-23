@@ -89,7 +89,6 @@ github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/journal.WithClock # Journal clock option retained for deterministic persistence tests.
-github.com/goobers/goobers/internal/localscheduler.WithLedgerClock # Claim-ledger clock option retained for deterministic expiry tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 github.com/goobers/goobers/internal/sandbox.newNative # Native sandbox constructor retained for platform policy tests.

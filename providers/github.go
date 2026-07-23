@@ -1790,6 +1790,36 @@ func (p *GitHubProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id
 	return mapGitHubIssue(issue), nil
 }
 
+// ListWorkItemChildren returns the provider-native sub-issues of a GitHub issue.
+func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "sub_issues")
+	if err != nil {
+		return nil, err
+	}
+	var items []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode sub-issues page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil {
+				items = append(items, mapGitHubIssue(issue))
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // CreateWorkItem creates a GitHub issue from a unified work item request.
 func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
@@ -2210,6 +2240,7 @@ type githubLabel struct {
 
 type githubUser struct {
 	Login string `json:"login"`
+	Type  string `json:"type"`
 }
 
 type githubNode struct {
