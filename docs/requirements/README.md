@@ -44,6 +44,7 @@ self-contained: purpose, model, requirements, and open questions.
 | Primitive | [Task](task.md) | Draft | |
 | Primitive | [Gate](gate.md) | Draft | Unified gate, pluggable evaluator |
 | System | [Scheduler & work distribution](scheduler.md) | Draft | Routing + work-claiming |
+| System | [PR lifecycle & merge loop](pr-lifecycle.md) | Draft | Cross-PR selection, election, merge/close authority, escalation drainage |
 | System | [Backlog & providers (GitHub/ADO)](backlog-providers.md) | Draft | Provider abstraction |
 | System | [Telemetry & tracing](telemetry.md) | Draft | Two separate stores; journal+rollup → ADX at tier 3 |
 | System | [Tutor & learning loop](tutor.md) | Draft | Writes only to `config`; reads journals; V1 scope |
