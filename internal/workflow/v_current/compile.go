@@ -160,7 +160,10 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		opt(o)
 	}
 
-	m := newMachine(def)
+	m, err := newMachine(def)
+	if err != nil {
+		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
+	}
 
 	var problems []string
 	allowPreview := false
@@ -200,17 +203,12 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
-	digest, err := model.ComputeDigest(def)
-	if err != nil {
-		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
-	}
-	m.SetDigest(digest)
 	return m, nil
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.
 // Duplicate names collapse in the maps; structuralProblems reports them.
-func newMachine(def Definition) *Machine {
+func newMachine(def Definition) (*Machine, error) {
 	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
 	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
@@ -219,7 +217,15 @@ func newMachine(def Definition) *Machine {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates)
+	return model.NewMachine(def, tasks, gates, buildGraph(def))
+}
+
+func newMachineForCheck(def Definition) (*Machine, []string) {
+	machine, err := newMachine(def)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("digest workflow %q: %v", def.Name, err)}
+	}
+	return machine, nil
 }
 
 // structuralProblems reports state-machine integrity errors: duplicate names, a

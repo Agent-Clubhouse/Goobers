@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
 func TestGoldenCompiledSemanticDigests(t *testing.T) {
@@ -80,6 +81,7 @@ type compiledSemantics struct {
 	DSLVersion       string              `json:"dslVersion"`
 	DefinitionDigest string              `json:"definitionDigest"`
 	Start            string              `json:"start"`
+	Graph            model.Graph         `json:"graph"`
 	States           []compiledState     `json:"states"`
 	Features         []Feature           `json:"features"`
 	Validation       validationSemantics `json:"validation"`
@@ -125,6 +127,7 @@ func semanticDigest(machine *Machine) (string, error) {
 		DSLVersion:       machine.Def.DSLVersion,
 		DefinitionDigest: machine.Digest(),
 		Start:            machine.Def.Spec.Start,
+		Graph:            machine.Graph(),
 		Features:         features,
 		Validation: validationSemantics{
 			Warnings:               CheckWarnings(machine.Def),

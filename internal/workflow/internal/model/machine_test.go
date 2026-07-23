@@ -13,11 +13,15 @@ func TestMachineRuntimeLookups(t *testing.T) {
 		"pass": TerminalComplete,
 		"fail": TargetAbort,
 	}}
-	machine := NewMachine(
+	machine, err := NewMachine(
 		Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}, Gates: []apiv1.Gate{gate}}},
 		map[string]apiv1.Task{task.Name: task},
 		map[string]apiv1.Gate{gate.Name: gate},
+		Graph{},
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got, ok := machine.Task(task.Name); !ok || !reflect.DeepEqual(got, task) {
 		t.Fatalf("Task() = %+v,%v", got, ok)
@@ -41,14 +45,15 @@ func TestMachineRuntimeLookups(t *testing.T) {
 
 func TestMachineDigestAndTargets(t *testing.T) {
 	def := Definition{Name: "digest", Version: 1}
-	digest, err := ComputeDigest(def)
+	machine, err := NewMachine(def, map[string]apiv1.Task{}, map[string]apiv1.Gate{}, Graph{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := NewMachine(def, map[string]apiv1.Task{}, map[string]apiv1.Gate{})
-	machine.SetDigest(digest)
 	if machine.Digest() != "sha256:fe1010736a8f4ff76e311232c8f7b32b6cd6a6b4d9abb94791cc76e21b4b57ae" {
 		t.Fatalf("Digest() = %q", machine.Digest())
+	}
+	if _, ok := reflect.TypeOf(machine).MethodByName("SetDigest"); ok {
+		t.Fatal("Machine exposes digest mutation")
 	}
 
 	gate := apiv1.Gate{Branches: map[string]string{"pass": "next"}}

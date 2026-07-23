@@ -87,7 +87,10 @@ func CheckWarnings(def Definition) []string {
 // those are reported field-by-field by the validator, and walking a broken graph
 // would only cascade misleading errors.
 func CheckReachability(def Definition) []string {
-	m := newMachine(def)
+	m, buildProblems := newMachineForCheck(def)
+	if len(buildProblems) > 0 {
+		return buildProblems
+	}
 	if len(structuralProblems(m)) > 0 {
 		return nil
 	}

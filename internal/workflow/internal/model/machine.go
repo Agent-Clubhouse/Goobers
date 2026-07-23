@@ -49,27 +49,33 @@ type Machine struct {
 	Def    Definition
 	tasks  map[string]apiv1.Task
 	gates  map[string]apiv1.Gate
+	graph  Graph
 	digest string
 }
 
-// NewMachine stores interpreter-built state lookups in the shared runtime type.
-func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate) *Machine {
-	return &Machine{
-		Def:   def,
-		tasks: tasks,
-		gates: gates,
+// NewMachine stores interpreter-built runtime state and atomically pins its
+// definition digest.
+func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, graph Graph) (*Machine, error) {
+	digest, err := ComputeDigest(def)
+	if err != nil {
+		return nil, err
 	}
+	graph.Name = def.Name
+	graph.Version = def.Version
+	graph.Digest = digest
+	return &Machine{
+		Def:    def,
+		tasks:  tasks,
+		gates:  gates,
+		graph:  cloneGraph(graph),
+		digest: digest,
+	}, nil
 }
 
 // Digest returns the content digest of the compiled definition ("sha256:<hex>").
 // It is stable across processes and runs: the same definition always digests to
 // the same value, so a run can record and complete on a pinned digest (WF-016).
 func (m *Machine) Digest() string { return m.digest }
-
-// SetDigest records the digest produced by the shared digest algorithm.
-func (m *Machine) SetDigest(digest string) {
-	m.digest = digest
-}
 
 // ComputeDigest returns a stable digest of the pinned definition.
 func ComputeDigest(def Definition) (string, error) {

@@ -1,8 +1,6 @@
 package model
 
 import (
-	"sort"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
@@ -56,91 +54,17 @@ type GraphEdge struct {
 	Terminal GraphTerminal `json:"terminal,omitempty"`
 }
 
-// Graph returns the canonical graph projection of the compiled machine.
+// Graph returns the interpreter-built canonical graph for the compiled machine.
 func (m *Machine) Graph() Graph {
-	nodes := make([]GraphNode, 0, len(m.Def.Spec.Tasks)+len(m.Def.Spec.Gates))
-	edges := make([]GraphEdge, 0, graphEdgeCount(m.Def.Spec))
-
-	for _, task := range m.Def.Spec.Tasks {
-		nodes = append(nodes, GraphNode{
-			ID:    task.Name,
-			Kind:  GraphNodeKind(task.Type),
-			Owner: task.Goober,
-		})
-		edges = append(edges, GraphEdge{
-			Source:   task.Name,
-			Target:   task.Next,
-			Terminal: graphTerminal(task.Next),
-		})
-	}
-
-	for _, gate := range m.Def.Spec.Gates {
-		node := GraphNode{
-			ID:        gate.Name,
-			Kind:      GraphNodeGate,
-			Evaluator: gate.Evaluator,
-		}
-		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil {
-			node.Owner = gate.Agentic.Goober
-		}
-		nodes = append(nodes, node)
-
-		for _, outcome := range graphOutcomes(gate.Branches) {
-			target := gate.Branches[outcome]
-			edges = append(edges, GraphEdge{
-				Source:   gate.Name,
-				Target:   target,
-				Outcome:  outcome,
-				Terminal: graphTerminal(target),
-			})
-		}
-	}
-
-	return Graph{
-		Name:    m.Def.Name,
-		Version: m.Def.Version,
-		Digest:  m.Digest(),
-		Start:   m.Def.Spec.Start,
-		Nodes:   nodes,
-		Edges:   edges,
-	}
+	return cloneGraph(m.graph)
 }
 
-func graphEdgeCount(spec apiv1.WorkflowSpec) int {
-	count := len(spec.Tasks)
-	for _, gate := range spec.Gates {
-		count += len(gate.Branches)
+func cloneGraph(graph Graph) Graph {
+	if graph.Nodes != nil {
+		graph.Nodes = append([]GraphNode{}, graph.Nodes...)
 	}
-	return count
-}
-
-func graphOutcomes(branches map[string]string) []string {
-	outcomes := make([]string, 0, len(branches))
-	for _, outcome := range []string{"pass", "fail"} {
-		if _, ok := branches[outcome]; ok {
-			outcomes = append(outcomes, outcome)
-		}
+	if graph.Edges != nil {
+		graph.Edges = append([]GraphEdge{}, graph.Edges...)
 	}
-
-	remaining := make([]string, 0, len(branches)-len(outcomes))
-	for outcome := range branches {
-		if outcome != "pass" && outcome != "fail" {
-			remaining = append(remaining, outcome)
-		}
-	}
-	sort.Strings(remaining)
-	return append(outcomes, remaining...)
-}
-
-func graphTerminal(target string) GraphTerminal {
-	switch target {
-	case TerminalComplete:
-		return GraphTerminalComplete
-	case TargetAbort:
-		return GraphTerminalAbort
-	case TargetEscalate:
-		return GraphTerminalEscalate
-	default:
-		return ""
-	}
+	return graph
 }

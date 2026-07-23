@@ -34,7 +34,10 @@ import (
 // those problems are reported field-by-field by the validator, and walking a
 // broken graph only cascades misleading messages.
 func CheckStageContracts(def Definition) []string {
-	m := newMachine(def)
+	m, buildProblems := newMachineForCheck(def)
+	if len(buildProblems) > 0 {
+		return buildProblems
+	}
 	if len(structuralProblems(m)) > 0 {
 		return nil
 	}
@@ -56,7 +59,10 @@ func CheckStageContracts(def Definition) []string {
 // its own shipped workflows to it, since "nothing reads it yet" is one
 // inputsFrom away from an outage.
 func CheckStageContractWarnings(def Definition) []string {
-	m := newMachine(def)
+	m, buildProblems := newMachineForCheck(def)
+	if len(buildProblems) > 0 {
+		return buildProblems
+	}
 	if len(structuralProblems(m)) > 0 {
 		return nil
 	}

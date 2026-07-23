@@ -68,7 +68,10 @@ var stageRequiredInputs = map[string][]string{
 // problems are reported field-by-field elsewhere and walking a broken graph
 // only cascades noise.
 func CheckStageRequiredInputs(def Definition) []string {
-	m := newMachine(def)
+	m, buildProblems := newMachineForCheck(def)
+	if len(buildProblems) > 0 {
+		return buildProblems
+	}
 	if len(structuralProblems(m)) > 0 {
 		return nil
 	}
