@@ -19,7 +19,8 @@ import (
 // fake writes it directly to prove the runner-side projection independent of
 // the CLI-level plumbing (covered separately in cmd/goobers).
 type mutationSidecarDeterministic struct {
-	fact string // one raw JSON line, or "" to write nothing
+	fact   string // one raw JSON line, or "" to write nothing
+	status apiv1.ResultStatus
 }
 
 func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -28,7 +29,11 @@ func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.Invocatio
 			return apiv1.ResultEnvelope{}, err
 		}
 	}
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "mutated"}, nil
+	status := d.status
+	if status == "" {
+		status = apiv1.ResultSuccess
+	}
+	return apiv1.ResultEnvelope{Status: status, Summary: "mutated"}, nil
 }
 
 // TestDispatchTaskProjectsMutationSidecarIntoRefTouched is issue #228's
@@ -121,5 +126,51 @@ func TestDispatchTaskNoSidecarProjectsNoMutation(t *testing.T) {
 		if e.Type == journal.EventRefTouched && e.Stage == "implement" {
 			t.Fatalf("expected no stage-level ref.touched event without a sidecar, got: %+v", e)
 		}
+	}
+}
+
+func TestDispatchTaskNoWorkWithMutationRetainsProvenance(t *testing.T) {
+	machine := noWorkFixtureMachine(t)
+	fact := `{"provider":"github","kind":"issue","id":"7","url":"https://github.com/acme/web/issues/7","operation":"update"}`
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return mutationSidecarDeterministic{fact: fact, status: apiv1.ResultNoWork}, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-filtered-mutation",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerItem},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-filtered-mutation"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawBranch, sawMutation bool
+	for _, event := range events {
+		if event.Type != journal.EventRefTouched || event.ExternalRef == nil {
+			continue
+		}
+		switch event.ExternalRef.Kind {
+		case "branch":
+			sawBranch = true
+		case "issue":
+			sawMutation = true
+		}
+	}
+	if !sawBranch || !sawMutation {
+		t.Fatalf("mutating no-work tick provenance: branch=%t mutation=%t events=%+v", sawBranch, sawMutation, events)
 	}
 }

@@ -1042,13 +1042,13 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":query-backlog": {status: apiv1.ResultNoWork, summary: "nothing eligible"},
 	}
-	r, _ := newTestRunner(t, byTask, nil)
+	r, runsDir := newTestRunner(t, byTask, nil)
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   runID,
 		Machine: machine,
 		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
 	if err != nil {
@@ -1059,6 +1059,19 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	}
 	if res.FinalState != "query-backlog" {
 		t.Fatalf("finalState = %q, want query-backlog (curate must never have become the final state)", res.FinalState)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
+		}
 	}
 }
 

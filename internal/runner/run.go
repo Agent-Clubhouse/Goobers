@@ -536,23 +536,16 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			}
 		}
 
-		// A scratch-only workflow has no repository branch. Repo-backed workflows
-		// retain the run branch as their primary external ref (#133).
-		if machineUsesRepo(in.Machine) {
-			if err := jr.Append(journal.Event{
-				Type: journal.EventRefTouched,
-				ExternalRef: &journal.ExternalRef{
-					Provider: string(in.RepoRef.Provider),
-					Kind:     "branch",
-					ID:       providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID),
-				},
-			}); err != nil {
+		seed := walkSeed{}
+		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
+			if err := r.recordRunBranch(jr, in); err != nil {
 				span.Fail(err)
 				return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
 			}
+			seed.branchRecorded = true
 		}
 
-		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, walkSeed{})
+		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -695,12 +688,14 @@ type baseSyncConflictArtifact struct {
 // lastFinishedSubject, reconstructPointers in resume.go), since walk's own
 // in-memory accumulation of them is exactly what a crash wipes.
 // workspaceBranch is the same for the run-scoped branch rebinding below
-// (lastWorkspaceBranch in resume.go).
+// (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
+// provenance across a resume without duplicating ref.touched.
 type walkSeed struct {
 	pointers        []apiv1.ContextPointer
 	lastStage       string
 	lastResult      apiv1.ResultEnvelope
 	workspaceBranch string
+	branchRecorded  bool
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -754,6 +749,30 @@ const WorkspaceBranchOutput = "workspaceBranch"
 // callers can concatenate or prefix-match against it uniformly.
 func (r *Runner) branchNamespaceFor(gaggle string) string {
 	return providers.NormalizeBranchNamespace(r.cfg.BranchNamespaces[gaggle])
+}
+
+func (r *Runner) recordRunBranch(jr *journal.Run, in StartInput) error {
+	return jr.Append(journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: string(in.RepoRef.Provider),
+			Kind:     "branch",
+			ID:       providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID),
+		},
+	})
+}
+
+func deferRunBranchProvenance(kind journal.TriggerKind) bool {
+	return kind == journal.TriggerSchedule || kind == journal.TriggerItem
+}
+
+func hasRunBranchRef(events []journal.Event) bool {
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			return true
+		}
+	}
+	return false
 }
 
 // rebindWorkspaceBranch reports the branch a finished task's result rebinds the
@@ -830,6 +849,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
 	// "the run's own branch", resolved per stage in createStageWorkspace.
 	workspaceBranch := seed.workspaceBranch
+	branchRecorded := seed.branchRecorded
 	steps := 0
 
 	for {
@@ -895,7 +915,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
 			}
@@ -939,6 +959,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 
 		if g, ok := in.Machine.Gate(state); ok {
+			if !branchRecorded && machineUsesRepo(in.Machine) {
+				if err := r.recordRunBranch(jr, in); err != nil {
+					return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+				}
+				branchRecorded = true
+			}
 			// The machine remains at this gate until its evaluator records a
 			// verdict. Persist that wait before dispatch so observers can
 			// distinguish it from an active stage.
@@ -1858,7 +1884,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1930,6 +1956,16 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			attemptAddendum = instructionAddendum
 		}
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		// A branchless no-work result with no provider mutations touched no
+		// external ref. Delay branch provenance until an attempt proves otherwise.
+		if !*branchRecorded && machineUsesRepo(in.Machine) &&
+			(dispatchErr != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
+			if err := r.recordRunBranch(jr, in); err != nil {
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+			}
+			*branchRecorded = true
+		}
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err

@@ -192,6 +192,42 @@ func TestFinalizeTerminalBranchIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestFinalizeTerminalBranchSkipsBranchlessNoWork(t *testing.T) {
+	const runID = "empty-tick"
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:    runID,
+		Workflow: "implementation",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventStageFinished,
+		Stage:  "query-backlog",
+		Status: string(apiv1.ResultNoWork),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int
+	deleteBranch := func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+		calls++
+		return providers.DeleteBranchResult{}, nil
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("delete calls = %d, want 0", calls)
+	}
+	if events := terminalBranchCleanupEvents(t, runsDir, runID); len(events) != 0 {
+		t.Fatalf("cleanup events = %+v, want none for an empty tick", events)
+	}
+}
+
 func TestFinalizeTerminalBranchScopesCleanupToResumedSegment(t *testing.T) {
 	runsDir, runID, jr := newTerminalBranchJournal(t, true, false)
 	var calls int

@@ -43,7 +43,7 @@ func TestRunnerDoesNotPolicyRetryTerminalCIPollProviderFailure(t *testing.T) {
 		RunID:   "run-terminal-ci-provider-error",
 		Machine: machine,
 		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
 	if err != nil {
@@ -66,6 +66,7 @@ func TestRunnerDoesNotPolicyRetryTerminalCIPollProviderFailure(t *testing.T) {
 	}
 	var starts int
 	var failure *journal.ErrorDetail
+	var sawBranch bool
 	for _, event := range events {
 		if event.Type == journal.EventStageStarted {
 			starts++
@@ -73,12 +74,18 @@ func TestRunnerDoesNotPolicyRetryTerminalCIPollProviderFailure(t *testing.T) {
 		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) {
 			failure = event.Error
 		}
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			sawBranch = true
+		}
 	}
 	if starts != 1 {
 		t.Fatalf("stage.started events = %d, want 1", starts)
 	}
 	if failure == nil || failure.Code != "poll_provider_error" || !strings.Contains(failure.Message, cause.Error()) {
 		t.Fatalf("stage failure = %+v, want terminal provider cause", failure)
+	}
+	if !sawBranch {
+		t.Fatal("provider failure lost run-branch provenance")
 	}
 }
 

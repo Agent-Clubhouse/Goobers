@@ -120,7 +120,7 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 	}
 
 	var branch *journal.ExternalRef
-	var pushed, openedPR, alreadyFinalized bool
+	var pushed, openedPR, alreadyFinalized, noWork bool
 	for i := range events {
 		ev := events[i]
 		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
@@ -143,11 +143,19 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		if ev.Type == journal.EventStageFinished && ev.Stage == "open-pr" && ev.Status == string(apiv1.ResultSuccess) {
 			openedPR = true
 		}
+		if ev.Type == journal.EventStageFinished && ev.Status == string(apiv1.ResultNoWork) {
+			noWork = true
+		}
 		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
 			openedPR = true
 		}
 	}
 	if alreadyFinalized {
+		return nil
+	}
+	// The runner deliberately leaves an empty tick branchless; there is no
+	// missing provider ref to diagnose or clean up in that case.
+	if branch == nil && noWork {
 		return nil
 	}
 	if branch == nil {
