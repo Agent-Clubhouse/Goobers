@@ -74,6 +74,7 @@ type issueMock struct {
 	authSeen  string
 	userLogin string
 	patchBody map[string]interface{}
+	children  []map[string]interface{}
 }
 
 func newIssueMock() *issueMock {
@@ -105,6 +106,12 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 		default:
 			t.Fatalf("unexpected comments method %s", r.Method)
 		}
+	})
+	mux.HandleFunc("/repos/acme/app/issues/7/sub_issues", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected sub-issues method %s", r.Method)
+		}
+		writeJSON(t, w, m.children)
 	})
 	mux.HandleFunc("/repos/acme/app/issues/7/labels", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -221,14 +228,15 @@ func TestGitHubListComments(t *testing.T) {
 	m := newIssueMock()
 	created := time.Date(2026, 7, 13, 1, 2, 3, 0, time.UTC)
 	m.comments = []map[string]interface{}{
-		{"id": 1, "body": "first", "user": map[string]string{"login": "mona"}, "created_at": created, "html_url": "c1"},
+		{"id": 1, "body": "first", "user": map[string]string{"login": "dependabot[bot]", "type": "Bot"}, "created_at": created, "html_url": "c1"},
 	}
 	p, repo := newIssueProvider(t, m)
 	comments, err := p.ListComments(context.Background(), repo, "7")
 	if err != nil {
 		t.Fatalf("ListComments: %v", err)
 	}
-	if len(comments) != 1 || comments[0].ID != "1" || comments[0].Author != "mona" || comments[0].Body != "first" {
+	if len(comments) != 1 || comments[0].ID != "1" || comments[0].Author != "dependabot[bot]" ||
+		comments[0].AuthorType != "Bot" || comments[0].Body != "first" {
 		t.Fatalf("unexpected comments: %#v", comments)
 	}
 	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(created) {
@@ -256,6 +264,22 @@ func TestGitHubAuthenticatedLoginRequiresLogin(t *testing.T) {
 
 	if _, err := p.AuthenticatedLogin(context.Background()); err == nil {
 		t.Fatal("AuthenticatedLogin with an empty login: err = nil, want an error")
+	}
+}
+
+func TestGitHubListWorkItemChildren(t *testing.T) {
+	m := newIssueMock()
+	m.children = []map[string]interface{}{
+		{"id": 124, "number": 8, "title": "Child", "state": "open", "html_url": "https://github.com/acme/app/issues/8"},
+	}
+	p, repo := newIssueProvider(t, m)
+
+	children, err := p.ListWorkItemChildren(context.Background(), repo, "7")
+	if err != nil {
+		t.Fatalf("ListWorkItemChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != "8" || children[0].State != "open" {
+		t.Fatalf("children = %#v, want open issue 8", children)
 	}
 }
 
@@ -559,6 +583,43 @@ func TestGitHubLedgerAuthorizedReleaseReconcilesHistoricalWinner(t *testing.T) {
 	}
 	if claimed {
 		t.Fatalf("claimWinner after reconciliation = %q, want no active claim", winner)
+	}
+}
+
+func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) {
+	m := newIssueMock()
+	m.labels = append(m.labels, LabelClaimed, LabelReady)
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   int64(1),
+		"body": claimBreadcrumb("historical-run"),
+		"user": map[string]string{"login": "goobers"},
+	})
+	m.nextID = 1
+	p, repo := newIssueProvider(t, m)
+
+	item, err := p.ReconcileOrphanedWorkItemClaim(
+		context.Background(),
+		repo,
+		"7",
+		[]string{LabelClaimed, LabelReady},
+		"Removed drifted claim and ready labels.",
+	)
+	if err != nil {
+		t.Fatalf("ReconcileOrphanedWorkItemClaim: %v", err)
+	}
+	if item.HasLabel(LabelClaimed) || item.HasLabel(LabelReady) {
+		t.Fatalf("reconciled labels = %v, want claim and ready removed", item.Labels)
+	}
+	winner, claimed, err := p.claimWinner(context.Background(), repo, "7")
+	if err != nil {
+		t.Fatalf("claimWinner: %v", err)
+	}
+	if claimed {
+		t.Fatalf("claimWinner = %q, want closed epoch", winner)
+	}
+	last := m.comments[len(m.comments)-1]["body"].(string)
+	if !strings.Contains(last, "Removed drifted claim and ready labels.") {
+		t.Fatalf("last comment = %q, want explanation", last)
 	}
 }
 
