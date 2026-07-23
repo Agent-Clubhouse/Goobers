@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -397,20 +398,49 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 }
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
-	// Each subprocess enforces limit independently; re-bound their combined
-	// output so recovery cannot double the session's transcript allowance.
-	transcript := newTranscriptBuffer(limit)
-	_, _ = transcript.Write(first.Transcript)
-	if len(first.Transcript) > 0 && len(second.Transcript) > 0 {
-		_, _ = transcript.Write([]byte("\n"))
+	if limit <= 0 {
+		limit = DefaultMaxTranscriptBytes
 	}
-	_, _ = transcript.Write(second.Transcript)
+
+	firstTranscript := processTranscriptBytes(first)
+	secondTranscript := processTranscriptBytes(second)
+
+	// The recovery turn is the most useful diagnostic when the first turn
+	// omitted its contract, so retain it first and use the remaining allowance
+	// for the initial turn.
+	secondRetained := min(int64(len(secondTranscript)), limit)
+	remaining := limit - secondRetained
+	var firstRetained int64
+	if secondRetained == 0 {
+		firstRetained = min(int64(len(firstTranscript)), remaining)
+	} else if len(firstTranscript) > 0 && remaining > 1 {
+		firstRetained = min(int64(len(firstTranscript)), remaining-1)
+	}
+	dropped := first.TranscriptDroppedBytes + second.TranscriptDroppedBytes +
+		int64(len(firstTranscript)) - firstRetained +
+		int64(len(secondTranscript)) - secondRetained
+
+	transcript := append([]byte(nil), firstTranscript[:firstRetained]...)
+	if firstRetained > 0 && secondRetained > 0 {
+		transcript = append(transcript, '\n')
+	}
+	transcript = append(transcript, secondTranscript[:secondRetained]...)
+	if dropped > 0 {
+		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
+	}
 	return ProcessResult{
-		Transcript:             transcript.Bytes(),
+		Transcript:             transcript,
 		ExitCode:               second.ExitCode,
-		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || transcript.Truncated(),
-		TranscriptDroppedBytes: first.TranscriptDroppedBytes + second.TranscriptDroppedBytes + transcript.Dropped(),
+		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
+		TranscriptDroppedBytes: dropped,
 	}
+}
+
+func processTranscriptBytes(result ProcessResult) []byte {
+	if result.TranscriptDroppedBytes <= 0 {
+		return result.Transcript
+	}
+	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
 }
 
 // baseEnv returns the minimal, explicit env every harness process starts

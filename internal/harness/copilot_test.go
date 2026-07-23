@@ -490,6 +490,53 @@ func TestCopilotAdapterPersistentMissingCompletionStopsAfterOneRecovery(t *testi
 	}
 }
 
+func TestMergeProcessResultsPreservesRecoveryAndDroppedByteAccounting(t *testing.T) {
+	const limit = int64(10)
+	for _, tc := range []struct {
+		name        string
+		first       ProcessResult
+		second      ProcessResult
+		wantText    string
+		wantDropped int64
+	}{
+		{
+			name: "truncated initial turn",
+			first: ProcessResult{
+				Transcript:             append([]byte("abcdefghij"), transcriptTruncationMarker(5)...),
+				TranscriptTruncated:    true,
+				TranscriptDroppedBytes: 5,
+			},
+			second:      ProcessResult{Transcript: []byte("RECOVER")},
+			wantText:    "ab\nRECOVER\n[transcript truncated: 13 bytes dropped]\n",
+			wantDropped: 13,
+		},
+		{
+			name:  "truncated recovery turn",
+			first: ProcessResult{Transcript: []byte("initial")},
+			second: ProcessResult{
+				Transcript:             append([]byte("RECOVERY!!"), transcriptTruncationMarker(4)...),
+				TranscriptTruncated:    true,
+				TranscriptDroppedBytes: 4,
+			},
+			wantText:    "RECOVERY!!\n[transcript truncated: 11 bytes dropped]\n",
+			wantDropped: 11,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeProcessResults(tc.first, tc.second, limit)
+			if string(got.Transcript) != tc.wantText {
+				t.Fatalf("Transcript = %q, want %q", got.Transcript, tc.wantText)
+			}
+			if !got.TranscriptTruncated {
+				t.Fatal("TranscriptTruncated = false, want true")
+			}
+			if got.TranscriptDroppedBytes != tc.wantDropped {
+				t.Fatalf("TranscriptDroppedBytes = %d, want %d", got.TranscriptDroppedBytes, tc.wantDropped)
+			}
+		})
+	}
+}
+
 func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	adapter := &CopilotAdapter{}
 	for _, tc := range []struct {
