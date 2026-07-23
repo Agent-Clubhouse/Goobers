@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -18,6 +21,8 @@ const defaultStaleAfter = 90 * 24 * time.Hour
 
 var trackingChecklistIssuePattern = regexp.MustCompile(`(?m)^\s*[-*+]\s+\[[ xX]\].*?#([1-9][0-9]*)\b`)
 
+var backlogReconcileReservationSequence atomic.Uint64
+
 type backlogMetadataCorrection struct {
 	removeLabels  []string
 	reasons       []string
@@ -28,6 +33,13 @@ type backlogMetadataCorrection struct {
 type inspectedBacklogItem struct {
 	item       providers.WorkItem
 	correction backlogMetadataCorrection
+}
+
+type backlogReconcileReservation struct {
+	itemID   string
+	gaggle   string
+	provider string
+	runID    string
 }
 
 func reconcileBacklogMetadata(
@@ -51,7 +63,6 @@ func reconcileBacklogMetadata(
 	observedAt := now()
 	botLogin := ""
 	inspected := make([]inspectedBacklogItem, 0, len(items))
-	needsClaimSnapshot := false
 	for _, item := range items {
 		if !hasReconciledMetadataLabel(item) {
 			continue
@@ -68,64 +79,123 @@ func reconcileBacklogMetadata(
 		if !correction.checkClaim && len(correction.removeLabels) == 0 {
 			continue
 		}
-		if correction.checkClaim {
-			needsClaimSnapshot = true
-		}
 		inspected = append(inspected, inspectedBacklogItem{item: current, correction: correction})
-	}
-
-	var claimSnapshot []localscheduler.ClaimEntry
-	if needsClaimSnapshot {
-		lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-		if err := withClaimLock(lockPath, claimLockOperationBacklogReconcile, func() error {
-			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-			if err != nil {
-				return fmt.Errorf("open claim ledger: %w", err)
-			}
-			claimSnapshot = ledger.Snapshot()
-			return nil
-		}); err != nil {
-			return err
-		}
 	}
 
 	for _, inspectedItem := range inspected {
 		current := inspectedItem.item
 		correction := inspectedItem.correction
-		if correction.checkClaim &&
-			!hasLiveClaim(claimSnapshot, current.ID, providerGaggle(), string(repo.Provider), observedAt) {
-			correction.orphanedClaim = true
-			correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
-			correction.reasons = append(correction.reasons,
-				"removed `goobers:claimed` because no live claim-ledger lease backs it")
+		var reservation *backlogReconcileReservation
+		if correction.checkClaim {
+			var acquired bool
+			reservation, acquired, err = reserveBacklogClaimReconciliation(l, repo, current.ID, now)
+			if err != nil {
+				return fmt.Errorf("reserve claim reconciliation for issue #%s: %w", current.ID, err)
+			}
+			if acquired {
+				correction.orphanedClaim = true
+				correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
+				correction.reasons = append(correction.reasons,
+					"removed `goobers:claimed` because no live claim-ledger lease backs it")
+			} else {
+				reservation = nil
+			}
 		}
 		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
 		if len(correction.removeLabels) == 0 {
 			continue
 		}
 		comment := reconciliationComment(correction.reasons)
+		var correctionErr error
 		if correction.orphanedClaim {
-			if _, err := provider.ReconcileOrphanedWorkItemClaim(
+			_, correctionErr = provider.ReconcileOrphanedWorkItemClaim(
 				ctx,
 				repo,
 				current.ID,
 				correction.removeLabels,
 				comment,
-			); err != nil {
-				return fmt.Errorf("reconcile issue #%s: %w", current.ID, err)
-			}
-			continue
+			)
+		} else {
+			_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository:   repo,
+				ID:           current.ID,
+				RemoveLabels: correction.removeLabels,
+				Comment:      comment,
+			})
 		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repo,
-			ID:           current.ID,
-			RemoveLabels: correction.removeLabels,
-			Comment:      comment,
-		}); err != nil {
-			return fmt.Errorf("reconcile issue #%s: %w", current.ID, err)
+		if reservation != nil {
+			if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
+				correctionErr = errors.Join(correctionErr, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
+			}
+		}
+		if correctionErr != nil {
+			return fmt.Errorf("reconcile issue #%s: %w", current.ID, correctionErr)
 		}
 	}
 	return nil
+}
+
+func reserveBacklogClaimReconciliation(
+	l instance.Layout,
+	repo providers.RepositoryRef,
+	itemID string,
+	now func() time.Time,
+) (*backlogReconcileReservation, bool, error) {
+	gaggle := providerGaggle()
+	ownerRunID := os.Getenv("GOOBERS_RUN_ID")
+	if ownerRunID == "" {
+		ownerRunID = "standalone"
+	}
+	runID := fmt.Sprintf(
+		"%s/backlog-reconcile/%d/%d",
+		ownerRunID,
+		os.Getpid(),
+		backlogReconcileReservationSequence.Add(1),
+	)
+	reservation := &backlogReconcileReservation{
+		itemID:   itemID,
+		gaggle:   gaggle,
+		provider: string(repo.Provider),
+		runID:    runID,
+	}
+	acquired := false
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogReconcile, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithLedgerClock(now),
+		)
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		if gaggle == "" {
+			acquired, _, err = ledger.Claim(itemID, runID, "backlog-reconcile", stageTimeout())
+		} else {
+			acquired, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
+				Gaggle:     gaggle,
+				Provider:   string(repo.Provider),
+				ExternalID: itemID,
+			}, runID, "backlog-reconcile", stageTimeout())
+		}
+		return err
+	})
+	return reservation, acquired, err
+}
+
+func releaseBacklogClaimReconciliation(l instance.Layout, reservation backlogReconcileReservation) error {
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogReconcile, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		if reservation.gaggle == "" {
+			return ledger.Release(reservation.itemID, reservation.runID)
+		}
+		return ledger.ReleaseScoped(localscheduler.ClaimKey{
+			Gaggle:     reservation.gaggle,
+			Provider:   reservation.provider,
+			ExternalID: reservation.itemID,
+		}, reservation.runID)
+	})
 }
 
 func hasReconciledMetadataLabel(item providers.WorkItem) bool {
@@ -272,25 +342,6 @@ func hasRecentHumanComment(
 		}
 	}
 	return false, nil
-}
-
-func hasLiveClaim(claims []localscheduler.ClaimEntry, itemID, gaggle, provider string, now time.Time) bool {
-	for _, claim := range claims {
-		externalID := claim.ExternalID
-		if externalID == "" {
-			externalID = claim.ItemID
-		}
-		if externalID != itemID || !claim.ExpiresAt.After(now) {
-			continue
-		}
-		if claim.Gaggle == "" && claim.Provider == "" {
-			return true
-		}
-		if claim.Gaggle == gaggle && claim.Provider == provider {
-			return true
-		}
-	}
-	return false
 }
 
 func uniqueSortedLabels(labels []string) []string {

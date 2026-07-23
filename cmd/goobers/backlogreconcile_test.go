@@ -150,8 +150,10 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 
 func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) {
 	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	server.addIssue(7, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(7, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman, providers.LabelClaimed)
+	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
 
 	baseHandler := server.server.Config.Handler
 	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,11 +180,97 @@ func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) 
 	if err == nil {
 		t.Fatal("reconcileBacklogMetadata error = nil, want comment failure")
 	}
-	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady, providers.LabelNeedsHuman, providers.LabelClaimed}, nil)
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := ledger.Snapshot(); len(entries) != 0 {
+		t.Fatalf("claim ledger after provider failure = %+v, want reservation released", entries)
+	}
+}
+
+func TestReconcileBacklogMetadataReservationBlocksConcurrentClaim(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
+	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+
+	type claimAttempt struct {
+		ok     bool
+		holder string
+		err    error
+	}
+	lockPath := filepath.Join(root, "scheduler", claimLockFileName)
+	attempted := make(chan claimAttempt, 1)
+	var once sync.Once
+	baseHandler := server.server.Config.Handler
+	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7/comments") {
+			once.Do(func() {
+				result := claimAttempt{}
+				result.err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+					ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+					if err != nil {
+						return err
+					}
+					result.ok, result.holder, err = ledger.ClaimScoped(localscheduler.ClaimKey{
+						Gaggle:     "goobers",
+						Provider:   string(providers.ProviderGitHub),
+						ExternalID: "7",
+					}, "concurrent-run", "implementation", time.Hour)
+					return err
+				})
+				if result.ok {
+					server.addComment(7, "goobers-claim-release: run=historical-run\n\nReleased by the prior owner.")
+					server.addComment(7, "goobers-claim: run=concurrent-run\n\nClaimed by the concurrent run.")
+				}
+				attempted <- result
+			})
+		}
+		baseHandler.ServeHTTP(w, r)
+	})
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	if err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		time.Now,
+	); err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	result := <-attempted
+	if result.err != nil {
+		t.Fatalf("concurrent claim attempt: %v", result.err)
+	}
+	if result.ok {
+		t.Fatal("concurrent claimant acquired the ledger lease during provider reconciliation")
+	}
+	if !strings.Contains(result.holder, "/backlog-reconcile/") {
+		t.Fatalf("concurrent claim holder = %q, want reconciliation reservation", result.holder)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelClaimed})
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := ledger.Snapshot(); len(entries) != 0 {
+		t.Fatalf("claim ledger after reconciliation = %+v, want reservation released", entries)
+	}
 }
 
 func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T) {
 	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
 	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
@@ -192,7 +280,7 @@ func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T)
 	var once sync.Once
 	baseHandler := server.server.Config.Handler
 	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7") {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/7/comments") {
 			once.Do(func() {
 				held, err := platformlock.TryAcquire(lockPath)
 				if err == nil {
