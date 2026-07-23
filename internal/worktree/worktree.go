@@ -87,13 +87,6 @@ func (e *BaseSyncConflictError) Unwrap() error {
 	return e.cause
 }
 
-// IsBaseSyncConflict reports whether err identifies a genuine base-sync merge
-// conflict, including through wrapping.
-func IsBaseSyncConflict(err error) bool {
-	var conflict *BaseSyncConflictError
-	return errors.As(err, &conflict)
-}
-
 // Worktree is a disposable, isolated working copy for one run, branched off
 // a Manager's managed working copy. Obtain one via Manager.Create and release
 // it via Remove.

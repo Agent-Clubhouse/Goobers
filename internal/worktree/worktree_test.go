@@ -508,7 +508,8 @@ func TestBaseSyncFailureWithCleanupErrorIsNotRemediableConflict(t *testing.T) {
 		nil,
 		errors.New("cleanup failed"),
 	)
-	if IsBaseSyncConflict(err) {
+	var conflict *BaseSyncConflictError
+	if errors.As(err, &conflict) {
 		t.Fatalf("baseSyncFailure error = %v, must not be remediable when cleanup failed", err)
 	}
 	if !strings.Contains(err.Error(), "cleanup failed") {
