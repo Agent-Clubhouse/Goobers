@@ -22,19 +22,21 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion             = "goobers.dev/v1alpha1"
-	ConfigKind                   = "Instance"
-	DefaultAPIListenAddress      = "127.0.0.1:8080"
-	DefaultWebhookListenAddress  = "127.0.0.1:8081"
-	OTLPEndpointEnv              = "GOOBERS_OTLP_ENDPOINT"
-	OTLPInsecureEnv              = "GOOBERS_OTLP_INSECURE"
-	DefaultWorkflowSourceRef     = "main"
-	WorkflowSourceKindLocalDir   = "local-dir"
-	WorkflowSourceKindGit        = "git"
-	DefaultDaemonLivenessTimeout = 2 * time.Minute
-	MinimumDaemonLivenessTimeout = 2 * time.Second
-	DefaultStalledRunTimeout     = 45 * time.Minute
-	DefaultClaimsLockTimeout     = 30 * time.Second
+	ConfigAPIVersion                 = "goobers.dev/v1alpha1"
+	ConfigKind                       = "Instance"
+	DefaultAPIListenAddress          = "127.0.0.1:8080"
+	DefaultWebhookListenAddress      = "127.0.0.1:8081"
+	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
+	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
+	DefaultWorkflowSourceRef         = "main"
+	WorkflowSourceKindLocalDir       = "local-dir"
+	WorkflowSourceKindGit            = "git"
+	DefaultDaemonLivenessTimeout     = 2 * time.Minute
+	MinimumDaemonLivenessTimeout     = 2 * time.Second
+	DefaultStalledRunTimeout         = 45 * time.Minute
+	DefaultClaimsLockTimeout         = 30 * time.Second
+	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
+	DefaultTelemetryRetentionMaxRuns = 500
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -188,6 +190,52 @@ type TelemetryConfig struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+	// Retention bounds terminal run journals and their rollup rows. Automatic
+	// daemon pruning is opt-in; explicit pruning can use the configured policy
+	// while automation remains disabled.
+	Retention *TelemetryRetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
+}
+
+// TelemetryRetentionConfig controls pruning of terminal run telemetry.
+type TelemetryRetentionConfig struct {
+	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Window  string `json:"window,omitempty" yaml:"window,omitempty"`
+	MaxRuns int    `json:"maxRuns,omitempty" yaml:"maxRuns,omitempty"`
+}
+
+// WindowDuration returns the configured retention window. Empty uses 90 days.
+func (c TelemetryRetentionConfig) WindowDuration() (time.Duration, error) {
+	if c.Window == "" {
+		return DefaultTelemetryRetentionWindow, nil
+	}
+	value := c.Window
+	if strings.HasSuffix(value, "d") {
+		days, err := strconv.ParseInt(strings.TrimSuffix(value, "d"), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("telemetry.retention.window %q must be a duration or whole number of days", value)
+		}
+		const maxDurationDays = int64((1<<63 - 1) / int64(24*time.Hour))
+		if days <= 0 || days > maxDurationDays {
+			return 0, fmt.Errorf("telemetry.retention.window must be positive, got %s", value)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	window, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("telemetry.retention.window %q: %w", value, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("telemetry.retention.window must be positive, got %s", window)
+	}
+	return window, nil
+}
+
+// MaxRunLimit returns the configured maximum retained run count. Zero uses 500.
+func (c TelemetryRetentionConfig) MaxRunLimit() int {
+	if c.MaxRuns == 0 {
+		return DefaultTelemetryRetentionMaxRuns
+	}
+	return c.MaxRuns
 }
 
 // OTLPConfig configures an optional OTLP/gRPC collector. Endpoint absence
@@ -463,6 +511,14 @@ func (c *Config) Validate() error {
 		}
 		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
 			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
+		}
+	}
+	if c.Telemetry.Retention != nil {
+		if _, err := c.Telemetry.Retention.WindowDuration(); err != nil {
+			return err
+		}
+		if c.Telemetry.Retention.MaxRuns < 0 {
+			return fmt.Errorf("telemetry.retention.maxRuns must not be negative")
 		}
 	}
 	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {

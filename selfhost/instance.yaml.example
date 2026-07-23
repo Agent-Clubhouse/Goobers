@@ -32,6 +32,13 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
+  # Automatic journal + rollup pruning is disabled unless enabled here.
+  # Omitted bounds use the 90-day and 500-run defaults. Operators can preview
+  # the same policy at any time with `goobers telemetry prune --dry-run`.
+  # retention:
+  #   enabled: true
+  #   window: 90d
+  #   maxRuns: 500
   # Collector push is disabled unless an endpoint is configured here or with
   # GOOBERS_OTLP_ENDPOINT. See docs/guides/jaeger-quickstart.md.
   # otlp:

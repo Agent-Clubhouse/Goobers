@@ -298,10 +298,13 @@ func init() {
 			subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
 				withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
 				withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
+			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
+				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
+				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("query aggregates or export journaled OTLP windows", telemetryHelp).
-			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z"),
+			withHelp("query, export, or prune run telemetry", telemetryHelp).
+			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry prune --dry-run"),
 		groupCommand(
 			"journal",
 			runJournal,

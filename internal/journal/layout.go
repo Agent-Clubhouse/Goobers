@@ -8,6 +8,7 @@ const (
 	fileEvents    = "events.jsonl"
 	fileStateTemp = "state.json.tmp"
 	fileLock      = ".lock"
+	filePruning   = ".telemetry-pruning"
 
 	dirInputs    = "inputs"
 	dirArtifacts = "artifacts"

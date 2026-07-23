@@ -70,6 +70,27 @@ func deleteRun(tx *sql.Tx, runID string) error {
 	return nil
 }
 
+// DeleteRun removes every rollup row derived from one run in a single
+// transaction. The caller coordinates deletion of the source journal.
+func (db *DB) DeleteRun(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("rollup: run id is required")
+	}
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("rollup: begin delete tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := deleteRun(tx, runID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rollup: commit delete for run %s: %w", runID, err)
+	}
+	checkpointWAL(db.sql)
+	return nil
+}
+
 func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	var status string
 	var finishedAt time.Time

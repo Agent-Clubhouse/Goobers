@@ -186,7 +186,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors export"
+                candidates="stats errors export prune"
             fi
             ;;
         journal)

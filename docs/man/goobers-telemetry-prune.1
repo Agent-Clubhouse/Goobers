@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY PRUNE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry prune \- remove terminal runs outside configured retention bounds
+.SH SYNOPSIS
+\fBgoobers telemetry prune\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry prune [--dry-run] [path]
+
+Remove terminal run journals and all of their SQLite rollup rows when either
+telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active
+and paused runs are never removed. The configured 90d/500-run defaults apply
+when a bound is omitted. This explicit command works even when automatic
+retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry prune --dry-run
+goobers telemetry prune
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

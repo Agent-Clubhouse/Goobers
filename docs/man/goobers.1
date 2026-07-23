@@ -211,13 +211,16 @@ show the instance lifetime summary card
 validate config, show warnings, list runs, or report daemon health
 .TP
 \fBgoobers telemetry\fR
-query aggregates or export journaled OTLP windows
+query, export, or prune run telemetry
 .TP
 \fBgoobers telemetry errors\fR
 recent errors across runs, by class, with run/stage refs
 .TP
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
+.TP
+\fBgoobers telemetry prune\fR
+remove terminal runs outside configured retention bounds
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
@@ -313,6 +316,7 @@ show a workflow as a text DAG
 \fBgoobers-telemetry\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),

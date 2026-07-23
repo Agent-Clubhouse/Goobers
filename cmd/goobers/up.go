@@ -431,6 +431,18 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: prune retained worktrees and branches: %v\n", err)
 		return 1
 	}
+	telemetryRetentionConfig := instance.TelemetryRetentionConfig{}
+	if setup.Config.Telemetry.Retention != nil {
+		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
+	}
+	telemetryPruned, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, time.Now())
+	if err != nil {
+		pf(stderr, "error: prune retained telemetry: %v\n", err)
+		return 1
+	}
+	for _, result := range telemetryPruned {
+		pf(stdout, "telemetry pruned run=%q reason=%s\n", result.RunID, result.Reason)
+	}
 
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
@@ -612,6 +624,23 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
+	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
+	telemetryRetentionTickerDone := make(chan struct{})
+	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	go func() {
+		defer close(telemetryRetentionTickerDone)
+		defer telemetryRetentionTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-telemetryRetentionTicker.C:
+				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
+				telemetryRetentionErrors.report(err)
+			}
+		}
+	}()
+
 	// #343's daemon-side half: periodically sweep for delegated trigger
 	// requests a short-lived `goobers run` invocation dropped after finding
 	// this daemon already holding up.lock (rundelegate.go), and dispatch
@@ -789,6 +818,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// (stdout/stderr are not safe for concurrent use).
 	<-claimTickerDone
 	<-stalledTickerDone
+	<-telemetryRetentionTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
 	if heartbeatDone != nil {
