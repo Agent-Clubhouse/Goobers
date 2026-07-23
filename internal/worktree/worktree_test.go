@@ -441,6 +441,82 @@ func TestManager_Create_SyncsExistingBranchWithFetchedBaseDespiteAmbientFFOnly(t
 	runTestGit(t, synced.Path, "merge-base", "--is-ancestor", "main", "HEAD")
 }
 
+func TestManager_Create_ClassifiesBaseSyncConflictAndPreservesBranch(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/wf/run-conflict"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-conflict-implement", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, "README.md"), "implementation\n")
+	runTestGit(t, first.Path, "add", "README.md")
+	runTestGit(t, first.Path, "commit", "-m", "implement")
+	implementationRef := strings.TrimSpace(runTestGit(t, first.Path, "rev-parse", "HEAD"))
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "base\n")
+	runTestGit(t, repo, "add", "README.md")
+	runTestGit(t, repo, "commit", "-m", "advance base")
+
+	_, err = m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-conflict-local-ci", BaseRef: "main", Branch: branch, SyncBase: true,
+	})
+	var conflict *BaseSyncConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Create error = %v, want BaseSyncConflictError", err)
+	}
+	if conflict.Branch != branch || conflict.BaseRef != "main" {
+		t.Fatalf("conflict refs = branch %q base %q, want %q and main", conflict.Branch, conflict.BaseRef, branch)
+	}
+	if len(conflict.ConflictingFiles) != 1 || conflict.ConflictingFiles[0] != "README.md" {
+		t.Fatalf("conflicting files = %v, want [README.md]", conflict.ConflictingFiles)
+	}
+
+	repoDir := m.repoDirForKey(repoKey(repo))
+	preservedRef := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "refs/heads/"+branch))
+	if preservedRef != implementationRef {
+		t.Fatalf("preserved branch ref = %s, want implementation ref %s", preservedRef, implementationRef)
+	}
+
+	recovered, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-conflict-remediation", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("recover branch: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(recovered.Path, "README.md"))
+	if err != nil {
+		t.Fatalf("read recovered implementation: %v", err)
+	}
+	if string(content) != "implementation\n" {
+		t.Fatalf("recovered README = %q, want implementation content", content)
+	}
+}
+
+func TestBaseSyncFailureWithCleanupErrorIsNotRemediableConflict(t *testing.T) {
+	err := baseSyncFailure(
+		CreateOptions{RunID: "run-conflict", Branch: "goobers/wf/run-conflict", BaseRef: "main"},
+		errors.New("merge failed"),
+		[]string{"README.md"},
+		nil,
+		errors.New("cleanup failed"),
+	)
+	var conflict *BaseSyncConflictError
+	if errors.As(err, &conflict) {
+		t.Fatalf("baseSyncFailure error = %v, must not be remediable when cleanup failed", err)
+	}
+	if !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("baseSyncFailure error = %v, want cleanup failure surfaced", err)
+	}
+}
+
 // TestManager_Create_ResolvesRelativeRootToAbsolute is #282's regression: a
 // Manager constructed with a relative Root (the common case — cmd/goobers
 // wires it off a "."-rooted instance) must not let git resolve a worktree's

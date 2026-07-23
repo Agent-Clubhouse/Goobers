@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,5 +92,175 @@ func TestRunnerSyncsConfiguredStageWithLatestBase(t *testing.T) {
 	}
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %s, want %s", result.Phase, journal.PhaseCompleted)
+	}
+}
+
+type conflictRemediatingDeterministic struct {
+	t                 *testing.T
+	remote            string
+	root              string
+	runDir            string
+	implementAttempts int
+	localCIAttempts   int
+}
+
+func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	switch {
+	case strings.HasSuffix(env.TaskID, ":implement"):
+		d.implementAttempts++
+		if d.implementAttempts == 1 {
+			if err := os.WriteFile(filepath.Join(env.Workspace, "README.md"), []byte("implementation\n"), 0o644); err != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			runGit(d.t, env.Workspace, "add", "README.md")
+			runGit(d.t, env.Workspace, "commit", "-m", "implement")
+
+			baseWork := filepath.Join(d.root, "conflicting-base-work")
+			runGit(d.t, "", "clone", d.remote, baseWork)
+			runGit(d.t, baseWork, "config", "user.email", "test@example.com")
+			runGit(d.t, baseWork, "config", "user.name", "test")
+			if err := os.WriteFile(filepath.Join(baseWork, "README.md"), []byte("base\n"), 0o644); err != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			runGit(d.t, baseWork, "add", "README.md")
+			runGit(d.t, baseWork, "commit", "-m", "advance base")
+			runGit(d.t, baseWork, "push", "origin", "main")
+			break
+		}
+
+		var conflictPointer *apiv1.ArtifactPointer
+		for i := range env.ContextPointers {
+			if env.ContextPointers[i].Name == "local-ci.artifact[0]" {
+				conflictPointer = env.ContextPointers[i].Artifact
+				break
+			}
+		}
+		if conflictPointer == nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("remediation invocation missing local-ci conflict context: %+v", env.ContextPointers)
+		}
+		conflictData, err := conflictPointer.Resolve(d.runDir)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve local-ci conflict context: %w", err)
+		}
+		var conflict baseSyncConflictArtifact
+		if err := json.Unmarshal(conflictData, &conflict); err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("decode local-ci conflict context: %w", err)
+		}
+		if conflict.Code != baseSyncConflictErrorCode || conflict.Branch == "" || conflict.BaseRef != "main" ||
+			len(conflict.ConflictingFiles) != 1 || conflict.ConflictingFiles[0] != "README.md" {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("local-ci conflict context = %+v, want README.md conflict against main", conflict)
+		}
+
+		cmd := exec.Command("git", "merge", "--no-edit", "main")
+		cmd.Dir = env.Workspace
+		if out, err := cmd.CombinedOutput(); err == nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("remediation merge unexpectedly succeeded: %s", out)
+		}
+		if err := os.WriteFile(filepath.Join(env.Workspace, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(d.t, env.Workspace, "add", "README.md")
+		runGit(d.t, env.Workspace, "commit", "-m", "resolve base conflict")
+	case strings.HasSuffix(env.TaskID, ":local-ci"):
+		d.localCIAttempts++
+		content, err := os.ReadFile(filepath.Join(env.Workspace, "README.md"))
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		if string(content) != "resolved\n" {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("local-ci README = %q, want resolved content", content)
+		}
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func TestRunnerRoutesBaseSyncConflictThroughBoundedRemediation(t *testing.T) {
+	remote := newFixtureRepo(t)
+	deterministic := &conflictRemediatingDeterministic{t: t, remote: remote, root: t.TempDir()}
+	r, runsDir := newWorktreeProvisioningTestRunner(t, remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return deterministic, nil
+	})
+	deterministic.runDir = filepath.Join(runsDir, "run-sync-conflict")
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "implementation",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web",
+			Start:  "implement",
+			Tasks: []apiv1.Task{
+				{
+					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci",
+				},
+				{
+					Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "test",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, Next: "local-gate",
+				},
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "local-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches: map[string]string{
+					"pass":                  workflow.TerminalComplete,
+					"fail":                  "implement",
+					workflow.BranchEscalate: workflow.TargetEscalate,
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-sync-conflict",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %s, want %s", result.Phase, journal.PhaseCompleted)
+	}
+	if deterministic.implementAttempts != 2 {
+		t.Fatalf("implement attempts = %d, want 2", deterministic.implementAttempts)
+	}
+	if deterministic.localCIAttempts != 1 {
+		t.Fatalf("local-ci executor attempts = %d, want 1 after conflict remediation", deterministic.localCIAttempts)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-sync-conflict"))
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	var typedConflict, successfulCI bool
+	for _, event := range events {
+		if event.Stage != "local-ci" {
+			continue
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+			t.Fatalf("base sync conflict was journaled as executor_error: %+v", event.Error)
+		}
+		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
+			event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
+			typedConflict = true
+		}
+		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
+			successfulCI = true
+		}
+	}
+	if !typedConflict {
+		t.Fatal("journal missing typed base-sync conflict stage result")
+	}
+	if !successfulCI {
+		t.Fatal("journal missing successful local-ci after remediation")
 	}
 }
