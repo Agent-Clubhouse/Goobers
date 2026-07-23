@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -45,6 +45,27 @@ describe("operational overview", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
     expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
+  });
+
+  it("refreshes health while events stay connected and reports a newly stale heartbeat", async () => {
+    vi.useFakeTimers();
+    const client = new StallingSchedulerClient();
+    const rendered = render(<App client={client} />);
+
+    try {
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByRole("heading", { name: "Daemon is ready." })).toBeInTheDocument();
+
+      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+
+      expect(screen.getByRole("heading", { name: "Daemon is unhealthy." })).toBeInTheDocument();
+      expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
+      expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
+      expect(client.healthRequests).toBe(2);
+    } finally {
+      rendered.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("groups canonical phases and places attention rows before aggregate counts", async () => {
@@ -175,5 +196,31 @@ class RecoveringClient extends FixtureDaemonClient {
       return Promise.reject(new DaemonUnavailableError());
     }
     return super.getHealth(options);
+  }
+}
+
+class StallingSchedulerClient extends FixtureDaemonClient {
+  healthRequests = 0;
+
+  constructor() {
+    super(emptyDaemonFixtures());
+  }
+
+  override async getHealth(options?: RequestOptions): Promise<Health> {
+    const request = ++this.healthRequests;
+    const health = await super.getHealth(options);
+    if (request === 1) {
+      return health;
+    }
+    return {
+      ...health,
+      healthy: false,
+      freshness: {
+        ...health.freshness,
+        observedAt: "2026-07-18T20:00:00Z",
+        lastSchedulerTickAt: "2026-07-18T19:57:00Z",
+        lastTickAgeMillis: 180_000,
+      },
+    };
   }
 }
