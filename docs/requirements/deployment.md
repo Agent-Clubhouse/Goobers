@@ -167,7 +167,8 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
   wrapper (`internal/winsvc`, build-tag-gated `//go:build windows`) that maps
   `SERVICE_CONTROL_STOP` onto the daemon's unix `SIGTERM` graceful-drain path, so stop
   semantics are identical across platforms. Install/start/stop/status/logs/upgrade docs:
-  [`docs/guides/supervision.md`](../guides/supervision.md). Stage 2 — a native
-  `goobers service install|uninstall|status` subcommand — is a deferred follow-up (#639).
+  [`docs/guides/supervision.md`](../guides/supervision.md). Native
+  `goobers service install|uninstall|status` commands install and manage each surface,
+  including supervisor restart backoff and dirty-restart journaling.
   The V1 packaging/install-channel story (scoop/winget/Homebrew) remains P12 (#639's
   cousin) — out of this resolution's scope.

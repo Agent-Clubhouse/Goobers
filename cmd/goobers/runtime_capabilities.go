@@ -134,6 +134,22 @@ func init() {
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
 			withExamples("goobers up", "goobers up --quiet --notify=all"),
+		groupCommand(
+			"service",
+			runService,
+			subcommand("service install", "install", apicontract.ActionDaemonLifecycle, runServiceInstall).
+				withHelp("install, enable, and start the supervised daemon", serviceInstallHelp).
+				withExamples("goobers service install", "goobers service install ./instance"),
+			subcommand("service uninstall", "uninstall", apicontract.ActionDaemonLifecycle, runServiceUninstall).
+				withHelp("gracefully stop and remove the supervised daemon", serviceUninstallHelp).
+				withExamples("goobers service uninstall", "goobers service uninstall ./instance"),
+			subcommand("service status", "status", apicontract.ActionReadOnlyNavigation, runServiceStatus).
+				withHelp("report whether the supervised daemon is installed and running", serviceStatusHelp).
+				withExamples("goobers service status", "goobers service status --json"),
+		).
+			withSynopsis(synopsisByID["service"]).
+			withHelp("install and manage the platform-supervised daemon", serviceHelp).
+			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
 		command("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).

@@ -60,10 +60,19 @@ func TestWaitForRunTerminalReportsTransitionsPauseAndHeartbeat(t *testing.T) {
 	done := make(chan struct{})
 	var phase journal.RunPhase
 	var waitErr error
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		phase, waitErr = waitForRunTerminalWithProgress(context.Background(), runsDir, runID, &progress)
+		phase, waitErr = waitForRunTerminalWithProgress(ctx, runsDir, runID, &progress)
 		close(done)
 	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("wait did not stop after cancellation")
+		}
+	})
 
 	waitForProgress(t, &progress, "stage build started")
 	now = now.Add(2 * time.Second)
@@ -181,14 +190,14 @@ func TestRunWaitReporterReopensAfterRunResumed(t *testing.T) {
 
 func waitForProgress(t *testing.T, progress *synchronizedBuffer, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * runPollInterval)
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(progress.String(), want) {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("progress did not contain %q within a poll interval window: %q", want, progress.String())
+	t.Fatalf("progress did not contain %q within one second: %q", want, progress.String())
 }
 
 // TestWaitForRunTerminalFailsFastOnDeadline is the #827 recurrence guard for the

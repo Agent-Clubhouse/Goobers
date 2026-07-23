@@ -89,6 +89,15 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventDaemonStarted records a daemon lifetime beginning after it acquires
+	// the instance lock.
+	EventDaemonStarted EventType = "daemon.started"
+	// EventDaemonCleanShutdown records a graceful drain completing before the
+	// daemon releases its instance lock.
+	EventDaemonCleanShutdown EventType = "daemon.clean_shutdown"
+	// EventDaemonDirtyRestart records startup finding a previous daemon lock
+	// without a subsequent clean-shutdown event.
+	EventDaemonDirtyRestart EventType = "daemon.dirty_restart"
 )
 
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human
@@ -210,8 +219,8 @@ type Event struct {
 	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
-	// Reason is a short, stable explanation for a tick.skipped or
-	// workflow.starved decision.
+	// Reason is a short, stable explanation for an instance-level scheduler or
+	// daemon lifecycle event.
 	Reason string `json:"reason,omitempty"`
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
@@ -253,7 +262,8 @@ func (e Event) IsConformanceNormative() bool {
 		return false
 	}
 	switch e.Type {
-	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired:
+	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
+		EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.

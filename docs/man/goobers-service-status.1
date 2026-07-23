@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE STATUS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service status \- report whether the supervised daemon is installed and running
+.SH SYNOPSIS
+\fBgoobers service status\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service status [--json] [path]
+
+Report the current platform supervisor, registration path (when applicable),
+and whether the goobers daemon is installed, loaded, and running.
+
+Exit codes: 0 = running, 1 = stopped/not installed/query error,
+2 = usage error or not an instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers service status
+goobers service status --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

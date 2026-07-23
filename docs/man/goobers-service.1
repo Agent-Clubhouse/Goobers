@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service \- install and manage the platform-supervised daemon
+.SH SYNOPSIS
+\fBgoobers service\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service <subcommand> [path]
+
+Install and manage the goobers daemon under the current platform's user
+supervisor: systemd on Linux, launchd on macOS, or the Windows Service
+Control Manager. The managed daemon runs `goobers up <path>`, receives the
+same graceful-shutdown trigger as a foreground daemon, and restarts after
+an unexpected exit with supervisor backoff.
+
+Subcommands:
+  install     install, enable, and start the service
+  uninstall   gracefully stop, disable, and remove the service
+  status      report whether the service is installed and running
+
+Run `goobers service install -h`, `goobers service uninstall -h`, or
+`goobers service status -h` for details. Default path is ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers service install
+goobers service status
+goobers service uninstall
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
