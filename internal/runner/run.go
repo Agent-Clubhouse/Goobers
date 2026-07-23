@@ -907,6 +907,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 						return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
 					}
 				}
+				// An interrupted deferred attempt cannot be proven to have been
+				// an empty tick. Preserve its branch before runTask can reject an
+				// exhausted retry budget without dispatching another attempt.
+				if !branchRecorded && machineUsesRepo(in.Machine) {
+					if err := r.recordRunBranch(jr, in); err != nil {
+						return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+					}
+					branchRecorded = true
+				}
 				startAttempt = int32(resume.attempt) + 1
 				if rerun != nil && rerun.stage == t.Name {
 					firstClass = journal.AttemptHuman
