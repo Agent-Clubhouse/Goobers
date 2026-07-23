@@ -168,7 +168,7 @@ describe("run detail", () => {
     expect(implementNode).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("renders pinned identity and narrow-layout semantics without later-slice UI", async () => {
+  it("renders pinned identity and narrow-layout semantics with the replay scrubber", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 480 });
     renderRun("01JZ300ABORTED");
 
@@ -186,7 +186,7 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /play|replay/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 });

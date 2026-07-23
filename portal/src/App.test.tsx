@@ -89,7 +89,7 @@ describe("portal foundation", () => {
     expect(screen.queryByText(/durable events from the daemon/)).not.toBeInTheDocument();
   });
 
-  it("opens a run from daemon data without later-slice controls", async () => {
+  it("opens a run from daemon data with the replay scrubber but no attempt/escalation panels", async () => {
     const user = userEvent.setup();
     renderLiveApp();
 
@@ -101,7 +101,7 @@ describe("portal foundation", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /play|replay/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 

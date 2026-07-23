@@ -1,4 +1,4 @@
-import type { RunEvent } from "./prototypeData";
+import type { RunEvent } from "./api/types";
 
 export const replaySpeeds = [1, 5, 10] as const;
 export type ReplaySpeed = (typeof replaySpeeds)[number];
@@ -13,6 +13,9 @@ export interface ReplayTransition {
   idleCompressed: boolean;
 }
 
+// orderedReplayEvents returns the events in durable-sequence order. Live events
+// can arrive out of order (branches, reconnect backfill); replay always plays
+// the canonical sequence.
 export function orderedReplayEvents(events: RunEvent[]): RunEvent[] {
   const ordered = [...events].sort((left, right) => left.seq - right.seq);
   for (let index = 1; index < ordered.length; index += 1) {
@@ -23,22 +26,16 @@ export function orderedReplayEvents(events: RunEvent[]): RunEvent[] {
   return ordered;
 }
 
-export function parseElapsedMs(elapsed: string): number {
-  const parts = elapsed.split(":");
-  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !/^\d+$/.test(part))) {
-    throw new Error(`Invalid elapsed time: ${elapsed}`);
-  }
-
-  const values = parts.map(Number);
-  const seconds = values[values.length - 1];
-  const minutes = values[values.length - 2];
-  const hours = values.length === 3 ? values[0] : 0;
-  if (seconds > 59 || (parts.length === 3 && minutes > 59)) {
-    throw new Error(`Invalid elapsed time: ${elapsed}`);
-  }
-  return ((hours * 60 + minutes) * 60 + seconds) * 1_000;
+function eventMillis(event: RunEvent): number {
+  const value = Date.parse(event.time);
+  return Number.isFinite(value) ? value : 0;
 }
 
+// replayTransition computes the wait before advancing from the event at
+// currentIndex to the next one. Real wall-clock gaps come from the events'
+// durable timestamps (the live RunEvent contract, not the old fixture
+// `.elapsed` string); long idle gaps are compressed, and every step honors a
+// minimum so bursts stay legible.
 export function replayTransition(
   events: RunEvent[],
   currentIndex: number,
@@ -50,11 +47,7 @@ export function replayTransition(
     return undefined;
   }
 
-  const realDelayMs = parseElapsedMs(next.elapsed) - parseElapsedMs(current.elapsed);
-  if (realDelayMs < 0) {
-    throw new Error(`Elapsed time moved backwards between event sequences ${current.seq} and ${next.seq}`);
-  }
-
+  const realDelayMs = Math.max(0, eventMillis(next) - eventMillis(current));
   const idleCompressed = realDelayMs > idleCompressionThresholdMs;
   const baseDelayMs = idleCompressed
     ? compressedIdleDelayMs

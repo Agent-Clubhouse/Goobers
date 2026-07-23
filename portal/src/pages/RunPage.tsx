@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
+import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import {
@@ -114,6 +115,12 @@ function RunDetailWorkspace({
     setFollowingLatest(event.seq === initialSeq);
   };
 
+  const replaySeek = (seq: number) => {
+    setSelectedSeq(seq);
+    setSelectedNodeId(eventNodeAtSequence(events, seq));
+    setFollowingLatest(seq === initialSeq);
+  };
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -200,6 +207,15 @@ function RunDetailWorkspace({
             </div>
           )}
         </GraphFrame>
+
+        {events.length > 0 && (
+          <ReplayScrubber
+            events={events}
+            onSeek={replaySeek}
+            selectedSeq={selectedSeq}
+            terminal={run.finishedAt != null}
+          />
+        )}
 
         {run.graphStatus === "pinned" && run.graph && (
           <RunStageInspector
