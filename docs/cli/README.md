@@ -72,7 +72,7 @@
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers versions`](#goobers-versions) | print the supported Go toolchain and OS/arch matrix (--json for structured output) |
+| [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 
@@ -490,11 +490,12 @@ $ goobers escalations show <run-id>
 list the workflow-DSL features this build supports
 
 ~~~text
-Usage: goobers features [--used] [path]
+Usage: goobers features [--dsl-version <version>] [--used] [path]
 
-List the workflow-DSL features this build understands, with each
-feature's support level (preview/ga/deprecated/removed) and the version
-it entered that level. This reads the same registry the committed
+List the workflow-DSL features this build understands by DSL version,
+including each feature's support level (preview/ga/deprecated/removed).
+Use --dsl-version to scope the matrix to one declared version. This reads
+the same registry and SupportMatrix the committed
 docs/feature-matrix.md is generated from, so the two never disagree.
 
 With --used, list only the features the instance at path (default ".")
@@ -507,6 +508,7 @@ config, 2 = usage/IO error.
 
 ~~~console
 $ goobers features
+$ goobers features --dsl-version 1.4
 $ goobers features --used
 ~~~
 
@@ -1433,11 +1435,11 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]
+Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --check-harness additionally preflights every agent harness
+using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token and verifies authenticated git access. Exit codes: 0 = valid,
@@ -1477,14 +1479,14 @@ $ goobers version --json
 
 ## `goobers versions`
 
-print the supported Go toolchain and OS/arch matrix (--json for structured output)
+print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
 
 ~~~text
 Usage: goobers versions [--json]
 
-Print the version-support matrix this build of goobers declares: the
-minimum Go toolchain it compiles against, the OS/arch targets it claims to
-support (with their tier), and where the current host stands in that matrix.
+Print the version-support matrix this build of goobers declares: supported
+DSL versions and lifecycle levels, the minimum Go toolchain, supported
+OS/arch targets, and where the current host stands in that matrix.
 
 The matrix is host-declared — a build-time constant, not a live probe — so it
 answers "what does this binary claim to support?" for operators and support
@@ -1492,8 +1494,8 @@ bundles. Distinct from `goobers version`, which reports this build's own
 version/commit/date.
 
 Default output is human-readable. --json emits a structured object with keys:
-minGoVersion, platforms[] (os, arch, tier), host (os, arch, goVersion,
-supported, tier) — machine-readable for scripts and support bundles.
+minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement),
+platforms[] (os, arch, tier), and host — machine-readable for scripts.
 
 Exit codes: 0 = OK, 2 = usage error.
 ~~~

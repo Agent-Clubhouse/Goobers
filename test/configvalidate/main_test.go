@@ -109,7 +109,12 @@ func TestValidatorHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	target := args[len(args)-1]
-	sourceTreeValidation := len(args) >= 3 && args[1] == "--source-tree"
+	wantStrict := filepath.Base(target) == "selfhost"
+	if containsArgument(args, "--strict") != wantStrict {
+		_, _ = fmt.Fprintf(os.Stderr, "validator strictness does not match target: %q\n", args)
+		os.Exit(2)
+	}
+	sourceTreeValidation := containsArgument(args, "--source-tree")
 	if !sourceTreeValidation {
 		for _, path := range []string{
 			filepath.Join(target, "instance.yaml"),
@@ -129,6 +134,15 @@ func TestValidatorHelperProcess(t *testing.T) {
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)
+}
+
+func containsArgument(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
 }
 
 func scanToolchainShellScripts(root string) error {

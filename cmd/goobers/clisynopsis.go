@@ -10,7 +10,7 @@ package main
 // registry so the top-level surface cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
-	"versions":               "  goobers versions [--json]     print the supported Go toolchain and OS/arch matrix\n",
+	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
 	"init":                   "  goobers init [--guided | --demo] [path]  scaffold an instance root\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
@@ -27,7 +27,7 @@ var synopsisByID = map[string]string{
 	"runs du":                "  goobers runs du [--json] [path]       report per-run journal and artifact bytes\n",
 	"status":                 "  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]\n                                validate config, show warnings, list runs newest first, or report daemon health with --daemon\n",
 	"stats":                  "  goobers stats [--since <duration>] [--json] [path]\n                                show the instance lifetime summary card\n",
-	"features":               "  goobers features [--used] [path]  list the workflow-DSL features this build supports\n",
+	"features":               "  goobers features [--dsl-version <version>] [--used] [path]\n                                list the workflow-DSL features this build supports\n",
 	"reset-rate-limit":       "  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/\n",
 	"blocked list":           "  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)\n",
 	"blocked clear":          "  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock\n",

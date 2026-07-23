@@ -1,14 +1,18 @@
 // Package supportmatrix declares the version-support surface a build of goobers
-// claims: the minimum Go toolchain it compiles against and the OS/arch targets
-// it is built and exercised on (#862, DVL-2).
+// claims: DSL versions and lifecycle levels, the minimum Go toolchain, and the
+// OS/arch targets it is built and exercised on (#862, DVL-2).
 //
-// The matrix is host-declared — a build-time constant maintained alongside the
-// code, not probed at runtime. Its purpose is to answer, for an operator or a
-// support bundle, "what does this binary claim to support?" without inspecting
-// CI config. runVersions in cmd/goobers renders it (human and --json).
+// The matrix is host-declared — build-time constants maintained alongside the
+// code, not probed at runtime. It includes the DSL version lifecycle as well as
+// toolchain and platform support. runVersions renders it (human and --json).
 package supportmatrix
 
-import "runtime"
+import (
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // Tier is the level of support a platform target carries.
 type Tier string
@@ -21,6 +25,103 @@ const (
 	// release gate; support is best-effort.
 	TierExperimental Tier = "experimental"
 )
+
+// Level is the lifecycle support level carried by a DSL version.
+type Level string
+
+// DSL version lifecycle levels.
+const (
+	LevelPreview     Level = "preview"
+	LevelSupported   Level = "supported"
+	LevelDeprecated  Level = "deprecated"
+	LevelUnsupported Level = "unsupported"
+)
+
+// CurrentDSLVersion is the language version implemented by the current
+// interpreter. New interpreters add another SupportMatrix entry rather than
+// changing this version's feature membership.
+const CurrentDSLVersion = "1.4"
+
+// VersionSupport describes the host's lifecycle contract for one DSL version.
+type VersionSupport struct {
+	Level            Level  `json:"level"`
+	UnsupportedAfter string `json:"unsupportedAfter,omitempty"`
+	Replacement      string `json:"replacement,omitempty"`
+}
+
+// SupportMatrix is the host-declared DSL version support surface.
+type SupportMatrix map[string]VersionSupport
+
+// Version is one stable, ordered row of a SupportMatrix.
+type Version struct {
+	Version          string `json:"version"`
+	Level            Level  `json:"level"`
+	UnsupportedAfter string `json:"unsupportedAfter,omitempty"`
+	Replacement      string `json:"replacement,omitempty"`
+}
+
+var dslVersions = SupportMatrix{
+	CurrentDSLVersion: {Level: LevelSupported},
+}
+
+// Lookup returns the support declaration for a DSL version.
+func (m SupportMatrix) Lookup(version string) (VersionSupport, bool) {
+	support, ok := m[version]
+	return support, ok
+}
+
+// Versions returns the matrix in numeric major/minor order.
+func (m SupportMatrix) Versions() []Version {
+	versions := make([]Version, 0, len(m))
+	for version, support := range m {
+		versions = append(versions, Version{
+			Version:          version,
+			Level:            support.Level,
+			UnsupportedAfter: support.UnsupportedAfter,
+			Replacement:      support.Replacement,
+		})
+	}
+	sort.Slice(versions, func(i, j int) bool {
+		leftMajor, leftMinor, leftOK := parseDSLVersion(versions[i].Version)
+		rightMajor, rightMinor, rightOK := parseDSLVersion(versions[j].Version)
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if !leftOK {
+			return versions[i].Version < versions[j].Version
+		}
+		if leftMajor != rightMajor {
+			return leftMajor < rightMajor
+		}
+		return leftMinor < rightMinor
+	})
+	return versions
+}
+
+// GetDSL returns a copy of the compiled-in DSL SupportMatrix.
+func GetDSL() SupportMatrix {
+	out := make(SupportMatrix, len(dslVersions))
+	for version, support := range dslVersions {
+		out[version] = support
+	}
+	return out
+}
+
+func parseDSLVersion(version string) (major, minor int, ok bool) {
+	majorText, minorText, found := strings.Cut(version, ".")
+	if !found || majorText == "" || minorText == "" || strings.Contains(minorText, ".") {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(majorText)
+	if err != nil || major < 0 {
+		return 0, 0, false
+	}
+	minor, err = strconv.Atoi(minorText)
+	if err != nil || minor < 0 {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
 
 // Platform is a single OS/arch target in the support matrix. OS and Arch use Go's
 // GOOS/GOARCH spelling so they compare directly against runtime.GOOS/GOARCH.
@@ -51,8 +152,7 @@ var platforms = []Platform{
 	{OS: "windows", Arch: "amd64", Tier: TierExperimental},
 }
 
-// Matrix is the host-declared support surface — the SupportMatrix of #862. It is
-// the version-and-platform contract a build of goobers publishes.
+// Matrix is the host-declared toolchain and platform support surface.
 type Matrix struct {
 	// MinGoVersion is the minimum Go toolchain the build compiles against,
 	// matching go.mod's `go` directive.
@@ -108,6 +208,7 @@ func CurrentHost() Host {
 type Report struct {
 	MinGoVersion string     `json:"minGoVersion"`
 	Platforms    []Platform `json:"platforms"`
+	DSLVersions  []Version  `json:"dslVersions"`
 	Host         Host       `json:"host"`
 }
 
@@ -117,6 +218,7 @@ func NewReport() Report {
 	return Report{
 		MinGoVersion: m.MinGoVersion,
 		Platforms:    m.Platforms,
+		DSLVersions:  GetDSL().Versions(),
 		Host:         CurrentHost(),
 	}
 }

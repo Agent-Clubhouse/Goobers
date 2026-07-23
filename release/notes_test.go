@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -81,9 +82,21 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if err := os.WriteFile(previousPath, previousJSON, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	previousSupport, err := newSupportSnapshot("v0.0.0", supportmatrix.GetDSL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousSupportJSON, err := json.Marshal(previousSupport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousSupportPath := filepath.Join(t.TempDir(), "previous-support.json")
+	if err := os.WriteFile(previousSupportPath, previousSupportJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	out := t.TempDir()
-	notesPath, snapshotPath, err := writeReleaseMetadata("v0.1.0", previousPath, out)
+	notesPath, snapshotPaths, err := writeReleaseMetadata("v0.1.0", previousPath, previousSupportPath, out)
 	if err != nil {
 		t.Fatalf("writeReleaseMetadata: %v", err)
 	}
@@ -91,23 +104,34 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Goobers v0.1.0", "Compared with `v0.0.0`.", "Support policy for external consumers"} {
+	for _, want := range []string{"# Goobers v0.1.0", "Compared with `v0.0.0`.", "DSL support-matrix delta", "Support policy for external consumers"} {
 		if !strings.Contains(string(notes), want) {
 			t.Errorf("release notes missing %q:\n%s", want, notes)
 		}
 	}
-	snapshot, err := readFeatureSnapshot(snapshotPath)
+	snapshot, err := readFeatureSnapshot(snapshotPaths[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snapshot.Release != "v0.1.0" || len(snapshot.Features) != len(workflow.AllFeatures()) {
 		t.Errorf("snapshot metadata = release %q, %d features", snapshot.Release, len(snapshot.Features))
 	}
+	supportSnapshot, err := readSupportSnapshot(snapshotPaths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if supportSnapshot.Release != "v0.1.0" {
+		t.Errorf("support snapshot release = %q", supportSnapshot.Release)
+	}
 }
 
 func TestSampleReleaseNoteUpToDate(t *testing.T) {
 	previous, current := sampleFeatureSnapshots(t)
-	rendered, err := renderReleaseNotes(current, &previous)
+	supportNotes, _, err := supportReleaseMetadata(current.Release, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := renderReleaseNotes(current, &previous, supportNotes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,18 +157,55 @@ func TestSampleReleaseNoteUpToDate(t *testing.T) {
 
 func sampleFeatureSnapshots(t *testing.T) (featureSnapshot, featureSnapshot) {
 	t.Helper()
+	transition := func(level workflow.SupportLevel, version string) workflow.SupportTransition {
+		return workflow.SupportTransition{Level: level, SinceVersion: version}
+	}
 	previous, err := newFeatureSnapshot("v0.1.0", []workflow.Feature{
-		{ID: "stage.shell", Level: workflow.SupportGA, SinceVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "v0.1.0"}}},
-		{ID: "trigger.schedule", Level: workflow.SupportPreview, SinceVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportPreview, SinceVersion: "v0.1.0"}}},
-		{ID: "trigger.webhook", Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0", Replacement: "trigger.schedule", RemovalTargetVersion: "v0.2.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "dev"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0"}}},
+		{
+			ID: "stage.shell", Level: workflow.SupportGA, SinceVersion: "v0.1.0",
+			History: []workflow.SupportTransition{transition(workflow.SupportGA, "v0.1.0")},
+		},
+		{
+			ID: "trigger.schedule", Level: workflow.SupportPreview, SinceVersion: "v0.1.0",
+			History: []workflow.SupportTransition{transition(workflow.SupportPreview, "v0.1.0")},
+		},
+		{
+			ID: "trigger.webhook", Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0",
+			Replacement: "trigger.schedule", RemovalTargetVersion: "v0.2.0",
+			History: []workflow.SupportTransition{
+				transition(workflow.SupportGA, "v0.0.0"),
+				transition(workflow.SupportDeprecated, "v0.1.0"),
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	current, err := newFeatureSnapshot("v0.2.0", []workflow.Feature{
-		{ID: "stage.shell", Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0", Replacement: "stage.run", RemovalTargetVersion: "v0.3.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "v0.1.0"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0"}}},
-		{ID: "trigger.schedule", Level: workflow.SupportGA, SinceVersion: "v0.2.0", History: []workflow.SupportTransition{{Level: workflow.SupportPreview, SinceVersion: "v0.1.0"}, {Level: workflow.SupportGA, SinceVersion: "v0.2.0"}}},
-		{ID: "trigger.webhook", Level: workflow.SupportRemoved, SinceVersion: "v0.2.0", LastSupportingVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "dev"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0"}, {Level: workflow.SupportRemoved, SinceVersion: "v0.2.0"}}},
+		{
+			ID: "stage.shell", Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0",
+			Replacement: "stage.run", RemovalTargetVersion: "v0.3.0",
+			History: []workflow.SupportTransition{
+				transition(workflow.SupportGA, "v0.1.0"),
+				transition(workflow.SupportDeprecated, "v0.2.0"),
+			},
+		},
+		{
+			ID: "trigger.schedule", Level: workflow.SupportGA, SinceVersion: "v0.2.0",
+			History: []workflow.SupportTransition{
+				transition(workflow.SupportPreview, "v0.1.0"),
+				transition(workflow.SupportGA, "v0.2.0"),
+			},
+		},
+		{
+			ID: "trigger.webhook", Level: workflow.SupportRemoved, SinceVersion: "v0.2.0",
+			LastSupportingVersion: "v0.1.0",
+			History: []workflow.SupportTransition{
+				transition(workflow.SupportGA, "v0.0.0"),
+				transition(workflow.SupportDeprecated, "v0.1.0"),
+				transition(workflow.SupportRemoved, "v0.2.0"),
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

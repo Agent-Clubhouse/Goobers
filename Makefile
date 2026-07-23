@@ -79,7 +79,7 @@ manifests:
 
 ## docs: Regenerate the committed CLI reference (docs/cli) + man pages (docs/man)
 ## from the command registry, and the feature matrix (docs/feature-matrix.md)
-## from the workflow feature registry. CI's TestCLIDocsUpToDate and
+## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and
 ## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
 ## from this, so run it after any CLI help or DSL-feature change.
 .PHONY: docs
@@ -174,7 +174,7 @@ build-%:
 
 build-goobers: portal-build
 
-## validate-configs: Build the validator and check every shipped config tree.
+## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers

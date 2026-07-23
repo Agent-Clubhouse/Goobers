@@ -46,10 +46,11 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
-const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). --source-tree validates a checked-in config source tree\n" +
 	"using instance.yaml.example and the path itself as config/. " +
+	"--strict treats config warnings as validation errors. " +
 	"--check-harness additionally preflights every agent harness\n" +
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
@@ -90,6 +91,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
+	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
 	fs.Usage = helpUsage(stderr, name)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -130,11 +132,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if report != nil {
-		for _, issue := range report.Issues {
-			pln(stdout, issue.CLIString())
-		}
-	}
+	printValidationIssues(stdout, report)
 	if errors.Is(err, instance.ErrInvalidConfig) {
 		pf(stdout, "\nconfig directory failed validation\n")
 		return 1
@@ -183,6 +181,10 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if *checkRepos && !checkTargetRepositories(cfg.Repos, stdout) {
+		return 1
+	}
+	if *strict && len(report.Warnings()) > 0 {
+		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
 	}
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",

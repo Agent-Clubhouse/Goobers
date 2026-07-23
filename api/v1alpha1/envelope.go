@@ -171,7 +171,10 @@ type ResultEnvelope struct {
 	Transcript *ArtifactPointer `json:"transcript,omitempty"`
 	// Summary is a human-readable summary of what happened.
 	Summary string `json:"summary,omitempty"`
-	// Metrics are numeric measures (duration, tokens, cost, custom).
+	// Metrics are numeric measures (duration, tokens, cost, custom). Agentic
+	// usage uses gen_ai.usage.input_tokens, gen_ai.usage.output_tokens,
+	// goobers.usage.copilot_premium_requests, and goobers.usage.cost_usd.
+	// Unavailable measures are omitted; observed zeroes remain present.
 	Metrics map[string]float64 `json:"metrics,omitempty"`
 	// Error carries failure detail; set when status != success.
 	Error *ErrorInfo `json:"error,omitempty"`

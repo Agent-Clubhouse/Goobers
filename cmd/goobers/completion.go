@@ -64,8 +64,8 @@ func completionCandidates(kind, start string) []string {
 
 	switch kind {
 	case "workflows":
-		set, _, err := instance.LoadConfigDir(layout.ConfigDir())
-		if err != nil {
+		set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+		if err != nil || report == nil {
 			return nil
 		}
 		names := make([]string, 0, len(set.Workflows))

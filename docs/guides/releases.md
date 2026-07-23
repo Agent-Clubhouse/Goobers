@@ -10,11 +10,12 @@ Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 `.github/workflows/release.yml`. The workflow builds the packaging engine's
 complete matrix, verifies its shared checksum manifest and Linux binary, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
-`feature-registry.json`, and `RELEASE_NOTES.md`. The release body and attached
-notes are the same document: curated highlights and the commit changelog followed
-by the DSL feature-support delta and external-consumer policy. Re-running the
-workflow updates the existing release and replaces its assets, so a partially
-failed publication can be recovered safely.
+`feature-registry.json`, `dsl-support-matrix.json`, and `RELEASE_NOTES.md`. The
+release body and attached notes are the same document: curated highlights and
+the commit changelog followed by the DSL feature-support delta, DSL
+support-matrix delta, and external-consumer policy. Re-running the workflow
+updates the existing release and replaces its assets, so a partially failed
+publication can be recovered safely.
 
 Release notes combine a curated overview with the first-parent commit history
 since the previous stable tag. Conventional-Commit messages are grouped by type,
@@ -23,8 +24,9 @@ subjects remain visible under **Other changes**. A non-empty curated overview is
 required. Add it at `.github/release-notes/<tag>.md` in the tagged commit, or use
 a non-empty annotated-tag message. A lightweight tag without the matching file
 fails before publication. The first stable release explicitly starts an empty
-feature baseline. Later releases download `feature-registry.json` from the
-previous stable GitHub Release; a missing prior snapshot stops publication.
+feature and DSL-version baselines. Later releases download both JSON snapshots
+from the previous stable GitHub Release; a missing prior snapshot stops
+publication.
 
 ```sh
 mkdir -p .github/release-notes
@@ -40,16 +42,18 @@ git push origin v1.2.3
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
 packages each target into a platform-conventional archive, and writes a shared
 `SHA256SUMS` manifest, generated release notes, and the shipped DSL feature
-snapshot into `dist/` (override with `-output`). It is a standalone Go tool —
-matching `test/ci` and `test/coveragegate` — so it runs identically on any
-release runner without a shell dependency.
+and version-support snapshots into `dist/` (override with `-output`). It is a
+standalone Go tool — matching `test/ci` and `test/coveragegate` — so it runs
+identically on any release runner without a shell dependency.
 
 ```sh
 go run ./release -first-feature-snapshot      # first recorded snapshot only
-go run ./release -previous-features previous-feature-registry.json
-go run ./release -previous-features previous-feature-registry.json -targets windows/amd64
-go run ./release -previous-features previous-feature-registry.json -version v1.2.3 -output dist
-go run ./release -previous-features previous-feature-registry.json -skip-unbuildable
+go run ./release -previous-features previous/feature-registry.json \
+  -previous-support-matrix previous/dsl-support-matrix.json
+go run ./release -previous-features previous/feature-registry.json \
+  -previous-support-matrix previous/dsl-support-matrix.json -targets windows/amd64
+go run ./release -previous-features previous/feature-registry.json \
+  -previous-support-matrix previous/dsl-support-matrix.json -version v1.2.3 -output dist
 ```
 
 Build metadata (`version`/`commit`/`date`) is injected via the same
@@ -59,42 +63,37 @@ released binary's `goobers --version` is byte-for-byte consistent with a local
 build date defaults to the commit's committer date, so re-running the engine on
 the same commit is reproducible (`-trimpath` is always on).
 
-### Release notes and DSL feature snapshot
+### Release notes and DSL support snapshots
 
-Every non-empty release build writes two metadata assets alongside the binaries:
+Every non-empty release build writes three metadata assets alongside the binaries:
 
 - `feature-registry.json` is the complete, schema-versioned snapshot returned by
   the same registry that powers `goobers features` and
   [`docs/feature-matrix.md`](../feature-matrix.md).
+- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`.
 - `RELEASE_NOTES.md` is rendered from
   [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
-  includes newly GA, newly deprecated, and removed features plus the external
-  consumer support policy. The tagged workflow combines those sections with its
-  required curated overview and generated commit changelog, then uses the result
-  as both the attached file and the GitHub Release body.
+  includes newly GA, newly deprecated, and removed features; DSL versions newly
+  marked `deprecated` or `unsupported` and their `goobers fix --to <version>`
+  migration command; and the external-consumer support policy. The tagged
+  workflow combines those sections with its required curated overview and
+  generated commit changelog, then uses the result as both the attached file and
+  the GitHub Release body.
 
-For every release after the first, download `feature-registry.json` from the
-previous GitHub Release and pass it with `-previous-features`. The generator
-validates the snapshot and compares support levels by stable feature ID. A
-feature must remain in the registry at level `removed`, not disappear. For the
-first recorded snapshot, pass `-first-feature-snapshot` to explicitly select an
-empty baseline; exactly one baseline option is required. The
+For every release after the first, download both snapshots from the previous
+GitHub Release and pass them with `-previous-features` and
+`-previous-support-matrix`. The generator validates the snapshots and compares
+support levels by stable feature ID and DSL version. A feature must remain in
+the registry at level `removed`, not disappear. A newly deprecated or
+unsupported DSL version must name a replacement so the release note can provide
+a migration path. For the first recorded snapshots, pass
+`-first-feature-snapshot` to explicitly select empty baselines; exactly one
+baseline mode is required. The
 [illustrative generated note](../releases/sample-release-notes.md) shows all
 three transition categories.
 
-> **DSL version-support extension.** The pending
-> [DVL-8 change](https://github.com/Agent-Clubhouse/Goobers/pull/1222) adds
-> `dsl-support-matrix.json` and `-previous-support-matrix`. Its tagged-release
-> integration must preserve the feature-registry contract above: download both
-> snapshots from the same previous release, pass both baselines to one packaging
-> invocation, publish both JSON assets, and compose `RELEASE_NOTES.md` in this
-> order: curated highlights, commit changelog, feature-support delta, DSL
-> support-matrix delta, then external-consumer policy. Until that integration
-> lands, tagged releases publish only the feature-registry metadata described
-> above.
-
-External consumers should pin both the Goobers binary version and its attached
-snapshot. Preview features are unstable; GA features carry the compatibility
+External consumers should pin the Goobers binary version and both attached
+snapshots. Preview features are unstable; GA features carry the compatibility
 contract; deprecated features continue to validate with warnings for at least
 one released minor before removal; removed features fail validation. Within an
 `apiVersion`, optional additions and `preview` to `ga` promotions are
@@ -117,9 +116,9 @@ the binary under its natural name.
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
 `<hex>  <filename>` line per binary archive and the authoritative
-`feature-registry.json`, sorted by filename. The generated release note remains
-editable for curation and is not checksummed. The same file verifies on every
-platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+`feature-registry.json` and `dsl-support-matrix.json`, sorted by filename. The
+generated release note remains editable for curation and is not checksummed.
+The same file verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
 **primary integrity mechanism** for the initially-unsigned Windows artifacts.

@@ -80,7 +80,7 @@ func init() {
 			withExamples("goobers --version", "goobers version --json"),
 		command("versions", apicontract.ActionReadOnlyNavigation, runVersions).
 			withSynopsis(synopsisByID["versions"]).
-			withHelp("print the supported Go toolchain and OS/arch matrix (--json for structured output)", versionsHelp).
+			withHelp("print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)", versionsHelp).
 			withExamples("goobers versions", "goobers versions --json"),
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
@@ -190,7 +190,7 @@ func init() {
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
-			withExamples("goobers features", "goobers features --used"),
+			withExamples("goobers features", "goobers features --dsl-version 1.4", "goobers features --used"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
