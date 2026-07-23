@@ -734,6 +734,30 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	}
 }
 
+func TestCompileMutationCapabilityWithoutPrescribedAction(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name:         "implement",
+			Type:         apiv1.TaskAgentic,
+			Goober:       "implementer",
+			Goal:         "run a fixture agent",
+			Capabilities: []string{string(capability.RepoPush)},
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"implementer": {Capabilities: []string{string(capability.RepoPush)}},
+	}
+
+	if _, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("mutation capability without a prescribed action should compile: %v", err)
+	}
+}
+
 func TestCompileAgenticPersonaActionsAreLoadBearing(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

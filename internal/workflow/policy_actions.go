@@ -112,19 +112,9 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 		if goobers == nil || task.Type != apiv1.TaskAgentic || task.Goober == "" {
 			continue
 		}
-		if hasMutationCapability(task.Capabilities) && len(task.PolicyActions) == 0 {
-			problems = append(problems, fmt.Sprintf(
-				"agentic task %q has mutation-capable grants but declares no policyActions", task.Name))
-		}
 		goober, ok := goobers[task.Goober]
 		if !ok {
 			continue
-		}
-		if hasMutationCapability(task.Capabilities) &&
-			len(goober.PolicyActions) == 0 && len(goober.ConditionalPolicyActions) == 0 {
-			problems = append(problems, fmt.Sprintf(
-				"agentic task %q invokes mutation-capable goober %q, but the goober declares no persona policyActions",
-				task.Name, task.Goober))
 		}
 		if !checkedGoobers[task.Goober] {
 			problems = append(problems, gooberPolicyActionProblems(task.Goober, goober, known)...)
@@ -204,24 +194,6 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		actions = append(actions, commandArgumentPolicyActions[command][arg]...)
 	}
 	return actions
-}
-
-func hasMutationCapability(capabilities []string) bool {
-	mutationCapabilities := map[string]bool{
-		string(capability.RepoPush):            true,
-		string(capability.GitHubIssuesWrite):   true,
-		string(capability.GitHubIssuesApprove): true,
-		string(capability.GitHubPRWrite):       true,
-		string(capability.GitHubPRReview):      true,
-		string(capability.GitHubBranchDelete):  true,
-		string(capability.GitHubPRMerge):       true,
-	}
-	for _, grant := range capabilities {
-		if mutationCapabilities[grant] {
-			return true
-		}
-	}
-	return false
 }
 
 func knownPolicyActions() []string {
