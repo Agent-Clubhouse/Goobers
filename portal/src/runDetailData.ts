@@ -16,7 +16,8 @@ export type RunNodeState =
   | "failed"
   | "blocked"
   | "aborted"
-  | "escalated";
+  | "escalated"
+  | "skipped";
 
 export interface RunDetailSnapshot {
   run: RunDetail;
@@ -132,6 +133,7 @@ export function deriveNodeStates(
     graph.nodes.map((node) => [node.id, "pending" as RunNodeState]),
   );
   let activeNodeId: string | undefined;
+  let terminal = false;
 
   for (const event of orderRunEvents(events)) {
     if (event.seq > selectedSeq) {
@@ -141,6 +143,7 @@ export function deriveNodeStates(
       if (activeNodeId) {
         states[activeNodeId] = stateFromStatus(event.status);
       }
+      terminal = true;
       continue;
     }
     const nodeId = eventNodeId(event);
@@ -160,6 +163,19 @@ export function deriveNodeStates(
       case "gate.evaluated":
         states[nodeId] = stateFromGate(event);
         break;
+    }
+  }
+
+  // Once the run is terminal (as of the selected sequence), a node that was
+  // never entered is not still "pending" — it is a no-work node the run ended
+  // without visiting, i.e. "skipped". Deriving this at the end (rather than
+  // per-event) is what keeps skipped nodes from reverting to pending when the
+  // run.finished event is processed — the DASH-19 regression.
+  if (terminal) {
+    for (const id of Object.keys(states)) {
+      if (states[id] === "pending") {
+        states[id] = "skipped";
+      }
     }
   }
 
