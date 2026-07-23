@@ -59,7 +59,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -91,6 +91,13 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt))
 	if err != nil {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
+	}
+	if id.GooberDigest != "" {
+		if _, err := tx.Exec(`
+			INSERT INTO run_goober_digests (run_id, goober_digest)
+			VALUES (?, ?)`, id.RunID, id.GooberDigest); err != nil {
+			return fmt.Errorf("rollup: insert goober digest for run %s: %w", id.RunID, err)
+		}
 	}
 	return nil
 }

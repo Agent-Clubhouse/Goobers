@@ -386,6 +386,157 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		mode           Mode
+		completionPath string
+		completion     interface{}
+	}{
+		{
+			name:           "result",
+			mode:           ModeInvoke,
+			completionPath: DefaultResultPath,
+			completion:     apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"},
+		},
+		{
+			name:           "verdict",
+			mode:           ModeReview,
+			completionPath: DefaultVerdictPath,
+			completion:     apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "approved"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", "")
+			t.Setenv("COPILOT_HOME", "")
+			workspace := t.TempDir()
+			var calls []ProcessRequest
+			runner := &fakeProcessRunner{
+				result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0},
+				act: func(req ProcessRequest) error {
+					calls = append(calls, req)
+					if len(calls) == 2 {
+						return WriteCompletion(req.Dir, tc.completionPath, tc.completion)
+					}
+					return nil
+				},
+			}
+			adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Mode:           tc.mode,
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: tc.completionPath,
+				Timeout:        time.Minute,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(out.Payload) == 0 {
+				t.Fatal("recovery produced no completion payload")
+			}
+			if got := strings.Count(string(out.Transcript), "finished"); got != 2 {
+				t.Fatalf("recovery transcript preserved %d process outputs, want 2: %q", got, out.Transcript)
+			}
+			if len(calls) != 2 {
+				t.Fatalf("process calls = %d, want initial call plus one recovery", len(calls))
+			}
+			firstSession, firstOK := nativeSessionID(calls[0])
+			secondSession, secondOK := nativeSessionID(calls[1])
+			if !firstOK || !secondOK || firstSession != secondSession {
+				t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
+			}
+			promptIndex := slices.Index(calls[1].Command, defaultPromptFlag)
+			if promptIndex < 0 || promptIndex+1 >= len(calls[1].Command) {
+				t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
+			}
+			recoveryPrompt := calls[1].Command[promptIndex+1]
+			if !strings.Contains(recoveryPrompt, tc.completionPath) ||
+				!strings.Contains(recoveryPrompt, "ended without writing the mandatory completion file") {
+				t.Fatalf("recovery prompt = %q", recoveryPrompt)
+			}
+			if calls[1].Timeout <= 0 || calls[1].Timeout >= calls[0].Timeout {
+				t.Fatalf("recovery timeout = %s, want positive remainder of %s", calls[1].Timeout, calls[0].Timeout)
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterPersistentMissingCompletionStopsAfterOneRecovery(t *testing.T) {
+	workspace := t.TempDir()
+	calls := 0
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(ProcessRequest) error {
+			calls++
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Timeout:        time.Minute,
+	})
+	if !errors.Is(err, ErrNoCompletion) {
+		t.Fatalf("Run error = %v, want ErrNoCompletion", err)
+	}
+	if calls != 2 {
+		t.Fatalf("process calls = %d, want exactly one bounded recovery", calls)
+	}
+}
+
+func TestMergeProcessResultsPreservesRecoveryAndDroppedByteAccounting(t *testing.T) {
+	const limit = int64(10)
+	for _, tc := range []struct {
+		name        string
+		first       ProcessResult
+		second      ProcessResult
+		wantText    string
+		wantDropped int64
+	}{
+		{
+			name: "truncated initial turn",
+			first: ProcessResult{
+				Transcript:             append([]byte("abcdefghij"), transcriptTruncationMarker(5)...),
+				TranscriptTruncated:    true,
+				TranscriptDroppedBytes: 5,
+			},
+			second:      ProcessResult{Transcript: []byte("RECOVER")},
+			wantText:    "ab\nRECOVER\n[transcript truncated: 13 bytes dropped]\n",
+			wantDropped: 13,
+		},
+		{
+			name:  "truncated recovery turn",
+			first: ProcessResult{Transcript: []byte("initial")},
+			second: ProcessResult{
+				Transcript:             append([]byte("RECOVERY!!"), transcriptTruncationMarker(4)...),
+				TranscriptTruncated:    true,
+				TranscriptDroppedBytes: 4,
+			},
+			wantText:    "RECOVERY!!\n[transcript truncated: 11 bytes dropped]\n",
+			wantDropped: 11,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeProcessResults(tc.first, tc.second, limit)
+			if string(got.Transcript) != tc.wantText {
+				t.Fatalf("Transcript = %q, want %q", got.Transcript, tc.wantText)
+			}
+			if !got.TranscriptTruncated {
+				t.Fatal("TranscriptTruncated = false, want true")
+			}
+			if got.TranscriptDroppedBytes != tc.wantDropped {
+				t.Fatalf("TranscriptDroppedBytes = %d, want %d", got.TranscriptDroppedBytes, tc.wantDropped)
+			}
+		})
+	}
+}
+
 func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	adapter := &CopilotAdapter{}
 	for _, tc := range []struct {

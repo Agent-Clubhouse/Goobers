@@ -53,6 +53,10 @@ type RunIdentity struct {
 	// definition (ARCHITECTURE.md §4). Optional so runs predating a compiled
 	// digest still validate.
 	WorkflowDigest string `json:"workflowDigest,omitempty"`
+	// GooberDigest is the content digest of the participating resolved goobers:
+	// instruction content, skills, model, and harness configuration. Optional
+	// for runs created before this pin was introduced.
+	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
 	// Trigger is what started the run.

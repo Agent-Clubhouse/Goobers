@@ -82,6 +82,45 @@ func newTestScheduler(t *testing.T, entries []WorkflowEntry, opts ...Option) (*S
 	return New(entries, log, opts...), dir
 }
 
+func TestRunRefreshesHeartbeatAndCapsIdleWait(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 9, 0, 0, 0, time.UTC)
+	waited := make(chan time.Duration, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	scheduler, _ := newTestScheduler(t, nil,
+		WithClock(func() time.Time { return now }, func(wait time.Duration) <-chan time.Time {
+			waited <- wait
+			cancel()
+			return make(chan time.Time)
+		}),
+		WithTickHeartbeat(10*time.Second, func(tickAt time.Time) error {
+			if !tickAt.Equal(now) {
+				t.Fatalf("heartbeat tickAt = %s, want %s", tickAt, now)
+			}
+			return nil
+		}),
+	)
+
+	if err := scheduler.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation", err)
+	}
+	if got := <-waited; got != 10*time.Second {
+		t.Fatalf("idle wait = %s, want heartbeat interval", got)
+	}
+}
+
+func TestRunSurfacesHeartbeatFailure(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, nil,
+		WithTickHeartbeat(time.Minute, func(time.Time) error {
+			return errors.New("disk failed")
+		}),
+	)
+
+	err := scheduler.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "refresh scheduler heartbeat: disk failed") {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestTickDispatchesDueWorkflow(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
@@ -1218,6 +1257,7 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 		Workflow:        "implement",
 		WorkflowVersion: 7,
 		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goobers",
 		Gaggle:          "acme-web",
 		Readiness:       apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
 		Schedules:       []Schedule{fakeSchedule{d: time.Hour}},
@@ -1235,9 +1275,14 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	spans.mu.Unlock()
 	starter.mu.Lock()
 	startedRunID := starter.starts[0].RunID
+	startedGooberDigest := starter.starts[0].GooberDigest
 	starter.mu.Unlock()
+	if startedGooberDigest != "sha256:goobers" {
+		t.Fatalf("starter goober digest = %q, want %q", startedGooberDigest, "sha256:goobers")
+	}
 	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" ||
 		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
+		got.GooberDigest != "sha256:goobers" ||
 		got.RunID == "" || got.RunID != startedRunID || got.Action != "dispatch" {
 		t.Fatalf("scheduler span attrs = %+v, want pinned workflow identity and candidate run id %q", got, startedRunID)
 	}

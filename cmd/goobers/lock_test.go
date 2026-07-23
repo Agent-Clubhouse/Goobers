@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -53,9 +54,9 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := time.Now().UTC()
-	release, err := acquireDaemonLock(lockPath, root)
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
-		t.Fatalf("acquireDaemonLock: %v", err)
+		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
 	}
 	defer release()
 
@@ -87,6 +88,9 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 	if identity.Version != version.Get().String() {
 		t.Errorf("version = %q, want %q", identity.Version, version.Get().String())
 	}
+	if identity.LivenessTimeoutMillis != instance.DefaultDaemonLivenessTimeout.Milliseconds() {
+		t.Errorf("liveness timeout = %dms, want %dms", identity.LivenessTimeoutMillis, instance.DefaultDaemonLivenessTimeout.Milliseconds())
+	}
 }
 
 func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
@@ -95,9 +99,10 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	release, err := acquireDaemonLock(lockPath, root)
+
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
-		t.Fatalf("acquireDaemonLock: %v", err)
+		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
 	}
 	defer release()
 
@@ -116,6 +121,32 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 	}
 	if identity.InstanceRoot != root {
 		t.Errorf("instanceRoot = %q, want %q", identity.InstanceRoot, root)
+	}
+}
+
+func TestInspectDaemonLivenessUsesPinnedTimeout(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	timeout := 5 * time.Minute
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	now := time.Now().UTC()
+	if err := daemonstate.Refresh(lockPath, now.Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	running, _, liveness, err := inspectDaemonLiveness(lockPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running || !liveness.Healthy || liveness.Timeout != timeout {
+		t.Fatalf("liveness = %+v, running = %t", liveness, running)
 	}
 }
 

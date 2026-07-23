@@ -363,13 +363,17 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		if errors.Is(runErr, ErrTimeout) {
 			return Outcome{}, transcript, invoke.Timeout(wrapped)
 		}
+		if errors.Is(runErr, ErrNoCompletion) {
+			return Outcome{}, transcript, invoke.InfrastructureFailure(wrapped)
+		}
 		return Outcome{}, transcript, wrapped
 	}
 	if len(out.Payload) == 0 {
 		// Defense in depth: an Adapter contract violation (nil error, empty
 		// payload) still fails closed rather than surfacing a zero-value
 		// result/verdict as a false success.
-		return Outcome{}, transcript, fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
+		err := fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
+		return Outcome{}, transcript, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil
 }

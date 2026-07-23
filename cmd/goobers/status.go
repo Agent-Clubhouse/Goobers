@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -538,7 +539,14 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	warnings := report.CLIWarnings()
-	if _, err := compiledMachines(set, goobersByName(set)); err != nil {
+	goobers := goobersByName(set)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		printValidationWarnings(stderr, warnings)
+		pf(stderr, "error: invalid workflow: %v\n", err)
+		return 1
+	}
+	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
 		printValidationWarnings(stderr, warnings)
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
@@ -809,7 +817,7 @@ func statusOutputIsTerminal(stdout io.Writer) bool {
 }
 
 func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writer) int {
-	running, identity, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	running, identity, liveness, err := inspectDaemonLiveness(filepath.Join(l.SchedulerDir(), "up.lock"), now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -831,15 +839,26 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 
 	if running {
 		if identity == nil {
-			pf(stdout, "daemon running: identity unavailable, live runs %d\n", liveRuns)
-			return 0
+			pf(stdout, "daemon %s: identity unavailable, last tick %s ago, live runs %d\n",
+				daemonLivenessLabel(liveness), liveness.Age.Truncate(time.Second), liveRuns)
+			if liveness.Healthy {
+				return 0
+			}
+			return 1
 		}
 		uptime := now.Sub(identity.StartedAt)
 		if uptime < 0 {
 			uptime = 0
 		}
-		pf(stdout, "daemon running: pid %d, uptime %s, version %s, live runs %d\n",
-			identity.PID, uptime.Truncate(time.Second), identity.Version, liveRuns)
+		if !liveness.Healthy {
+			pf(stdout, "daemon unhealthy: pid %d, uptime %s, version %s, last tick %s ago (threshold %s), live runs %d\n",
+				identity.PID, uptime.Truncate(time.Second), identity.Version,
+				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
+			return 1
+		}
+		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
+			identity.PID, uptime.Truncate(time.Second), identity.Version,
+			liveness.Age.Truncate(time.Second), liveRuns)
 		return 0
 	}
 	if identity != nil {
@@ -849,4 +868,11 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 	}
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+func daemonLivenessLabel(liveness daemonstate.Liveness) string {
+	if liveness.Healthy {
+		return "running"
+	}
+	return "unhealthy"
 }

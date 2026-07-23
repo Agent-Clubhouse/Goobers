@@ -29,6 +29,8 @@ repos:
     name: web
     token:
       env: GITHUB_TOKEN
+runner:
+  livenessTimeout: 3m
 runConditions:
   maxParallelRuns: 2
   stalledRunTimeout: 30m
@@ -55,6 +57,9 @@ notifications: true
 	}
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
+	}
+	if got, err := cfg.Runner.LivenessTimeoutDuration(); err != nil || got != 3*time.Minute {
+		t.Fatalf("LivenessTimeoutDuration = %s, %v; want 3m", got, err)
 	}
 	if got, err := cfg.RunConditions.StalledRunTimeoutDuration(); err != nil || got != 30*time.Minute {
 		t.Fatalf("StalledRunTimeoutDuration = %s, %v; want 30m", got, err)
@@ -293,6 +298,23 @@ func TestClaimsLockTimeout(t *testing.T) {
 			cfg := Config{RunConditions: RunConditions{ClaimsLockTimeout: value}}
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "claimsLockTimeout") {
 				t.Fatalf("Validate() error = %v, want claimsLockTimeout error", err)
+			}
+		})
+	}
+}
+
+func TestDaemonLivenessTimeout(t *testing.T) {
+	if got, err := (RunnerConfig{}).LivenessTimeoutDuration(); err != nil || got != DefaultDaemonLivenessTimeout {
+		t.Fatalf("default LivenessTimeoutDuration = %s, %v; want %s", got, err, DefaultDaemonLivenessTimeout)
+	}
+	if got, err := (RunnerConfig{LivenessTimeout: "10s"}).LivenessTimeoutDuration(); err != nil || got != 10*time.Second {
+		t.Fatalf("LivenessTimeoutDuration = %s, %v; want 10s", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "1s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{Runner: RunnerConfig{LivenessTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "livenessTimeout") {
+				t.Fatalf("Validate() error = %v, want livenessTimeout error", err)
 			}
 		})
 	}

@@ -32,6 +32,7 @@ type WorkflowEntry struct {
 	Workflow        string
 	WorkflowVersion int
 	WorkflowDigest  string
+	GooberDigest    string
 	Gaggle          string
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
@@ -105,6 +106,8 @@ type Scheduler struct {
 	after             func(d time.Duration) <-chan time.Time
 	telemetry         SpanStarter
 	afterTick         func(context.Context)
+	heartbeatInterval time.Duration
+	refreshHeartbeat  func(time.Time) error
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 
 	mu         sync.Mutex
@@ -169,6 +172,21 @@ func WithTelemetry(t SpanStarter) Option {
 func WithAfterTick(afterTick func(context.Context)) Option {
 	return func(s *Scheduler) {
 		s.afterTick = afterTick
+	}
+}
+
+// WithTickHeartbeat records completed daemon ticks and bounds idle waits so
+// the heartbeat remains fresh even when the next workflow trigger is far away.
+func WithTickHeartbeat(interval time.Duration, refresh func(time.Time) error) Option {
+	if interval <= 0 {
+		panic("scheduler heartbeat interval must be positive")
+	}
+	if refresh == nil {
+		panic("scheduler heartbeat refresh function is required")
+	}
+	return func(s *Scheduler) {
+		s.heartbeatInterval = interval
+		s.refreshHeartbeat = refresh
 	}
 }
 
@@ -413,8 +431,16 @@ func (s *Scheduler) Wait() {
 func (s *Scheduler) Run(ctx context.Context) error {
 	for {
 		s.Tick(ctx, s.now())
+		if s.refreshHeartbeat != nil {
+			if err := s.refreshHeartbeat(s.now()); err != nil {
+				return fmt.Errorf("refresh scheduler heartbeat: %w", err)
+			}
+		}
 
 		wait := s.nextWakeup(s.now())
+		if s.heartbeatInterval > 0 && wait > s.heartbeatInterval {
+			wait = s.heartbeatInterval
+		}
 		if wait < minPoll {
 			wait = minPoll
 		}
@@ -970,6 +996,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	go func() {
 		defer s.dispatches.Done()
 		defer s.ReleaseRun(runID, entry.Workflow)
+		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,
@@ -1048,6 +1075,7 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, runID st
 		WorkflowID:      entry.Workflow,
 		WorkflowVersion: strconv.Itoa(entry.WorkflowVersion),
 		WorkflowDigest:  entry.WorkflowDigest,
+		GooberDigest:    entry.GooberDigest,
 		RunID:           runID,
 		Action:          "dispatch",
 	}

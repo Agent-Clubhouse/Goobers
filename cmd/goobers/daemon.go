@@ -50,6 +50,7 @@ type schedulerSetup struct {
 	InstanceLog       *journal.InstanceLog
 	Entries           []localscheduler.WorkflowEntry
 	Machines          map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests     map[localscheduler.WorkflowIdentity]string
 	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 	RunConditions     instance.RunConditions
 	Validation        *validate.Report
@@ -80,6 +81,7 @@ type schedulerDefinitions struct {
 	Runners           map[string]*runner.Runner
 	Entries           []localscheduler.WorkflowEntry
 	Machines          map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests     map[localscheduler.WorkflowIdentity]string
 	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 	OpenPRRefresher   *localscheduler.OpenPRRefresher
 	Worktrees         *worktree.Manager
@@ -272,6 +274,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		InstanceLog:       instanceLog,
 		Entries:           definitions.Entries,
 		Machines:          definitions.Machines,
+		GooberDigests:     definitions.GooberDigests,
 		RepoRefs:          definitions.RepoRefs,
 		RunConditions:     cfg.RunConditions,
 		Validation:        definitions.Validation,
@@ -335,7 +338,11 @@ func buildSchedulerDefinitions(
 	terminalNotifier runner.TerminalNotifier,
 ) (*schedulerDefinitions, error) {
 	goobers := goobersByName(set)
-	machines, err := compiledMachines(set, goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		return nil, err
+	}
+	machines, gooberDigests, err := compiledMachinesWithGooberDigests(set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +371,7 @@ func buildSchedulerDefinitions(
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
-			scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
 		)
 		if err != nil {
@@ -443,6 +450,7 @@ func buildSchedulerDefinitions(
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 		})
+		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
 
 	var firstRunner *runner.Runner
@@ -460,6 +468,7 @@ func buildSchedulerDefinitions(
 		Runners:           runners,
 		Entries:           entries,
 		Machines:          machines,
+		GooberDigests:     gooberDigests,
 		RepoRefs:          repoRefs,
 		OpenPRRefresher:   openPRRefresher,
 		Worktrees:         firstWorktrees,
@@ -484,8 +493,13 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
+	goobers := goobersByName(set)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		return nil, nil, err
+	}
 	return buildRuntimeRunner(
-		l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota,
+		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
 		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
 	)
 }
@@ -510,6 +524,7 @@ func buildRuntimeRunner(
 	l instance.Layout,
 	cfg *instance.Config,
 	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
 	tel *telemetry.Client,
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
@@ -521,7 +536,7 @@ func buildRuntimeRunner(
 	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -647,6 +662,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:                req.RunID,
 		Machine:              s.machine,
+		GooberDigest:         req.GooberDigest,
 		Gaggle:               req.Gaggle,
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,
@@ -699,11 +715,11 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, repoRefs, log, tel, rollupDB, release, wg)
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, release, wg)
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		return nil, nil, err
@@ -786,15 +802,16 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				continue
 			}
 			repoRef := repoRefs[identity]
+			gooberDigest := gooberDigests[identity]
 
 			resumed = append(resumed, id.RunID)
 			wg.Add(1)
 			untrack := runnerRegistry.Track(id.RunID, rn)
-			go func(runID, gaggle, wfName string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
+			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
 				defer untrack()
-				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
+				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
 				ingestRunTelemetry(tel, rollupDB, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:
@@ -821,7 +838,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				if log != nil {
 					_ = log.Append(ev)
 				}
-			}(id.RunID, id.Gaggle, id.Workflow, rn, runLayout, untrack)
+			}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 		}
 	}
 	return resumed, warned, nil
