@@ -250,10 +250,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// this change (telemetry soft-fails an unreachable collector). Normal
 		// runs finish in ~2m, so the higher ceiling never slows a green run.
 		args: testArgs,
-		env:  testEnvironment,
+		env: append(
+			append([]string(nil), testEnvironment...),
+			"GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1",
+		),
+	}
+	shippedWorkflowCheck := check{
+		label:   "shipped-workflows",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
+		env:     testEnvironment,
 	}
 
 	result = append(result,
+		shippedWorkflowCheck,
 		testCheck,
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},
 		check{
@@ -302,7 +312,6 @@ func fullChecks(makeCommand string) []check {
 		"cover-check",
 		"sandbox-check",
 		"linux-node-validation",
-		"test-shipped-workflows",
 		"stress",
 	}
 	result := make([]check, 0, len(targets))
