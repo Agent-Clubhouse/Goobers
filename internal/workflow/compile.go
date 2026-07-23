@@ -51,6 +51,7 @@ var currentInterpreter = versionedInterpreter{
 type compileConfig struct {
 	goobers              map[string]apiv1.GooberSpec
 	goobersSet           bool
+	gooberInstructions   map[string]string
 	knownChecks          []string
 	knownChecksSet       bool
 	knownHarnesses       []string
@@ -67,6 +68,15 @@ func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 	return func(config *compileConfig) {
 		config.goobers = goobers
 		config.goobersSet = true
+	}
+}
+
+// WithGooberInstructions supplies resolved instruction content, keyed by
+// goober name. The interpreter uses it to digest the effective participating
+// goobers without hashing instruction paths.
+func WithGooberInstructions(instructions map[string]string) Option {
+	return func(config *compileConfig) {
+		config.gooberInstructions = instructions
 	}
 }
 
@@ -119,6 +129,9 @@ func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 	var opts []vcurrent.Option
 	if config.goobersSet {
 		opts = append(opts, vcurrent.WithGoobers(config.goobers))
+	}
+	if config.gooberInstructions != nil {
+		opts = append(opts, vcurrent.WithGooberInstructions(config.gooberInstructions))
 	}
 	if config.knownChecksSet {
 		opts = append(opts, vcurrent.WithKnownChecks(config.knownChecks))

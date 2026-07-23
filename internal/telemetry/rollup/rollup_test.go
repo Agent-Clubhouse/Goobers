@@ -49,7 +49,7 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 	}
 	r := runs[0]
 	if r.RunID != fixtureRunID || r.Workflow != "implement" || r.WorkflowVersion != 3 ||
-		r.WorkflowDigest != "sha256:deadbeefcafef00d" || r.Gaggle != "web" ||
+		r.WorkflowDigest != "sha256:deadbeefcafef00d" || r.GooberDigest != "sha256:resolvedgoobers" || r.Gaggle != "web" ||
 		r.TriggerKind != "item" || r.TriggerRef != "issue-42" || r.Status != "failed" {
 		t.Fatalf("unexpected run row: %#v", r)
 	}

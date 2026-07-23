@@ -335,7 +335,11 @@ func buildSchedulerDefinitions(
 	terminalNotifier runner.TerminalNotifier,
 ) (*schedulerDefinitions, error) {
 	goobers := goobersByName(set)
-	machines, err := compiledMachines(set, goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		return nil, err
+	}
+	machines, err := compiledMachines(set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +368,7 @@ func buildSchedulerDefinitions(
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
-			scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
 		)
 		if err != nil {
@@ -433,6 +437,7 @@ func buildSchedulerDefinitions(
 			Workflow:        wf.Name,
 			WorkflowVersion: machine.Def.Version,
 			WorkflowDigest:  machine.Digest(),
+			GooberDigest:    machine.GooberDigest(),
 			Gaggle:          wf.Spec.Gaggle,
 			Readiness:       wf.Spec.Readiness,
 			Schedules:       scheds,
@@ -484,8 +489,13 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
+	goobers := goobersByName(set)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		return nil, nil, err
+	}
 	return buildRuntimeRunner(
-		l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota,
+		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
 		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
 	)
 }
@@ -510,6 +520,7 @@ func buildRuntimeRunner(
 	l instance.Layout,
 	cfg *instance.Config,
 	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
 	tel *telemetry.Client,
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
@@ -521,7 +532,7 @@ func buildRuntimeRunner(
 	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
 	)
 	if err != nil {
 		return nil, nil, err

@@ -45,7 +45,13 @@ func TestMachineRuntimeLookups(t *testing.T) {
 
 func TestMachineDigestAndTargets(t *testing.T) {
 	def := Definition{Name: "digest", Version: 1}
-	machine, err := NewMachine(def, map[string]apiv1.Task{}, map[string]apiv1.Gate{}, Graph{})
+	machine, err := NewMachine(
+		def,
+		map[string]apiv1.Task{},
+		map[string]apiv1.Gate{},
+		Graph{},
+		WithGooberDigest("sha256:goober"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +60,9 @@ func TestMachineDigestAndTargets(t *testing.T) {
 	}
 	if _, ok := reflect.TypeOf(machine).MethodByName("SetDigest"); ok {
 		t.Fatal("Machine exposes digest mutation")
+	}
+	if machine.GooberDigest() != "sha256:goober" {
+		t.Fatalf("GooberDigest() = %q", machine.GooberDigest())
 	}
 
 	gate := apiv1.Gate{Branches: map[string]string{"pass": "next"}}

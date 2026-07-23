@@ -46,16 +46,27 @@ type Definition struct {
 // Machine is a compiled, validated view of a Definition with O(1) state lookup
 // and a stable content digest.
 type Machine struct {
-	Def    Definition
-	tasks  map[string]apiv1.Task
-	gates  map[string]apiv1.Gate
-	graph  Graph
-	digest string
+	Def          Definition
+	tasks        map[string]apiv1.Task
+	gates        map[string]apiv1.Gate
+	graph        Graph
+	digest       string
+	gooberDigest string
+}
+
+// MachineOption supplies interpreter-owned pins when constructing a machine.
+type MachineOption func(*Machine)
+
+// WithGooberDigest pins the effective participating-goober digest.
+func WithGooberDigest(digest string) MachineOption {
+	return func(machine *Machine) {
+		machine.gooberDigest = digest
+	}
 }
 
 // NewMachine stores interpreter-built runtime state and atomically pins its
 // definition digest.
-func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, graph Graph) (*Machine, error) {
+func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, graph Graph, opts ...MachineOption) (*Machine, error) {
 	digest, err := ComputeDigest(def)
 	if err != nil {
 		return nil, err
@@ -63,19 +74,27 @@ func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]ap
 	graph.Name = def.Name
 	graph.Version = def.Version
 	graph.Digest = digest
-	return &Machine{
+	machine := &Machine{
 		Def:    def,
 		tasks:  tasks,
 		gates:  gates,
 		graph:  cloneGraph(graph),
 		digest: digest,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(machine)
+	}
+	return machine, nil
 }
 
 // Digest returns the content digest of the compiled definition ("sha256:<hex>").
 // It is stable across processes and runs: the same definition always digests to
 // the same value, so a run can record and complete on a pinned digest (WF-016).
 func (m *Machine) Digest() string { return m.digest }
+
+// GooberDigest returns the content digest of the participating resolved
+// goobers. It is empty when compilation did not receive resolved instructions.
+func (m *Machine) GooberDigest() string { return m.gooberDigest }
 
 // ComputeDigest returns a stable digest of the pinned definition.
 func ComputeDigest(def Definition) (string, error) {

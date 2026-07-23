@@ -12,6 +12,7 @@ import (
 
 type options struct {
 	goobers              map[string]apiv1.GooberSpec
+	gooberInstructions   map[string]string
 	knownChecks          map[string]bool
 	knownHarnesses       map[string]bool
 	allowPreviewFeatures *bool
@@ -29,6 +30,12 @@ type Option func(*options)
 // time, since capability/harness admission happens at config-validation time.
 func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 	return func(o *options) { o.goobers = goobers }
+}
+
+// WithGooberInstructions supplies resolved instruction content, keyed by
+// goober name, for the effective participating-goober digest.
+func WithGooberInstructions(instructions map[string]string) Option {
+	return func(o *options) { o.gooberInstructions = instructions }
 }
 
 // WithKnownChecks supplies the names of every automated check actually
@@ -203,12 +210,19 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
+	if o.gooberInstructions != nil {
+		gooberDigest, err := computeGooberDigest(def, o.goobers, o.gooberInstructions)
+		if err != nil {
+			return nil, fmt.Errorf("digest workflow %q goobers: %w", def.Name, err)
+		}
+		return newMachine(def, model.WithGooberDigest(gooberDigest))
+	}
 	return m, nil
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.
 // Duplicate names collapse in the maps; structuralProblems reports them.
-func newMachine(def Definition) (*Machine, error) {
+func newMachine(def Definition, opts ...model.MachineOption) (*Machine, error) {
 	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
 	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
@@ -217,7 +231,7 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	return model.NewMachine(def, tasks, gates, buildGraph(def), opts...)
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {
