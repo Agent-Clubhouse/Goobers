@@ -125,8 +125,9 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 
 // visitRecordingDeterministic records the order stages were dispatched in and
 // serves each one canned outputs, standing in for the provider-chain CLIs
-// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated,
-// respond-to-findings) and for `make ci`.
+// (gather-pr-context, rebase-pr, remediation-checkpoint,
+// validate-finding-responses, push-remediated, respond-to-findings) and for
+// `make ci`.
 type visitRecordingDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
@@ -187,7 +188,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
 			artifactMediaType: "application/json",
 		},
-		runID + ":local-ci": {status: apiv1.ResultSuccess},
+		runID + ":validate-finding-responses": {status: apiv1.ResultSuccess},
+		runID + ":local-ci":                   {status: apiv1.ResultSuccess},
 		runID + ":push-remediated": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
 		},
@@ -236,9 +238,10 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → gather-sibling-context → implement → [review pass] → local-ci
-// → [ci pass] → push-remediated → respond-to-findings, and complete. Before
-// #392 this run dead-ended at remediation-checkpoint.
+// [continue] → gather-sibling-context → implement → validate-finding-responses
+// → [response validation pass] → [review pass] → local-ci → [ci pass] →
+// push-remediated → respond-to-findings, and complete. Before #392 this run
+// dead-ended at remediation-checkpoint.
 func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	goober := &remediationGoober{t: t}
 	res, visited, _ := walkShippedPRRemediation(t, "prr-full", goober)
@@ -253,6 +256,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"remediation-checkpoint",
 		"gather-sibling-context",
 		"implement",
+		"validate-finding-responses",
 		"local-ci",
 		"push-remediated",
 		"respond-to-findings",
