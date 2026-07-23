@@ -33,6 +33,7 @@ type fakeIssue struct {
 	assignee       string
 	milestone      int
 	children       []int
+	createdAt      time.Time
 }
 
 type fakePR struct {
@@ -161,7 +162,10 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.issues[number] = &fakeIssue{number: number, title: title, labels: append([]string{}, labels...), state: "open"}
+	s.issues[number] = &fakeIssue{
+		number: number, title: title, labels: append([]string{}, labels...), state: "open",
+		createdAt: time.Now().UTC(),
+	}
 }
 
 // addOpenPR seeds a fixture PR for ListPullRequests/PullRequestFiles (issue
@@ -631,6 +635,9 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	out := map[string]interface{}{
 		"id": issue.number, "number": issue.number, "title": issue.title, "body": issue.body,
 		"state": issue.state, "labels": labels, "html_url": fmt.Sprintf("https://example/issues/%d", issue.number),
+	}
+	if !issue.createdAt.IsZero() {
+		out["created_at"] = issue.createdAt
 	}
 	if issue.assignee != "" {
 		out["assignees"] = []map[string]string{{"login": issue.assignee}}

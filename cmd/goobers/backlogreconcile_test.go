@@ -44,6 +44,8 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	server.issues[15].body = "- [x] #16"
 	server.issues[16].state = "closed"
 	server.issues[17].assignee = "mona"
+	server.issues[19].createdAt = now.Add(-100 * 24 * time.Hour)
+	server.issues[22].createdAt = now.Add(-100 * 24 * time.Hour)
 	server.mu.Unlock()
 	server.addCommentAtAs(18, "mona", "Still wanted.", now.Add(-time.Hour))
 	server.addCommentAtAsType(22, "dependabot[bot]", "Bot", "Automated update.", now.Add(-time.Hour))
@@ -77,7 +79,7 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 		Name:     "your-repo",
 	}
 	provider := server.newGitHubProvider("token")
-	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", func() time.Time { return now }); err != nil {
+	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now }); err != nil {
 		t.Fatalf("reconcileBacklogMetadata: %v", err)
 	}
 
@@ -110,7 +112,7 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	}
 	server.mu.Unlock()
 
-	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", func() time.Time { return now }); err != nil {
+	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now }); err != nil {
 		t.Fatalf("second reconcileBacklogMetadata: %v", err)
 	}
 	server.mu.Lock()
@@ -175,6 +177,7 @@ func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) 
 		server.newGitHubProvider("token"),
 		repo,
 		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
 		time.Now,
 	)
 	if err == nil {
@@ -243,6 +246,7 @@ func TestReconcileBacklogMetadataReservationBlocksConcurrentClaim(t *testing.T) 
 		server.newGitHubProvider("token"),
 		repo,
 		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
 		time.Now,
 	); err != nil {
 		t.Fatalf("reconcileBacklogMetadata: %v", err)
@@ -303,6 +307,7 @@ func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T)
 		server.newGitHubProvider("token"),
 		repo,
 		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
 		time.Now,
 	); err != nil {
 		t.Fatalf("reconcileBacklogMetadata: %v", err)
@@ -335,6 +340,7 @@ func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
 		server.newGitHubProvider("token"),
 		repo,
 		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
 		time.Now,
 	); err != nil {
 		t.Fatalf("reconcileBacklogMetadata: %v", err)
@@ -343,11 +349,82 @@ func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 
+func TestReconcileBacklogMetadataUsesConfiguredStaleAfter(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Inactive stale item", "goobers:approved", providers.LabelStale)
+	server.addIssue(8, "Recently active stale item", "goobers:approved", providers.LabelStale)
+
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	server.mu.Lock()
+	server.issues[7].createdAt = now.Add(-60 * 24 * time.Hour)
+	server.issues[8].createdAt = now.Add(-60 * 24 * time.Hour)
+	server.mu.Unlock()
+	server.addCommentAtAs(7, "maintainer", "Older activity.", now.Add(-40*24*time.Hour))
+	server.addCommentAtAs(8, "maintainer", "Recent activity.", now.Add(-20*24*time.Hour))
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	if err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		backlogStalenessPolicy{thresholdDays: 30},
+		func() time.Time { return now },
+	); err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelStale}, nil)
+	assertFakeIssueLabels(t, server, 8, nil, []string{providers.LabelStale})
+}
+
+func TestReconcileBacklogMetadataMatchesStructuredStalenessSignal(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Younger than raised threshold", "goobers:approved", providers.LabelStale)
+	server.addIssue(8, "Activity exactly at threshold", "goobers:approved", providers.LabelStale)
+
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	server.mu.Lock()
+	server.issues[7].createdAt = now.Add(-40 * 24 * time.Hour)
+	server.issues[8].createdAt = now.Add(-120 * 24 * time.Hour)
+	server.mu.Unlock()
+	server.addCommentAtAs(8, "maintainer", "Still wanted.", now.Add(-90*24*time.Hour))
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	if err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		backlogStalenessPolicy{thresholdDays: 90},
+		func() time.Time { return now },
+	); err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	assertFakeIssueLabels(t, server, 7, nil, []string{providers.LabelStale})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelStale}, nil)
+}
+
 func TestTrackingChecklistIssueIDs(t *testing.T) {
 	got := trackingChecklistIssueIDs("- [ ] #12 first\n* [x] done in #13\n- ordinary ref #14\n- [ ] duplicate #12")
 	if strings.Join(got, ",") != "12,13" {
 		t.Fatalf("trackingChecklistIssueIDs = %v, want [12 13]", got)
 	}
+}
+
+func defaultBacklogStalenessPolicy() backlogStalenessPolicy {
+	return backlogStalenessPolicy{thresholdDays: int(defaultStaleAfter / (24 * time.Hour))}
 }
 
 func assertFakeIssueLabels(t *testing.T, server *fakeGitHubServer, id int, want, reject []string) {

@@ -125,6 +125,12 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	if gotQueryInputs["excludeLabels"] != "goobers:ready,goobers:needs-human" {
 		t.Errorf("query-backlog excludeLabels input = %v, want the two output markers", gotQueryInputs["excludeLabels"])
 	}
+	if gotQueryInputs["staleAfterDays"] != "90" {
+		t.Errorf("query-backlog staleAfterDays input = %v, want 90", gotQueryInputs["staleAfterDays"])
+	}
+	if gotQueryInputs["staleAutoClose"] != "false" {
+		t.Errorf("query-backlog staleAutoClose input = %v, want false", gotQueryInputs["staleAutoClose"])
+	}
 	queryOut, ok := res.Outputs["query-backlog"]
 	if !ok || queryOut.Status != apiv1.ResultSuccess {
 		t.Fatalf("query-backlog output missing or not success: %+v", queryOut)
