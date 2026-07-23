@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -341,6 +343,63 @@ func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 	}
 	if st.labelRemovalAuth != "Bearer issues-token" {
 		t.Errorf("label removal authorization = %q, want the github:issues:write credential", st.labelRemovalAuth)
+	}
+}
+
+func TestPushRemediatedSkipsTerminalPRPastTickSnapshot(t *testing.T) {
+	tests := []struct {
+		name   string
+		merged bool
+	}{
+		{name: "closed"},
+		{name: "merged", merged: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instanceRoot, st, wtPath, remoteTip := pushRemediatedFixture(t, true)
+			t.Setenv(providersnapshot.EnvVar, "tick-before-remediation")
+
+			repo, err := providerRepo(instanceRoot)
+			if err != nil {
+				t.Fatalf("providerRepo: %v", err)
+			}
+			cached := newCachedGitHubProvider(instanceRoot, "test-token")
+			prs, err := cached.ListPullRequests(t.Context(), providers.ListPullRequestsRequest{
+				Repository: repo, Base: "main", HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+			})
+			if err != nil || len(prs) != 1 {
+				t.Fatalf("seed pull-request snapshot: prs=%v, err=%v", prs, err)
+			}
+
+			st.mu.Lock()
+			st.terminalOnComments = true
+			st.mergeOnComments = tt.merged
+			st.mu.Unlock()
+
+			code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "no longer open") {
+				t.Fatalf("stdout = %q, want terminal-PR no-op", stdout)
+			}
+			result := readCheckpointResult(t, filepath.Join(wtPath, pushRemediatedResultName))
+			if result["published"] != "false" {
+				t.Fatalf("push result = %v, want published=false", result)
+			}
+			pushed := strings.TrimSpace(runGitOutputT(t, wtPath, "ls-remote", "origin", "refs/heads/"+remediationPRBranch))
+			pushedSHA, _, _ := strings.Cut(pushed, "\t")
+			if pushedSHA != remoteTip {
+				t.Fatalf("remote %s = %q, want terminal PR untouched at %q", remediationPRBranch, pushedSHA, remoteTip)
+			}
+			st.mu.Lock()
+			labels := append([]string(nil), st.labels...)
+			st.mu.Unlock()
+			if !slices.Contains(labels, needsRemediationLabel) {
+				t.Fatalf("labels = %v, want %s retained", labels, needsRemediationLabel)
+			}
+		})
 	}
 }
 

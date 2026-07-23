@@ -126,29 +126,12 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	prs, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
+	current, err := prProvider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
 	}
-	var current *providers.PullRequestSummary
-	for i := range prs {
-		if prs[i].Number == selectedNumber {
-			current = &prs[i]
-			break
-		}
-	}
-	if current == nil {
-		// Merged or closed while this cycle's agentic chain was running. The
-		// rework is not lost — it is committed on the run's branch and the
-		// journal records it — but there is no longer an open PR to publish it
-		// to, and force-pushing to a merged PR's branch would be actively
-		// wrong. A clean no-op; next cycle selects on current facts.
-		pf(stdout, "PR #%d is no longer open (merged/closed during remediation) — nothing to push\n", selectedNumber)
-		return writePushRemediatedResult(selectedNumber, false, "", stderr)
+	if current.State != "open" || current.Merged {
+		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
 	}
 
 	rawComments, err := prProvider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
@@ -182,6 +165,14 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	current, err = prProvider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
+	}
+
 	if err := forcePushWithLease(".", current.Head, state.HeadSHA, pushToken); err != nil {
 		pf(stderr, "error: force-push remediated PR #%d branch %q: %v\n", selectedNumber, current.Head, err)
 		return 1
@@ -195,6 +186,13 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
 	return writePushRemediatedResult(selectedNumber, true, current.Head, stderr)
+}
+
+func skipTerminalRemediatedPullRequest(selectedNumber int, stdout, stderr io.Writer) int {
+	// The rework remains committed in the run journal, but publishing it to a
+	// merged or closed PR branch would be actively wrong.
+	pf(stdout, "PR #%d is no longer open (merged/closed during remediation) — nothing to push\n", selectedNumber)
+	return writePushRemediatedResult(selectedNumber, false, "", stderr)
 }
 
 func writePushRemediatedResult(selectedNumber int, published bool, head string, stderr io.Writer) int {

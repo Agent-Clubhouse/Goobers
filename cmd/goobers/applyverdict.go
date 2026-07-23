@@ -365,17 +365,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "")
 	}
-	var current *providers.PullRequestSummary
-	for i := range prs {
-		if prs[i].Number == selectedNumber {
-			current = &prs[i]
-			break
-		}
-	}
-	if current == nil {
-		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
-		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", "", stderr)
-	}
 
 	// #950: which open PRs are currently demoted (repeatedly could not merge at
 	// an unchanged head). The election drops these from candidacy and from every
@@ -388,6 +377,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if derr != nil {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
+	}
+
+	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 
 	// D6: gather-sibling-context's deterministic pin is authoritative. The
@@ -415,19 +413,19 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// Never intercept a PASS: a passing PR merges and wins. For a non-passing
 	// PR, close it if it is no longer needed.
 	if verdict.Decision != apiv1.VerdictPass {
-		if reason, moot := mootFailReason(ctx, provider, repo, current); moot {
-			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		if reason, moot := mootFailReason(ctx, provider, repo, &current); moot {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
-		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, current); dup {
-			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, &current); dup {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 		// Superseded by a byte-identical earlier open sibling (#1211): two PRs
 		// that implement DIFFERENT issues can still converge to the identical
 		// tree, which duplicateOfEarlierPR (shared-issue only) misses — the
 		// deadlock #1179/#1180 filed. Same disposition: the earlier one wins,
 		// this redundant later one is closed as no-longer-needed.
-		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, current); superseded {
-			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, &current); superseded {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 	}
 
