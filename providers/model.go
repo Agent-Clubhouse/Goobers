@@ -77,6 +77,7 @@ type WorkItem struct {
 	Parent     *WorkItemRef           `json:"parent,omitempty"`
 	Hierarchy  map[string]interface{} `json:"hierarchy,omitempty"`
 	URL        string                 `json:"url,omitempty"`
+	CreatedAt  *time.Time             `json:"createdAt,omitempty"`
 	UpdatedAt  *time.Time             `json:"updatedAt,omitempty"`
 	Raw        interface{}            `json:"raw,omitempty"`
 }

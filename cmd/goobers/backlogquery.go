@@ -130,6 +130,15 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
+	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
+	var stalenessPolicy backlogStalenessPolicy
+	if curationRun {
+		stalenessPolicy, err = readBacklogStalenessPolicy()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
@@ -176,9 +185,18 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	observedAt := time.Now().UTC()
 
-	if *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation" {
-		if err := reconcileBacklogMetadata(ctx, l, issueProvider, repo, trustLabel, time.Now); err != nil {
+	if curationRun {
+		if err := reconcileBacklogMetadata(
+			ctx,
+			l,
+			issueProvider,
+			repo,
+			trustLabel,
+			stalenessPolicy,
+			func() time.Time { return observedAt },
+		); err != nil {
 			return failProviderStage(stderr, "reconcile backlog metadata", err, "claimed-items.json")
 		}
 	}
@@ -517,6 +535,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
 
+	var curationItems []curationClaimedItem
+	if curationRun {
+		curationItems, err = enrichClaimedItemsWithStaleness(ctx, issueProvider, repo, claimed, observedAt, stalenessPolicy)
+		if err != nil {
+			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
+		}
+	}
+
 	// Provider-visible marker per claimed item: best-effort mirror of the
 	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
 	// decision, for human visibility on the provider. A failure here does not
@@ -536,7 +562,11 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// input — curation's #236 fix adds it so the batch actually reaches curate.
 	resultFile := providerInput("resultFile", "claimed-item.json")
 	var data []byte
-	if maxItems == 1 {
+	if curationRun && maxItems == 1 {
+		data, err = json.Marshal(curationItems[0])
+	} else if curationRun {
+		data, err = json.Marshal(curationItems)
+	} else if maxItems == 1 {
 		data, err = json.Marshal(claimed[0])
 	} else {
 		data, err = json.Marshal(claimed)

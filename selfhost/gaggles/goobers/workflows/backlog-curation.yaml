@@ -61,6 +61,14 @@ spec:
         # something" rather than relying on the exit code alone. Plural name:
         # curation claims a batch (maxItems>1 → JSON array).
         resultFile: "claimed-items.json"
+        # Deterministic staleness pre-pass: backlog-query computes each claimed
+        # item's age from issue creation + non-bot comments before writing its
+        # own claim breadcrumb. The structured signal travels in
+        # claimed-items.json; the curator does not estimate dates.
+        staleAfterDays: "90"
+        # Conservative default: a stale signal permits label + ask, never close.
+        # Set true explicitly to allow the curator to close a stale item.
+        staleAutoClose: "false"
       capabilities:
         - github:issues:write
         # Same open-PR eligibility backstop as implementation.yaml's
@@ -80,9 +88,10 @@ spec:
       type: agentic
       goober: curator
       goal: >-
-        Curate the claimed backlog items: dedupe, handle staleness, tag, split
-        oversized items, and mark each item goobers:ready or
-        goobers:needs-human. Explain every action in a comment on the item.
+        Curate the claimed backlog items using each item's deterministic
+        staleness signal: dedupe, handle staleness, tag, split oversized items,
+        and mark each item goobers:ready or goobers:needs-human. Explain every
+        action in a comment on the item.
       capabilities:
         - github:issues:write
         - agent:model

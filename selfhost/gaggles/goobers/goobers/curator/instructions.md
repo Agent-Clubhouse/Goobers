@@ -62,14 +62,22 @@ from issue/PR metadata alone (you have no code access), escalate with the
 
 ### 2. Staleness
 
-If an item has had no meaningful activity in a long time (default: 90 days —
-override via the stage's `staleAfterDays` input if set) and no clear owner:
+The claimed-items artifact gives every item a `staleness` object computed
+before the claim mutation. It contains `stale`, `ageDays`, `thresholdDays`,
+`lastMeaningfulActivityAt`, and `autoCloseEnabled`. The deterministic pre-pass
+counts issue creation and non-bot comments as meaningful activity; claim
+breadcrumbs and other bot comments do not reset the clock.
+
+Do not estimate age yourself. `staleness.stale` is the authoritative threshold
+result: never stale-label or close an item for age when it is `false`. When it
+is `true`, use the supplied age and last-activity timestamp to judge whether to
+act (for example, a clearly owned item may not need prompting). If you act:
 
 - **Default action:** add a `stale` label and a comment explaining why, asking
   whether it's still wanted. Do not close it.
-- **Configurable close:** only close a stale item outright if the workflow's
-  stage inputs explicitly enable auto-close for stale items; otherwise leave
-  closing to a human.
+- **Configurable close:** only close a stale item outright when
+  `staleness.autoCloseEnabled` is `true`. When it is `false`, label and ask;
+  never infer permission to close from the item's age or wording.
 
 ### 3. Tagging
 

@@ -48,6 +48,7 @@ func reconcileBacklogMetadata(
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	trustLabel string,
+	stalenessPolicy backlogStalenessPolicy,
 	now func() time.Time,
 ) error {
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
@@ -71,7 +72,7 @@ func reconcileBacklogMetadata(
 		if err != nil {
 			return fmt.Errorf("refresh issue #%s: %w", item.ID, err)
 		}
-		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt)
+		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy)
 		if err != nil {
 			return fmt.Errorf("inspect issue #%s: %w", item.ID, err)
 		}
@@ -212,6 +213,7 @@ func inspectBacklogMetadata(
 	item providers.WorkItem,
 	botLogin string,
 	now time.Time,
+	stalenessPolicy backlogStalenessPolicy,
 ) (backlogMetadataCorrection, string, error) {
 	correction := backlogMetadataCorrection{}
 	validTracking := false
@@ -256,12 +258,16 @@ func inspectBacklogMetadata(
 					return correction, botLogin, fmt.Errorf("resolve reconciliation actor: %w", err)
 				}
 			}
-			recent, err := hasRecentHumanComment(ctx, provider, repo, item.ID, botLogin, now.Add(-defaultStaleAfter))
+			comments, err := provider.ListComments(ctx, repo, item.ID)
 			if err != nil {
 				return correction, botLogin, fmt.Errorf("inspect stale activity: %w", err)
 			}
-			if recent {
-				reason = "removed `stale` because the issue has recent human activity"
+			signal, err := calculateBacklogStaleness(item, comments, botLogin, now, stalenessPolicy)
+			if err != nil {
+				return correction, botLogin, fmt.Errorf("calculate stale activity: %w", err)
+			}
+			if !signal.Stale {
+				reason = "removed `stale` because the issue is below the configured staleness threshold"
 			}
 		}
 		if reason != "" {
@@ -319,29 +325,6 @@ func trackingChecklistIssueIDs(body string) []string {
 		}
 	}
 	return ids
-}
-
-func hasRecentHumanComment(
-	ctx context.Context,
-	provider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
-	id string,
-	botLogin string,
-	cutoff time.Time,
-) (bool, error) {
-	comments, err := provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return false, err
-	}
-	for _, comment := range comments {
-		if comment.CreatedAt != nil &&
-			!comment.CreatedAt.Before(cutoff) &&
-			!strings.EqualFold(comment.AuthorType, "bot") &&
-			!strings.EqualFold(comment.Author, botLogin) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func uniqueSortedLabels(labels []string) []string {

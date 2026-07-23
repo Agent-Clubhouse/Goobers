@@ -64,6 +64,12 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if query.Next != "curate" {
 		t.Errorf("query-backlog.next = %q, want curate", query.Next)
 	}
+	if query.Inputs["staleAfterDays"] != "90" {
+		t.Errorf("query-backlog staleAfterDays = %q, want 90", query.Inputs["staleAfterDays"])
+	}
+	if query.Inputs["staleAutoClose"] != "false" {
+		t.Errorf("query-backlog staleAutoClose = %q, want false", query.Inputs["staleAutoClose"])
+	}
 	curate, ok := m.Task("curate")
 	if !ok {
 		t.Fatal("curate task not found")
@@ -94,7 +100,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:39a2593e9a2cfbe94180bef0d1d7b625a6131b14185bfc400830ffad51698f31"
+	const wantDigest = "sha256:04cce755fcee72d88c7af9e22cdf2f34f6e6d3930975e70de8de44069975f465"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

@@ -2224,6 +2224,7 @@ type githubIssue struct {
 	Labels    []githubLabel `json:"labels"`
 	Assignees []githubUser  `json:"assignees"`
 	Milestone *githubNode   `json:"milestone"`
+	CreatedAt *time.Time    `json:"created_at"`
 	UpdatedAt *time.Time    `json:"updated_at"`
 	// PullRequest is non-nil when this "issue" is actually a pull request.
 	PullRequest *githubPullRequestLink `json:"pull_request"`
@@ -2418,6 +2419,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Parent:     parent,
 		Hierarchy:  hierarchy,
 		URL:        issue.HTMLURL,
+		CreatedAt:  issue.CreatedAt,
 		UpdatedAt:  issue.UpdatedAt,
 		Raw:        issue,
 	}
