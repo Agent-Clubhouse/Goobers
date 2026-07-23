@@ -7,10 +7,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +33,19 @@ const (
 	maxDeliveries   = 10000
 )
 
-// Signaler is the existing scheduler signal delivery seam.
+// Delivery is the bounded metadata retained from an authenticated GitHub
+// webhook. The full provider payload remains outside the run contract.
+type Delivery struct {
+	Event           string
+	ID              string
+	RepositoryOwner string
+	RepositoryName  string
+	PullNumber      int
+}
+
+// Signaler is the scheduler's repository webhook delivery seam.
 type Signaler interface {
-	Signal(context.Context, string, time.Time) []string
+	SignalWebhook(context.Context, Delivery, time.Time) []string
 }
 
 // InstanceJournal records rejected deliveries without creating a run.
@@ -108,6 +120,31 @@ func (g *DispatchGate) dispatch(signal func(context.Context)) bool {
 // SignalName returns the internal signal subscription for a GitHub event.
 func SignalName(event string) string {
 	return signalPrefix + strings.TrimSpace(event)
+}
+
+// TriggerRef returns the run trigger reference for a delivery.
+func TriggerRef(delivery Delivery) string {
+	ref := SignalName(delivery.Event)
+	if delivery.PullNumber > 0 {
+		ref += "#" + strconv.Itoa(delivery.PullNumber)
+	}
+	return ref
+}
+
+// PullNumberFromTriggerRef extracts a targeted pull request from a webhook
+// trigger reference.
+func PullNumberFromTriggerRef(ref string) (string, bool) {
+	const prefix = signalPrefix + "pull_request#"
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, prefix) {
+		return "", false
+	}
+	value := strings.TrimPrefix(ref, prefix)
+	number, err := strconv.Atoi(value)
+	if err != nil || number <= 0 {
+		return "", false
+	}
+	return strconv.Itoa(number), true
 }
 
 // ValidSignature reports whether signature authenticates body with secret using
@@ -189,18 +226,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	mac := hmac.New(sha256.New, h.secret)
-	_, err := io.Copy(mac, r.Body)
-	if err != nil {
+	payload, payloadErr, readErr := readPayload(r.Body, mac)
+	if readErr != nil || payloadErr != nil {
 		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.As(readErr, &tooLarge) || errors.As(payloadErr, &tooLarge) {
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+		if readErr != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
 	}
 	if !hmac.Equal(provided, mac.Sum(nil)) {
 		h.rejectInvalidSignature(w)
+		return
+	}
+	if payloadErr != nil {
+		h.rejectUnusablePayload(w, fmt.Errorf("parse GitHub webhook payload: %w", payloadErr))
 		return
 	}
 
@@ -214,12 +257,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%s must be present and no longer than %d bytes", deliveryHeader, maxHeaderBytes), http.StatusBadRequest)
 		return
 	}
+	metadata, err := parseDelivery(event, delivery, payload)
+	if err != nil {
+		h.rejectUnusablePayload(w, err)
+		return
+	}
 	now := h.now()
 	if !h.gate.dispatch(func(ctx context.Context) {
 		if h.seen(delivery) {
 			return
 		}
-		h.signaler.Signal(ctx, SignalName(event), now)
+		h.signaler.SignalWebhook(ctx, metadata, now)
 	}) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
@@ -236,6 +284,62 @@ func (h *Handler) rejectInvalidSignature(w http.ResponseWriter) {
 		return
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
+func (h *Handler) rejectUnusablePayload(w http.ResponseWriter, cause error) {
+	if err := h.journal.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "webhook_payload_unusable", Message: cause.Error()},
+	}); err != nil {
+		http.Error(w, "record webhook rejection", http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, "unusable webhook payload", http.StatusBadRequest)
+}
+
+type githubPayload struct {
+	Number     int `json:"number"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	} `json:"repository"`
+}
+
+func readPayload(body io.Reader, mac io.Writer) (githubPayload, error, error) {
+	var payload githubPayload
+	decoder := json.NewDecoder(io.TeeReader(body, mac))
+	decodeErr := decoder.Decode(&payload)
+	if decodeErr == nil {
+		var trailing json.RawMessage
+		switch err := decoder.Decode(&trailing); {
+		case errors.Is(err, io.EOF):
+		case err != nil:
+			decodeErr = err
+		default:
+			decodeErr = errors.New("multiple JSON values")
+		}
+	}
+	_, readErr := io.Copy(mac, body)
+	return payload, decodeErr, readErr
+}
+
+func parseDelivery(event, delivery string, payload githubPayload) (Delivery, error) {
+	result := Delivery{
+		Event:           event,
+		ID:              delivery,
+		RepositoryOwner: strings.TrimSpace(payload.Repository.Owner.Login),
+		RepositoryName:  strings.TrimSpace(payload.Repository.Name),
+	}
+	if event != "pull_request" {
+		return result, nil
+	}
+	if result.RepositoryOwner == "" || result.RepositoryName == "" || payload.Number <= 0 {
+		return Delivery{}, errors.New("GitHub pull_request webhook payload requires repository owner, repository name, and pull number")
+	}
+	result.PullNumber = payload.Number
+	return result, nil
 }
 
 func (h *Handler) seen(delivery string) bool {

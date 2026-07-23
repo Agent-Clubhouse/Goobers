@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Version:
-> `v1alpha1` (`api/v1alpha1.StageContractVersion`).
+> `v1alpha2` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -66,6 +66,8 @@ Constraints:
 
 The runner hands the stage an `InvocationEnvelope`:
 
+- `triggerRef` — optional bounded scheduler metadata identifying the event or item
+  that caused the run; it never carries the provider's raw trigger payload.
 - `goal` — what to achieve.
 - `workspace` — absolute path to the fresh, isolated, disposable workspace the
   stage runs in. Repo-backed stages receive a git worktree at tiers 1–2; a
@@ -253,8 +255,10 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha1` (`StageContractVersion`). The whole
-  `api/v1alpha1` package + `api/schemas` set is that version.
+- The contract version is `v1alpha2` (`StageContractVersion`). The Go types retain
+  the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
+  the current wire contract. Version `v1alpha2` adds the optional `triggerRef`
+  invocation field for bounded scheduler trigger provenance.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

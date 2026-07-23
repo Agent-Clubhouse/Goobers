@@ -9,6 +9,8 @@ spec:
   # A pass enters the explicitly capability-gated merge/post-merge chain;
   # other outcomes become PR feedback for remediation or a human.
   triggers:
+    - type: webhook
+      events: [pull_request]
     - type: schedule
       schedule: "23 * * * *"
   readiness:

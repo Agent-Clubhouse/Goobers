@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/telemetry"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
 // fakeSpanStarter records every scheduler span opened (issue #126).
@@ -826,6 +827,84 @@ func TestSignalDispatchesOnlySubscribedWorkflows(t *testing.T) {
 	if unsubscribed.count() != 0 {
 		t.Fatalf("unsubscribed workflow should not have fired: %d starts", unsubscribed.count())
 	}
+}
+
+func TestWebhookSignalRoutesRepositoryAndJournalsChoice(t *testing.T) {
+	target := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	other := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow: "merge-review", Gaggle: "target", Signals: []string{webhookhttp.SignalName("pull_request")},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}, Starter: target,
+		},
+		{
+			Workflow: "merge-review", Gaggle: "other", Signals: []string{webhookhttp.SignalName("pull_request")},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "other"}, Starter: other,
+		},
+	})
+	delivery := webhookhttp.Delivery{
+		Event: "pull_request", ID: "delivery-1",
+		RepositoryOwner: "acme", RepositoryName: "app", PullNumber: 42,
+	}
+
+	runIDs := sched.SignalWebhook(context.Background(), delivery, time.Now())
+	if len(runIDs) != 1 {
+		t.Fatalf("runIDs = %v, want one repository-matched run", runIDs)
+	}
+	waitForCount(t, target.count, 1)
+	sched.Wait()
+	if other.count() != 0 {
+		t.Fatalf("other repository starts = %d, want 0", other.count())
+	}
+	target.mu.Lock()
+	trigger := target.starts[0].Trigger
+	target.mu.Unlock()
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != webhookhttp.TriggerRef(delivery) {
+		t.Fatalf("trigger = %+v, want targeted webhook reference", trigger)
+	}
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventTriggerFired && event.Workflow == "merge-review" {
+			if event.Reason != "webhook delivery: pull_request" {
+				t.Fatalf("trigger reason = %q", event.Reason)
+			}
+			return
+		}
+	}
+	t.Fatal("webhook trigger choice was not journaled")
+}
+
+func TestScheduleJournalsWebhookPollingFallbackCause(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow: "merge-review", Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		PollFallbackCause: "webhook listener is disabled because webhook.secret is not configured",
+		Starter:           starter,
+	}})
+	sched.mu.Lock()
+	lastEval := sched.triggers[WorkflowIdentity{Workflow: "merge-review"}].LastEval
+	sched.mu.Unlock()
+
+	sched.Tick(context.Background(), lastEval.Add(time.Hour))
+	waitForCount(t, starter.count, 1)
+	sched.Wait()
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventTriggerFired && event.Workflow == "merge-review" {
+			want := "polling fallback: webhook listener is disabled because webhook.secret is not configured"
+			if event.Reason != want {
+				t.Fatalf("trigger reason = %q, want %q", event.Reason, want)
+			}
+			return
+		}
+	}
+	t.Fatal("polling fallback cause was not journaled")
 }
 
 // TestSignalUnknownNameReturnsEmptyNotError proves an unmatched signal name

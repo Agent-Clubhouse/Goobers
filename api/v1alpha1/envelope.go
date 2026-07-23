@@ -19,7 +19,7 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-const StageContractVersion = "v1alpha1"
+const StageContractVersion = "v1alpha2"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -45,6 +45,9 @@ type InvocationEnvelope struct {
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
 	RunID string `json:"runId"`
+	// TriggerRef identifies the event or item that caused the run. It is bounded
+	// scheduler metadata, not the provider's raw trigger payload.
+	TriggerRef string `json:"triggerRef,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
 	// BranchNamespace is the gaggle's configured run-branch namespace root

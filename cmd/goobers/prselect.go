@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -75,11 +78,9 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
+	prs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, os.Getenv(executor.TriggerRefEnvVar))
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "selected-pr.json")
+		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
 
 	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
@@ -99,6 +100,9 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
+		if pr.State != "open" || pr.Base != base || !strings.HasPrefix(pr.Head, headPrefix) {
+			continue
+		}
 		if pr.Draft {
 			continue
 		}
@@ -181,6 +185,24 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
 	return 0
+}
+
+func pullRequestsForSelection(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, base, headPrefix, triggerRef string) ([]providers.PullRequestSummary, error) {
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
+	if !targeted {
+		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+			Repository: repo, Base: base, HeadPrefix: headPrefix,
+		})
+	}
+	pr, err := provider.GetPullRequest(ctx, repo, pullID)
+	if err != nil {
+		return nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+	}
+	pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+	if err != nil {
+		return nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+	}
+	return []providers.PullRequestSummary{pr}, nil
 }
 
 func splitLabelList(value string) []string {

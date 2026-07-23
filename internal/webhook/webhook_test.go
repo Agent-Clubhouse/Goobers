@@ -18,21 +18,31 @@ import (
 )
 
 type recordingSignaler struct {
-	mu      sync.Mutex
-	signals []string
+	mu         sync.Mutex
+	deliveries []Delivery
 }
 
-func (s *recordingSignaler) Signal(_ context.Context, name string, _ time.Time) []string {
+func (s *recordingSignaler) SignalWebhook(_ context.Context, delivery Delivery, _ time.Time) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.signals = append(s.signals, name)
+	s.deliveries = append(s.deliveries, delivery)
 	return []string{"run-1"}
 }
 
 func (s *recordingSignaler) names() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.signals...)
+	names := make([]string, 0, len(s.deliveries))
+	for _, delivery := range s.deliveries {
+		names = append(names, SignalName(delivery.Event))
+	}
+	return names
+}
+
+func (s *recordingSignaler) recordedDeliveries() []Delivery {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Delivery(nil), s.deliveries...)
 }
 
 type recordingJournal struct {
@@ -129,13 +139,44 @@ func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 
 	events := []string{"pull_request", "issues", "check_suite", "pull_request_review_comment"}
 	for i, event := range events {
-		response := deliver(t, handler, secret, event, event+"-delivery", []byte(`{"zen":"test"}`))
+		body := []byte(`{"zen":"test"}`)
+		if event == "pull_request" {
+			body = []byte(`{"number":42,"repository":{"name":"app","owner":{"login":"acme"}}}`)
+		}
+		response := deliver(t, handler, secret, event, event+"-delivery", body)
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("event %q status = %d, want %d", event, response.Code, http.StatusAccepted)
 		}
 		if got := signaler.names(); len(got) != i+1 || got[i] != SignalName(event) {
 			t.Fatalf("signals after %q = %v", event, got)
 		}
+	}
+	deliveries := signaler.recordedDeliveries()
+	if got := deliveries[0]; got.RepositoryOwner != "acme" || got.RepositoryName != "app" || got.PullNumber != 42 {
+		t.Fatalf("pull-request delivery metadata = %+v", got)
+	}
+}
+
+func TestHandlerRejectsUnusablePullRequestPayloadAndJournalsFallbackCause(t *testing.T) {
+	const secret = "webhook-test-secret"
+	signaler := &recordingSignaler{}
+	instanceLog := &recordingJournal{}
+	handler, err := NewHandler([]byte(secret), signaler, instanceLog, startedDispatchGate(t, context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := deliver(t, handler, secret, "pull_request", "delivery-1", []byte(`{"number":42}`))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if got := signaler.names(); len(got) != 0 {
+		t.Fatalf("unusable delivery signaled %v", got)
+	}
+	if len(instanceLog.events) != 1 ||
+		instanceLog.events[0].Error == nil ||
+		instanceLog.events[0].Error.Code != "webhook_payload_unusable" {
+		t.Fatalf("journal events = %+v", instanceLog.events)
 	}
 }
 

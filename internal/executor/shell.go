@@ -292,6 +292,16 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
+	if injectRunContext && env.TriggerRef != "" {
+		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
+	}
+	if injectRunContext && env.RepoRef.Provider != "" {
+		stageEnv = append(stageEnv,
+			RepoProviderEnvVar+"="+string(env.RepoRef.Provider),
+			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
+			RepoNameEnvVar+"="+env.RepoRef.Name,
+		)
+	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}

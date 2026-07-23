@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/telemetry"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
@@ -37,6 +38,9 @@ type WorkflowEntry struct {
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
 	Signals         []string
+	// PollFallbackCause, when non-empty, explains why a scheduled fire is the
+	// fallback for an event-capable workflow.
+	PollFallbackCause string
 	// BacklogCounter, when set, marks this workflow as backlog-item-triggered
 	// (#344): Tick polls it every backlogPollInterval instead of (or in
 	// addition to, if Schedules is also set) evaluating a cron schedule, and
@@ -600,7 +604,15 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					break
 				}
 				attempted = true
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, tick, kind)
+				trigger := journal.Trigger{Kind: kind, Ref: candidate.entry.Workflow}
+				fire := fireReason(tick, kind)
+				if kind == journal.TriggerSchedule && candidate.entry.PollFallbackCause != "" {
+					fire = "polling fallback: " + candidate.entry.PollFallbackCause
+					if tick.CatchUp {
+						fire += "; " + fireReason(tick, kind)
+					}
+				}
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire)
 				if admitted {
 					candidate.dispatchedThisTick = true
 					break
@@ -777,7 +789,10 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	if matches > 1 {
 		return "", fmt.Errorf("localscheduler: workflow %q is ambiguous across gaggles", workflow)
 	}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerManual)
+	tick := TickResult{Fire: true, LastEval: now}
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now,
+		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
+		fireReason(tick, journal.TriggerManual))
 	if !admitted {
 		return "", &TriggerRejectedError{Workflow: workflow, Reason: skipReason}
 	}
@@ -838,6 +853,25 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 // run ids of every workflow actually admitted, in bounded-fair gaggle order
 // and workflow-name order within each gaggle.
 func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
+	return s.signal(ctx, name, name, "signal", now, func(WorkflowEntry) bool { return true })
+}
+
+// SignalWebhook routes an authenticated GitHub delivery only to workflows for
+// the repository named by the payload. Pull-request deliveries retain the PR
+// number in the run trigger reference so merge-review can select it directly.
+func (s *Scheduler) SignalWebhook(ctx context.Context, delivery webhookhttp.Delivery, now time.Time) []string {
+	name := webhookhttp.SignalName(delivery.Event)
+	return s.signal(ctx, name, webhookhttp.TriggerRef(delivery), "webhook delivery: "+delivery.Event, now, func(entry WorkflowEntry) bool {
+		if delivery.RepositoryOwner == "" || delivery.RepositoryName == "" {
+			return true
+		}
+		return entry.RepoRef.Provider == apiv1.ProviderGitHub &&
+			strings.EqualFold(entry.RepoRef.Owner, delivery.RepositoryOwner) &&
+			strings.EqualFold(entry.RepoRef.Name, delivery.RepositoryName)
+	})
+}
+
+func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time.Time, matches func(WorkflowEntry) bool) []string {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
 	ctx = providersnapshot.WithTick(ctx, now)
@@ -845,6 +879,9 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 	s.mu.Lock()
 	var subscribed []WorkflowEntry
 	for _, e := range s.workflows {
+		if !matches(e) {
+			continue
+		}
 		for _, sig := range e.Signals {
 			if sig == name {
 				subscribed = append(subscribed, e)
@@ -879,7 +916,8 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 				entry := byGaggle[gaggle][next[gaggle]]
 				next[gaggle]++
 				attempted = true
-				runID, admitted, reason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal)
+				runID, admitted, reason := s.dispatch(ctx, entry, now,
+					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire)
 				if admitted {
 					runIDs = append(runIDs, runID)
 					break
@@ -896,21 +934,18 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 	return runIDs
 }
 
-// dispatch admits and starts (or skips) one due firing of entry. kind tags
-// both the trigger.fired reason (journal.TriggerManual renders as "manual",
-// never "scheduled" — issue #134's fireReason mislabeling fix) and the
-// dispatched run's own journal.Trigger.Kind, previously hardcoded to
-// TriggerSchedule even for a manual Scheduler.Trigger call. Returns the
-// dispatched run's id (empty if skipped), whether it was admitted, and — when
-// not admitted — the run-conditions skip reason, so Trigger can surface it to
-// a human caller instead of silently doing nothing.
+// dispatch admits and starts (or skips) one due firing of entry. The caller
+// supplies both the run's pinned trigger identity and the human-readable
+// instance-journal reason. It returns the dispatched run's id (empty if
+// skipped), whether it was admitted, and — when not admitted — the
+// run-conditions skip reason.
 //
 // The telemetry span it opens covers only the decision (trigger -> admit/skip),
 // not the run itself: entry.Starter.Start runs in its own
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult, kind journal.TriggerKind) (runID string, admitted bool, skipReason string) {
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string) (runID string, admitted bool, skipReason string) {
 	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
@@ -941,7 +976,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
 		Gaggle:   entry.Gaggle,
-		Reason:   fireReason(tick, kind),
+		Reason:   triggerReason,
 	}); err != nil {
 		reason := "trigger.fired journal write failed: " + err.Error()
 		span.Fail(err)
@@ -1000,7 +1035,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,
-			Trigger: journal.Trigger{Kind: kind, Ref: entry.Workflow},
+			Trigger: trigger,
 			RepoRef: entry.RepoRef,
 		})
 		// #710: this echo used to carry only the bare phase string — a

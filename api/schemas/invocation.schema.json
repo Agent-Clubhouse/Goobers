@@ -10,6 +10,11 @@
     "taskId": { "type": "string", "minLength": 1 },
     "workflowId": { "type": "string", "minLength": 1 },
     "runId": { "type": "string", "minLength": 1 },
+    "triggerRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The event or item that caused the run. Bounded scheduler metadata only, never the provider's raw trigger payload."
+    },
     "gaggle": { "type": "string", "minLength": 1 },
     "branchNamespace": {
       "type": "string",
