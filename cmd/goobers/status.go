@@ -545,7 +545,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	if _, _, err := compiledMachines(set, goobers, instructions); err != nil {
+	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
 		printValidationWarnings(stderr, warnings)
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1

@@ -342,7 +342,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachines(set, goobers, instructions)
+	machines, gooberDigests, err := compiledMachinesWithGooberDigests(set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}

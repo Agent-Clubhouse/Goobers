@@ -350,10 +350,9 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := compiledMachines(
+			_, err := compiledMachines(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
-				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
@@ -391,7 +390,6 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	workflowDefinition := func(gaggle, dslVersion string) apiv1.Workflow {
 		return apiv1.Workflow{
 			ObjectMeta: metav1.ObjectMeta{Name: "deploy"},
@@ -423,7 +421,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, err := compiledMachines(set, map[string]apiv1.GooberSpec{}, nil)
+	machines, err := compiledMachines(set, map[string]apiv1.GooberSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,10 +481,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := definitions.Runners[identity.Gaggle].Start(context.Background(), runner.StartInput{
-			RunID:        runID,
-			Machine:      definitions.Machines[identity],
-			GooberDigest: definitions.GooberDigests[identity],
-			Gaggle:       identity.Gaggle,
+			RunID:   runID,
+			Machine: definitions.Machines[identity],
+			Gaggle:  identity.Gaggle,
 		})
 		if err != nil || result.Phase != journal.PhaseCompleted {
 			t.Fatalf("start %s run %d: phase=%s err=%v", identity.Gaggle, i, result.Phase, err)
@@ -494,65 +491,6 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
 			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
 		}
-	}
-}
-
-func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
-	configDir := t.TempDir()
-	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")
-	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	instructionsPath := filepath.Join(instructionsDir, "instructions.md")
-	if err := os.WriteFile(instructionsPath, []byte("first instructions"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	goobers := map[string]apiv1.GooberSpec{
-		"coder": {
-			Gaggle:       "alpha",
-			Instructions: "instructions.md",
-			Harness:      apiv1.HarnessCopilot,
-			Model:        "claude-sonnet-4.5",
-		},
-	}
-	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
-		ObjectMeta: metav1.ObjectMeta{Name: "implement"},
-		Spec: apiv1.WorkflowSpec{
-			Gaggle: "alpha",
-			Start:  "implement",
-			Tasks: []apiv1.Task{{
-				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
-				Goober: "coder", Next: workflow.TerminalComplete,
-			}},
-		},
-	}}}
-	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
-	firstInstructions, err := loadGooberInstructions(configDir, goobers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, firstDigests, err := compiledMachines(set, goobers, firstInstructions)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(instructionsPath, []byte("second instructions"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	secondInstructions, err := loadGooberInstructions(configDir, goobers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, secondDigests, err := compiledMachines(set, goobers, secondInstructions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstDigests[identity] == secondDigests[identity] {
-		t.Fatalf("goober digest did not change with instruction content: %s", firstDigests[identity])
-	}
-	if first[identity].Digest() != second[identity].Digest() {
-		t.Fatalf("workflow digest changed with instruction content: %s != %s", first[identity].Digest(), second[identity].Digest())
 	}
 }
 

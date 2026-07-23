@@ -151,7 +151,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		return 1
 	}
-	if _, _, err := compiledMachines(set, goobers, instructions); err != nil {
+	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		return 1
 	}
