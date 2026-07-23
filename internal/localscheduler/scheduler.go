@@ -842,9 +842,8 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 
 // Signal fires every workflow subscribed to the named external signal (WF-014,
 // #342: a type=signal trigger declares Signal: "<name>") — `goobers signal
-// <name>` CLI wiring calls this today; an HTTP/webhook sink (#169) is the
-// planned future caller, once the daemon has a write-capable API surface, but
-// this method itself has no delivery-mechanism opinion. Unlike Trigger (which
+// <name>` CLI wiring calls this; authenticated repository webhooks use
+// SignalWebhook below. Unlike Trigger (which
 // names exactly one workflow and reports why it didn't start), Signal
 // broadcasts to however many workflows are subscribed — zero, one, or many —
 // so a conditions-driven skip is silent per subscriber (best-effort, the same

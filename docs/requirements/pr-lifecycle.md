@@ -75,14 +75,35 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   liveness checks** (PRL-062/PRL-063), never via a permanent label test — an
   exclusion that cannot self-heal is forbidden (#716).
 - **PRL-004 (MUST, Shipped):** Among eligible PRs, selection order MUST be
-  deterministic: descending count of open PRs blocked on the candidate (so a
-  cluster's lander is reviewed before its parked dependents), then ascending PR
-  number (FIFO). The first unclaimed candidate in that order is selected.
+  deterministic. Before aging applies, order is descending count of open PRs
+  blocked on the candidate (so a cluster's lander is reviewed before its parked
+  dependents), then ascending PR number (FIFO). The first unclaimed candidate in
+  the effective order is selected.
 - **PRL-005 (SHOULD, V1):** Selection priority SHOULD become configurable
   (label-driven / user-defined ordering) rather than FIFO-only; #509 owns the
-  design. The PRL-004 order is the shipped default, not a ceiling.
+  design. The PRL-004/PRL-007 order is the shipped default, not a ceiling.
 - **PRL-006 (MUST, Shipped):** A cycle with no eligible or claimable PR MUST be
   a normal no-work outcome (exit 0), never a failure.
+- **PRL-007 (MUST, Shipped):** `pr-select` MUST persist the first observation of
+  each PR's current continuously eligible interval. Every complete 15 minutes
+  adds one deterministic aging point to its blocked-dependent priority. A PR
+  waiting at least one hour MUST sort ahead of every candidate below that
+  bound, regardless of blocked-dependent count. Ascending PR number remains the
+  tie-breaker for equivalent effective priority. Selection, an ineligible
+  observation, an active claim, or a head-SHA change resets the interval; an
+  ineligible, claimed, escalated, demoted, sibling-blocked, or
+  remediation-blocked PR therefore cannot accumulate priority merely by aging.
+  After release or expiry, a new eligible interval starts when the PR is first
+  observed genuinely unclaimed.
+  A complete polling snapshot MAY remove unobserved entries, but a targeted
+  webhook snapshot MUST mutate only the PR it observed. A webhook-triggered
+  selection MUST use a complete polling snapshot whenever retained fairness
+  state contains a candidate at the one-hour guard.
+- **PRL-008 (MUST, Shipped):** The `pr-select` result MUST report the selected
+  PR's eligible wait, the maximum eligible wait among observed unclaimed
+  candidates, whether the hard guard applied, and the numbers of any unclaimed
+  eligible PRs already over the one-hour bound. These scalar outputs are the W2
+  soak's starvation signal.
 
 ### Sibling context & the verdict contract
 
