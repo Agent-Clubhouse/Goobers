@@ -184,6 +184,7 @@ spec:
         - github:issues:write
         - repo:push
       policyActions:
+        - record-remediation-checkpoint
         - escalate-pr
       expectedOutputs:
         # What checkpoint-gate branches on: "false" when this cycle escalated
@@ -261,6 +262,7 @@ spec:
         - repo:push
         - agent:model
       policyActions:
+        - modify-repository
         - rework-pr
       retry:
         maxAttempts: 2
@@ -372,6 +374,7 @@ spec:
         - github:issues:write
         - repo:push
       policyActions:
+        - record-remediation-checkpoint
         - escalate-pr
       # @escalate, not @abort, for the same reason implementation.yaml's own
       # park-escalated is: every escalation surface (`goobers run` exit 3,

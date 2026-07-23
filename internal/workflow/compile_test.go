@@ -231,10 +231,12 @@ func TestCompileOnTimeoutPolicy(t *testing.T) {
 
 func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	task := apiv1.Task{
-		Name: "query-backlog",
-		Type: apiv1.TaskDeterministic,
-		Goal: "claim one item",
-		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+		Name:          "query-backlog",
+		Type:          apiv1.TaskDeterministic,
+		Goal:          "claim one item",
+		Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+		Capabilities:  []string{string(capability.GitHubIssuesWrite)},
+		PolicyActions: []string{"claim-backlog-items"},
 	}
 	cases := []struct {
 		name     string
@@ -609,11 +611,17 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 		Start:  "implement",
 		Tasks: []apiv1.Task{
 			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
-				Capabilities: []string{"github:issues:write", "repo:push"}},
+				Capabilities:  []string{"github:issues:write", "repo:push"},
+				PolicyActions: []string{"label-issue", "modify-repository"}},
 		},
 	}
 	goobers := map[string]apiv1.GooberSpec{
-		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write", "repo:push"}},
+		"coder": {
+			Role:          "coder",
+			Harness:       apiv1.HarnessCopilot,
+			Capabilities:  []string{"github:issues:write", "repo:push"},
+			PolicyActions: []string{"label-issue", "modify-repository"},
+		},
 	}
 	if _, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
@@ -623,7 +631,12 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	}
 
 	// Drop repo:push from the grant set -> admission fails closed.
-	goobers["coder"] = apiv1.GooberSpec{Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write"}}
+	goobers["coder"] = apiv1.GooberSpec{
+		Role:          "coder",
+		Harness:       apiv1.HarnessCopilot,
+		Capabilities:  []string{"github:issues:write"},
+		PolicyActions: []string{"label-issue", "modify-repository"},
+	}
 	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
@@ -718,6 +731,112 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `task "apply" command "goobers apply-verdict" prescribes policy action "close-pr" but policyActions does not declare it`) {
 		t.Fatalf("Compile error = %v, want missing policy-action declaration", err)
+	}
+}
+
+func TestCompileAgenticPersonaActionsAreLoadBearing(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name:         "implement",
+			Type:         apiv1.TaskAgentic,
+			Goober:       "implementer",
+			Goal:         "remediate the pull request",
+			Capabilities: []string{string(capability.RepoPush)},
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"implementer": {
+			Capabilities:  []string{string(capability.RepoPush)},
+			PolicyActions: []string{"modify-repository"},
+		},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	const want = `task "implement" invokes goober "implementer" whose persona prescribes policy action "modify-repository", but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"modify-repository"}
+	if _, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("declared persona action should compile: %v", err)
+	}
+}
+
+func TestCompileConditionalPersonaActionRequiresTaskOptIn(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "nominate",
+		Tasks: []apiv1.Task{{
+			Name:          "nominate",
+			Type:          apiv1.TaskAgentic,
+			Goober:        "nominator",
+			Goal:          "file evidence-backed issues",
+			Capabilities:  []string{string(capability.GitHubIssuesWrite)},
+			PolicyActions: []string{"create-issue"},
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"nominator": {
+			Capabilities:             []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove)},
+			PolicyActions:            []string{"create-issue"},
+			ConditionalPolicyActions: []string{"approve-issue"},
+		},
+	}
+
+	if _, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("disabled conditional persona action should compile: %v", err)
+	}
+
+	spec.Tasks[0].PolicyActions = append(spec.Tasks[0].PolicyActions, "approve-issue")
+	_, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	const want = `task "nominate" policy action "approve-issue" requires capability "github:issues:approve", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+}
+
+func TestCompilePersonaActionRequiresGooberCapability(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "curate",
+		Tasks: []apiv1.Task{{
+			Name:          "curate",
+			Type:          apiv1.TaskAgentic,
+			Goober:        "curator",
+			Goal:          "curate issues",
+			Capabilities:  []string{string(capability.GitHubIssuesWrite)},
+			PolicyActions: []string{"close-issue"},
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"curator": {
+			Capabilities:  []string{string(capability.AgentModel)},
+			PolicyActions: []string{"close-issue"},
+		},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "policy", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	const want = `goober "curator" policy action "close-issue" requires capability "github:issues:write", but the goober does not grant it`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
 }
 

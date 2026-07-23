@@ -90,6 +90,8 @@ spec:
       capabilities:
         - repo:push
         - agent:model
+      policyActions:
+        - modify-repository
       expectedOutputs:
         - changed-files
       next: validate-config
@@ -112,6 +114,8 @@ spec:
         command: ["goobers", "push-branch"]
       capabilities:
         - repo:push
+      policyActions:
+        - push-repository-branch
       next: open-pr
 
     - name: open-pr
@@ -132,6 +136,8 @@ spec:
         configRoot: "selfhost"
       capabilities:
         - github:pr:write
+      policyActions:
+        - open-or-update-pr
       expectedOutputs:
         - pull-request-url
         - prNumber

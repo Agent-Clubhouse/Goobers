@@ -24,6 +24,18 @@
         "harnessOptions": { "type": "object", "additionalProperties": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "policyActions": {
+          "description": "Closed vocabulary of externally mutating actions this persona unconditionally prescribes. Invoking tasks must redeclare every action and grant its canonical capability.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "conditionalPolicyActions": {
+          "description": "Persona actions enabled only when an invoking task explicitly declares the action and grants its canonical capability.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "skills": { "type": "array", "items": { "type": "string" } },
         "tools": { "type": "array", "items": { "type": "string" } },
         "scaleFactor": { "type": "integer", "minimum": 1 },

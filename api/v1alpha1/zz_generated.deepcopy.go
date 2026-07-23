@@ -6,7 +6,7 @@ package v1alpha1
 
 import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -466,6 +466,16 @@ func (in *GooberSpec) DeepCopyInto(out *GooberSpec) {
 	}
 	if in.Capabilities != nil {
 		in, out := &in.Capabilities, &out.Capabilities
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PolicyActions != nil {
+		in, out := &in.PolicyActions, &out.PolicyActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ConditionalPolicyActions != nil {
+		in, out := &in.ConditionalPolicyActions, &out.ConditionalPolicyActions
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

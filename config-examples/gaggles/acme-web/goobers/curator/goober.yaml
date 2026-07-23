@@ -15,6 +15,12 @@ spec:
   # never materialized into this goober's run environment.
   capabilities:
     - github:issues:write
+  policyActions:
+    - close-issue
+    - comment-on-issue
+    - create-issue
+    - edit-issue
+    - label-issue
   skills:
     - triage
   tools:

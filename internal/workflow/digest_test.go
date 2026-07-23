@@ -54,9 +54,9 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 var goldenDigests = map[string]string{
 	// #401: await-ci explicitly declares the github:pr:write capability used
 	// to poll the pull request's checks.
-	"implementation.yaml":   "sha256:3c0fb6f9133f0df14b208acfdaf6d96173dfd8a24771ce521035862ece080761",
-	"backlog-curation.yaml": "sha256:268e996fa834f22c854680b2084cdeb054a437bed5d3546ea0755e19c86af151",
-	"work-nomination.yaml":  "sha256:68692fb377f3140fa66033eec2fe00bfb0033b08c39783b370223622180a81e9",
+	"implementation.yaml":   "sha256:23e39af6998f0901a3a1c82e525c111bff6389b9c530f857f4a0aa7976c48d9c",
+	"backlog-curation.yaml": "sha256:e23e5fa4821ceb8e987bf2f21be2dde6b135203c4f1c67f17918c4981514c8b3",
+	"work-nomination.yaml":  "sha256:67eb702aba404b995e806964a9aaf52f9a176a497fc24848fc8ac3b217d65b73",
 }
 
 // TestShippedWorkflowsCompile proves the three V0 shipped workflows (curation,
@@ -107,7 +107,7 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	const want = "sha256:8799d6c3e5b977b82c6451462f025e60bc177307409dc70e00c4293040b01ddb"
+	const want = "sha256:e9964709dc240a2bc9da9c6f61517f93e8606faeeddba0efb7d86ceb1d539e77"
 	t.Logf("default-implement digest = %s", m.Digest())
 	if m.Digest() != want {
 		t.Errorf("digest drift for default-implement:\n got  %s\n want %s\n(update if intended)", m.Digest(), want)

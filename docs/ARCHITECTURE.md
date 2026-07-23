@@ -192,9 +192,12 @@ Contract rules:
   simply never materialized), and by sandbox policy from V1 (`SEC-042`,
   `SEC-044`). A task whose command, policy, persona, or verdict vocabulary can
   prescribe an external mutation also declares that closed vocabulary in
-  `policyActions`; the compiler rejects unknown actions, omitted actions for
-  known policy-bearing commands, and actions whose canonical capability is not
-  declared.
+  `policyActions`. Goober definitions make persona prescriptions
+  machine-readable in `policyActions`; capability-gated persona behavior lives
+  in `conditionalPolicyActions` and is disabled unless a task explicitly opts
+  into both the action and its capability. The compiler rejects unknown
+  actions, omitted command/persona actions, and actions whose canonical
+  capability is not declared by both the task and its goober.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 

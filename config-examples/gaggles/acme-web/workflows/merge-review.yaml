@@ -255,6 +255,7 @@ spec:
         - github:pr:write
         - github:issues:write
       policyActions:
+        - record-merge-refusal
         - demote-pr
 
   gates:

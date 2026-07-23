@@ -18,6 +18,13 @@ spec:
     - github:issues:approve
     - telemetry:read
     - agent:model
+  policyActions:
+    - comment-on-issue
+    - create-issue
+    - label-issue
+  conditionalPolicyActions:
+    # Enabled only when a workflow task deliberately opts into self-approval.
+    - approve-issue
   skills:
     - nomination
   tools:

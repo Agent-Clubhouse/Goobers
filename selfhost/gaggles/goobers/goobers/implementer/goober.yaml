@@ -24,6 +24,8 @@ spec:
   capabilities:
     - repo:push
     - agent:model
+  policyActions:
+    - modify-repository
   skills:
     - implement
     - run-tests

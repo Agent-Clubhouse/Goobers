@@ -235,7 +235,9 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 				"enabled": true,
 				"budget": 3,
 				"nested": {"strategy": "adaptive"}
-			}
+			},
+			"policyActions": ["modify-repository"],
+			"conditionalPolicyActions": ["open-or-update-pr"]
 		}
 	}`
 	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {

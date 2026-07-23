@@ -19,6 +19,12 @@ spec:
     - telemetry:read
     - github:issues:write
     - github:issues:approve
+  policyActions:
+    - comment-on-issue
+    - create-issue
+    - label-issue
+  conditionalPolicyActions:
+    - approve-issue
   skills:
     - analysis
   tools:

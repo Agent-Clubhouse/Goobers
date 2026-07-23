@@ -366,31 +366,52 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 ## Capability-vs-policy audit
 
 `Task.policyActions` is the closed, auditable vocabulary for actions that a
-policy, persona, or verdict can direct a task to perform. The workflow compiler
-maps each action to its canonical capability and rejects an unknown action, a
-known policy-bearing command that omits an action declaration, or an action
-whose task lacks the required grant. The shipped self-host PR lifecycle
-workflows audit as follows:
+command, policy, persona, or verdict can direct a task to perform. Personas
+declare their unconditional vocabulary in `Goober.spec.policyActions`; an
+invoking task must redeclare every one. Capability-gated persona actions use
+`conditionalPolicyActions` and remain disabled unless the task explicitly
+declares the action and its capability. The workflow compiler rejects unknown
+actions, omitted built-in/persona declarations, and actions whose task or
+goober lacks the canonical grant.
+
+The audit below covers all six shipped self-host workflows. Read-only stages
+(`gather-signals`, PR/context selection, CI polling, validation, local tests)
+and the `analyst` and `reviewer` personas prescribe no external mutation and
+therefore have no action row.
 
 | Action | Workflow / task | Required capability | Status |
 |---|---|---|---|
-| Publish the verdict as a native review | `merge-review/apply-verdict` | `github:pr:review` | Covered |
-| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation | `merge-review/apply-verdict` | `github:pr:write` | Covered |
-| Close a moot, duplicate, or byte-identical superseded PR | `merge-review/apply-verdict` | `github:pr:write` | Covered |
-| Merge a PR after all safety conjuncts hold | `merge-review/merge-pr` | `github:pr:merge` | Covered |
-| Watch an enqueued merge to a determined outcome | `merge-review/queue-watch` | `github:pr:merge` | Covered |
-| Route an evicted or timed-out queue entry to remediation | `merge-review/queue-watch` | `github:issues:write` | Covered |
-| Delete a merged head branch | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch` | `github:branch:delete` | Covered |
-| Close originating issues after merge | `merge-review/reconcile-post-merge`, `post-merge` | `github:issues:write` | Covered |
-| Fan out remediation to affected siblings | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
-| Demote a repeatedly refused lander | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
-| Update a clean behind-base PR through the provider API | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered |
-| Clear a completed remediation handoff | `pr-remediation/update-behind-pr`, `rebase-pr`, `push-remediated` | `github:issues:write` | Covered |
-| Rebase a PR branch | `pr-remediation/rebase-pr` | `repo:push` | Covered |
-| Rework a PR from reviewer findings | `pr-remediation/implement` | `repo:push` | Covered |
-| Publish a remediated PR branch | `pr-remediation/push-remediated` | `repo:push` | Covered |
-| Respond to every original finding | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
-| Escalate a non-converging or rejected remediation | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
+| Claim eligible backlog items and reconcile claim labels (`claim-backlog-items`) | `backlog-curation/query-backlog`, `implementation/query-backlog` | `github:issues:write` | Covered |
+| Release the provider-visible claim (`release-backlog-claim`) | `backlog-curation/release-claim` | `github:issues:write` | Covered |
+| Close a duplicate, obsolete, or configured-stale issue (`close-issue`) | `backlog-curation/curate` | `github:issues:write` | Covered |
+| Post explanatory or evidence comments (`comment-on-issue`) | `backlog-curation/curate`, `work-nomination/nominate` | `github:issues:write` | Covered |
+| Create a split child or nominated issue (`create-issue`) | `backlog-curation/curate`, `work-nomination/nominate` | `github:issues:write` | Covered |
+| Edit a split parent into a tracking issue (`edit-issue`) | `backlog-curation/curate` | `github:issues:write` | Covered |
+| Apply curation or nomination labels (`label-issue`) | `backlog-curation/curate`, `work-nomination/nominate` | `github:issues:write` | Covered |
+| Self-approve a nominated issue (`approve-issue`) | `work-nomination/nominate` (conditional persona action) | `github:issues:approve` | Capability-gated; disabled in the shipped task |
+| Modify and commit a worktree (`modify-repository`) | `implementation/implement`, `pr-remediation/implement`, `tutor/draft-change` | `repo:push` | Covered |
+| Push a run branch (`push-repository-branch`) | `implementation/push-branch`, `tutor/push-branch` | `repo:push` | Covered |
+| Open or update a PR (`open-or-update-pr`) | `implementation/open-pr`, `tutor/open-pr` | `github:pr:write` | Covered |
+| Comment on and update the driving issue's status (`update-issue`) | `implementation/close-out`, `park-escalated`, `park-needs-human` | `github:issues:write` | Covered |
+| Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
+| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation (`route-verdict`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` | Covered |
+| Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` | Covered |
+| Route an evicted or timed-out queue entry to remediation (`route-queue-outcome`) | `merge-review/queue-watch` | `github:issues:write` | Covered |
+| Delete a merged head branch (`delete-branch`) | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch` | `github:branch:delete` | Covered |
+| Close originating issues after merge (`close-issues`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:issues:write` | Covered |
+| Fan out remediation to affected siblings (`fan-out-remediation`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
+| Record a merge refusal at the current head (`record-merge-refusal`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
+| Demote a repeatedly refused lander (`demote-pr`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
+| Update a clean behind-base PR through the provider API (`update-pr-branch`) | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered |
+| Clear a completed remediation handoff (`clear-remediation`) | `pr-remediation/update-behind-pr`, `rebase-pr`, `push-remediated` | `github:issues:write` | Covered |
+| Rebase a PR branch (`rebase-pr`) | `pr-remediation/rebase-pr` | `repo:push` | Covered |
+| Rework a PR from reviewer findings (`rework-pr`) | `pr-remediation/implement` | `repo:push` | Covered |
+| Record remediation progress or cycle exhaustion (`record-remediation-checkpoint`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
+| Publish a remediated PR branch (`push-pr-branch`) | `pr-remediation/push-remediated` | `repo:push` | Covered |
+| Respond to every original finding (`respond-to-findings`) | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
+| Escalate a non-converging or rejected remediation (`escalate-pr`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
 | Retarget a PR | Not present in the shipped policy/persona/verdict vocabulary | — | Not prescribed |
 
 ## Known gaps (prescriptive)

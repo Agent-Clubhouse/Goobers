@@ -129,7 +129,7 @@
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "policyActions": {
-          "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Compiler admission requires each action's canonical capability.",
+          "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Agentic tasks must include every unconditional action declared by their referenced goober, and compiler admission requires each action's canonical capability.",
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }

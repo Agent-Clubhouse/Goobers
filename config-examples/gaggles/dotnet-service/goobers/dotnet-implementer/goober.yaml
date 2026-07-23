@@ -14,6 +14,8 @@ spec:
   # stack-agnostic deterministic stages, unchanged from the Go/web gaggles).
   capabilities:
     - repo:push
+  policyActions:
+    - modify-repository
   skills:
     - implement
     - run-tests

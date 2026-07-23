@@ -57,6 +57,8 @@ spec:
         # Same open-PR eligibility backstop as implementation.yaml's
         # query-backlog (issue #414).
         - github:pr:write
+      policyActions:
+        - claim-backlog-items
       expectedOutputs:
         - claimed-items
       next: curate
@@ -72,6 +74,12 @@ spec:
         goobers:needs-human. Explain every action in a comment on the item.
       capabilities:
         - github:issues:write
+      policyActions:
+        - close-issue
+        - comment-on-issue
+        - create-issue
+        - edit-issue
+        - label-issue
       # No structured output: per-item outcomes are posted as issue comments,
       # and a result's `outputs` are scalar-only (#302). The scalar `summary`
       # in the result envelope carries the run's counts.
@@ -94,4 +102,6 @@ spec:
         command: ["goobers", "backlog-query", "--release"]
       capabilities:
         - github:issues:write
+      policyActions:
+        - release-backlog-claim
       # Terminal: no `next`.

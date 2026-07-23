@@ -309,6 +309,8 @@ spec:
                         actions this task may perform because a policy, persona, or verdict
                         prescribes them. The compiler maps each action to its required credential
                         capabilities and fails closed when the task does not declare every grant.
+                        Agentic tasks must include every unconditional action declared by their
+                        referenced goober's persona.
                         Known policy-bearing built-in commands must declare their complete action
                         set so policy changes cannot silently outrun capability admission.
                       items:
