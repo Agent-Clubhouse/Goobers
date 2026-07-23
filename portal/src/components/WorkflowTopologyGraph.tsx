@@ -30,6 +30,7 @@ export function WorkflowTopologyGraph({
   selectedStageId,
   nodeStates,
   stateSeq,
+  causalNodeId,
 }: {
   graph: WorkflowGraph;
   onSelectStage: (stageId: string) => void;
@@ -38,6 +39,8 @@ export function WorkflowTopologyGraph({
   // as-of-sequence run state and the executed path is emphasized (DASH-19).
   nodeStates?: Record<string, RunNodeState>;
   stateSeq?: number;
+  // The single node the authoritative escalation cause points at (DASH-21).
+  causalNodeId?: string;
 }) {
   const layout = useMemo(() => layoutWorkflowGraph(graph), [graph]);
   const markerId = `workflow-arrow-${useId().replaceAll(":", "")}`;
@@ -294,9 +297,10 @@ export function WorkflowTopologyGraph({
               // In a live run overlay the label is concise and state-first
               // ("review, gate, Running at sequence 6"); on the definition page
               // it stays the richer configured-topology label.
+              const causalSuffix = causalNodeId === node.id ? ", escalation cause" : "";
               const ariaLabel = runState
-                ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}`
-                : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured`;
+                ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}${causalSuffix}`
+                : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured${causalSuffix}`;
               return (
                 <button
                   aria-label={ariaLabel}
@@ -305,11 +309,13 @@ export function WorkflowTopologyGraph({
                     "workflow-graph-node",
                     `workflow-node-${node.kind}`,
                     runState ? `run-node-state-${runState}` : "",
+                    causalNodeId === node.id ? "run-node-causal" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                   data-node-kind={node.kind}
                   data-run-state={runState}
+                  data-causal={causalNodeId === node.id ? "true" : undefined}
                   key={node.id}
                   onClick={() => onSelectStage(node.id)}
                   onKeyDown={(event) => {

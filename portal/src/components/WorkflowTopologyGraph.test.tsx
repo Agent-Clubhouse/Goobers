@@ -228,3 +228,34 @@ function terminalGraph(): WorkflowGraph {
     ],
   };
 }
+
+describe("workflow topology graph escalation cause (DASH-21)", () => {
+  const graph: WorkflowGraph = {
+    name: "impl",
+    version: 1,
+    digest: "sha256:x",
+    start: "implement",
+    nodes: [
+      { id: "implement", kind: "agentic", owner: "core/impl" },
+      { id: "review", kind: "gate", evaluator: "agentic" },
+    ],
+    edges: [{ source: "implement", target: "review" }],
+  };
+
+  it("marks the causal node by class and accessible label, not color alone", () => {
+    render(
+      <WorkflowTopologyGraph
+        causalNodeId="review"
+        graph={graph}
+        nodeStates={{ implement: "completed", review: "escalated" }}
+        onSelectStage={() => {}}
+        stateSeq={9}
+      />,
+    );
+    const causal = screen.getByRole("button", { name: /review, gate, Escalated at sequence 9, escalation cause/ });
+    expect(causal).toHaveClass("run-node-causal");
+    expect(
+      screen.getByRole("button", { name: /implement, agentic, Completed at sequence 9$/ }),
+    ).not.toHaveClass("run-node-causal");
+  });
+});

@@ -2803,6 +2803,15 @@ a.telemetry-error-row:hover {
   color: var(--muted);
 }
 
+/* The single node the authoritative escalation cause points at (DASH-21).
+   Emphasis is an outline + ring plus the node's "escalation cause" label, so it
+   reads without relying on color. */
+.workflow-graph-node.run-node-causal {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--danger-soft);
+}
+
 /* The declared-but-untraversed edges recede so the executed path reads first. */
 .workflow-graph-edge-declared {
   opacity: 0.3;

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
+import { EscalationPanel } from "../components/EscalationPanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
@@ -121,6 +122,14 @@ function RunDetailWorkspace({
     setFollowingLatest(seq === initialSeq);
   };
 
+  const causalEventSeq = run.escalation?.causalEventSeq;
+  const causalEvent =
+    causalEventSeq === undefined ? undefined : events.find((event) => event.seq === causalEventSeq);
+  const causalNodeId =
+    causalEventSeq === undefined ? undefined : eventNodeAtSequence(events, causalEventSeq);
+  const focusCausalEvent =
+    causalEventSeq === undefined ? undefined : () => replaySeek(causalEventSeq);
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -180,6 +189,14 @@ function RunDetailWorkspace({
         </dl>
       </header>
 
+      {run.escalation && (
+        <EscalationPanel
+          causalEvent={causalEvent}
+          escalation={run.escalation}
+          onFocusCausalEvent={focusCausalEvent}
+        />
+      )}
+
       <section
         className="run-detail-workspace"
         data-responsive-layout="stack-under-820"
@@ -194,6 +211,7 @@ function RunDetailWorkspace({
         >
           {run.graphStatus === "pinned" && run.graph ? (
             <WorkflowTopologyGraph
+              causalNodeId={causalNodeId}
               graph={run.graph}
               nodeStates={nodeStates}
               onSelectStage={setSelectedNodeId}
