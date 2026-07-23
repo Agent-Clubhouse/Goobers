@@ -53,6 +53,26 @@ type terminalScenario struct {
 	wantPhase      journal.RunPhase
 }
 
+type valueHandoffContract struct {
+	workflow       string
+	producer       string
+	producerOutput string
+	consumer       string
+	consumerInput  string
+	consumerOutput string
+	expectedValue  any
+}
+
+var requiredValueHandoffs = []valueHandoffContract{{
+	workflow:       "merge-review",
+	producer:       "pr-select",
+	producerOutput: "number",
+	consumer:       "gather-sibling-context",
+	consumerInput:  "selectedNumber",
+	consumerOutput: "selectedNumber",
+	expectedValue:  contractNumber,
+}}
+
 func TestShippedWorkflowCommandHelper(t *testing.T) {
 	if os.Getenv(contractHelperMode) == "" {
 		return
@@ -158,6 +178,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 								t.Fatalf("%s: workflow %q read journal events: %v", source, key, err)
 							}
 							assertJournalScenario(t, definition, events, scenario)
+							assertRequiredValueHandoffs(t, definition.Name, events)
 							state, err := reader.State()
 							if err != nil {
 								t.Fatalf("%s: workflow %q read journal state: %v", source, key, err)
@@ -265,6 +286,7 @@ func assertStaticStageContracts(t *testing.T, source string, def workflow.Defini
 		{name: "output", problems: workflow.CheckStageContractWarnings(def)},
 		{name: "required-input", problems: workflow.CheckStageRequiredInputs(def)},
 		{name: "gate-output", problems: gateOutputContractProblems(def)},
+		{name: "required-value-handoff", problems: requiredValueHandoffProblems(def)},
 	}
 	for _, check := range checks {
 		if len(check.problems) > 0 {
@@ -293,6 +315,49 @@ func gateOutputContractProblems(def workflow.Definition) []string {
 			"task %q feeds gate %q check %q from output %q, but expectedOutputs does not declare it; the wired fake emits only declared outputs, so this path cannot produce the requested gate outcome",
 			task.Name, gateDefinition.Name, gateDefinition.Automated.Check, key,
 		))
+	}
+	return problems
+}
+
+func requiredValueHandoffProblems(def workflow.Definition) []string {
+	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
+	for _, task := range def.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	var problems []string
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != def.Name {
+			continue
+		}
+		consumer, ok := tasks[contract.consumer]
+		if !ok {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s has no consumer task %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput, contract.consumer,
+			))
+			continue
+		}
+		output, ok := consumer.InputsFrom[contract.consumerInput]
+		if !ok {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s is missing inputsFrom mapping %q: %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerInput, contract.producerOutput,
+			))
+		} else if output != contract.producerOutput {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s maps output %q, want %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				output, contract.producerOutput,
+			))
+		}
+		if !contains(consumer.ExpectedOutputs, contract.consumerOutput) {
+			problems = append(problems, fmt.Sprintf(
+				"required value handoff %s.%s -> %s.%s cannot be observed: task %q does not declare expected output %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumer, contract.consumerOutput,
+			))
+		}
 	}
 	return problems
 }
@@ -344,6 +409,39 @@ func TestGateOutputContractNamesMissingExpectedOutput(t *testing.T) {
 		!strings.Contains(problems[0], `gate "published-verdict"`) ||
 		!strings.Contains(problems[0], `output "decision"`) {
 		t.Fatalf("gate output problems = %v, want producer, consumer, and missing output", problems)
+	}
+}
+
+func TestRequiredValueHandoffNamesMissingOrMisthreadedMapping(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		inputsFrom map[string]string
+		want       string
+	}{
+		{name: "missing", want: `is missing inputsFrom mapping "selectedNumber": "number"`},
+		{
+			name:       "misthreaded",
+			inputsFrom: map[string]string{"selectedNumber": "head"},
+			want:       `maps output "head", want "number"`,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			def := workflow.Definition{Name: "merge-review", Spec: apiv1.WorkflowSpec{
+				Tasks: []apiv1.Task{{
+					Name:            "gather-sibling-context",
+					InputsFrom:      test.inputsFrom,
+					ExpectedOutputs: []string{"selectedNumber"},
+				}},
+			}}
+			problems := requiredValueHandoffProblems(def)
+			if len(problems) != 1 || !strings.Contains(problems[0], test.want) {
+				t.Fatalf("required value handoff problems = %v, want one containing %q", problems, test.want)
+			}
+		})
 	}
 }
 
@@ -590,6 +688,37 @@ func assertJournalScenario(t *testing.T, definition apiv1.Workflow, events []jou
 	}
 }
 
+func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []journal.Event) {
+	t.Helper()
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != workflowName {
+			continue
+		}
+		var source, destination any
+		var sourceFound, destinationFound bool
+		for _, event := range events {
+			if event.Type != journal.EventStageFinished {
+				continue
+			}
+			switch event.Stage {
+			case contract.producer:
+				source, sourceFound = event.Outputs[contract.producerOutput]
+			case contract.consumer:
+				destination, destinationFound = event.Outputs[contract.consumerOutput]
+			}
+		}
+		if !sourceFound || !destinationFound ||
+			!reflect.DeepEqual(source, contract.expectedValue) ||
+			!reflect.DeepEqual(destination, source) {
+			t.Fatalf(
+				"required value handoff %s.%s -> %s.%s = source(%T %v), destination(%T %v), want %T(%v) at both ends",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				source, source, destination, destination, contract.expectedValue, contract.expectedValue,
+			)
+		}
+	}
+}
+
 type scenarioScript struct {
 	definition apiv1.Workflow
 	scenario   terminalScenario
@@ -667,6 +796,9 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (sta
 		return stageScript{}, err
 	}
 	outputs := expectedOutputs(task)
+	if err := s.threadRequiredValueHandoffs(task, inputs, outputs); err != nil {
+		return stageScript{}, err
+	}
 	if stage == s.scenario.escalationTask {
 		return failedStage(outputs, "ISSUE_OVER_SCOPE"), nil
 	}
@@ -689,6 +821,31 @@ func validateThreadedInputs(task apiv1.Task, inputs map[string]any) error {
 		if _, ok := inputs[inputKey]; !ok {
 			return fmt.Errorf("task %q inputsFrom %q did not resolve upstream output %q", task.Name, inputKey, outputKey)
 		}
+	}
+	return nil
+}
+
+func (s *scenarioScript) threadRequiredValueHandoffs(task apiv1.Task, inputs, outputs map[string]any) error {
+	for _, contract := range requiredValueHandoffs {
+		if contract.workflow != s.definition.Name || contract.consumer != task.Name {
+			continue
+		}
+		value, ok := inputs[contract.consumerInput]
+		if !ok {
+			return fmt.Errorf(
+				"required value handoff %s.%s -> %s.%s did not resolve input %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerInput,
+			)
+		}
+		if _, ok := outputs[contract.consumerOutput]; !ok {
+			return fmt.Errorf(
+				"required value handoff %s.%s -> %s.%s cannot emit undeclared output %q",
+				contract.producer, contract.producerOutput, contract.consumer, contract.consumerInput,
+				contract.consumerOutput,
+			)
+		}
+		outputs[contract.consumerOutput] = value
 	}
 	return nil
 }
@@ -854,6 +1011,9 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 			Status:  apiv1.ResultSuccess,
 			Summary: "scripted fake-harness completion",
 			Outputs: expectedOutputs(task),
+		}
+		if err := s.threadRequiredValueHandoffs(task, request.Envelope.Inputs, result.Outputs); err != nil {
+			return err
 		}
 		if stage == s.scenario.escalationTask {
 			result.Status = apiv1.ResultFailure
