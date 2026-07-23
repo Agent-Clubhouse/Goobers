@@ -59,7 +59,7 @@ type Config struct {
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
-	// Credentials sources individual capabilities from their own token refs,
+	// Credentials sources individual stage capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one
 	// capability at a distinct token; an entry for a capability the runner would
@@ -167,10 +167,8 @@ type TokenRef struct {
 	File string `json:"file,omitempty" yaml:"file,omitempty"`
 }
 
-// CredentialGrant sources one capability from its own token ref (#287). It is
-// the config surface for holding more than one token at a time and routing each
-// to the capability that needs it — e.g. agent:model → a personal Copilot
-// Requests PAT, separate from the repo token backing repo/issue/PR access.
+// CredentialGrant sources one stage capability from its own token ref (#287).
+// Runner-owned capabilities use their dedicated config surfaces instead.
 type CredentialGrant struct {
 	// Capability is the canonical capability string (internal/capability) this
 	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
@@ -499,6 +497,13 @@ func (c *Config) Validate() error {
 		// neither/both of env|file can never resolve.
 		if !capability.Known(cg.Capability) {
 			return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
+		}
+		if !capability.StageDeclarable(cg.Capability) {
+			return fmt.Errorf(
+				"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
+				i,
+				cg.Capability,
+			)
 		}
 		if seen[cg.Capability] {
 			return fmt.Errorf("credentials[%d]: capability %q is sourced more than once", i, cg.Capability)

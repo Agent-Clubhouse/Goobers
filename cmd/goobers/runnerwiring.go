@@ -305,6 +305,9 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 	// Per-capability credential refs (#287): each sources one capability from
 	// its own token, named distinctly so it never collides with a repo ref.
 	for _, cg := range cfg.Credentials {
+		if !capability.StageDeclarable(cg.Capability) {
+			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
+		}
 		refs = append(refs, credentials.TokenRef{
 			Name: credentialRefName(cg.Capability),
 			Env:  cg.Token.Env,
@@ -341,15 +344,18 @@ func buildGooberCredentialGrants(gooberName string, capabilities []string, sourc
 	}
 	grants := make([]credentials.Grant, 0, len(capabilities))
 	seen := make(map[string]bool, len(capabilities))
-	for _, capability := range capabilities {
-		if seen[capability] {
+	for _, cap := range capabilities {
+		if seen[cap] {
 			continue
 		}
-		seen[capability] = true
-		if ref, ok := refs[capability]; ok {
+		seen[cap] = true
+		if !capability.StageDeclarable(cap) {
+			continue
+		}
+		if ref, ok := refs[cap]; ok {
 			grants = append(grants, credentials.Grant{
 				Goober:     gooberName,
-				Capability: capability,
+				Capability: cap,
 				Ref:        ref,
 			})
 		}

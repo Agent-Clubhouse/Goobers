@@ -34,6 +34,18 @@ func TestAllHasNoDuplicates(t *testing.T) {
 	}
 }
 
+func TestConfigRepoReadIsKnownButRunnerOnly(t *testing.T) {
+	if !Known(string(ConfigRepoRead)) {
+		t.Fatal("configrepo:read is not in the canonical registry")
+	}
+	if StageDeclarable(string(ConfigRepoRead)) {
+		t.Fatal("configrepo:read must not be stage-declarable")
+	}
+	if !StageDeclarable(string(RepoRead)) {
+		t.Fatal("repo:read should remain stage-declarable")
+	}
+}
+
 func TestSuggestReturnsLikelyTypo(t *testing.T) {
 	got, ok := Suggest("github:prs:write")
 	if !ok || got != GitHubPRWrite {

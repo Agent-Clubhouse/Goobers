@@ -81,14 +81,17 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		repoPath = "/" + repoPath
 	}
 	repositoryURL := (&url.URL{Scheme: "file", Path: repoPath}).String()
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-source-token")
+	registrar := &gitSourceTestRegistrar{}
 
-	source, err := NewGitSource(GitSourceOptions{
-		InstanceRoot: instanceRoot,
-		Repository:   repositoryURL,
-		Ref:          "main",
-	})
+	source, err := NewWorkflowGitSource(instanceRoot, WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Ref:   "main",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, registrar)
 	if err != nil {
-		t.Fatalf("NewGitSource: %v", err)
+		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
 	if source.local || source.mirror == "" {
 		t.Fatalf("remote source = local %v, mirror %q", source.local, source.mirror)
@@ -99,6 +102,9 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertGitSourceTestFile(t, first, "config.txt", "remote-v1\n")
+	if len(registrar.values) != 1 || registrar.values[0] != "workflow-source-token" {
+		t.Fatalf("registered secrets after clone = %q, want workflow-source token", registrar.values)
+	}
 
 	if got := strings.TrimSpace(runGitSourceTest(t, "", "--git-dir="+source.mirror, "rev-parse", "--is-bare-repository")); got != "true" {
 		t.Fatalf("managed repository is bare = %q, want true", got)
@@ -123,6 +129,56 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		t.Fatalf("snapshot did not advance after remote main update: %s", second)
 	}
 	assertGitSourceTestFile(t, first, "config.txt", "remote-v1\n")
+	if len(registrar.values) != 2 || registrar.values[1] != "workflow-source-token" {
+		t.Fatalf("registered secrets after fetch = %q, want token resolved for each remote operation", registrar.values)
+	}
+}
+
+func TestWorkflowGitSourceFailsClosedWhenTokenDoesNotResolve(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "remote\n")
+	repoPath := filepath.ToSlash(repo)
+	if runtime.GOOS == "windows" {
+		repoPath = "/" + repoPath
+	}
+	repositoryURL := (&url.URL{Scheme: "file", Path: repoPath}).String()
+	t.Setenv("EMPTY_WORKFLOW_SOURCE_TOKEN", "")
+
+	source, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Token: &TokenRef{Env: "EMPTY_WORKFLOW_SOURCE_TOKEN"},
+	}, &gitSourceTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+	if _, err := source.Resolve(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "configrepo:read") ||
+		!strings.Contains(err.Error(), "empty value") {
+		t.Fatalf("Resolve error = %v, want fail-closed configrepo:read credential error", err)
+	}
+	if _, err := os.Stat(source.mirror); !os.IsNotExist(err) {
+		t.Fatalf("managed mirror exists after credential failure: %v", err)
+	}
+}
+
+func TestNewGitSourceRejectsRemoteWithoutCredentials(t *testing.T) {
+	_, err := NewGitSource(GitSourceOptions{
+		InstanceRoot: t.TempDir(),
+		Repository:   "https://example.com/workflow-config.git",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires configrepo:read credentials") {
+		t.Fatalf("NewGitSource error = %v, want remote credential requirement", err)
+	}
+}
+
+func TestGitSourceEnvExcludesAmbientCredentialRefs(t *testing.T) {
+	t.Setenv("CODE_REPO_TOKEN", "code-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-token")
+	for _, entry := range gitSourceEnv() {
+		if strings.HasPrefix(entry, "CODE_REPO_TOKEN=") || strings.HasPrefix(entry, "WORKFLOW_SOURCE_TOKEN=") {
+			t.Fatalf("git source inherited credential ref: %s", entry)
+		}
+	}
 }
 
 func TestGitSourcePreservesCommittedBlobsWithArchiveAttributes(t *testing.T) {
@@ -232,4 +288,12 @@ func runGitSourceTest(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return string(output)
+}
+
+type gitSourceTestRegistrar struct {
+	values []string
+}
+
+func (r *gitSourceTestRegistrar) Register(secret []byte) {
+	r.values = append(r.values, string(secret))
 }

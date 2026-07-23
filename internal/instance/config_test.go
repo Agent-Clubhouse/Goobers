@@ -232,6 +232,17 @@ func TestWorkflowSourceValidation(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsConfigRepoReadInStageCredentials(t *testing.T) {
+	cfg := Config{Credentials: []CredentialGrant{{
+		Capability: "configrepo:read",
+		Token:      TokenRef{Env: "CD_PAT"},
+	}}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `capability "configrepo:read" is runner-owned`) {
+		t.Fatalf("Validate error = %v, want runner-owned credential rejection", err)
+	}
+}
+
 func TestLoadConfigRejectsInlineWorkflowSourceToken(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

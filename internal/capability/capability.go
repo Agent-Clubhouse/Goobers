@@ -1,5 +1,5 @@
 // Package capability is the canonical registry of capability strings a Goober
-// may grant and a Task/Gate may declare use of (ARCHITECTURE.md §5,
+// stage or a dedicated runner component may hold (ARCHITECTURE.md §5,
 // SEC-042/SEC-044). It is the single source of truth the DSL compiler
 // validates declarations against (internal/workflow), and that other
 // capability-scoped seams — the credential injector (internal/credentials),
@@ -17,17 +17,15 @@
 // depend on it without pulling in anything heavier.
 package capability
 
-// Capability identifies a scoped grant a goober may hold and a task or gate
-// may declare use of. The dotted "resource:verb" shape mirrors provider/
-// credential capability strings already in use (ARCHITECTURE.md §5).
+// Capability identifies a scoped grant a stage or dedicated runner component
+// may hold. The dotted "resource:verb" shape mirrors provider/credential
+// capability strings already in use (ARCHITECTURE.md §5).
 type Capability string
 
-// The canonical V0 capability set — every capability string that actually
-// appears in a shipped or example workflow/goober definition
-// (internal/workflow/testdata/shipped, config-examples/). Add new entries
-// here first; the compiler rejects anything not listed (WithGoobers-gated
-// admission, internal/workflow/compile.go), so a definition can never drift
-// ahead of this registry.
+// The canonical V0 capability set. Add new entries here first; the compiler
+// rejects anything not listed (WithGoobers-gated admission,
+// internal/workflow/compile.go), so a definition can never drift ahead of this
+// registry. Runner-only entries must also be excluded by StageDeclarable.
 const (
 	// RepoRead grants a read-only checkout of the target repository's per-stage
 	// worktree — no push. Added for the work-nomination workflow (issue #26):
@@ -36,6 +34,10 @@ const (
 	RepoRead Capability = "repo:read"
 	// RepoPush grants `git push` to the target repository's per-stage worktree.
 	RepoPush Capability = "repo:push"
+	// ConfigRepoRead grants the daemon's workflow-config source read access to
+	// its repository. It is runner-only: workflow stages and goobers cannot
+	// declare it, and its credential never comes from a target repository.
+	ConfigRepoRead Capability = "configrepo:read"
 	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
 	// comment operations (the backlog-curation and work-nomination workflows'
 	// surface). It does not grant the trust decision represented by
@@ -95,7 +97,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{RepoRead, RepoPush, ConfigRepoRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.
@@ -106,6 +108,13 @@ func Known(s string) bool {
 		}
 	}
 	return false
+}
+
+// StageDeclarable reports whether s is a canonical capability that workflow
+// tasks and goobers may declare. Runner-owned capabilities stay in the same
+// canonical registry but are admitted only by their dedicated runner consumer.
+func StageDeclarable(s string) bool {
+	return Known(s) && s != string(ConfigRepoRead)
 }
 
 // Suggest returns the closest canonical capability for a likely typo.

@@ -14,12 +14,24 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/procenv"
 )
 
 const (
-	defaultGitSourceRef = "main"
-	configSourcesDir    = "config-sources"
+	defaultGitSourceRef         = "main"
+	configSourcesDir            = "config-sources"
+	workflowSourceCredentialRef = "workflow-source"
 )
+
+// GitTokenSource supplies the credential for remote config-source Git
+// operations. The workflow-source constructor below narrows this to the
+// dedicated configrepo:read grant.
+type GitTokenSource interface {
+	Token(context.Context) (string, error)
+}
 
 // GitSourceOptions identifies a Git-backed workflow configuration source.
 type GitSourceOptions struct {
@@ -29,6 +41,9 @@ type GitSourceOptions struct {
 	Repository string
 	// Ref is the branch to track. Empty defaults to main.
 	Ref string
+	// TokenSource is required for a remote repository and must be nil for a
+	// local repository.
+	TokenSource GitTokenSource
 }
 
 // GitSource reads workflow configuration from the committed tree of a branch.
@@ -40,6 +55,8 @@ type GitSource struct {
 	local         bool
 	repositoryDir string
 	mirror        string
+	tokenSource   GitTokenSource
+	askpass       string
 
 	mu sync.Mutex
 }
@@ -102,8 +119,74 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 
 	if !local {
 		source.mirror = filepath.Join(repositoryDir, "repo.git")
+		if opts.TokenSource == nil {
+			return nil, errors.New("git config source: remote repository requires configrepo:read credentials")
+		}
+		source.tokenSource = opts.TokenSource
+		source.askpass, err = credentials.WriteAskpassScript(filepath.Join(repositoryDir, "auth"))
+		if err != nil {
+			return nil, fmt.Errorf("git config source: prepare authentication: %w", err)
+		}
+	} else if opts.TokenSource != nil {
+		return nil, errors.New("git config source: local repository must not configure credentials")
 	}
 	return source, nil
+}
+
+// NewWorkflowGitSource constructs a Git source from instance.yaml's
+// workflowSource block. Remote authentication is isolated behind a dedicated
+// configrepo:read grant backed only by workflowSource.token.
+func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar credentials.SecretRegistrar) (*GitSource, error) {
+	if err := source.Validate(); err != nil {
+		return nil, fmt.Errorf("git config source: workflowSource: %w", err)
+	}
+	if source.Kind != WorkflowSourceKindGit {
+		return nil, fmt.Errorf("git config source: workflowSource kind must be %q", WorkflowSourceKindGit)
+	}
+
+	repository := source.Path
+	var tokenSource GitTokenSource
+	if source.URL != "" {
+		if registrar == nil {
+			return nil, errors.New("git config source: remote workflow source requires a secret registrar")
+		}
+		repository = source.URL
+		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+			Name: workflowSourceCredentialRef,
+			Env:  source.Token.Env,
+			File: source.Token.File,
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("git config source: build workflow-source resolver: %w", err)
+		}
+		injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+			Capability: string(capability.ConfigRepoRead),
+			Ref:        workflowSourceCredentialRef,
+		}}, registrar)
+		if err != nil {
+			return nil, fmt.Errorf("git config source: build workflow-source grant: %w", err)
+		}
+		tokenSource = &workflowSourceTokenSource{injector: injector}
+	}
+
+	return NewGitSource(GitSourceOptions{
+		InstanceRoot: instanceRoot,
+		Repository:   repository,
+		Ref:          source.Ref,
+		TokenSource:  tokenSource,
+	})
+}
+
+type workflowSourceTokenSource struct {
+	injector *credentials.Injector
+}
+
+func (s *workflowSourceTokenSource) Token(ctx context.Context) (string, error) {
+	set, err := s.injector.Materialize(ctx, []string{string(capability.ConfigRepoRead)})
+	if err != nil {
+		return "", err
+	}
+	return set.Token(ctx, string(capability.ConfigRepoRead))
 }
 
 // Resolve fetches the source when needed and returns an immutable materialized
@@ -205,7 +288,7 @@ func (s *GitSource) refreshMirror(ctx context.Context) error {
 	case err != nil:
 		return fmt.Errorf("git config source: inspect managed mirror: %w", err)
 	default:
-		if _, err := s.gitOutput(
+		if _, err := s.remoteGitOutput(
 			ctx,
 			"fetch managed mirror",
 			"--git-dir="+s.mirror,
@@ -231,7 +314,7 @@ func (s *GitSource) cloneMirror(ctx context.Context) error {
 	defer func() { _ = os.RemoveAll(staging) }()
 
 	stagedMirror := filepath.Join(staging, "repo.git")
-	if _, err := s.gitOutput(
+	if _, err := s.remoteGitOutput(
 		ctx,
 		"clone managed mirror",
 		"clone",
@@ -404,8 +487,26 @@ func validateGitSymlink(name, target string) error {
 }
 
 func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...string) ([]byte, error) {
+	return s.gitOutputWithEnv(ctx, operation, gitSourceEnv(), args...)
+}
+
+func (s *GitSource) remoteGitOutput(ctx context.Context, operation string, args ...string) ([]byte, error) {
+	token, err := s.tokenSource.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s credential: %w", capability.ConfigRepoRead, err)
+	}
+	env := append(gitSourceEnv(), credentials.GitEnv(s.askpass, token)...)
+	args = append([]string{
+		"-c", "credential.helper=",
+		"-c", "credential.interactive=never",
+		"-c", "http.extraHeader=",
+	}, args...)
+	return s.gitOutputWithEnv(ctx, operation, env, args...)
+}
+
+func (s *GitSource) gitOutputWithEnv(ctx context.Context, operation string, env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = gitSourceEnv()
+	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -416,7 +517,7 @@ func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...str
 }
 
 func gitSourceEnv() []string {
-	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1")
+	return append(procenv.BaseEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1")
 }
 
 func (s *GitSource) commandError(operation string, cause error, stderr string) error {
