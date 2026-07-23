@@ -511,6 +511,17 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		runID + ":ci-poll":   {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"ciStatus": "passing"}},
 		runID + ":close-out": {status: apiv1.ResultSuccess},
 	}
+	want := []string{"query-backlog"}
+	if _, ok := machine.Task("gather-implement-context"); ok {
+		byTask[runID+":gather-implement-context"] = stubTaskResult{
+			status:            apiv1.ResultSuccess,
+			artifactName:      "implementation-context.json",
+			artifactData:      []byte(`{"reviewerVerdictTaxonomy":{},"hotFileMap":{}}`),
+			artifactMediaType: "application/json",
+		}
+		want = append(want, "gather-implement-context")
+	}
+	want = append(want, "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out")
 
 	record := func(env apiv1.InvocationEnvelope) {
 		_, stage, _ := strings.Cut(env.TaskID, ":")
@@ -549,7 +560,6 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
