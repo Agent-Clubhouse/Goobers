@@ -657,10 +657,13 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // resumeContext identifies a task attempt that was in flight when the runner
 // stopped. Its original class is retained so a human rerun's start/finish audit
 // pair remains matched; ordinary crash recovery still closes it as infra.
+// recorded is true after a second crash finds that closure already journaled
+// but the replacement attempt not yet started.
 type resumeContext struct {
-	stage   string
-	attempt int
-	class   journal.AttemptClass
+	stage    string
+	attempt  int
+	class    journal.AttemptClass
+	recorded bool
 }
 
 const (
@@ -870,13 +873,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// terminal now. Preserve a human rerun's class for an auditable
 				// matched start/finish; ordinary crash recovery remains infra-
 				// tagged. The next dispatch advances the attempt count.
-				if err := jr.Append(journal.Event{
-					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
-					Status: string(apiv1.ResultFailure),
-					Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
-					Runner: map[string]any{interruptedAttemptMarkerKey: true},
-				}); err != nil {
-					return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
+				if !resume.recorded {
+					if err := jr.Append(journal.Event{
+						Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
+						Status: string(apiv1.ResultFailure),
+						Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
+						Runner: map[string]any{interruptedAttemptMarkerKey: true},
+					}); err != nil {
+						return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
+					}
 				}
 				startAttempt = int32(resume.attempt) + 1
 				if rerun != nil && rerun.stage == t.Name {
@@ -980,44 +985,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				state = retryTarget
 				continue
 			}
-			if reason, ok := terminalGateNotificationReason(gr); ok {
-				notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason)
-				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
-					return stalledResult, stalledErr
-				}
-				if notifyErr != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, notifyErr)
-				}
+			next, res, advance, oerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item, gr, lastStage, lastResult, steps)
+			if oerr != nil {
+				return res, oerr
 			}
-			switch gr.Target {
-			case workflow.TargetAbort:
-				return r.finish(in.RunID, jr, journal.PhaseAborted, g.Name, steps)
-			case workflow.TargetEscalate:
-				return r.finish(in.RunID, jr, journal.PhaseEscalated, g.Name, steps)
-			case workflow.TerminalComplete:
-				// #849: a gate can route a stage that reported ResultFailure
-				// into a terminal-complete branch, and two very different
-				// things look alike here:
-				//   - merge-review's merge-gate: merge-pr ERRORED, its
-				//     land-outcome check found no landOutcome → "fail" → ""
-				//     (complete). The failure dead-ended unresolved, yet the
-				//     run reported `completed` — the 23/23 merge-pr masking
-				//     that hid the merge blocker for four rounds.
-				//   - the implement→review loop: implement reported failure,
-				//     but the reviewer evaluated the actual diff and PASSED it
-				//     → "pass" → complete. The gate affirmatively cleared the
-				//     failure; the run legitimately completed.
-				// The discriminator is the gate's own outcome: a non-pass
-				// outcome reaching complete while still carrying a ResultFailure
-				// is unresolved → fail the run with the stage's own cause; a
-				// pass outcome resolved it → complete. A designed negative
-				// outcome (merge-pr's exit-0 `reasons` refusal, ci-poll's
-				// status output) is a ResultSuccess and never trips this.
-				subject, _ := in.Machine.Task(lastStage)
-				if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
-					return r.finishStageFailure(ctx, in.RunID, jr, in.RepoRef, lastStage, steps, lastResult.Error)
-				}
-				return r.finish(in.RunID, jr, journal.PhaseCompleted, g.Name, steps)
+			if !advance {
+				return res, nil
 			}
 			if gr.VerdictArtifact != nil {
 				// #412: the next dispatch — a repass back to the stage that
@@ -1031,11 +1004,44 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// for lack of anything new to act on.
 				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
 			}
-			state = gr.Target
+			state = next
 			continue
 		}
 
 		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
+	}
+}
+
+func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID string, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, lastStage string, lastResult apiv1.ResultEnvelope, steps int) (string, Result, bool, error) {
+	if reason, ok := terminalGateNotificationReason(gr); ok {
+		notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, runID, repoRef, item, gr, reason)
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, gr.Gate, steps); stalled {
+			return "", stalledResult, false, stalledErr
+		}
+		if notifyErr != nil {
+			res, err := r.failTerminal(ctx, runID, jr, repoRef, gr.Gate, steps, notifyErr)
+			return "", res, false, err
+		}
+	}
+	switch gr.Target {
+	case workflow.TargetAbort:
+		res, err := r.finish(runID, jr, journal.PhaseAborted, gr.Gate, steps)
+		return "", res, false, err
+	case workflow.TargetEscalate:
+		res, err := r.finish(runID, jr, journal.PhaseEscalated, gr.Gate, steps)
+		return "", res, false, err
+	case workflow.TerminalComplete:
+		// #849: a non-pass gate must not hide an unresolved stage failure,
+		// while a passing gate has affirmatively cleared that same result.
+		subject, _ := machine.Task(lastStage)
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
+			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
+			return "", res, false, err
+		}
+		res, err := r.finish(runID, jr, journal.PhaseCompleted, gr.Gate, steps)
+		return "", res, false, err
+	default:
+		return gr.Target, Result{}, true, nil
 	}
 }
 
@@ -2055,6 +2061,10 @@ func routeRetryDecision(jr *journal.Run, result gate.Result, stage string, subje
 	case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
 		return "", false, nil
 	}
+	// Append checkpoints the machine state after fsyncing the annotation. Resume
+	// also recovers the target from gate.evaluated if a crash lands between the
+	// verdict and this append, or between this append's fsync and checkpoint.
+	jr.SetMachineState(result.Target)
 	if err := jr.Append(journal.Event{
 		Type:  journal.EventRunnerAnnotation,
 		Stage: stage,

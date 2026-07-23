@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
@@ -100,6 +101,21 @@ type conflictRemediatingDeterministic struct {
 	runDir            string
 	implementAttempts int
 	localCIAttempts   int
+}
+
+type successfulRetryDeterministic struct {
+	implementAttempts int
+	localCIAttempts   int
+}
+
+func (d *successfulRetryDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	switch {
+	case strings.HasSuffix(env.TaskID, ":implement"):
+		d.implementAttempts++
+	case strings.HasSuffix(env.TaskID, ":local-ci"):
+		d.localCIAttempts++
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
 type countingAutomated struct {
@@ -258,6 +274,53 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func conflictRetryMachine(t *testing.T, statusEquals, retryTarget string, localCIMaxAttempts int) *workflow.Machine {
+	t.Helper()
+	var gateParams map[string]string
+	if statusEquals != "" {
+		gateParams = map[string]string{"equals": statusEquals}
+	}
+	if retryTarget == "" {
+		retryTarget = "implement"
+	}
+	localCI := apiv1.Task{
+		Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "test",
+		Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, Next: "local-gate",
+	}
+	if localCIMaxAttempts > 0 {
+		localCI.Retry = &apiv1.RetryPolicy{MaxAttempts: int32(localCIMaxAttempts)}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "implementation",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web",
+			Start:  "implement",
+			Tasks: []apiv1.Task{
+				{
+					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci",
+				},
+				localCI,
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "local-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: gateParams},
+				Branches: map[string]string{
+					"pass":                  workflow.TerminalComplete,
+					"fail":                  retryTarget,
+					workflow.BranchEscalate: workflow.TargetEscalate,
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	return machine
+}
+
 func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -314,41 +377,7 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 			runID := "run-sync-conflict-" + tt.name
 			deterministic.runDir = filepath.Join(runsDir, runID)
 			repo.runDir = deterministic.runDir
-			var gateParams map[string]string
-			if tt.statusEquals != "" {
-				gateParams = map[string]string{"equals": tt.statusEquals}
-			}
-			machine, err := workflow.Compile(workflow.Definition{
-				Name:    "implementation",
-				Version: 1,
-				Spec: apiv1.WorkflowSpec{
-					Gaggle: "acme-web",
-					Start:  "implement",
-					Tasks: []apiv1.Task{
-						{
-							Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
-							Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci",
-						},
-						{
-							Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "test",
-							Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, Next: "local-gate",
-						},
-					},
-					Gates: []apiv1.Gate{{
-						Name:      "local-gate",
-						Evaluator: apiv1.EvaluatorAutomated,
-						Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: gateParams},
-						Branches: map[string]string{
-							"pass":                  workflow.TerminalComplete,
-							"fail":                  "implement",
-							workflow.BranchEscalate: workflow.TargetEscalate,
-						},
-					}},
-				},
-			}, workflow.WithPreviewFeatures(true))
-			if err != nil {
-				t.Fatalf("compile workflow: %v", err)
-			}
+			machine := conflictRetryMachine(t, tt.statusEquals, "implement", 0)
 
 			result, err := r.Start(context.Background(), StartInput{
 				RunID:   runID,
@@ -422,6 +451,196 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 				if retryAttempts[i] != tt.wantRetryAttempts[i] {
 					t.Fatalf("journaled retry attempts = %v, want %v", retryAttempts, tt.wantRetryAttempts)
 				}
+			}
+		})
+	}
+}
+
+func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
+	tests := []struct {
+		name                     string
+		includeAnnotation        bool
+		evaluatedEscalated       bool
+		newConflictAfterDecision bool
+		wantPhase                journal.RunPhase
+		wantImplement            int
+		wantLocalCI              int
+		wantFailedVerdicts       int
+		wantRetryDecisions       int
+		retryTarget              string
+		interruptedRetry         bool
+		wantSuccessfulCIAttempt  int
+		localCIMaxAttempts       int
+	}{
+		{
+			name: "after_verdict", wantPhase: journal.PhaseCompleted,
+			wantImplement: 1, wantLocalCI: 1, wantFailedVerdicts: 1, wantRetryDecisions: 1, wantSuccessfulCIAttempt: 1,
+		},
+		{
+			name: "after_retry_annotation", includeAnnotation: true, wantPhase: journal.PhaseCompleted,
+			wantImplement: 1, wantLocalCI: 1, wantFailedVerdicts: 1, wantRetryDecisions: 1, wantSuccessfulCIAttempt: 1,
+		},
+		{
+			name: "after_same_stage_retry_annotation", includeAnnotation: true, retryTarget: "local-ci",
+			wantPhase: journal.PhaseCompleted, wantLocalCI: 1, wantFailedVerdicts: 1, wantRetryDecisions: 1, wantSuccessfulCIAttempt: 1,
+		},
+		{
+			name: "after_interrupted_same_stage_retry", includeAnnotation: true, retryTarget: "local-ci", interruptedRetry: true,
+			localCIMaxAttempts: 2, wantPhase: journal.PhaseCompleted, wantLocalCI: 1,
+			wantFailedVerdicts: 1, wantRetryDecisions: 1, wantSuccessfulCIAttempt: 2,
+		},
+		{
+			name: "after_escalated_verdict", evaluatedEscalated: true, wantPhase: journal.PhaseEscalated,
+			wantFailedVerdicts: 1,
+		},
+		{
+			name: "prior_verdict_before_new_conflict", includeAnnotation: true, newConflictAfterDecision: true,
+			wantPhase: journal.PhaseEscalated, wantFailedVerdicts: 2, wantRetryDecisions: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFixtureRepo(t)
+			deterministic := &successfulRetryDeterministic{}
+			r, runsDir := newWorktreeProvisioningTestRunner(t, repo, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+				return deterministic, nil
+			})
+			r.cfg.MaxRepasses = 1
+			machine := conflictRetryMachine(t, "", tt.retryTarget, tt.localCIMaxAttempts)
+			runID := "run-resume-sync-conflict-" + tt.name
+			runDir := filepath.Join(runsDir, runID)
+
+			jr, err := journal.Create(runsDir, journal.RunIdentity{
+				RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+				WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			}, nil)
+			if err != nil {
+				t.Fatalf("journal.Create: %v", err)
+			}
+			jr.SetMachineState("local-gate")
+			repassAttempt := 1
+			target := tt.retryTarget
+			if target == "" {
+				target = "implement"
+			}
+			if tt.evaluatedEscalated {
+				repassAttempt = 2
+				target = workflow.TargetEscalate
+			}
+			for _, event := range []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+				{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+				{Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1},
+				{
+					Type: journal.EventStageFinished, Stage: "local-ci", Attempt: 1, Status: string(apiv1.ResultFailure),
+					Error: &journal.ErrorDetail{Code: baseSyncConflictErrorCode, Message: "base moved during sync"},
+				},
+				{Type: journal.EventGatePaused, Gate: "local-gate"},
+				{Type: journal.EventGateStarted, Gate: "local-gate", Runner: map[string]any{"repassAttempt": repassAttempt}},
+				{
+					Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: target,
+					Escalated: tt.evaluatedEscalated, Runner: map[string]any{"repassAttempt": repassAttempt},
+				},
+			} {
+				if err := jr.Append(event); err != nil {
+					t.Fatalf("append %s: %v", event.Type, err)
+				}
+			}
+			if tt.includeAnnotation {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: "local-ci", Gate: "local-gate",
+					Runner: map[string]any{
+						"kind": retryDecisionKind, retryFailureClassKey: string(journal.AttemptPolicy),
+						"failureCode": baseSyncConflictErrorCode, "repassAttempt": repassAttempt, "target": target,
+					},
+				}); err != nil {
+					t.Fatalf("append retry annotation: %v", err)
+				}
+			}
+			if tt.interruptedRetry {
+				for _, event := range []journal.Event{
+					{Type: journal.EventStageStarted, Stage: target, Attempt: 1},
+					{
+						Type: journal.EventStageFinished, Stage: target, Attempt: 1, AttemptClass: journal.AttemptInfra,
+						Status: string(apiv1.ResultFailure),
+						Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
+						Runner: map[string]any{interruptedAttemptMarkerKey: true},
+					},
+				} {
+					if err := jr.Append(event); err != nil {
+						t.Fatalf("append interrupted retry %s: %v", event.Type, err)
+					}
+				}
+			}
+			if tt.newConflictAfterDecision {
+				for _, event := range []journal.Event{
+					{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, AttemptClass: journal.AttemptPolicy},
+					{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, AttemptClass: journal.AttemptPolicy, Status: string(apiv1.ResultSuccess)},
+					{Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1},
+					{
+						Type: journal.EventStageFinished, Stage: "local-ci", Attempt: 1, Status: string(apiv1.ResultFailure),
+						Error: &journal.ErrorDetail{Code: baseSyncConflictErrorCode, Message: "base moved again during sync"},
+					},
+				} {
+					if err := jr.Append(event); err != nil {
+						t.Fatalf("append post-decision %s: %v", event.Type, err)
+					}
+				}
+			}
+			if err := jr.Close(); err != nil {
+				t.Fatalf("close journal: %v", err)
+			}
+
+			overwriteStateJSON(t, runDir, journal.State{
+				Schema: journal.StateSchema, RunID: runID,
+				Phase: journal.PhaseRunning, MachineState: "local-gate",
+			})
+
+			result, err := r.Resume(context.Background(), ResumeInput{
+				RunID:   runID,
+				Machine: machine,
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if result.Phase != tt.wantPhase {
+				t.Fatalf("phase = %s, want %s", result.Phase, tt.wantPhase)
+			}
+			if deterministic.implementAttempts != tt.wantImplement || deterministic.localCIAttempts != tt.wantLocalCI {
+				t.Fatalf("post-resume attempts = implement:%d local-ci:%d, want implement:%d local-ci:%d",
+					deterministic.implementAttempts, deterministic.localCIAttempts, tt.wantImplement, tt.wantLocalCI)
+			}
+
+			rd, err := journal.OpenRead(runDir)
+			if err != nil {
+				t.Fatalf("open journal: %v", err)
+			}
+			events, err := rd.Events()
+			if err != nil {
+				t.Fatalf("read events: %v", err)
+			}
+			var failedVerdicts, retryDecisions, successfulCIAttempt int
+			for _, event := range events {
+				if event.Type == journal.EventGateEvaluated && event.Gate == "local-gate" && event.Verdict == gate.OutcomeFail {
+					failedVerdicts++
+				}
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind {
+					retryDecisions++
+				}
+				if event.Type == journal.EventStageFinished && event.Stage == "local-ci" && event.Status == string(apiv1.ResultSuccess) {
+					successfulCIAttempt = event.Attempt
+				}
+			}
+			if failedVerdicts != tt.wantFailedVerdicts {
+				t.Fatalf("failed gate verdicts = %d, want %d", failedVerdicts, tt.wantFailedVerdicts)
+			}
+			if retryDecisions != tt.wantRetryDecisions {
+				t.Fatalf("retry decisions = %d, want %d", retryDecisions, tt.wantRetryDecisions)
+			}
+			if successfulCIAttempt != tt.wantSuccessfulCIAttempt {
+				t.Fatalf("successful local-ci attempt = %d, want %d", successfulCIAttempt, tt.wantSuccessfulCIAttempt)
 			}
 		})
 	}

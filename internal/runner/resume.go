@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -296,6 +297,28 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
+	var completedGate *gate.Result
+	resumedGateTransition := false
+	if rerun == nil {
+		if retryTarget, pending := pendingRetryTarget(segment, in.Machine, lastStage, lastResult); pending {
+			jr.SetMachineState(retryTarget)
+			startState = retryTarget
+			resumedGateTransition = true
+		} else if g, isGate := in.Machine.Gate(startState); isGate {
+			gr, retry, completed, rerr := resumeCompletedRetry(jr, segment, g, lastStage, lastResult)
+			if rerr != nil {
+				return Result{}, fmt.Errorf("runner: restore completed retry decision for gate %q: %w", g.Name, rerr)
+			}
+			if completed {
+				resumedGateTransition = true
+				if retry {
+					startState = gr.Target
+				} else {
+					completedGate = &gr
+				}
+			}
+		}
+	}
 	if request, ok := stalledRequestFromContext(ctx); ok {
 		return r.finishStalled(in.RunID, jr, startState, 0, request)
 	}
@@ -307,6 +330,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
 	}
+	if completedGate != nil {
+		next, res, advance, gerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, item, *completedGate, lastStage, lastResult, 0)
+		if gerr != nil {
+			return res, gerr
+		}
+		if !advance {
+			return res, nil
+		}
+		startState = next
+	}
 
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask {
@@ -316,7 +349,14 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 				attempt: attempt,
 				class:   startedAttemptClass(segment, startState, attempt),
 			}
-		} else if rerun == nil && hasSegmentLast && segmentLastStage == startState {
+		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
+			resume = &resumeContext{
+				stage:    startState,
+				attempt:  attempt,
+				class:    startedAttemptClass(segment, startState, attempt),
+				recorded: true,
+			}
+		} else if rerun == nil && !resumedGateTransition && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
 			// SetMachineState timing: it's set BEFORE dispatch and not
 			// reassigned until the transition decision after runTask
@@ -378,6 +418,123 @@ func latestRunResume(events []journal.Event) (journal.Event, bool) {
 		}
 	}
 	return journal.Event{}, false
+}
+
+// resumeCompletedRetry closes the crash window between gate.evaluated, the
+// retry annotation, and the next machine-state checkpoint. The verdict's
+// normative Target is the durable transition; a missing annotation is restored
+// once, while an existing one proves the decision was already fully recorded.
+func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate, subjectStage string, subject apiv1.ResultEnvelope) (gate.Result, bool, bool, error) {
+	evaluated, ok := latestCompletedGateEvaluation(events, g.Name)
+	if !ok {
+		return gate.Result{}, false, false, nil
+	}
+	class, _, retryable := retryFailureClass(g, subject)
+	if !retryable {
+		return gate.Result{}, false, false, nil
+	}
+	result := gate.Result{
+		Gate:      evaluated.Gate,
+		Outcome:   evaluated.Verdict,
+		Target:    evaluated.Target,
+		Attempt:   gateRepassAttempt(evaluated),
+		Escalated: evaluated.Escalated,
+	}
+	if hasRetryDecisionAfter(events, evaluated) {
+		if result.Outcome == gate.OutcomePass || result.Escalated {
+			return result, false, true, nil
+		}
+		switch result.Target {
+		case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+			return result, false, true, nil
+		}
+		jr.SetMachineState(result.Target)
+		return result, true, true, nil
+	}
+	target, retry, err := routeRetryDecision(jr, result, subjectStage, subject, class, true)
+	if err != nil {
+		return gate.Result{}, false, false, err
+	}
+	if retry {
+		result.Target = target
+	}
+	return result, retry, true, nil
+}
+
+func latestCompletedGateEvaluation(events []journal.Event, gateName string) (journal.Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Type == journal.EventStageFinished {
+			return journal.Event{}, false
+		}
+		if e.Gate != gateName {
+			continue
+		}
+		switch e.Type {
+		case journal.EventGateEvaluated:
+			return e, true
+		case journal.EventGatePaused, journal.EventGateStarted:
+			return journal.Event{}, false
+		}
+	}
+	return journal.Event{}, false
+}
+
+// pendingRetryTarget returns a retry annotation that has not yet been followed
+// by a completed stage or another gate visit. It is independent of state.json:
+// when a gate retries its own subject stage, the checkpoint already names that
+// task, so gate-state-only recovery would replay the finished result instead of
+// dispatching the recorded retry.
+func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subjectStage string, subject apiv1.ResultEnvelope) (string, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		switch e.Type {
+		case journal.EventStageFinished:
+			if isInterruptedAttemptMarker(e) {
+				continue
+			}
+			return "", false
+		case journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated:
+			return "", false
+		case journal.EventRunnerAnnotation:
+			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
+				continue
+			}
+			g, ok := machine.Gate(e.Gate)
+			if !ok {
+				return "", false
+			}
+			if _, _, retryable := retryFailureClass(g, subject); !retryable {
+				return "", false
+			}
+			target, ok := e.Runner["target"].(string)
+			if !ok || target == "" {
+				return "", false
+			}
+			switch target {
+			case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+				return "", false
+			}
+			return target, true
+		}
+	}
+	return "", false
+}
+
+func hasRetryDecisionAfter(events []journal.Event, evaluated journal.Event) bool {
+	for i := len(events) - 1; i >= 0 && events[i].Seq > evaluated.Seq; i-- {
+		e := events[i]
+		if e.Type == journal.EventRunnerAnnotation && e.Gate == evaluated.Gate &&
+			e.Runner["kind"] == retryDecisionKind {
+			return true
+		}
+	}
+	return false
+}
+
+func gateRepassAttempt(e journal.Event) int {
+	n, _ := e.Runner["repassAttempt"].(float64)
+	return int(n)
 }
 
 // refuseResume ends a run whose WF-016 resume verification failed at the
@@ -616,6 +773,23 @@ func interruptedAttempt(events []journal.Event, stageName string) int {
 		case journal.EventStageStarted:
 			return e.Attempt
 		case journal.EventStageFinished:
+			return 0
+		}
+	}
+	return 0
+}
+
+func recordedInterruptedAttempt(events []journal.Event, stageName string) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Stage != stageName {
+			continue
+		}
+		if isInterruptedAttemptMarker(e) {
+			return e.Attempt
+		}
+		switch e.Type {
+		case journal.EventStageStarted, journal.EventStageFinished:
 			return 0
 		}
 	}
