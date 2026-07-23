@@ -24,6 +24,8 @@ const (
 	HealthPath = apicontract.HealthPath
 	// TelemetryStatsPath exposes workflow and stage telemetry aggregates.
 	TelemetryStatsPath = apicontract.TelemetryStatsPath
+	// TelemetryErrorSignaturesPath exposes recurring error code/class aggregates.
+	TelemetryErrorSignaturesPath = apicontract.TelemetryErrorSignaturesPath
 	// TelemetryErrorsPath exposes paginated recent telemetry errors.
 	TelemetryErrorsPath = apicontract.TelemetryErrorsPath
 	// RunsPath is the run history endpoint.

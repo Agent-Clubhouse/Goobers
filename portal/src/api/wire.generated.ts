@@ -12,6 +12,7 @@ import type {
   EventList,
   AttemptList,
   TelemetryStatsResult,
+  TelemetryErrorSignaturesResult,
   TelemetryErrorsPage,
   ModelInvalidation,
   ApiErrorEnvelope,
@@ -29,6 +30,7 @@ export interface GoWireFixtures {
   runEvents: EventList;
   stageAttempts: AttemptList;
   telemetryStats: TelemetryStatsResult;
+  telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
   eventInvalidation: ModelInvalidation;
   errorEnvelope: ApiErrorEnvelope;
@@ -617,6 +619,19 @@ export const goWireFixtures = {
         "copilotPremiumRequests": 3,
         "costSamples": 3,
         "costUSD": 1.5
+      }
+    ]
+  },
+  "telemetryErrorSignatures": {
+    "items": [
+      {
+        "code": "stage_failed",
+        "errorClass": "unknown",
+        "count": 3,
+        "lastSeen": "2026-07-18T12:34:56Z",
+        "exampleRunId": "run-123",
+        "exampleStage": "implement",
+        "exampleAttempt": 1
       }
     ]
   },

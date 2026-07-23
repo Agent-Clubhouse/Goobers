@@ -35,6 +35,7 @@ const (
 type StatsRequest struct {
 	Workflow              string
 	Gaggle                string
+	Stage                 string
 	Model                 string
 	HarnessVersion        string
 	GroupByModel          bool
@@ -710,7 +711,7 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 	if limit <= 0 {
 		limit = 20
 	}
-	where, args := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
+	where, args := errorSignaturesWhere(req)
 	query := fmt.Sprintf(telemetryErrorsCTE+`
 		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
 		FROM telemetry_errors e
@@ -744,10 +745,10 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		return nil, err
 	}
 
-	// The example row must respect the same workflow/window filter as the
+	// The example row must respect the same scope/window filter as the
 	// aggregate query above.
-	exampleWhere, exampleArgs := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
-	exampleFilter := "e.code = ? AND e.error_class = ?"
+	exampleWhere, exampleArgs := errorSignaturesWhere(req)
+	exampleFilter := "e.code = ? AND COALESCE(e.error_class, '') = ?"
 	if exampleWhere != "" {
 		exampleFilter = strings.TrimPrefix(exampleWhere, "WHERE ") + " AND " + exampleFilter
 	}
@@ -766,6 +767,15 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		sigs[i].ExampleRunID, sigs[i].ExampleStage, sigs[i].ExampleAttempt = runID.String, stage.String, int(attempt.Int64)
 	}
 	return sigs, nil
+}
+
+func errorSignaturesWhere(req StatsRequest) (string, []any) {
+	clauses, args := statsClauses("e.workflow", "e.gaggle", "e.occurred_at", req)
+	if req.Stage != "" {
+		clauses = append(clauses, "e.stage = ?")
+		args = append(args, req.Stage)
+	}
+	return whereClause(clauses), args
 }
 
 // ProviderMutationCount is the occurrence count of one (provider, kind,

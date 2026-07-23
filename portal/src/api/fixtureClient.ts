@@ -24,6 +24,8 @@ import type {
   RunPhase,
   RunSummary,
   StageAttemptStatus,
+  TelemetryErrorSignaturesOptions,
+  TelemetryErrorSignaturesResult,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -45,6 +47,7 @@ export interface DaemonFixtures {
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
   telemetryStats: TelemetryStatsResult;
+  telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
 }
 
@@ -184,6 +187,13 @@ export class FixtureDaemonClient implements DaemonClient {
       ),
       models: stats.models,
     });
+  }
+
+  getTelemetryErrorSignatures(
+    _request?: TelemetryErrorSignaturesOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryErrorSignaturesResult> {
+    return fixture(this.fixtures.telemetryErrorSignatures, options);
   }
 
   listTelemetryErrors(

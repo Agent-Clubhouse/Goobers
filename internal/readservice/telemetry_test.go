@@ -12,18 +12,29 @@ import (
 )
 
 type fakeTelemetryStore struct {
-	stats       rollup.StatsResult
-	errors      []rollup.ErrorEvent
-	err         error
-	statsReq    rollup.StatsRequest
-	errorReqs   []rollup.ErrorsRequest
-	statsCalled int
+	stats          rollup.StatsResult
+	signatures     []rollup.ErrorSignature
+	errors         []rollup.ErrorEvent
+	err            error
+	statsReq       rollup.StatsRequest
+	signatureReq   rollup.StatsRequest
+	signatureLimit int
+	errorReqs      []rollup.ErrorsRequest
+	statsCalled    int
+	signatureCalls int
 }
 
 func (f *fakeTelemetryStore) Stats(req rollup.StatsRequest) (rollup.StatsResult, error) {
 	f.statsCalled++
 	f.statsReq = req
 	return f.stats, f.err
+}
+
+func (f *fakeTelemetryStore) TopErrorSignatures(req rollup.StatsRequest, limit int) ([]rollup.ErrorSignature, error) {
+	f.signatureCalls++
+	f.signatureReq = req
+	f.signatureLimit = limit
+	return f.signatures, f.err
 }
 
 func (f *fakeTelemetryStore) Errors(req rollup.ErrorsRequest) ([]rollup.ErrorEvent, error) {
@@ -191,6 +202,49 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	}
 }
 
+func TestTelemetryErrorSignaturesProjectsScopeAndExamples(t *testing.T) {
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	until := since.Add(24 * time.Hour)
+	store := &fakeTelemetryStore{signatures: []rollup.ErrorSignature{{
+		Code:           "harness.crash",
+		ErrorClass:     "unknown",
+		Count:          3,
+		LastSeen:       until,
+		ExampleRunID:   "run-3",
+		ExampleStage:   "review",
+		ExampleAttempt: 2,
+	}}}
+	service := &Telemetry{store: store}
+
+	got, err := service.TelemetryErrorSignatures(context.Background(), TelemetryErrorSignaturesRequest{
+		Workflow: "implement",
+		Gaggle:   "core",
+		Stage:    "review",
+		Since:    since,
+		Until:    until,
+		Limit:    12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReq := rollup.StatsRequest{
+		Workflow: "implement",
+		Gaggle:   "core",
+		Stage:    "review",
+		Since:    since,
+		Until:    until,
+	}
+	if !reflect.DeepEqual(store.signatureReq, wantReq) || store.signatureLimit != 12 {
+		t.Fatalf("store request = %+v limit %d, want %+v limit 12", store.signatureReq, store.signatureLimit, wantReq)
+	}
+	if len(got.Items) != 1 ||
+		got.Items[0].ErrorClass != "unknown" ||
+		got.Items[0].ExampleRunID != "run-3" ||
+		got.Items[0].ExampleStage != "review" {
+		t.Fatalf("signatures = %+v", got.Items)
+	}
+}
+
 func TestTelemetryErrorsPaginatesAndBindsCursorToFilters(t *testing.T) {
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeTelemetryStore{errors: []rollup.ErrorEvent{
@@ -241,6 +295,9 @@ func TestTelemetryQueriesHonorContextAndStoreErrors(t *testing.T) {
 	if _, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{}); !errors.Is(err, storeErr) {
 		t.Fatalf("stats error = %v", err)
 	}
+	if _, err := service.TelemetryErrorSignatures(context.Background(), TelemetryErrorSignaturesRequest{}); !errors.Is(err, storeErr) {
+		t.Fatalf("error signatures error = %v", err)
+	}
 	if _, err := service.TelemetryErrors(context.Background(), TelemetryErrorsRequest{}); !errors.Is(err, storeErr) {
 		t.Fatalf("errors error = %v", err)
 	}
@@ -255,6 +312,12 @@ func TestTelemetryQueriesHonorContextAndStoreErrors(t *testing.T) {
 	if store.statsCalled != 0 {
 		t.Fatalf("canceled query reached store %d times", store.statsCalled)
 	}
+	if _, err := service.TelemetryErrorSignatures(ctx, TelemetryErrorSignaturesRequest{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled error signatures error = %v", err)
+	}
+	if store.signatureCalls != 0 {
+		t.Fatalf("canceled query reached signature store %d times", store.signatureCalls)
+	}
 }
 
 func TestLocalTelemetryUnavailable(t *testing.T) {
@@ -264,6 +327,9 @@ func TestLocalTelemetryUnavailable(t *testing.T) {
 	}
 	if _, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{}); !errors.Is(err, ErrTelemetryUnavailable) {
 		t.Fatalf("stats error = %v", err)
+	}
+	if _, err := service.TelemetryErrorSignatures(context.Background(), TelemetryErrorSignaturesRequest{}); !errors.Is(err, ErrTelemetryUnavailable) {
+		t.Fatalf("error signatures error = %v", err)
 	}
 	if _, err := service.TelemetryErrors(context.Background(), TelemetryErrorsRequest{}); !errors.Is(err, ErrTelemetryUnavailable) {
 		t.Fatalf("errors error = %v", err)

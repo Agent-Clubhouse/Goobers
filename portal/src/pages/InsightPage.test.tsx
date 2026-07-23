@@ -13,6 +13,7 @@ describe("Insight page", () => {
   it("shows scoped outcomes and full stage duration distributions", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const getTelemetryErrorSignatures = vi.spyOn(client, "getTelemetryErrorSignatures");
     const user = userEvent.setup();
     render(<App client={client} />);
 
@@ -22,7 +23,15 @@ describe("Insight page", () => {
       "page",
     );
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
+    expect(screen.getByText("harness.crash")).toBeInTheDocument();
+    expect(screen.getByText("unknown")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Open example run 01JZ400FAILED for error harness.crash",
+      }),
+    ).toHaveAttribute("href", "#/run/01JZ400FAILED");
     expect(screen.getAllByText("50.0%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P95").length).toBeGreaterThan(0);
@@ -52,12 +61,28 @@ describe("Insight page", () => {
       "href",
       expect.stringMatching(/stage=implement.*outcome=finished.*population=measured/),
     );
+    await waitFor(() =>
+      expect(getTelemetryErrorSignatures).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          gaggle: "core",
+          workflow: "implementation",
+          stage: "implement",
+          since: expect.stringMatching(/Z$/),
+          until: expect.stringMatching(/Z$/),
+        }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
     await waitFor(() => {
       const request = getTelemetryStats.mock.calls.at(-1)?.[0];
       expect(request?.since).toMatch(/Z$/);
       expect(request?.until).toMatch(/Z$/);
+      const errorRequest = getTelemetryErrorSignatures.mock.calls.at(-1)?.[0];
+      expect(errorRequest?.stage).toBe("implement");
+      expect(errorRequest?.since).toMatch(/Z$/);
+      expect(errorRequest?.until).toMatch(/Z$/);
     });
   });
 
@@ -128,6 +153,7 @@ describe("Insight page", () => {
   it("keeps a selected scope when a narrower window has no rows", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const getTelemetryErrorSignatures = vi.spyOn(client, "getTelemetryErrorSignatures");
     const user = userEvent.setup();
     render(<App client={client} />);
 
@@ -136,6 +162,7 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
     getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [], models: [] });
+    getTelemetryErrorSignatures.mockResolvedValueOnce({ items: [] });
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
 

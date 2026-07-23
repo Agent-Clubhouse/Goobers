@@ -539,6 +539,28 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
       models: [],
     },
+    telemetryErrorSignatures: {
+      items: [
+        {
+          code: "harness.crash",
+          errorClass: "unknown",
+          count: 2,
+          lastSeen: "2026-07-18T04:00:00Z",
+          exampleRunId: "01JZ400FAILED",
+          exampleStage: "implement",
+          exampleAttempt: 1,
+        },
+        {
+          code: "provider.rate_limit",
+          errorClass: "provider-rate-limit",
+          count: 1,
+          lastSeen: "2026-07-18T03:00:00Z",
+          exampleRunId: "01JZ455ESCALATE",
+          exampleStage: "review",
+          exampleAttempt: 2,
+        },
+      ],
+    },
     telemetryErrors: { items: [] },
   };
 }
@@ -600,5 +622,6 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: { gaggles: [], runs: [], stages: [], models: [] },
+    telemetryErrorSignatures: { items: [] },
   };
 }

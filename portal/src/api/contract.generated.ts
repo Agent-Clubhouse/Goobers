@@ -13,6 +13,7 @@ export const apiRoutes = {
   "stageAttempts": { method: "GET", path: "/api/v1/runs/{run}/stages/{stage}/attempts", actionClass: "read-only-navigation" },
   "runArtifact": { method: "GET", path: "/api/v1/runs/{run}/artifacts/{digest}", actionClass: "read-only-navigation" },
   "telemetryStats": { method: "GET", path: "/api/v1/telemetry/stats", actionClass: "read-only-navigation" },
+  "telemetryErrorSignatures": { method: "GET", path: "/api/v1/telemetry/error-signatures", actionClass: "read-only-navigation" },
   "telemetryErrors": { method: "GET", path: "/api/v1/telemetry/errors", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
 } as const;

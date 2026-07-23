@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
 import type {
   DaemonClient,
+  TelemetryErrorSignaturesOptions,
+  TelemetryErrorSignaturesResult,
   TelemetryStatsOptions,
   TelemetryStatsResult,
 } from "./api/types";
@@ -13,6 +15,12 @@ export interface InsightSnapshot {
   filters: TelemetryStatsOptions;
   stats: TelemetryStatsResult;
   window: InsightWindow;
+}
+
+export interface InsightErrorSignaturesSnapshot {
+  filters: TelemetryErrorSignaturesOptions;
+  requestKey: string;
+  result: TelemetryErrorSignaturesResult;
 }
 
 export function useInsightStats(
@@ -86,6 +94,83 @@ export function useInsightStats(
   return { retry: refresh, state };
 }
 
+export function useInsightErrorSignatures(
+  client: DaemonClient,
+  window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+  stage?: string,
+): {
+  retry: () => void;
+  state: QueryState<InsightErrorSignaturesSnapshot>;
+} {
+  const [state, setState] = useState<QueryState<InsightErrorSignaturesSnapshot>>({
+    status: "loading",
+  });
+  const request = useRef<AbortController | undefined>(undefined);
+  const { freshness, isFresh, subscribe } = useLiveData();
+  const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
+
+  const refresh = useCallback(() => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
+    setState((current) =>
+      (current.status === "ready" || current.status === "stale") &&
+      current.data.requestKey === requestKey
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
+
+    return client.getTelemetryErrorSignatures(filters, { signal: controller.signal }).then(
+      (result) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        const data = { filters, requestKey, result };
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+        return true;
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted) {
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read failure reasons.");
+          setState((current) =>
+            (current.status === "ready" || current.status === "stale") &&
+            current.data.requestKey === requestKey
+              ? { status: "stale", data: current.data, error: queryError }
+              : { status: "error", error: queryError },
+          );
+        }
+        return false;
+      },
+    );
+  }, [client, gaggle, isFresh, requestKey, stage, window, workflow]);
+
+  useEffect(() => {
+    const unsubscribe = subscribe(["run"], refresh);
+    return () => {
+      unsubscribe();
+      request.current?.abort();
+    };
+  }, [refresh, subscribe]);
+
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  return { retry: refresh, state };
+}
+
 export function insightWindowFilters(
   window: InsightWindow,
   now = new Date(),
@@ -102,4 +187,20 @@ export function insightWindowFilters(
         since: new Date(now.getTime() - milliseconds[window]).toISOString(),
         until,
       };
+}
+
+export function insightErrorSignatureFilters(
+  window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+  stage?: string,
+  now = new Date(),
+): TelemetryErrorSignaturesOptions {
+  return {
+    ...insightWindowFilters(window, now),
+    gaggle,
+    workflow,
+    stage,
+    limit: 20,
+  };
 }

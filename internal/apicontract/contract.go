@@ -18,20 +18,21 @@ const (
 	// V1Prefix is the versioned root for daemon API routes.
 	V1Prefix = "/api/v1"
 
-	HealthPath          = V1Prefix + "/health"
-	InstancePath        = V1Prefix + "/instance"
-	GagglesPath         = V1Prefix + "/gaggles"
-	GaggleGoobersPath   = V1Prefix + "/gaggles/{gaggle}/goobers"
-	GaggleWorkflowsPath = V1Prefix + "/gaggles/{gaggle}/workflows"
-	WorkflowDetailPath  = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
-	RunsPath            = V1Prefix + "/runs"
-	RunDetailPath       = V1Prefix + "/runs/{run}"
-	RunEventsPath       = V1Prefix + "/runs/{run}/events"
-	StageAttemptsPath   = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
-	RunArtifactPath     = V1Prefix + "/runs/{run}/artifacts/{digest}"
-	TelemetryStatsPath  = V1Prefix + "/telemetry/stats"
-	TelemetryErrorsPath = V1Prefix + "/telemetry/errors"
-	EventsPath          = V1Prefix + "/events"
+	HealthPath                   = V1Prefix + "/health"
+	InstancePath                 = V1Prefix + "/instance"
+	GagglesPath                  = V1Prefix + "/gaggles"
+	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
+	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
+	WorkflowDetailPath           = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
+	RunsPath                     = V1Prefix + "/runs"
+	RunDetailPath                = V1Prefix + "/runs/{run}"
+	RunEventsPath                = V1Prefix + "/runs/{run}/events"
+	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
+	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
+	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
+	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
+	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
+	EventsPath                   = V1Prefix + "/events"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -39,20 +40,21 @@ type RouteID string
 
 // Stable V1 route IDs.
 const (
-	RouteHealth          RouteID = "health"
-	RouteInstance        RouteID = "instance"
-	RouteGaggles         RouteID = "gaggles"
-	RouteGaggleGoobers   RouteID = "gaggleGoobers"
-	RouteGaggleWorkflows RouteID = "gaggleWorkflows"
-	RouteWorkflowDetail  RouteID = "workflowDetail"
-	RouteRuns            RouteID = "runs"
-	RouteRunDetail       RouteID = "runDetail"
-	RouteRunEvents       RouteID = "runEvents"
-	RouteStageAttempts   RouteID = "stageAttempts"
-	RouteRunArtifact     RouteID = "runArtifact"
-	RouteTelemetryStats  RouteID = "telemetryStats"
-	RouteTelemetryErrors RouteID = "telemetryErrors"
-	RouteEvents          RouteID = "events"
+	RouteHealth                   RouteID = "health"
+	RouteInstance                 RouteID = "instance"
+	RouteGaggles                  RouteID = "gaggles"
+	RouteGaggleGoobers            RouteID = "gaggleGoobers"
+	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
+	RouteWorkflowDetail           RouteID = "workflowDetail"
+	RouteRuns                     RouteID = "runs"
+	RouteRunDetail                RouteID = "runDetail"
+	RouteRunEvents                RouteID = "runEvents"
+	RouteStageAttempts            RouteID = "stageAttempts"
+	RouteRunArtifact              RouteID = "runArtifact"
+	RouteTelemetryStats           RouteID = "telemetryStats"
+	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
+	RouteTelemetryErrors          RouteID = "telemetryErrors"
+	RouteEvents                   RouteID = "events"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -77,6 +79,7 @@ var v1Routes = []Route{
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation},
+	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation},
 }

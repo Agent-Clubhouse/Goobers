@@ -14,7 +14,10 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 )
 
-const maxTelemetryErrorsPageSize = 200
+const (
+	defaultTelemetryErrorSignaturesLimit = 20
+	maxTelemetryErrorsPageSize           = 200
+)
 
 func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTelemetryStats, func(w http.ResponseWriter, request *http.Request) {
@@ -26,6 +29,20 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		result, err := reader.TelemetryStats(request.Context(), query)
 		if err != nil {
 			writeTelemetryReadError(w, errorLog, "stats", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	router.Handle(apicontract.RouteTelemetryErrorSignatures, func(w http.ResponseWriter, request *http.Request) {
+		query, err := parseTelemetryErrorSignaturesQuery(request.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
+		result, err := reader.TelemetryErrorSignatures(request.Context(), query)
+		if err != nil {
+			writeTelemetryReadError(w, errorLog, "error signatures", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -94,6 +111,31 @@ func parseTelemetryGroupBy(value string) (model, harnessVersion bool, err error)
 	return model, harnessVersion, nil
 }
 
+func parseTelemetryErrorSignaturesQuery(values url.Values) (readservice.TelemetryErrorSignaturesRequest, error) {
+	if err := validateQueryValues(values, "workflow", "gaggle", "stage", "since", "until", "limit"); err != nil {
+		return readservice.TelemetryErrorSignaturesRequest{}, err
+	}
+	since, until, err := parseTelemetryWindow(values)
+	if err != nil {
+		return readservice.TelemetryErrorSignaturesRequest{}, err
+	}
+	limit := defaultTelemetryErrorSignaturesLimit
+	if value := values.Get("limit"); value != "" {
+		limit, err = strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > maxTelemetryErrorsPageSize {
+			return readservice.TelemetryErrorSignaturesRequest{}, fmt.Errorf("limit must be an integer between 1 and %d", maxTelemetryErrorsPageSize)
+		}
+	}
+	return readservice.TelemetryErrorSignaturesRequest{
+		Workflow: values.Get("workflow"),
+		Gaggle:   values.Get("gaggle"),
+		Stage:    values.Get("stage"),
+		Since:    since,
+		Until:    until,
+		Limit:    limit,
+	}, nil
+}
+
 func parseTelemetryErrorsQuery(values url.Values) (readservice.TelemetryErrorsRequest, error) {
 	if err := validateQueryValues(values, "workflow", "gaggle", "class", "since", "until", "limit", "cursor"); err != nil {
 		return readservice.TelemetryErrorsRequest{}, err
@@ -125,6 +167,21 @@ func parseTelemetryErrorsQuery(values url.Values) (readservice.TelemetryErrorsRe
 		Limit:      limit,
 		Cursor:     values.Get("cursor"),
 	}, nil
+}
+
+func parseTelemetryWindow(values url.Values) (time.Time, time.Time, error) {
+	since, err := parseOptionalTime(values.Get("since"), "since")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	until, err := parseOptionalTime(values.Get("until"), "until")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !since.IsZero() && !until.IsZero() && since.After(until) {
+		return time.Time{}, time.Time{}, errors.New("since must not be after until")
+	}
+	return since, until, nil
 }
 
 func validateQueryValues(values url.Values, allowed ...string) error {
