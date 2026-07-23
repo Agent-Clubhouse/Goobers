@@ -1149,7 +1149,7 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 		RunID:   "run-1",
 		Machine: machine,
 		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		Trigger: journal.Trigger{Kind: journal.TriggerSignal, Ref: "github-webhook:pull_request#42"},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
 	if err != nil {
@@ -1164,6 +1164,12 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 	if got := ciPollEnv.Inputs["prNumber"]; got != "42" {
 		t.Fatalf("ci-poll env.Inputs[prNumber] = %v, want \"42\" (threaded from open-pr's Outputs)", got)
+	}
+	if ciPollEnv.TriggerRef != "github-webhook:pull_request#42" {
+		t.Fatalf("ci-poll TriggerRef = %q", ciPollEnv.TriggerRef)
+	}
+	if ciPollEnv.RepoRef.Owner != "acme" || ciPollEnv.RepoRef.Name != "web" {
+		t.Fatalf("ci-poll RepoRef = %+v", ciPollEnv.RepoRef)
 	}
 }
 

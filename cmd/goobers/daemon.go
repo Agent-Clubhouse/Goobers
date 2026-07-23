@@ -413,6 +413,7 @@ func buildSchedulerDefinitions(
 		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
 		var sigs []string
+		hasRepositoryWebhook := false
 		for _, trigger := range wf.Spec.Triggers {
 			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" {
 				schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
@@ -425,9 +426,21 @@ func buildSchedulerDefinitions(
 				sigs = append(sigs, trigger.Signal)
 			}
 			if trigger.Type == apiv1.TriggerWebhook {
+				hasRepositoryWebhook = true
 				for _, event := range trigger.Events {
 					sigs = append(sigs, webhookhttp.SignalName(event))
 				}
+			}
+		}
+		pollFallbackCause := ""
+		if hasRepositoryWebhook && len(scheds) > 0 {
+			switch {
+			case repoRefs[identity].Provider != apiv1.ProviderGitHub:
+				pollFallbackCause = "repository provider does not support GitHub webhook delivery"
+			case !cfg.WebhookSecretConfigured():
+				pollFallbackCause = "webhook listener is disabled because webhook.secret is not configured"
+			default:
+				pollFallbackCause = "no usable webhook delivery was available"
 			}
 		}
 		// RRQ-1/#1101: the runner capabilities a single run of this workflow
@@ -437,16 +450,17 @@ func buildSchedulerDefinitions(
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
 		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:        wf.Name,
-			WorkflowVersion: machine.Def.Version,
-			WorkflowDigest:  machine.Digest(),
-			Gaggle:          wf.Spec.Gaggle,
-			Readiness:       wf.Spec.Readiness,
-			Schedules:       scheds,
-			Signals:         sigs,
-			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir()),
-			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
-			RepoRef:         repoRefs[identity],
+			Workflow:          wf.Name,
+			WorkflowVersion:   machine.Def.Version,
+			WorkflowDigest:    machine.Digest(),
+			Gaggle:            wf.Spec.Gaggle,
+			Readiness:         wf.Spec.Readiness,
+			Schedules:         scheds,
+			Signals:           sigs,
+			PollFallbackCause: pollFallbackCause,
+			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir()),
+			Starter:           &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			RepoRef:           repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 		})

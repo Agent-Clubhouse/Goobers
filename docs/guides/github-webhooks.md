@@ -22,10 +22,19 @@ webhook:
 
 Set the GitHub webhook payload URL to `/webhooks/github`, content type to JSON,
 and secret to the same value. The daemon verifies `X-Hub-Signature-256` before
-mapping `X-GitHub-Event` to subscribed workflows. The payload is not passed to
-the run; each delivery is only a wake-up edge, and normal readiness limits and
-run budgets still apply. Duplicate `X-GitHub-Delivery` IDs are acknowledged
-without firing twice during one daemon lifetime.
+mapping `X-GitHub-Event` to subscribed workflows. Raw payloads are not passed
+to runs. For `pull_request`, the daemon retains only the authenticated
+repository identity and PR number, routes the event to workflows for that
+repository, and records the PR number in the trigger reference so selection
+can refresh that PR directly instead of listing the repository's PRs. Other
+deliveries remain wake-up edges. Normal readiness limits and run budgets still
+apply. Duplicate `X-GitHub-Delivery` IDs are acknowledged without firing twice
+during one daemon lifetime.
+
+A workflow may declare both `webhook` and `schedule` triggers. The schedule is
+the explicit polling fallback when the repository provider or listener cannot
+deliver a usable webhook; scheduler journal entries record whether a run chose
+the webhook path or the polling fallback and why.
 
 The webhook listener is not opened unless both a webhook trigger and
 `webhook.secret` are configured. It accepts only loopback addresses. Exposing

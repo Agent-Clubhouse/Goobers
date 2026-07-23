@@ -47,6 +47,20 @@ const (
 	// goobers CLI stages report typed failures even when the stage declares no
 	// resultFile. It is an internal subprocess protocol, not a DSL input.
 	BuiltinErrorFileEnvVar = "GOOBERS_BUILTIN_ERROR_FILE"
+
+	// TriggerRefEnvVar carries the bounded reference for the trigger that
+	// started the run. Only goobers CLI stages receive it.
+	TriggerRefEnvVar = "GOOBERS_TRIGGER_REF"
+
+	// RepoProviderEnvVar carries the scheduler-routed repository provider to
+	// goobers CLI stages.
+	RepoProviderEnvVar = "GOOBERS_REPO_PROVIDER"
+	// RepoOwnerEnvVar carries the scheduler-routed repository owner to goobers
+	// CLI stages.
+	RepoOwnerEnvVar = "GOOBERS_REPO_OWNER"
+	// RepoNameEnvVar carries the scheduler-routed repository name to goobers
+	// CLI stages.
+	RepoNameEnvVar = "GOOBERS_REPO_NAME"
 )
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)

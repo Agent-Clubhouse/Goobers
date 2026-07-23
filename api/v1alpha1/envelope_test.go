@@ -12,6 +12,7 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 		TaskID:              "implement-001",
 		WorkflowID:          "default-implement",
 		RunID:               "0af7651916cd43dd8448eb211c80319c",
+		TriggerRef:          "github-webhook:pull_request#42",
 		Gaggle:              "acme-web",
 		Goal:                "Implement the backlog item and open a PR.",
 		InstructionAddendum: "Use the existing rate limiter instead of adding a new dependency.",

@@ -135,12 +135,21 @@ func providerStageRoot(pathArg string) string {
 	return "."
 }
 
-// providerRepo loads instance.yaml at root and returns its single configured
-// target repo as a providers.RepositoryRef — V0's single-target-repo
-// simplification (matching runnerwiring.go's buildCredentials/
-// buildCIPollExecutor), and V0 ships GitHub only (instance.Config.Repos[].
-// Provider is already validated to "github" at load time).
+// providerRepo returns the repository routed into a stage invocation. Standalone
+// commands without run context retain the original first-configured-repo
+// fallback.
 func providerRepo(root string) (providers.RepositoryRef, error) {
+	routed := providers.RepositoryRef{
+		Provider: providers.ProviderKind(os.Getenv(executor.RepoProviderEnvVar)),
+		Owner:    os.Getenv(executor.RepoOwnerEnvVar),
+		Name:     os.Getenv(executor.RepoNameEnvVar),
+	}
+	if routed.Provider != "" || routed.Owner != "" || routed.Name != "" {
+		if routed.Provider != providers.ProviderGitHub || routed.Owner == "" || routed.Name == "" {
+			return providers.RepositoryRef{}, fmt.Errorf("invalid routed repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
+		}
+		return routed, nil
+	}
 	l := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {

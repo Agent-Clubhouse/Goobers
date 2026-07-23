@@ -29,6 +29,8 @@ spec:
   # maxRunsPerHour ceiling still bounds it if the schedule and a manual
   # `goobers run` both fire in the same window.
   triggers:
+    - type: webhook
+      events: [pull_request]
     - type: schedule
       schedule: "23 * * * *"
   readiness:

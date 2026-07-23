@@ -123,7 +123,7 @@ func TestShellExecutor_UsesDeclaredEnvironment(t *testing.T) {
 
 func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s' \"$GOOBERS_GAGGLE\" \"$GREETING\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s/%s' \"$GOOBERS_GAGGLE\" \"$GREETING\" \"$GOOBERS_TRIGGER_REF\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_NAME\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,6 +131,8 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	exec.SelfBin = stub
 	env := baseEnvelope(t)
 	env.Gaggle = "alpha"
+	env.TriggerRef = "github-webhook:pull_request#42"
+	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}
 
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"goobers", "env-check"},
@@ -142,7 +144,7 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl" {
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl|github-webhook:pull_request#42|acme/app" {
 		t.Fatalf("stdout = %q, want gaggle context and declared environment", got)
 	}
 }
