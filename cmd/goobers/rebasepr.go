@@ -15,6 +15,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
+	"sigs.k8s.io/yaml"
 )
 
 // runRebasePR implements `goobers rebase-pr` (issue #363): pr-remediation's
@@ -289,7 +290,7 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 		if err != nil {
 			return rebaseConflictAbsent, fmt.Errorf("read PR version for %q: %w", file.path, err)
 		}
-		merged, ok := mergeAdjacentLineInsertions(ancestorData, upstreamData, incomingData)
+		merged, ok := mergeAdjacentLineInsertions(file.path, ancestorData, upstreamData, incomingData)
 		if !ok {
 			return rebaseConflictUnsafe, nil
 		}
@@ -453,7 +454,7 @@ func worktreeConflictPath(dir, name string) (string, error) {
 	return filepath.Join(dir, clean), nil
 }
 
-func mergeAdjacentLineInsertions(ancestor, upstream, incoming []byte) ([]byte, bool) {
+func mergeAdjacentLineInsertions(path string, ancestor, upstream, incoming []byte) ([]byte, bool) {
 	if len(ancestor) == 0 ||
 		bytes.IndexByte(ancestor, 0) >= 0 ||
 		bytes.IndexByte(upstream, 0) >= 0 ||
@@ -478,6 +479,7 @@ func mergeAdjacentLineInsertions(ancestor, upstream, incoming []byte) ([]byte, b
 		strings.TrimSpace(upstreamLine) == "" ||
 		strings.TrimSpace(upstreamLine) == strings.TrimSpace(incomingLine) ||
 		leadingWhitespace(upstreamLine) != leadingWhitespace(incomingLine) ||
+		!hasVerifiedMarkerListSyntax(path, ancestor, upstream, incoming, upstreamLine) ||
 		!sameAdjacentList(ancestorLines, upstreamAt, upstreamLine, incomingLine) {
 		return nil, false
 	}
@@ -487,6 +489,30 @@ func mergeAdjacentLineInsertions(ancestor, upstream, incoming []byte) ([]byte, b
 	merged = append(merged, upstreamLine, incomingLine)
 	merged = append(merged, ancestorLines[upstreamAt:]...)
 	return []byte(strings.Join(merged, "")), true
+}
+
+func hasVerifiedMarkerListSyntax(path string, ancestor, upstream, incoming []byte, insertedLine string) bool {
+	kind := listEntryKind(insertedLine)
+	if kind == "" {
+		return false
+	}
+	if strings.HasPrefix(kind, "quoted ") {
+		return true
+	}
+	if kind != "- " {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".yaml" && ext != ".yml" {
+		return false
+	}
+	for _, data := range [][]byte{ancestor, upstream, incoming} {
+		var document any
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func splitFileLines(data []byte) []string {

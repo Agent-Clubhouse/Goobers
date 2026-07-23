@@ -536,6 +536,53 @@ func TestRebasePRRejectsStructuralMarkerAdditions(t *testing.T) {
 	}
 }
 
+func TestRebasePRRejectsPythonFunctionMarkerAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-python-structural"
+	const ancestor = "def f():\n    - existing\n"
+	const incoming = "def f():\n    - existing\n    - from_pr\n"
+	const upstream = "def f():\n    - existing\n    - from_base\n"
+	origin := initAdjacentConflictPRBranch(t, prBranch, "logic.py", ancestor, incoming, upstream, "")
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 64)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "64",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "needs agentic remediation") {
+		t.Fatalf("stdout = %q, want Python structural additions routed to agentic remediation", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want none after the aborted Python conflict", unmerged)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, "logic.py"))
+	if err != nil {
+		t.Fatalf("read original PR Python file: %v", err)
+	}
+	if string(got) != incoming {
+		t.Fatalf("origin Python file = %q, want PR branch left untouched", got)
+	}
+}
+
 // TestRebasePRConflictDefersAndLeavesCleanWorktree proves a rebase conflict
 // is itself treated as substantive (routes to needsAgent) AND that the
 // worktree is left in a clean, non-mid-rebase state — never a broken
@@ -638,7 +685,7 @@ func TestMergeAdjacentLineInsertionsPreservesDistinctQuotedEntries(t *testing.T)
 	upstream := "items = [\n  \"existing\",\n  \"from-base\",\n]\n"
 	incoming := "items = [\n  \"existing\",\n  \"from-pr\",\n]\n"
 
-	merged, ok := mergeAdjacentLineInsertions([]byte(ancestor), []byte(upstream), []byte(incoming))
+	merged, ok := mergeAdjacentLineInsertions("items.go", []byte(ancestor), []byte(upstream), []byte(incoming))
 	if !ok {
 		t.Fatal("mergeAdjacentLineInsertions() rejected comma-terminated quoted entries")
 	}
@@ -651,6 +698,7 @@ func TestMergeAdjacentLineInsertionsPreservesDistinctQuotedEntries(t *testing.T)
 func TestMergeAdjacentLineInsertionsRejectsUnsafeCases(t *testing.T) {
 	tests := []struct {
 		name     string
+		path     string
 		ancestor string
 		upstream string
 		incoming string
@@ -692,6 +740,19 @@ func TestMergeAdjacentLineInsertionsRejectsUnsafeCases(t *testing.T) {
 			incoming: "items:\n  - existing\n  - pr",
 		},
 		{
+			name:     "python function body is structural",
+			path:     "logic.py",
+			ancestor: "def f():\n    - existing\n",
+			upstream: "def f():\n    - existing\n    - from_base\n",
+			incoming: "def f():\n    - existing\n    - from_pr\n",
+		},
+		{
+			name:     "malformed YAML is not a verified list",
+			ancestor: "items:\n  - existing\nbroken: [\n",
+			upstream: "items:\n  - existing\n  - from-base\nbroken: [\n",
+			incoming: "items:\n  - existing\n  - from-pr\nbroken: [\n",
+		},
+		{
 			name:     "executable block is structural",
 			ancestor: "func run() {\n\talreadyRunning()\n}\n",
 			upstream: "func run() {\n\talreadyRunning()\n\tfromBase()\n}\n",
@@ -731,7 +792,11 @@ func TestMergeAdjacentLineInsertionsRejectsUnsafeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if merged, ok := mergeAdjacentLineInsertions([]byte(tt.ancestor), []byte(tt.upstream), []byte(tt.incoming)); ok {
+			path := tt.path
+			if path == "" {
+				path = "items.yaml"
+			}
+			if merged, ok := mergeAdjacentLineInsertions(path, []byte(tt.ancestor), []byte(tt.upstream), []byte(tt.incoming)); ok {
 				t.Fatalf("mergeAdjacentLineInsertions() = %q, true; want rejection", merged)
 			}
 		})
