@@ -19,6 +19,9 @@ func TestRunVersionsHuman(t *testing.T) {
 	}
 	for _, want := range []string{
 		"goobers support matrix",
+		"DSL versions:",
+		supportmatrix.CurrentDSLVersion,
+		string(supportmatrix.LevelSupported),
 		"minimum Go toolchain:",
 		supportmatrix.Get().MinGoVersion,
 		"supported platforms:",
@@ -47,6 +50,9 @@ func TestRunVersionsJSON(t *testing.T) {
 	}
 	if len(got.Platforms) != len(supportmatrix.Get().Platforms) {
 		t.Errorf("platforms = %d, want %d", len(got.Platforms), len(supportmatrix.Get().Platforms))
+	}
+	if len(got.DSLVersions) != len(supportmatrix.GetDSL()) {
+		t.Errorf("DSL versions = %d, want %d", len(got.DSLVersions), len(supportmatrix.GetDSL()))
 	}
 	if got.Host != supportmatrix.CurrentHost() {
 		t.Errorf("host = %+v, want %+v", got.Host, supportmatrix.CurrentHost())

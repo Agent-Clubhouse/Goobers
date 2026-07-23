@@ -22,7 +22,9 @@ func TestParseFlagsExplicit(t *testing.T) {
 	// Explicit values bypass the git-derived defaults, so this is hermetic.
 	opts, err := parseFlags([]string{
 		"-version", "v9.9.9", "-commit", "abc123", "-date", "2026-01-02T03:04:05Z",
-		"-targets", "windows/amd64", "-output", "out", "-previous-features", "previous.json",
+		"-targets", "windows/amd64", "-output", "out",
+		"-previous-features", "previous-features.json",
+		"-previous-support-matrix", "previous-support.json",
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -30,9 +32,12 @@ func TestParseFlagsExplicit(t *testing.T) {
 	if opts.version != "v9.9.9" || opts.commit != "abc123" || opts.date != "2026-01-02T03:04:05Z" {
 		t.Errorf("metadata not honored: %+v", opts)
 	}
-	if opts.outDir != "out" || opts.previousFeatures != "previous.json" ||
+	if opts.outDir != "out" || opts.previousFeatures != "previous-features.json" ||
 		len(opts.targets) != 1 || opts.targets[0].String() != "windows/amd64" {
 		t.Errorf("release options not honored: %+v", opts)
+	}
+	if opts.previousSupportMatrix != "previous-support.json" {
+		t.Errorf("previous support matrix = %q", opts.previousSupportMatrix)
 	}
 	if !opts.checksums {
 		t.Error("checksums should default true")
@@ -47,6 +52,14 @@ func TestParseFlagsRequiresExplicitFeatureBaseline(t *testing.T) {
 	args := append(append([]string(nil), metadata...), "-previous-features", "previous.json", "-first-feature-snapshot")
 	if _, err := parseFlags(args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("conflicting baseline error = %v", err)
+	}
+	args = append(append([]string(nil), metadata...), "-previous-features", "previous.json")
+	if _, err := parseFlags(args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "support-matrix baseline required") {
+		t.Fatalf("missing support baseline error = %v", err)
+	}
+	args = append(append([]string(nil), metadata...), "-first-feature-snapshot", "-previous-support-matrix", "previous.json")
+	if _, err := parseFlags(args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("conflicting support baseline error = %v", err)
 	}
 }
 
@@ -97,19 +110,38 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
+	notes, err := os.ReadFile(filepath.Join(out, releaseNotesFile))
+	if err != nil {
+		t.Fatalf("%s: %v", releaseNotesFile, err)
+	}
+	for _, heading := range []string{"## DSL feature-support delta", "## DSL support-matrix delta"} {
+		if !strings.Contains(string(notes), heading) {
+			t.Errorf("release notes missing %q:\n%s", heading, notes)
+		}
+	}
+	snapshot, err := readSupportSnapshot(filepath.Join(out, supportSnapshotFile))
+	if err != nil {
+		t.Fatalf("%s: %v", supportSnapshotFile, err)
+	}
+	if snapshot.Release != "v1.2.3" {
+		t.Errorf("support snapshot release = %q", snapshot.Release)
+	}
 	if !strings.Contains(string(sums), featureSnapshotFile) {
 		t.Errorf("SHA256SUMS missing the feature snapshot:\n%s", sums)
 	}
+	if !strings.Contains(string(sums), supportSnapshotFile) {
+		t.Errorf("SHA256SUMS missing the support snapshot:\n%s", sums)
+	}
 	// The intermediate binary was cleaned up, leaving only release assets.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 4 {
+	if len(entries) != 5 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want archive, checksums, release notes, and feature snapshot", names)
+		t.Errorf("dist has %v, want archive, checksums, release notes, feature snapshot, and support snapshot", names)
 	}
-	for _, name := range []string{releaseNotesFile, featureSnapshotFile} {
+	for _, name := range []string{releaseNotesFile, featureSnapshotFile, supportSnapshotFile} {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("missing release metadata %s: %v", name, err)
 		}

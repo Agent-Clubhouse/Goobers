@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -30,8 +31,39 @@ func TestFeaturesListsBuildMatrix(t *testing.T) {
 			t.Errorf("feature %q missing from output", feature.ID)
 		}
 	}
-	if footer := strconv.Itoa(len(all)) + " feature(s)"; !strings.Contains(stdout, footer) {
+	if footer := strconv.Itoa(len(all)) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
 		t.Errorf("output missing %q count footer:\n%s", footer, stdout)
+	}
+}
+
+func TestFeaturesScopesToDSLVersion(t *testing.T) {
+	version := supportmatrix.CurrentDSLVersion
+	code, stdout, stderr := runArgs(t, "features", "--dsl-version", version)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "DSL VERSION") || !strings.Contains(stdout, version) {
+		t.Fatalf("output missing scoped DSL version:\n%s", stdout)
+	}
+	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if footer := strconv.Itoa(len(features)) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
+		t.Errorf("output missing %q count footer:\n%s", footer, stdout)
+	}
+}
+
+func TestFeaturesRejectsUnknownDSLVersion(t *testing.T) {
+	code, stdout, stderr := runArgs(t, "features", "--dsl-version", "9.9")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, `unknown DSL version "9.9"`) {
+		t.Fatalf("stderr = %q", stderr)
 	}
 }
 

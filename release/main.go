@@ -25,14 +25,15 @@ func main() {
 }
 
 type options struct {
-	version          string
-	commit           string
-	date             string
-	outDir           string
-	previousFeatures string
-	targets          []Target
-	checksums        bool
-	skipUnbuildable  bool
+	version               string
+	commit                string
+	date                  string
+	outDir                string
+	previousFeatures      string
+	previousSupportMatrix string
+	targets               []Target
+	checksums             bool
+	skipUnbuildable       bool
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -73,12 +74,23 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	checksumAssets := append([]string(nil), archives...)
 	if len(archives) > 0 {
-		notesPath, snapshotPath, err := writeReleaseMetadata(opts.version, opts.previousFeatures, opts.outDir)
+		notesPath, snapshotPaths, err := writeReleaseMetadata(
+			opts.version,
+			opts.previousFeatures,
+			opts.previousSupportMatrix,
+			opts.outDir,
+		)
 		if err != nil {
 			return err
 		}
-		checksumAssets = append(checksumAssets, snapshotPath)
-		_, _ = fmt.Fprintf(stdout, "wrote %s and %s\n", filepath.Base(notesPath), filepath.Base(snapshotPath))
+		checksumAssets = append(checksumAssets, snapshotPaths...)
+		_, _ = fmt.Fprintf(
+			stdout,
+			"wrote %s, %s, and %s\n",
+			filepath.Base(notesPath),
+			filepath.Base(snapshotPaths[0]),
+			filepath.Base(snapshotPaths[1]),
+		)
 	}
 
 	if opts.checksums && len(checksumAssets) > 0 {
@@ -111,9 +123,10 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
 		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
+		previousSupport  = fs.String("previous-support-matrix", "", "dsl-support-matrix.json from the previous release")
 		firstFeatures    = fs.Bool("first-feature-snapshot", false, "use an empty feature baseline for the first recorded snapshot")
 		targetCSV        = fs.String("targets", "", "comma-separated os/arch list (default: the full release matrix)")
-		checksums        = fs.Bool("checksums", true, "write a SHA256SUMS manifest over binary archives and the feature snapshot")
+		checksums        = fs.Bool("checksums", true, "write a SHA256SUMS manifest over binary archives and support snapshots")
 		skip             = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -121,10 +134,11 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 
 	opts := options{
-		outDir:           *outDir,
-		previousFeatures: strings.TrimSpace(*previousFeatures),
-		checksums:        *checksums,
-		skipUnbuildable:  *skip,
+		outDir:                *outDir,
+		previousFeatures:      strings.TrimSpace(*previousFeatures),
+		previousSupportMatrix: strings.TrimSpace(*previousSupport),
+		checksums:             *checksums,
+		skipUnbuildable:       *skip,
 	}
 
 	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--always", "--dirty"), "dev")
@@ -136,6 +150,10 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		return options{}, fmt.Errorf("feature baseline required: pass -previous-features or explicitly acknowledge -first-feature-snapshot")
 	case opts.previousFeatures != "" && *firstFeatures:
 		return options{}, fmt.Errorf("-previous-features and -first-feature-snapshot are mutually exclusive")
+	case opts.previousFeatures != "" && opts.previousSupportMatrix == "":
+		return options{}, fmt.Errorf("support-matrix baseline required with -previous-features: pass -previous-support-matrix")
+	case *firstFeatures && opts.previousSupportMatrix != "":
+		return options{}, fmt.Errorf("-previous-support-matrix and -first-feature-snapshot are mutually exclusive")
 	}
 
 	targets, err := parseTargets(*targetCSV)
