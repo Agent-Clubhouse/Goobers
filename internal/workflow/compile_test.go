@@ -677,6 +677,77 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 	}
 }
 
+func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "apply",
+		Tasks: []apiv1.Task{{
+			Name:          "apply",
+			Type:          apiv1.TaskDeterministic,
+			Goal:          "apply verdict",
+			Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}},
+			PolicyActions: []string{"publish-review", "route-verdict", "close-pr"},
+			Capabilities:  []string{string(capability.GitHubPRReview)},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "github:pr:write", but the task does not declare it`) {
+		t.Fatalf("Compile error = %v, want missing policy-action capability", err)
+	}
+
+	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite))
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("policy actions with their capabilities should compile: %v", err)
+	}
+}
+
+func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "apply",
+		Tasks: []apiv1.Task{{
+			Name:         "apply",
+			Type:         apiv1.TaskDeterministic,
+			Goal:         "apply verdict",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}},
+			Capabilities: []string{string(capability.GitHubPRWrite), string(capability.GitHubPRReview)},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `task "apply" command "goobers apply-verdict" prescribes policy action "close-pr" but policyActions does not declare it`) {
+		t.Fatalf("Compile error = %v, want missing policy-action declaration", err)
+	}
+}
+
+func TestCompileRejectsUnknownAndDuplicatePolicyActions(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "act",
+		Tasks: []apiv1.Task{{
+			Name:          "act",
+			Type:          apiv1.TaskAgentic,
+			Goal:          "act",
+			PolicyActions: []string{"rework-pr", "retarget-pr", "rework-pr"},
+			Capabilities:  []string{string(capability.RepoPush)},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	if err == nil {
+		t.Fatal("Compile should reject invalid policy actions")
+	}
+	for _, want := range []string{
+		`task "act" declares unknown policy action "retarget-pr"`,
+		`task "act" declares duplicate policy action "rework-pr"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Compile error = %v, want containing %q", err, want)
+		}
+	}
+}
+
 // TestCompileRejectsGateVocabMismatch proves the #132 compile-time check-param
 // validation hook: a gate declaring params.equals against the wrong output
 // vocabulary for its check now fails Compile instead of compiling clean and

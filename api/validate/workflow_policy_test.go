@@ -22,6 +22,8 @@ func TestWorkflowSchemaAcceptsExecutionPolicyFields(t *testing.T) {
 				"timeoutSeconds": 30,
 				"limits": {"maxTokens": 1000, "maxCostUSD": 1.5},
 				"run": {"command": ["make", "build"], "env": {"CI": "true"}},
+				"policyActions": ["rework-pr"],
+				"capabilities": ["repo:push"],
 				"next": "quality"
 			}],
 			"gates": [{

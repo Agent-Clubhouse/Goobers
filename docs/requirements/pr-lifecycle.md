@@ -363,6 +363,36 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   telemetry can distinguish "the machine declined for a stated reason" from a
   failure — the loop's health is measured by drain rate, not green rate.
 
+## Capability-vs-policy audit
+
+`Task.policyActions` is the closed, auditable vocabulary for actions that a
+policy, persona, or verdict can direct a task to perform. The workflow compiler
+maps each action to its canonical capability and rejects an unknown action, a
+known policy-bearing command that omits an action declaration, or an action
+whose task lacks the required grant. The shipped self-host PR lifecycle
+workflows audit as follows:
+
+| Action | Workflow / task | Required capability | Status |
+|---|---|---|---|
+| Publish the verdict as a native review | `merge-review/apply-verdict` | `github:pr:review` | Covered |
+| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Close a moot, duplicate, or byte-identical superseded PR | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Merge a PR after all safety conjuncts hold | `merge-review/merge-pr` | `github:pr:merge` | Covered |
+| Watch an enqueued merge to a determined outcome | `merge-review/queue-watch` | `github:pr:merge` | Covered |
+| Route an evicted or timed-out queue entry to remediation | `merge-review/queue-watch` | `github:issues:write` | Covered |
+| Delete a merged head branch | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch` | `github:branch:delete` | Covered |
+| Close originating issues after merge | `merge-review/reconcile-post-merge`, `post-merge` | `github:issues:write` | Covered |
+| Fan out remediation to affected siblings | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
+| Demote a repeatedly refused lander | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
+| Update a clean behind-base PR through the provider API | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered |
+| Clear a completed remediation handoff | `pr-remediation/update-behind-pr`, `rebase-pr`, `push-remediated` | `github:issues:write` | Covered |
+| Rebase a PR branch | `pr-remediation/rebase-pr` | `repo:push` | Covered |
+| Rework a PR from reviewer findings | `pr-remediation/implement` | `repo:push` | Covered |
+| Publish a remediated PR branch | `pr-remediation/push-remediated` | `repo:push` | Covered |
+| Respond to every original finding | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
+| Escalate a non-converging or rejected remediation | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
+| Retarget a PR | Not present in the shipped policy/persona/verdict vocabulary | — | Not prescribed |
+
 ## Known gaps (prescriptive)
 
 Verified open issues this spec expects to be closed against these IDs:

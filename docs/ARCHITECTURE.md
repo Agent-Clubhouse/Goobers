@@ -190,7 +190,11 @@ Contract rules:
   tiers 1–2 by declaration validation at compile time plus **capability-scoped
   credential non-injection** (an undeclared capability's credentials are
   simply never materialized), and by sandbox policy from V1 (`SEC-042`,
-  `SEC-044`).
+  `SEC-044`). A task whose command, policy, persona, or verdict vocabulary can
+  prescribe an external mutation also declares that closed vocabulary in
+  `policyActions`; the compiler rejects unknown actions, omitted actions for
+  known policy-bearing commands, and actions whose canonical capability is not
+  declared.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 

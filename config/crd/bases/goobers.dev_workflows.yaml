@@ -303,6 +303,17 @@ spec:
                       - fail
                       - salvage
                       type: string
+                    policyActions:
+                      description: |-
+                        PolicyActions declares the closed vocabulary of externally mutating
+                        actions this task may perform because a policy, persona, or verdict
+                        prescribes them. The compiler maps each action to its required credential
+                        capabilities and fails closed when the task does not declare every grant.
+                        Known policy-bearing built-in commands must declare their complete action
+                        set so policy changes cannot silently outrun capability admission.
+                      items:
+                        type: string
+                      type: array
                     run:
                       description: |-
                         Run defines the code to execute for a deterministic task. Required when

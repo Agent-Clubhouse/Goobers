@@ -34,7 +34,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {

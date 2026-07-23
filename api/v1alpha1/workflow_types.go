@@ -146,6 +146,14 @@ type Task struct {
 	// closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// PolicyActions declares the closed vocabulary of externally mutating
+	// actions this task may perform because a policy, persona, or verdict
+	// prescribes them. The compiler maps each action to its required credential
+	// capabilities and fails closed when the task does not declare every grant.
+	// Known policy-bearing built-in commands must declare their complete action
+	// set so policy changes cannot silently outrun capability admission.
+	// +optional
+	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
 	// `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct

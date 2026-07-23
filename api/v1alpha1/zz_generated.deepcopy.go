@@ -975,6 +975,11 @@ func (in *Task) DeepCopyInto(out *Task) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.PolicyActions != nil {
+		in, out := &in.PolicyActions, &out.PolicyActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.RequiredCapabilities != nil {
 		in, out := &in.RequiredCapabilities, &out.RequiredCapabilities
 		*out = make([]string, len(*in))

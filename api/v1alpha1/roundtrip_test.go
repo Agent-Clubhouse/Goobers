@@ -109,6 +109,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 				{
 					Name: "implement", Type: TaskAgentic, Goober: "coder",
 					Goal: "Implement the item.", Capabilities: []string{"repo:push", "github:pr:write"},
+					PolicyActions:   []string{"rework-pr"},
 					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
 					TimeoutSeconds:  1800,
 					Limits:          &Limits{MaxTokens: 2_000_000, MaxCostUSD: 5},
