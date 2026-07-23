@@ -83,8 +83,8 @@ type Config struct {
 
 // WorkflowSource locates the workflow configuration independently of Repos.
 // A local-dir source reads Path directly. A git source reads a committed Ref
-// from either a local repository Path or a remote URL; remote sources require
-// their own token reference.
+// from either a local repository Path or a remote HTTPS URL; remote sources
+// require their own token reference.
 type WorkflowSource struct {
 	Kind  string    `json:"kind" yaml:"kind"`
 	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
@@ -538,6 +538,15 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
+	if c.WorkflowSource != nil &&
+		c.WorkflowSource.Token != nil &&
+		c.WorkflowSource.Token.Env != "" &&
+		stageEnvironmentAllows(c.WorkflowSource.Token.Env, c.Runner.EnvPassthrough) {
+		return fmt.Errorf(
+			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+			c.WorkflowSource.Token.Env,
+		)
+	}
 	return nil
 }
 
@@ -560,6 +569,9 @@ func (s WorkflowSource) Validate() error {
 			return fmt.Errorf("kind %q must set exactly one of path or url", s.Kind)
 		}
 		if hasURL {
+			if err := validateRemoteGitURL(s.URL); err != nil {
+				return err
+			}
 			if s.Token == nil {
 				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
@@ -588,6 +600,25 @@ func (s WorkflowSource) Validate() error {
 		}
 	}
 	return nil
+}
+
+func stageEnvironmentAllows(name string, extra []string) bool {
+	for _, allowed := range procenv.Vars {
+		if strings.EqualFold(name, allowed) {
+			return true
+		}
+	}
+	for _, allowed := range extra {
+		if strings.EqualFold(name, allowed) {
+			return true
+		}
+	}
+	for _, prefix := range procenv.Prefixes {
+		if len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateOTLPEndpoint(endpoint string, insecure bool) error {

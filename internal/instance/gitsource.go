@@ -37,7 +37,7 @@ type GitTokenSource interface {
 type GitSourceOptions struct {
 	// InstanceRoot owns the managed mirror and materialized snapshots.
 	InstanceRoot string
-	// Repository is either a local Git repository path or a remote Git URL.
+	// Repository is either a local Git repository path or a remote HTTPS URL.
 	Repository string
 	// Ref is the branch to track. Empty defaults to main.
 	Ref string
@@ -88,13 +88,6 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 
 	repository := opts.Repository
 	local := false
-	remote := false
-	if filepath.VolumeName(repository) == "" {
-		parsed, parseErr := url.Parse(repository)
-		at := strings.IndexByte(repository, '@')
-		colon := strings.IndexByte(repository, ':')
-		remote = (parseErr == nil && parsed.Scheme != "") || (at >= 0 && colon > at)
-	}
 	switch info, statErr := os.Stat(repository); {
 	case statErr == nil && !info.IsDir():
 		return nil, errors.New("git config source: local repository is not a directory")
@@ -104,8 +97,13 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 			return nil, fmt.Errorf("git config source: resolve local repository: %w", err)
 		}
 		local = true
-	case !remote && !os.IsNotExist(statErr):
-		return nil, fmt.Errorf("git config source: inspect repository: %w", statErr)
+	default:
+		if urlErr := validateRemoteGitURL(repository); urlErr != nil {
+			if !os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("git config source: inspect repository: %w", statErr)
+			}
+			return nil, fmt.Errorf("git config source: %w", urlErr)
+		}
 	}
 
 	sum := sha256.Sum256([]byte(repository))
@@ -131,6 +129,29 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 		return nil, errors.New("git config source: local repository must not configure credentials")
 	}
 	return source, nil
+}
+
+func validateRemoteGitURL(repository string) error {
+	parsed, err := url.Parse(repository)
+	if err != nil {
+		if !strings.HasPrefix(strings.ToLower(repository), "https://") {
+			return errors.New("remote git url must use https")
+		}
+		return fmt.Errorf("remote git url is invalid: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("remote git url must use https")
+	}
+	if parsed.Opaque != "" || parsed.Host == "" {
+		return errors.New("remote git url must be an absolute https url")
+	}
+	if parsed.User != nil {
+		return errors.New("remote git url must not include userinfo")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("remote git url must not include a query or fragment")
+	}
+	return nil
 }
 
 // NewWorkflowGitSource constructs a Git source from instance.yaml's
@@ -495,11 +516,24 @@ func (s *GitSource) remoteGitOutput(ctx context.Context, operation string, args 
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s credential: %w", capability.ConfigRepoRead, err)
 	}
-	env := append(gitSourceEnv(), credentials.GitEnv(s.askpass, token)...)
+	authHome := filepath.Dir(s.askpass)
+	env := append(gitSourceEnv(),
+		"HOME="+authHome,
+		"XDG_CONFIG_HOME="+authHome,
+		"USERPROFILE="+authHome,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_ALLOW_PROTOCOL=https",
+	)
+	if caFile := os.Getenv("SSL_CERT_FILE"); caFile != "" {
+		env = append(env, "GIT_SSL_CAINFO="+caFile)
+	}
+	env = append(env, credentials.GitEnv(s.askpass, token)...)
 	args = append([]string{
 		"-c", "credential.helper=",
-		"-c", "credential.interactive=never",
 		"-c", "http.extraHeader=",
+		"-c", "http.cookieFile=",
+		"-c", "http.saveCookies=false",
 	}, args...)
 	return s.gitOutputWithEnv(ctx, operation, env, args...)
 }

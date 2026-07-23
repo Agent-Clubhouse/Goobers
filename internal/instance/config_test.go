@@ -206,6 +206,51 @@ func TestWorkflowSourceValidation(t *testing.T) {
 			wantErr: "remote git token must reference exactly one",
 		},
 		{
+			name: "remote git file url",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "file:///tmp/config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "must use https",
+		},
+		{
+			name: "remote git ssh url",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "ssh://git@example.com/config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "must use https",
+		},
+		{
+			name: "remote git scp url",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "git@example.com:config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "must use https",
+		},
+		{
+			name: "remote git url with userinfo",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://user:password@example.com/config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "must not include userinfo",
+		},
+		{
+			name: "remote git url with credential query",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://example.com/config.git?token=secret",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "must not include a query or fragment",
+		},
+		{
 			name: "local git with token",
 			source: WorkflowSource{
 				Kind:  "git",
@@ -227,6 +272,45 @@ func TestWorkflowSourceValidation(t *testing.T) {
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigRejectsWorkflowSourceTokenExposedToStages(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		extra []string
+	}{
+		{
+			name:  "explicit passthrough",
+			token: "WORKFLOW_SOURCE_TOKEN",
+			extra: []string{"WORKFLOW_SOURCE_TOKEN"},
+		},
+		{
+			name:  "built-in exact allowlist",
+			token: "HOME",
+		},
+		{
+			name:  "built-in prefix allowlist",
+			token: "LC_WORKFLOW_SOURCE_TOKEN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				WorkflowSource: &WorkflowSource{
+					Kind:  WorkflowSourceKindGit,
+					URL:   "https://example.com/config.git",
+					Token: &TokenRef{Env: tt.token},
+				},
+				Runner: RunnerConfig{EnvPassthrough: tt.extra},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "must not be exposed to stages") {
+				t.Fatalf("Validate error = %v, want workflow-source token exposure rejection", err)
 			}
 		})
 	}
