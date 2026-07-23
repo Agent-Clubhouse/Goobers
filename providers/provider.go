@@ -1,3 +1,4 @@
+// Package providers defines repository and backlog provider integrations.
 package providers
 
 import (

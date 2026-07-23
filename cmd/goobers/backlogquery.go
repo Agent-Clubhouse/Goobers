@@ -64,13 +64,15 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --release] [pa
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
 	"a plain list (no --claim) does not require it.\n\n" +
-	"With --release, releases every claim this run holds in the local ledger\n" +
-	"(issue #234: a workflow that only reads/labels an item, never opening a\n" +
-	"PR or closing the issue — e.g. backlog-curation — must release its own\n" +
-	"claim explicitly, since issue-close-out's release is reached only by the\n" +
-	"implementation workflow). Idempotent: releasing claims this run does not\n" +
-	"hold (already released, e.g. re-run after a crash) is a no-op success, not\n" +
-	"an error. --claim and --release are mutually exclusive.\n\n" +
+	"With --release, removes the provider-visible claim marker and then releases\n" +
+	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
+	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
+	"issue — e.g. backlog-curation — must release its own claim explicitly,\n" +
+	"since issue-close-out's release is reached only by implementation. Claims\n" +
+	"require github:issues:write so the label mirror stays symmetric with the\n" +
+	"ledger. Idempotent: releasing claims this run does not hold (already\n" +
+	"released, e.g. re-run after a crash) is a no-op success, not an error.\n" +
+	"--claim and --release are mutually exclusive.\n\n" +
 	"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n" +
 	"claiming an issue whose referenced files are already contested by\n" +
 	"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n" +
@@ -89,7 +91,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
-	release := fs.Bool("release", false, "release this run's claim ledger leases early (issue #234) — no provider access, pure ledger operation")
+	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
 	fs.Usage = helpUsage(stderr, "backlog-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -123,7 +125,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}), apiReadCacheOption(root))
 
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
@@ -180,7 +182,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		openIssues map[string]bool
 	)
 	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil {
-		prProvider = newGitHubProvider(prToken)
+		prProvider = newGitHubProvider(prToken, apiReadCacheOption(root))
 		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
 		if err != nil {
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
@@ -713,20 +715,12 @@ func parseWorkItemID(id string) (int64, bool) {
 	return n, err == nil
 }
 
-// runBacklogQueryRelease implements `backlog-query --release` (issue #234):
-// an explicit, deterministic-path release of every claim this run holds, for a
-// workflow whose consuming stage neither opens a PR nor closes the issue
-// (backlog-curation's curate: it triages/labels the item and stops) — the
-// only existing release path, issue-close-out, is reached solely by the
-// implementation workflow after it opens a PR, so a curation run's claim was
-// otherwise held for the full lease (up to 6h now, was 2h — #235) even
-// though curation's own work on the item finished immediately.
-//
-// No provider/credential access at all — this is a pure ledger operation,
-// unlike --claim (which needs a token to list/mirror against the provider).
-// That keeps a curation workflow's release stage free of any capability
-// declaration, and keeps ledger mutations on the deterministic path per the
-// issue's own fix-shape guidance.
+// runBacklogQueryRelease implements `backlog-query --release` (issues
+// #234/#1003): an explicit, deterministic-path release of every claim this run
+// holds for a workflow whose consuming stage neither opens a PR nor closes the
+// issue. Curation still needs the early ledger release added by #234, but it
+// must also remove the provider-visible marker that --claim added; otherwise
+// the authoritative ledger becomes free while goobers:claimed leaks forever.
 func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 	runID, _, err := providerRunContext()
 	if err != nil {
@@ -742,15 +736,35 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
-		// ForRunAll + Release, not a blind Release-by-guess: idempotency (issue
-		// #234's acceptance criterion) requires distinguishing "this run
-		// holds nothing to release" (a no-op success — already released, or
-		// a crash-resume of this same stage) from an actual release, without
-		// needing the caller to already know the item id. Release itself is
-		// already a no-op on an unheld item (its own doc comment), so this
-		// is belt-and-suspenders for the "nothing to report" stdout case
-		// below, not required for correctness.
-		for _, entry := range ledger.ForRunAll(runID) {
+		entries := ledger.ForRunAll(runID)
+		if len(entries) == 0 {
+			return nil
+		}
+
+		repo, rerr := providerRepo(root)
+		if rerr != nil {
+			return rerr
+		}
+		token, rerr := providerToken(capability.GitHubIssuesWrite)
+		if rerr != nil {
+			return rerr
+		}
+		issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		ctx, cancel := providerCommandContext()
+		defer cancel()
+
+		for _, entry := range entries {
+			// End the provider claim epoch while the claim lock still prevents a
+			// new local owner from claiming this item. Keep the ledger entry if
+			// provider cleanup fails so a retry retains the item ID.
+			if _, rerr := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+				Repository:       repo,
+				ID:               entry.ItemID,
+				RunID:            runID,
+				LedgerAuthorized: true,
+			}); rerr != nil {
+				return fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
+			}
 			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}

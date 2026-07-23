@@ -94,7 +94,12 @@ func TestClaimWinnerSeesPage2Breadcrumb(t *testing.T) {
 	}
 	page1 := mustJSON(t, p1)
 	page2 := mustJSON(t, []map[string]interface{}{{"id": 31, "body": claimBreadcrumb("run-winner"), "user": map[string]string{"login": "goobers"}}})
-	p, repo := paginationProvider(t, paginatedJSON(t, [][]byte{page1, page2}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(mustJSON(t, map[string]string{"login": "goobers"}))
+	})
+	mux.Handle("/repos/acme/app/issues/7/comments", paginatedJSON(t, [][]byte{page1, page2}))
+	p, repo := paginationProvider(t, mux)
 
 	winner, ok, err := p.claimWinner(context.Background(), repo, "7")
 	if err != nil {

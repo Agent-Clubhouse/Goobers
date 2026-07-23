@@ -121,6 +121,29 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 	}
 }
 
+func TestIngestRunTreatsRunResumedAsActive(t *testing.T) {
+	tmp := t.TempDir()
+	runID := "11111111111111111111111111111111"
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started","status":"running"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"run.finished","status":"escalated"`),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"run.resumed","status":"escalated","target":"implement","actor":"operator@example.test","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`),
+	}, "\n") + "\n"
+	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, "")
+	db := openTestDB(t, tmp)
+
+	if err := db.IngestRun(runDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	runs, err := db.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("Runs: %v, %#v", err, runs)
+	}
+	if runs[0].Status != "" || !runs[0].FinishedAt.IsZero() || runs[0].DurationMs != 0 {
+		t.Fatalf("resumed rollup row = %#v, want active status with no finish", runs[0])
+	}
+}
+
 // TestSeededFailingRunYieldsRightErrorClass covers the acceptance criterion
 // with additional error codes beyond the main fixture, including the
 // heuristic-fallback and unknown paths.
@@ -516,6 +539,15 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 	}
 	if events[1].Name != "harness.model_response" || events[1].Attributes["tokens"] != "128" {
 		t.Fatalf("unexpected span event 1: %#v", events[1])
+	}
+
+	invocations, err := db.AgentInvocations(runID)
+	if err != nil {
+		t.Fatalf("AgentInvocations: %v", err)
+	}
+	if len(invocations) != 1 || invocations[0].Stage != "scan" ||
+		invocations[0].Traversal != nil || invocations[0].Attempt == nil || *invocations[0].Attempt != 1 {
+		t.Fatalf("unexpected unmatched agent invocation: %#v", invocations)
 	}
 }
 

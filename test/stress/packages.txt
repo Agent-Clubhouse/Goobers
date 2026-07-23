@@ -1,0 +1,5 @@
+# Curated timing/goroutine-sensitive packages. Keep this list small: every
+# entry runs under the race detector twenty times in the nightly stress tier.
+
+# Embedded scheduler and claim ledger; site of the timing incident tracked by #21.
+./internal/localscheduler

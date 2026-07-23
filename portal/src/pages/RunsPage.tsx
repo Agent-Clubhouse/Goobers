@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { routeHash } from "../routing";
+import { routeHash, type RunRouteFilters } from "../routing";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
@@ -11,13 +11,15 @@ const FILTERS: readonly RunsFilter[] = ["all", "active", "attention", "complete"
 
 export function RunsPage({
   client,
+  filters,
   standalone,
 }: {
   client: DaemonClient;
+  filters?: RunRouteFilters;
   standalone: boolean;
 }) {
   const [filter, setFilter] = useState<RunsFilter>("all");
-  const query = useRunsHistory(client, filter);
+  const query = useRunsHistory(client, filter, filters);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -37,11 +39,20 @@ export function RunsPage({
         <p className="page-kicker">Journal</p>
         <h1>Runs</h1>
         <p>
-          {standalone
-            ? "Every execution recorded in this instance, filtered and paginated by the read service."
-            : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
+          {filters
+            ? `Executions behind the selected Insight scope${formatWindow(filters)}.`
+            : standalone
+              ? "Every execution recorded in this instance, filtered and paginated by the read service."
+              : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
         </p>
       </header>
+
+      {filters && (
+        <div aria-label="Insight drill-through scope" className="run-scope-strip">
+          <strong>{formatScope(filters)}</strong>
+          <a href={routeHash({ page: "runs" })}>Clear Insight scope</a>
+        </div>
+      )}
 
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
@@ -88,6 +99,49 @@ export function RunsPage({
       </section>
     </>
   );
+}
+
+function formatScope(filters: RunRouteFilters): string {
+  let scope: string;
+  if (filters.stage) {
+    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
+  } else if (filters.workflow) {
+    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
+  } else {
+    scope = filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
+  }
+  return `${scope}${formatPopulation(filters)}`;
+}
+
+function formatPopulation(filters: RunRouteFilters): string {
+  if (filters.population === "measured") {
+    return " · Measured attempts";
+  }
+  switch (filters.outcome) {
+    case "terminal":
+      return " · Terminal outcomes";
+    case "success":
+      return " · Successful outcomes";
+    case "failure":
+      return " · Failed outcomes";
+    case "other":
+      return " · Other outcomes";
+    default:
+      return filters.population === "attempts" ? " · All attempts" : "";
+  }
+}
+
+function formatWindow(filters: RunRouteFilters): string {
+  if (filters.since && filters.until) {
+    return ` from ${formatTimestamp(filters.since)} to ${formatTimestamp(filters.until)}`;
+  }
+  if (filters.since) {
+    return ` since ${formatTimestamp(filters.since)}`;
+  }
+  if (filters.until) {
+    return ` through ${formatTimestamp(filters.until)}`;
+  }
+  return "";
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {

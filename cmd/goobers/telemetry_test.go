@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -68,6 +70,39 @@ func writeFixtureRunWithErrorForGaggle(t *testing.T, l instance.Layout, runID, g
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
+
+	span := telemetry.SpanRecord{
+		Schema:     telemetry.SpanSchema,
+		TraceID:    runID,
+		SpanID:     "0123456789abcdef",
+		Name:       "task/implement",
+		Kind:       telemetry.SpanKindTask,
+		StartTime:  time.Now().UTC().Add(-time.Minute),
+		EndTime:    time.Now().UTC().Add(time.Minute),
+		Status:     "error",
+		Attributes: map[string]string{telemetry.AttrStage: "implement", telemetry.AttrAttemptNumber: "1"},
+		Events: []telemetry.SpanEventRecord{{
+			Name: telemetry.GenAIModelUsageEventName,
+			Attributes: map[string]string{
+				telemetry.AttrGenAIResponseModel:     "gpt-5.4",
+				telemetry.AttrGenAIUsageInputTokens:  "120",
+				telemetry.AttrGenAIUsageOutputTokens: "30",
+				telemetry.AttrCopilotPremiumRequests: "1",
+				telemetry.AttrUsageCostUSD:           "0.25",
+			},
+		}},
+	}
+	spanData, err := json.Marshal(span)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanDir := filepath.Join(l.RunsDir(), runID, "spans")
+	if err := os.MkdirAll(spanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestTelemetryStatsAfterRun hand-writes its fixture run directly to disk
@@ -83,7 +118,9 @@ func TestTelemetryStatsAfterRun(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "WORKFLOW STATS") || !strings.Contains(stdout, "default-implement") {
+	if !strings.Contains(stdout, "WORKFLOW STATS") ||
+		!strings.Contains(stdout, "GAGGLE") ||
+		!strings.Contains(stdout, "default-implement") {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }
@@ -117,28 +154,117 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		got.Runs[0].TotalRuns != 1 || got.Runs[0].FailedRuns != 1 {
 		t.Fatalf("run stats = %#v", got.Runs)
 	}
+	if len(got.Gaggles) != 1 || got.Gaggles[0].Gaggle != "example" ||
+		got.Gaggles[0].TotalRuns != 1 || got.Gaggles[0].FailedRuns != 1 {
+		t.Fatalf("gaggle stats = %#v", got.Gaggles)
+	}
 	if len(got.Stages) != 1 || got.Stages[0].Stage != "implement" ||
 		got.Stages[0].TotalAttempts != 1 || got.Stages[0].FailedAttempts != 1 {
 		t.Fatalf("stage stats = %#v", got.Stages)
 	}
+	if len(got.Models) != 1 || got.Models[0].Model != "gpt-5.4" ||
+		got.Models[0].UsageSamples != 1 ||
+		got.Models[0].InputTokenSamples != 1 || got.Models[0].InputTokens != 120 ||
+		got.Models[0].OutputTokenSamples != 1 || got.Models[0].OutputTokens != 30 ||
+		got.Models[0].PremiumRequestSamples != 1 || got.Models[0].CopilotPremiumRequests != 1 ||
+		got.Models[0].CostSamples != 1 || got.Models[0].CostUSD != 0.25 {
+		t.Fatalf("model stats = %#v", got.Models)
+	}
 
 	var document struct {
-		Runs   []json.RawMessage `json:"runs"`
-		Stages []json.RawMessage `json:"stages"`
+		Gaggles []json.RawMessage `json:"gaggles"`
+		Runs    []json.RawMessage `json:"runs"`
+		Stages  []json.RawMessage `json:"stages"`
+		Models  []json.RawMessage `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
 	}
+	assertJSONObjectKeys(t, document.Gaggles[0],
+		"gaggle", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
+		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+	)
 	assertJSONObjectKeys(t, document.Runs[0],
-		"workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
+		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 	)
 	assertJSONObjectKeys(t, document.Stages[0],
-		"stage", "totalAttempts", "succeededAttempts", "failedAttempts",
+		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
 		"tokenSamples", "costSamples", "retryWasteAttempts",
 	)
+	assertJSONObjectKeys(t, document.Models[0],
+		"model", "usageSamples",
+		"inputTokenSamples", "inputTokens",
+		"outputTokenSamples", "outputTokens",
+		"premiumRequestSamples", "copilotPremiumRequests",
+		"costSamples", "costUSD",
+	)
+}
+
+func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	db, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	started := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	for i, fixture := range []struct {
+		runID, model, version string
+	}{
+		{"agent-run-1", "gpt-5.6-sol", "copilot version 1.2.3"},
+		{"agent-run-2", "claude-sonnet-5", "copilot version 1.2.3"},
+	} {
+		if _, err := raw.Exec(`
+			INSERT INTO runs (
+				run_id, workflow, workflow_version, gaggle, status, started_at, finished_at, duration_ms
+			) VALUES (?, 'implement', 1, 'example', 'completed', ?, ?, 10)`,
+			fixture.runID, started, started); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`
+			INSERT INTO stage_attempts (
+				run_id, stage, traversal, attempt, status, started_at, finished_at, duration_ms
+			) VALUES (?, 'implement', 1, 1, 'success', ?, ?, 10)`,
+			fixture.runID, started, started); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`
+			INSERT INTO agent_invocations (
+				run_id, span_id, kind, stage, traversal, attempt, model, harness_version
+			) VALUES (?, ?, 'task', 'implement', 1, 1, ?, ?)`,
+			fixture.runID, fmt.Sprintf("span-%d", i), fixture.model, fixture.version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, stdout, stderr := runArgs(
+		t, "telemetry", "stats", "--json",
+		"--model=gpt-5.6-sol", "--harness-version=copilot version 1.2.3",
+		"--group-by=model", "--group-by=harness-version", root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var result readservice.TelemetryStatsResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Runs) != 1 || result.Runs[0].Model != "gpt-5.6-sol" ||
+		result.Runs[0].HarnessVersion != "copilot version 1.2.3" ||
+		len(result.Stages) != 1 || result.Stages[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("provenance stats = %#v", result)
+	}
 }
 
 func TestTelemetryErrorsJSON(t *testing.T) {
@@ -175,7 +301,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"runs":[],"stages":[]}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"models":[]}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

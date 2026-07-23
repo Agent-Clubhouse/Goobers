@@ -537,16 +537,16 @@ func findCLICommandIn(commands []cliCommand, name string) (cliCommand, bool) {
 	return cliCommand{}, false
 }
 
-func (command cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
+func (c cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
-		if subcommand, ok := findCLICommandIn(command.subcommands, args[0]); ok {
+		if subcommand, ok := findCLICommandIn(c.subcommands, args[0]); ok {
 			return subcommand.dispatch(args[1:], stdout, stderr)
 		}
 	}
-	if command.providerStage {
-		return runProviderStageCommand(command.names[0], command.resultFile, command.run, args, stdout, stderr)
+	if c.providerStage {
+		return runProviderStageCommand(c.names[0], c.resultFile, c.run, args, stdout, stderr)
 	}
-	return command.run(args, stdout, stderr)
+	return c.run(args, stdout, stderr)
 }
 
 func cliSurfaceActions() []apicontract.SurfaceAction {

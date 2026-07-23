@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -186,6 +187,99 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 		events[137].Name != telemetry.EventWorkcopyDiskUsage {
 		t.Fatalf("teardown metric events = %#v, %#v", events[136], events[137])
 	}
+}
+
+func TestAgenticTaskSpanCarriesProvenanceWhenPreparationFails(t *testing.T) {
+	exporter := telemetry.NewMemoryExporter()
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "runner-agent-provenance-test",
+		SpanExporter: exporter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "agent-provenance",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder",
+				Goal: "implement the change", Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invoked := false
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			invoked = true
+			return nil, errors.New("agent executor should not be resolved")
+		},
+		Worktrees: wtMgr,
+		RunsDir:   filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			return "", errors.New("repository unavailable")
+		},
+		Telemetry: client,
+		AgentProvenance: map[string]AgentProvenance{
+			"coder": {
+				Model:          "gpt-5.6-sol",
+				HarnessVersion: "copilot version 1.2.3",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+		},
+	}); err == nil {
+		t.Fatal("Start() error = nil, want workspace preparation failure")
+	}
+	if invoked {
+		t.Fatal("agent executor was resolved before workspace preparation completed")
+	}
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, span := range exporter.Spans() {
+		if span.Name() != "task/implement" {
+			continue
+		}
+		attrs := make(map[string]string)
+		for _, attr := range span.Attributes() {
+			attrs[string(attr.Key)] = attr.Value.Emit()
+		}
+		if attrs[telemetry.AttrModel] != "gpt-5.6-sol" ||
+			attrs[telemetry.AttrHarnessVersion] != "copilot version 1.2.3" {
+			t.Fatalf("agent provenance = %#v", attrs)
+		}
+		return
+	}
+	t.Fatal("task/implement span not exported")
 }
 
 type telemetryEmittingReviewer struct{}

@@ -32,3 +32,24 @@ func TestWorkflowCRDRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 		t.Fatalf("run schema CEL message = %q", validation.Message)
 	}
 }
+
+func TestWorkflowCRDValidatesDSLVersionShape(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/goobers.dev_workflows.yaml")
+	if err != nil {
+		t.Fatalf("read Workflow CRD: %v", err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("decode Workflow CRD: %v", err)
+	}
+
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	schema, ok := root.Properties["dslVersion"]
+	if !ok {
+		t.Fatal("Workflow CRD is missing dslVersion")
+	}
+	const wantPattern = `^[0-9]+\.[0-9]+$`
+	if schema.Pattern != wantPattern {
+		t.Fatalf("dslVersion pattern = %q, want %q", schema.Pattern, wantPattern)
+	}
+}

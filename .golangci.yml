@@ -19,6 +19,9 @@ linters:
     - unconvert     # redundant conversions
     - errorlint     # error-wrapping correctness
   settings:
+    staticcheck:
+      checks:
+        - all
     revive:
       rules:
         - name: exported

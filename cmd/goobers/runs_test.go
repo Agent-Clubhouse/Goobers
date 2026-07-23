@@ -39,10 +39,13 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 			t.Fatalf("status stdout = %q, want it to contain %q", statusStdout, want)
 		}
 	}
-	statusRunTableAt := strings.LastIndex(statusStdout, "\nRUN ID")
-	runsRunTableAt := strings.LastIndex(runsStdout, "\nRUN ID")
+	// Find the run-table header directly (not "\nRUN ID"): with a GA-clean
+	// config (#1196) `runs list` emits no leading warnings, so the table can
+	// start the output with no preceding newline.
+	statusRunTableAt := strings.LastIndex(statusStdout, "RUN ID")
+	runsRunTableAt := strings.LastIndex(runsStdout, "RUN ID")
 	if statusRunTableAt == -1 || runsRunTableAt == -1 ||
-		runsStdout[runsRunTableAt+1:] != statusStdout[statusRunTableAt+1:] {
+		runsStdout[runsRunTableAt:] != statusStdout[statusRunTableAt:] {
 		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
 	}
 	if !reflect.DeepEqual(warningLines(runsStdout), warningLines(statusStdout)) {

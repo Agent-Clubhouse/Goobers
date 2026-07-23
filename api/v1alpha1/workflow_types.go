@@ -429,6 +429,11 @@ type Workflow struct {
 	metav1.TypeMeta   `json:",inline" yaml:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
+	// DSLVersion is the language version this workflow was authored against.
+	// +kubebuilder:validation:Pattern="^[0-9]+\\.[0-9]+$"
+	// +optional
+	DSLVersion string `json:"dslVersion,omitempty" yaml:"dslVersion,omitempty"`
+
 	// +kubebuilder:validation:Required
 	Spec WorkflowSpec `json:"spec" yaml:"spec"`
 }

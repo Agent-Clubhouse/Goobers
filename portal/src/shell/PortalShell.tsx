@@ -71,6 +71,16 @@ export function PortalShell({ activeArea, children, navigate, standalone }: Port
             <Icon name="run" />
             <span className="nav-label">Runs</span>
           </button>
+          <button
+            aria-current={activeArea === "insight" ? "page" : undefined}
+            aria-label="Insight"
+            className={activeArea === "insight" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "insight" })}
+            type="button"
+          >
+            <Icon name="insight" />
+            <span className="nav-label">Insight</span>
+          </button>
         </nav>
 
         <div className="sidebar-status">

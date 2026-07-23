@@ -4,7 +4,6 @@ package operator
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,16 +17,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/testdep"
 )
 
-// TestEnvtestReconcile runs the reconciler against a real (envtest) API server:
-// create CR -> reconcile drives desired state + updates status (M9 acceptance).
-// Run it via `make test-envtest`, which selects the integration tier and
-// provisions the assets.
-func TestEnvtestReconcile(t *testing.T) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS not set; run `make test-envtest` to provision envtest binaries")
-	}
+// TestIntegrationEnvtestReconcile runs the reconciler against a real (envtest)
+// API server: create CR -> reconcile drives desired state + updates status (M9
+// acceptance). Run it via `make test-envtest`, which selects the integration
+// tier and provisions the assets.
+func TestIntegrationEnvtestReconcile(t *testing.T) {
+	testdep.RequireEnv(t, "KUBEBUILDER_ASSETS")
 
 	scheme, err := NewScheme()
 	if err != nil {

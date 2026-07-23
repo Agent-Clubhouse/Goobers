@@ -20,87 +20,86 @@ import (
 // (proven at the gate.Evaluator layer by
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall in internal/gate).
 
-// TestComputeReviewDigestIsSensitiveToEveryPinnedInput is issue #786's
-// stable-key contract: head, base, and every reviewer-visible sibling field
-// independently invalidate the cache.
-func TestComputeReviewDigestIsSensitiveToEveryPinnedInput(t *testing.T) {
-	siblings := []siblingPR{
-		{
-			Number: 11, URL: "https://example/pull/11", Head: "goobers/run-11", HeadSHA: "sha11",
-			Labels: []string{"priority", "goobers"}, CheckState: "pending",
-			Files:   []string{"internal/runner/run.go", "internal/runner/run_test.go"},
-			Overlap: []string{"internal/runner/run.go"},
-		},
-		{Number: 12, HeadSHA: "sha12", CheckState: "passing"},
+// TestComputeReviewDigestKeyedOnSelectedHeadAndBaseOnly is #1237's key
+// contract, superseding #786's "every sibling field invalidates": the digest
+// changes iff the SELECTED PR's own head or base SHA changes. The open-PR
+// sibling set is deliberately NOT an input — an unrelated PR opening, closing,
+// or churning must not invalidate a parked PR's stable verdict. Sibling
+// relevance is enforced separately and precisely by
+// cachedBlockerVerdictStillApplies (see its own test).
+func TestComputeReviewDigestKeyedOnSelectedHeadAndBaseOnly(t *testing.T) {
+	base := computeReviewDigest("sha10", "base10")
+	if base == "" {
+		t.Fatal("digest empty for a complete (head, base) key")
 	}
-	reordered := []siblingPR{
-		{Number: 12, HeadSHA: "sha12", CheckState: "passing"},
-		{
-			Number: 11, URL: "https://example/pull/11", Head: "goobers/run-11", HeadSHA: "sha11",
-			Labels: []string{"goobers", "priority"}, CheckState: "pending",
-			Files:   []string{"internal/runner/run_test.go", "internal/runner/run.go"},
-			Overlap: []string{"internal/runner/run.go"},
-		},
+	if got := computeReviewDigest("sha10", "base10"); got != base {
+		t.Fatalf("digest not deterministic for a fixed key: %q vs %q", got, base)
 	}
-	base := computeReviewDigest("sha10", "base10", siblings)
-
-	if got := computeReviewDigest("sha10", "base10", reordered); got != base {
-		t.Fatalf("digest changed with sibling or set-value order = %q, want stable digest %q", got, base)
-	}
-	if got := computeReviewDigest("sha10-changed", "base10", siblings); got == base {
+	if got := computeReviewDigest("sha10-changed", "base10"); got == base {
 		t.Fatalf("digest unchanged after selected head SHA changed, want it to differ from %q", base)
 	}
-	if got := computeReviewDigest("sha10", "base10-changed", siblings); got == base {
+	if got := computeReviewDigest("sha10", "base10-changed"); got == base {
 		t.Fatalf("digest unchanged after selected base SHA changed, want it to differ from %q", base)
-	}
-	mutations := []struct {
-		name   string
-		mutate func([]siblingPR)
-	}{
-		{name: "head SHA", mutate: func(s []siblingPR) { s[0].HeadSHA = "sha11-changed" }},
-		{name: "draft state", mutate: func(s []siblingPR) { s[0].Draft = true }},
-		{name: "labels", mutate: func(s []siblingPR) { s[0].Labels = append(s[0].Labels, "blocked") }},
-		{name: "check state", mutate: func(s []siblingPR) { s[0].CheckState = "passing" }},
-		{name: "URL", mutate: func(s []siblingPR) { s[0].URL = "https://example/pull/changed" }},
-		{name: "head ref", mutate: func(s []siblingPR) { s[0].Head = "goobers/run-11-renamed" }},
-		{name: "files", mutate: func(s []siblingPR) { s[0].Files = append(s[0].Files, "internal/runner/new.go") }},
-		{name: "overlap", mutate: func(s []siblingPR) { s[0].Overlap = nil }},
-	}
-	for _, tt := range mutations {
-		t.Run("sibling "+tt.name, func(t *testing.T) {
-			changed := append([]siblingPR(nil), siblings...)
-			changed[0].Labels = append([]string(nil), siblings[0].Labels...)
-			changed[0].Files = append([]string(nil), siblings[0].Files...)
-			changed[0].Overlap = append([]string(nil), siblings[0].Overlap...)
-			tt.mutate(changed)
-			if got := computeReviewDigest("sha10", "base10", changed); got == base {
-				t.Fatalf("digest unchanged after sibling %s changed, want it to differ from %q", tt.name, base)
-			}
-		})
-	}
-	fewerSiblings := siblings[:1]
-	if got := computeReviewDigest("sha10", "base10", fewerSiblings); got == base {
-		t.Fatalf("digest unchanged after the sibling set shrank, want it to differ from %q", base)
 	}
 }
 
 func TestComputeReviewDigestRejectsIncompleteKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		head     string
-		base     string
-		siblings []siblingPR
+		name string
+		head string
+		base string
 	}{
 		{name: "missing head", base: "base"},
 		{name: "missing base", head: "head"},
-		{name: "missing sibling head", head: "head", base: "base", siblings: []siblingPR{{Number: 11}}},
-		{name: "invalid sibling number", head: "head", base: "base", siblings: []siblingPR{{HeadSHA: "sha11"}}},
-		{name: "duplicate sibling number", head: "head", base: "base", siblings: []siblingPR{{Number: 11, HeadSHA: "sha11"}, {Number: 11, HeadSHA: "sha11"}}},
+		{name: "both missing"},
+		{name: "blank head", head: "  ", base: "base"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := computeReviewDigest(tt.head, tt.base, tt.siblings); got != "" {
+			if got := computeReviewDigest(tt.head, tt.base); got != "" {
 				t.Fatalf("computeReviewDigest() = %q, want empty unusable key", got)
+			}
+		})
+	}
+}
+
+// TestCachedBlockerVerdictStillApplies is #1237's relevance gate: a cached
+// blocked-on-sibling verdict may be reused only while at least one sibling it
+// named as a blocker is still an open, non-merge-demoted PR (mirrors
+// blockedOnSiblingStillBlocks). A verdict that names no blockers (a pass or a
+// content needs-changes) always still applies — its validity is captured by the
+// head/base digest, unaffected by any sibling churn.
+func TestCachedBlockerVerdictStillApplies(t *testing.T) {
+	blockedOn := func(prs ...int) apiv1.Verdict {
+		return apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges,
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityWarning, Message: "blocked on a prerequisite sibling",
+				Class: apiv1.FindingCrossPRBlocked, BlockingPRs: prs,
+			}},
+		}
+	}
+	openSibling := func(n int, labels ...string) siblingPR {
+		return siblingPR{Number: n, HeadSHA: "sha", Labels: labels}
+	}
+	tests := []struct {
+		name     string
+		verdict  apiv1.Verdict
+		siblings []siblingPR
+		want     bool
+	}{
+		{"blocker still open", blockedOn(11), []siblingPR{openSibling(11)}, true},
+		{"blocker resolved (no longer open)", blockedOn(11), []siblingPR{openSibling(12)}, false},
+		{"blocker demoted", blockedOn(11), []siblingPR{openSibling(11, mergeDemotedLabel)}, false},
+		{"one of two blockers still open", blockedOn(11, 12), []siblingPR{openSibling(11)}, true},
+		{"all blockers resolved", blockedOn(11, 12), []siblingPR{openSibling(99)}, false},
+		{"pass cites no blocker — churn irrelevant", apiv1.Verdict{Decision: apiv1.VerdictPass}, []siblingPR{openSibling(11)}, true},
+		{"content needs-changes cites no blocker", apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{{Severity: apiv1.SeverityError, Message: "fix this", Class: apiv1.FindingSubstantive}}}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cachedBlockerVerdictStillApplies(tt.verdict, tt.siblings); got != tt.want {
+				t.Fatalf("cachedBlockerVerdictStillApplies() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -160,10 +159,7 @@ func seedVerdictCacheFixture(t *testing.T) (root string, server *fakeGitHubServe
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 
-	wantDigest = computeReviewDigest("sha10head", "shamainbase", []siblingPR{{
-		Number: 11, URL: "https://example/pull/11", Head: "goobers/implementation/run-11", HeadSHA: "sha11head",
-		CheckState: "passing", Files: []string{"internal/runner/run.go"},
-	}})
+	wantDigest = computeReviewDigest("sha10head", "shamainbase")
 	return root, server, wantDigest
 }
 
@@ -257,25 +253,32 @@ func TestGatherSiblingContextBaseChangeMissesCache(t *testing.T) {
 	}
 }
 
-func TestGatherSiblingContextSiblingSetChangeMissesCache(t *testing.T) {
+// TestGatherSiblingContextSiblingChurnKeepsCache is #1237's headline
+// regression: an UNRELATED sibling changing (here #11's head — #11 is not a
+// blocker of the passing PR #10) must NOT invalidate #10's stable verdict. The
+// digest is keyed on #10's own head/base, and a pass cites no blockers, so the
+// cache still hits — no wasted re-review on sibling churn.
+func TestGatherSiblingContextSiblingChurnKeepsCache(t *testing.T) {
 	root, server, reviewedDigest := seedVerdictCacheFixture(t)
 	server.addComment(10, renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Digest: reviewedDigest, SourceRunID: "run-review",
 		HeadSHA: "sha10head", BaseSHA: "shamainbase",
 	}))
-	siblingFiles := []fakePRFile{{path: "internal/runner/run.go", status: "modified", additions: 1}}
-	server.setPRHead(11, "sha11head-changed", siblingFiles)
+	server.setPRHead(11, "sha11head-changed", []fakePRFile{{path: "internal/runner/run.go", status: "modified", additions: 1}})
 
 	result := readSiblingContextResultAfterGather(t, root)
-	if result.CachedVerdictJSON != "" {
-		t.Fatalf("cachedVerdictJson = %q, want empty after sibling set changed", result.CachedVerdictJSON)
+	if result.ReviewDigest != reviewedDigest {
+		t.Fatalf("reviewDigest = %q, want it stable at %q across unrelated sibling churn (#1237)", result.ReviewDigest, reviewedDigest)
 	}
-	if result.ReviewDigest == reviewedDigest {
-		t.Fatalf("reviewDigest = %q, want a new key after sibling set changed", result.ReviewDigest)
+	if result.CachedVerdictJSON == "" {
+		t.Fatalf("cachedVerdictJson is empty; want the stable verdict reused despite sibling churn (#1237)")
 	}
 }
 
-func TestGatherSiblingContextSameHeadStateChangeMissesCache(t *testing.T) {
+// TestGatherSiblingContextSiblingStateChurnKeepsCache is #1237: sibling
+// draft/label/check-state churn — none of which touch the selected PR's own
+// head/base — must not invalidate its stable verdict either.
+func TestGatherSiblingContextSiblingStateChurnKeepsCache(t *testing.T) {
 	tests := []struct {
 		name   string
 		before func(*fakeGitHubServer)
@@ -314,13 +317,47 @@ func TestGatherSiblingContextSameHeadStateChangeMissesCache(t *testing.T) {
 
 			tt.change(server)
 			current := readSiblingContextResultAfterGather(t, root)
-			if current.CachedVerdictJSON != "" {
-				t.Fatalf("cachedVerdictJson = %q, want empty after same-head sibling %s changed", current.CachedVerdictJSON, tt.name)
+			if current.ReviewDigest != reviewed.ReviewDigest {
+				t.Fatalf("reviewDigest = %q, want it stable at %q across sibling %s churn (#1237)", current.ReviewDigest, reviewed.ReviewDigest, tt.name)
 			}
-			if current.ReviewDigest == reviewed.ReviewDigest {
-				t.Fatalf("reviewDigest = %q, want a new key after same-head sibling %s changed", current.ReviewDigest, tt.name)
+			if current.CachedVerdictJSON == "" {
+				t.Fatalf("cachedVerdictJson is empty; want stable verdict reused despite sibling %s churn (#1237)", tt.name)
 			}
 		})
+	}
+}
+
+// TestGatherSiblingContextResolvedBlockerMissesCache is #1237's other half: a
+// cached blocked-on-sibling verdict whose NAMED blocker has resolved (here #11
+// merged/closed, so it is no longer an open sibling) must NOT be reused even
+// though the selected PR's own head/base are unchanged — the PR may now be free
+// to progress, so force a fresh review.
+func TestGatherSiblingContextResolvedBlockerMissesCache(t *testing.T) {
+	root, server, reviewedDigest := seedVerdictCacheFixture(t)
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision:    apiv1.VerdictNeedsChanges,
+		Digest:      reviewedDigest,
+		SourceRunID: "run-review",
+		HeadSHA:     "sha10head",
+		BaseSHA:     "shamainbase",
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityWarning, Message: "blocked on #11 (must merge first)",
+			Class: apiv1.FindingCrossPRBlocked, BlockingPRs: []int{11},
+		}},
+	}))
+	// #11 is the named blocker; while it stays open the cache still applies.
+	blocked := readSiblingContextResultAfterGather(t, root)
+	if blocked.ReviewDigest != reviewedDigest || blocked.CachedVerdictJSON == "" {
+		t.Fatalf("with the named blocker still open, want a stable cache hit; got digest %q cached %q", blocked.ReviewDigest, blocked.CachedVerdictJSON)
+	}
+	// Resolve the named blocker: #11 is no longer an open sibling.
+	server.setPRClosed(11)
+	resolved := readSiblingContextResultAfterGather(t, root)
+	if resolved.ReviewDigest != reviewedDigest {
+		t.Fatalf("reviewDigest = %q, want it unchanged at %q (selected PR's own head/base did not move)", resolved.ReviewDigest, reviewedDigest)
+	}
+	if resolved.CachedVerdictJSON != "" {
+		t.Fatalf("cachedVerdictJson = %q, want empty after the named blocker resolved — must force a fresh review (#1237)", resolved.CachedVerdictJSON)
 	}
 }
 

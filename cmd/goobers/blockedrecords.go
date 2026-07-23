@@ -38,12 +38,6 @@ type blockedRecord struct {
 	RecordedAt time.Time               `json:"recordedAt"`
 }
 
-type parkedDependency struct {
-	ItemID             string
-	Blockers           []string
-	repositoryIdentity string
-}
-
 const maxBlockedCyclePaths = 3
 
 type blockedCycleNode struct {
@@ -727,28 +721,12 @@ func refreshBlockedEligibility(
 	return filtered, err
 }
 
-func listParkedDependencies(l instance.Layout) ([]parkedDependency, error) {
+func listParkedDependencies(l instance.Layout) ([]blockedListRecord, error) {
 	recs, err := loadBlockedRecords(blockedRecordsPath(l))
 	if err != nil {
 		return nil, err
 	}
-	parked := make([]parkedDependency, 0, len(recs))
-	for recordKey, rec := range recs {
-		blockers := append([]string(nil), rec.Blockers...)
-		sort.Strings(blockers)
-		parked = append(parked, parkedDependency{
-			ItemID:             blockedRecordItemID(recordKey, rec),
-			Blockers:           blockers,
-			repositoryIdentity: blockedRepositoryIdentity(rec.Repository),
-		})
-	}
-	sort.Slice(parked, func(i, j int) bool {
-		if parked[i].ItemID != parked[j].ItemID {
-			return parked[i].ItemID < parked[j].ItemID
-		}
-		return parked[i].repositoryIdentity < parked[j].repositoryIdentity
-	})
-	return parked, nil
+	return blockedListRecords(recs), nil
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's

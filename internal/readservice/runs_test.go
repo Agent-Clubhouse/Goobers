@@ -113,6 +113,80 @@ func finishFixtureRun(t *testing.T, run *journal.Run, clock *fixtureClock, phase
 	}
 }
 
+func appendFixtureStageAttempt(
+	t *testing.T,
+	run *journal.Run,
+	clock *fixtureClock,
+	status string,
+) {
+	t.Helper()
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "implement",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if status == "" {
+		return
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  status,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-human-resumed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Target: "implement",
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal ||
+		detail.CurrentStage != "implement" || detail.FinishedAt != nil {
+		t.Fatalf("resumed detail = %+v, want active run at implement with no finish time", detail.RunSummary)
+	}
+
+	ledger, err := service.RunEvents(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	resumed := ledger.Events[len(ledger.Events)-1]
+	if resumed.Type != journal.EventRunResumed ||
+		resumed.Actor != "operator@example.test" ||
+		resumed.WorkflowVersion != machine.Def.Version ||
+		resumed.WorkflowDigest != machine.Digest() {
+		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+}
+
 func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	base := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
@@ -144,6 +218,14 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 			true,
 		)
 		if fixture.phase == journal.PhaseRunning {
+			clock.advance(time.Second)
+			if err := run.Append(journal.Event{
+				Type:    journal.EventStageStarted,
+				Stage:   "implement",
+				Attempt: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			run.SetMachineState("implement")
 			if err := run.Checkpoint(); err != nil {
 				t.Fatal(err)
@@ -185,12 +267,21 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 		Workflow: "implementation",
 		Gaggle:   "goobers",
 		Trigger:  journal.TriggerManual,
+		Since:    base.Add(time.Minute),
+		Until:    base.Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filtered.Runs) != 2 || filtered.Runs[0].ID != "run-d" || filtered.Runs[1].ID != "run-a" {
+	if len(filtered.Runs) != 1 || filtered.Runs[0].ID != "run-d" {
 		t.Fatalf("filtered runs = %+v", filtered.Runs)
+	}
+	stageFiltered, err := service.ListRuns(context.Background(), RunListOptions{Stage: "implement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stageFiltered.Runs) != 1 || stageFiltered.Runs[0].ID != "run-d" {
+		t.Fatalf("stage-filtered runs = %+v", stageFiltered.Runs)
 	}
 	completed, err := service.ListRuns(context.Background(), RunListOptions{Phase: journal.PhaseCompleted})
 	if err != nil {
@@ -212,8 +303,131 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	if _, err := service.ListRuns(context.Background(), RunListOptions{Trigger: "webhook"}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("non-canonical trigger error = %v", err)
 	}
+	if _, err := service.ListRuns(context.Background(), RunListOptions{
+		Since: base.Add(time.Hour),
+		Until: base,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("reversed window error = %v", err)
+	}
 	if _, err := service.GetRun(context.Background(), "partial-run"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("partial run error = %v", err)
+	}
+}
+
+func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	base := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	fixtures := []struct {
+		id          string
+		phase       journal.RunPhase
+		stageStatus string
+	}{
+		{id: "run-success", phase: journal.PhaseCompleted, stageStatus: string(apiv1.ResultSuccess)},
+		{id: "run-failure", phase: journal.PhaseFailed, stageStatus: string(apiv1.ResultFailure)},
+		{id: "run-other", phase: journal.PhaseAborted, stageStatus: string(apiv1.ResultBlocked)},
+		{id: "run-active", phase: journal.PhaseRunning, stageStatus: string(apiv1.ResultSuccess)},
+	}
+	for index, fixture := range fixtures {
+		run, clock := createFixtureRun(
+			t,
+			layout,
+			machine,
+			fixture.id,
+			machine.Def.Name,
+			"goobers",
+			base.Add(time.Duration(index)*time.Minute),
+			journal.Trigger{Kind: journal.TriggerManual},
+			true,
+		)
+		appendFixtureStageAttempt(t, run, clock, fixture.stageStatus)
+		if fixture.phase == journal.PhaseRunning {
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			finishFixtureRun(t, run, clock, fixture.phase)
+		}
+	}
+
+	assertRuns := func(options RunListOptions, want ...string) {
+		t.Helper()
+		list, err := service.ListRuns(context.Background(), options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, len(list.Runs))
+		for index, run := range list.Runs {
+			got[index] = run.ID
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("runs for %+v = %v, want %v", options, got, want)
+		}
+	}
+
+	assertRuns(
+		RunListOptions{},
+		"run-active",
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Outcome: OutcomeFinished},
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(RunListOptions{Outcome: OutcomeTerminal}, "run-failure", "run-success")
+	assertRuns(RunListOptions{Outcome: OutcomeSuccess}, "run-success")
+	assertRuns(RunListOptions{Outcome: OutcomeFailure}, "run-failure")
+	assertRuns(RunListOptions{Outcome: OutcomeOther}, "run-other")
+	assertRuns(
+		RunListOptions{Stage: "implement", StagePopulation: StagePopulationAttempts},
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Stage: "implement", StagePopulation: StagePopulationMeasured},
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Stage: "implement", Outcome: OutcomeTerminal},
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Stage: "implement", Outcome: OutcomeSuccess},
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Stage: "implement", Outcome: OutcomeFailure},
+		"run-failure",
+	)
+	assertRuns(
+		RunListOptions{Stage: "implement", Outcome: OutcomeOther},
+		"run-other",
+	)
+	started := base.Add(time.Hour)
+	finished := started.Add(-time.Second)
+	if matchesStageAttempt(
+		[]StageAttempt{{StartedAt: &started, FinishedAt: &finished}},
+		"",
+		StagePopulationMeasured,
+	) {
+		t.Fatal("negative duration counted as measured")
+	}
+
+	for _, options := range []RunListOptions{
+		{Outcome: "unknown"},
+		{Stage: "implement", StagePopulation: "unknown"},
+		{StagePopulation: StagePopulationMeasured},
+	} {
+		if _, err := service.ListRuns(context.Background(), options); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("options %+v error = %v", options, err)
+		}
 	}
 }
 
@@ -993,6 +1207,94 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 	if detail.Escalation.CausalEventSeq != stageSeq || detail.Escalation.CausalEventSeq == cleanupSeq {
 		t.Fatalf("causal event = %d, stage = %d, cleanup = %d", detail.Escalation.CausalEventSeq, stageSeq, cleanupSeq)
+	}
+}
+
+func TestEscalationAttributionUsesCurrentLifecycleSegment(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-resumed-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 21, 16, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptPolicy},
+	} {
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: string(apiv1.VerdictFail),
+		Target:  workflow.TargetEscalate,
+		Runner:  map[string]any{"repassAttempt": 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:   journal.EventRunFinished,
+		Status: string(journal.PhaseEscalated),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:            journal.EventRunResumed,
+		Status:          string(journal.PhaseEscalated),
+		Target:          "implement",
+		Actor:           "operator@example.test",
+		WorkflowVersion: machine.Def.Version,
+		WorkflowDigest:  machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "new_failure", Message: "resumed segment failed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector != (EscalationSelector{Kind: "stage", Name: "implement"}) ||
+		detail.Escalation.TerminalReason != "resumed segment failed" ||
+		detail.Escalation.RepassCount != 0 ||
+		detail.Escalation.RetryCount != 0 {
+		t.Fatalf("resumed escalation = %+v", detail.Escalation)
+	}
+	if detail.RepassCount != 1 || detail.RetryCount != 1 {
+		t.Fatalf("whole-run attempt counts = repasses %d retries %d, want 1 each", detail.RepassCount, detail.RetryCount)
+	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil ||
+		traceEscalation.RepassCount != 0 ||
+		traceEscalation.LastNeedsChangesReason != "" {
+		t.Fatalf("trace escalation leaked prior segment = %+v", traceEscalation)
 	}
 }
 

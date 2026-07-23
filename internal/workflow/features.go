@@ -538,18 +538,35 @@ func currentFeatures(sinceVersion string) []Feature {
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
-		history := []SupportTransition{{
-			Level:        SupportPreview,
-			SinceVersion: sinceVersion,
-		}}
+		level := SupportGA
+		if _, preview := previewFeatures[id]; preview {
+			level = SupportPreview
+		}
 		features = append(features, Feature{
 			ID:           id,
-			Level:        SupportPreview,
+			Level:        level,
 			SinceVersion: sinceVersion,
-			History:      history,
+			History: []SupportTransition{{
+				Level:        level,
+				SinceVersion: sinceVersion,
+			}},
 		})
 	}
 	return features
+}
+
+// previewFeatures lists the DSL features that remain preview — unstable and
+// gated behind the explicit goobers.dev/allow-preview-features opt-in — at the
+// current pre-release ("dev") version. Everything else in the canonical DSL
+// surface is GA: the shipped, documented language that guided-init scaffolds
+// and config-examples model, which must validate without a preview
+// acknowledgement (an earlier placeholder marked *every* field preview, so
+// guided-init tripped VER002 on every standard field, #1196). Only genuinely
+// unproven features stay preview — here, container-image stages, whose
+// execution path is deferred (#1102) and is exercised by nothing in the
+// canonical set. Promoting a feature to GA is a one-line removal from this map.
+var previewFeatures = map[FeatureID]struct{}{
+	featureStageImage: {},
 }
 
 type featureSet map[FeatureID]struct{}

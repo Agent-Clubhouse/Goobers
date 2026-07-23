@@ -1,6 +1,20 @@
 package telemetry
 
-import "go.opentelemetry.io/otel/attribute"
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// RecordAgentProvenance annotates the active task or gate span. Empty values
+// remain explicit so every harness invocation has both provenance dimensions.
+func RecordAgentProvenance(ctx context.Context, model, harnessVersion string) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(AttrModel, model),
+		attribute.String(AttrHarnessVersion, harnessVersion),
+	)
+}
 
 func runAttributeSet(a RunAttributes) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
@@ -30,6 +44,12 @@ func taskAttributeSet(a TaskAttributes) []attribute.KeyValue {
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
 	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
 	attrs = appendOptionalString(attrs, AttrStageType, a.TaskType)
+	if a.TaskType == StageTypeAgentic {
+		attrs = append(attrs,
+			attribute.String(AttrModel, a.Model),
+			attribute.String(AttrHarnessVersion, a.HarnessVersion),
+		)
+	}
 	attrs = appendOptionalString(attrs, AttrAttemptKind, a.AttemptKind)
 	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
 	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
@@ -47,6 +67,12 @@ func gateAttributeSet(a GateAttributes) []attribute.KeyValue {
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
 	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
 	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
+	if a.Agentic {
+		attrs = append(attrs,
+			attribute.String(AttrModel, a.Model),
+			attribute.String(AttrHarnessVersion, a.HarnessVersion),
+		)
+	}
 	attrs = appendOptionalString(attrs, AttrGateDecision, a.Decision)
 	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
 	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)

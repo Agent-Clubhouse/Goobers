@@ -1,6 +1,6 @@
 //go:build integration
 
-package providers_contract
+package providerscontract
 
 import (
 	"context"
@@ -9,24 +9,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/providers"
 )
 
-// TestContract_GitHubLiveSmoke is an opt-in read-only smoke test against the real
-// GitHub API. It runs only when GOOBERS_GITHUB_LIVE_SMOKE=1 and a token + repo are
-// provided.
-func TestContract_GitHubLiveSmoke(t *testing.T) {
-	if os.Getenv("GOOBERS_GITHUB_LIVE_SMOKE") != "1" {
-		t.Skip("set GOOBERS_GITHUB_LIVE_SMOKE=1 (plus token + repo) to run the live smoke test")
-	}
+// TestIntegrationContractGitHubLiveSmoke is an opt-in read-only smoke test
+// against the real GitHub API. It runs only when GOOBERS_GITHUB_LIVE_SMOKE=1
+// and a token + repo are provided.
+func TestIntegrationContractGitHubLiveSmoke(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_GITHUB_LIVE_SMOKE")
+	testdep.RequireEnv(t, "GOOBERS_GITHUB_TOKEN", "GITHUB_TOKEN")
+	testdep.RequireEnv(t, "GOOBERS_GITHUB_SMOKE_REPO")
+
 	token := firstNonEmpty(os.Getenv("GOOBERS_GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN"))
-	if token == "" {
-		t.Skip("live smoke test needs GOOBERS_GITHUB_TOKEN or GITHUB_TOKEN")
-	}
 	repoSpec := os.Getenv("GOOBERS_GITHUB_SMOKE_REPO") // "owner/name"
 	owner, name, ok := strings.Cut(repoSpec, "/")
 	if !ok {
-		t.Skip("live smoke test needs GOOBERS_GITHUB_SMOKE_REPO in owner/name form")
+		t.Fatalf("GOOBERS_GITHUB_SMOKE_REPO = %q, want owner/name form", repoSpec)
 	}
 	p := providers.NewGitHubProvider(token)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

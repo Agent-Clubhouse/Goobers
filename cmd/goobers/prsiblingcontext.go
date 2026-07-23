@@ -274,11 +274,12 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Verdict-level cache: hash the complete stable key (selected head/base
-	// SHAs and all reviewer-visible sibling state), then check the selected
-	// PR's trusted status comment for a matching usable verdict. Any missing
-	// key component or lookup problem degrades to a fresh review.
-	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
+	// Verdict-level cache: the key is the selected PR's own reviewable state
+	// (head/base SHAs), NOT the whole sibling set (#1237 — see
+	// computeReviewDigest). Check the selected PR's trusted status comment for a
+	// matching usable verdict. Any missing key component or lookup problem
+	// degrades to a fresh review.
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA)
 	var cachedVerdictJSON string
 	if reviewDigest == "" {
 		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
@@ -286,6 +287,12 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
 		if cerr != nil {
 			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if cached != nil && !cachedBlockerVerdictStillApplies(*cached, siblings) {
+			// The head/base key still matches, but the cached verdict is a
+			// blocked-on-sibling verdict whose named blocker(s) have all resolved
+			// (merged/closed/demoted). Reusing it would keep the PR parked behind
+			// a block that no longer exists, so force a fresh review (#1237).
+			pf(stderr, "info: cached verdict's named blocker(s) have resolved; forcing a fresh review\n")
 		} else if cached != nil {
 			data, merr := json.Marshal(cached)
 			if merr != nil {

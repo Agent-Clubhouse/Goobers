@@ -143,9 +143,28 @@ func TestCompileFeatureSupportLevels(t *testing.T) {
 }
 
 func TestCompileRejectsPreviewFeaturesWhenOptionOmitted(t *testing.T) {
-	_, err := Compile(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
-	if err == nil || !strings.Contains(err.Error(), `DSL feature "workflow.spec.gaggle" is preview and requires explicit instance opt-in`) {
-		t.Fatalf("Compile error = %v, want preview opt-in diagnostic", err)
+	// A container-image stage is the DSL feature that remains preview (#1102);
+	// standard fields are GA (#1196), so the gate must fire on the image, not on
+	// ordinary fields like workflow.spec.gaggle.
+	def := Definition{Name: "image-build", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build",
+			Type: apiv1.TaskDeterministic,
+			Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+		}},
+	}}
+
+	_, err := Compile(def)
+	if err == nil || !strings.Contains(err.Error(), `DSL feature "stage.run.image" is preview and requires explicit instance opt-in`) {
+		t.Fatalf("Compile error = %v, want stage.run.image preview opt-in diagnostic", err)
+	}
+	// The same workflow compiles once the instance opts into preview features.
+	if _, err := Compile(def, WithPreviewFeatures(true)); err != nil {
+		t.Fatalf("Compile with preview opt-in must succeed, got: %v", err)
 	}
 }
 
@@ -952,6 +971,25 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "enqueued" has no branch`) {
 			t.Fatalf("expected missing-enqueued-branch error, got %v", err)
+		}
+	})
+
+	t.Run("all missing outcomes share one diagnostic", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "land-outcome"},
+				Branches: map[string]string{"merged": TerminalComplete},
+			}},
+		}
+		problems := CheckGateOutcomes(Definition{Name: "x", Version: 1, Spec: spec})
+		if len(problems) != 1 {
+			t.Fatalf("CheckGateOutcomes returned %d problems, want one diagnostic: %v", len(problems), problems)
+		}
+		want := `gate "gate-only": producible outcomes "enqueued", "fail" have no branches (would fail closed at evaluation time)`
+		if problems[0] != want {
+			t.Fatalf("CheckGateOutcomes problem = %q, want %q", problems[0], want)
 		}
 	})
 

@@ -53,13 +53,16 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	store := &fakeTelemetryStore{stats: rollup.StatsResult{
+		Gaggles: []rollup.GaggleStats{
+			{Gaggle: "core", TotalRuns: 2, CompletedRuns: 1, FailedRuns: 1, SuccessRate: 0.5},
+		},
 		Runs: []rollup.RunStats{
-			{Workflow: "failed", TotalRuns: 1, FailedRuns: 1, HasDuration: true},
-			{Workflow: "running", TotalRuns: 1, OtherRuns: 1},
+			{Gaggle: "core", Workflow: "failed", Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3", TotalRuns: 1, FailedRuns: 1, HasDuration: true},
+			{Gaggle: "core", Workflow: "running", TotalRuns: 1, OtherRuns: 1},
 		},
 		Stages: []rollup.StageStats{
 			{
-				Stage: "done", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
+				Gaggle: "core", Workflow: "failed", Stage: "done", Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
 				DurationSamples: 2, P50DurationMs: 10, P95DurationMs: 20,
 				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
@@ -67,25 +70,40 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 				RetryWasteTokens: 100, HasRetryWasteTokens: true,
 				RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 			},
-			{Stage: "active", TotalAttempts: 1},
+			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
+		Models: []rollup.ModelStats{{
+			Model: "gpt-5.4", UsageSamples: 1,
+			InputTokenSamples: 1, InputTokens: 0, HasInputTokens: true,
+		}},
 	}}
 	service := &Telemetry{store: store}
 
 	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
-		Workflow: "implement",
-		Gaggle:   "core",
-		Since:    since,
-		Until:    until,
+		Workflow:              "implement",
+		Gaggle:                "core",
+		Model:                 "gpt-5.6-sol",
+		HarnessVersion:        "copilot version 1.2.3",
+		GroupByModel:          true,
+		GroupByHarnessVersion: true,
+		Since:                 since,
+		Until:                 until,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReq := rollup.StatsRequest{Workflow: "implement", Gaggle: "core", Since: since, Until: until}
+	wantReq := rollup.StatsRequest{
+		Workflow: "implement", Gaggle: "core", Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3",
+		GroupByModel: true, GroupByHarnessVersion: true, Since: since, Until: until,
+	}
 	if !reflect.DeepEqual(store.statsReq, wantReq) {
 		t.Fatalf("store request = %+v, want %+v", store.statsReq, wantReq)
 	}
-	if got.Runs[0].SuccessRate == nil || *got.Runs[0].SuccessRate != 0 {
+	if len(got.Gaggles) != 1 || got.Gaggles[0].Gaggle != "core" ||
+		got.Gaggles[0].SuccessRate == nil || *got.Gaggles[0].SuccessRate != 0.5 {
+		t.Fatalf("projected gaggle stats = %+v", got.Gaggles)
+	}
+	if got.Runs[0].Gaggle != "core" || got.Runs[0].SuccessRate == nil || *got.Runs[0].SuccessRate != 0 {
 		t.Fatalf("observed zero success rate = %v, want pointer to zero", got.Runs[0].SuccessRate)
 	}
 	if got.Runs[0].AvgDurationMs == nil || *got.Runs[0].AvgDurationMs != 0 {
@@ -94,10 +112,15 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	if got.Runs[1].SuccessRate != nil || got.Runs[1].AvgDurationMs != nil {
 		t.Fatalf("running metrics = %+v, want unknown metrics absent", got.Runs[1])
 	}
-	if got.Stages[1].SuccessRate != nil || got.Stages[1].AvgDurationMs != nil {
+	if got.Stages[1].Gaggle != "core" || got.Stages[1].Workflow != "running" ||
+		got.Stages[1].SuccessRate != nil || got.Stages[1].AvgDurationMs != nil {
 		t.Fatalf("active stage metrics = %+v, want unknown metrics absent", got.Stages[1])
 	}
 	done := got.Stages[0]
+	if got.Runs[0].Model != "gpt-5.6-sol" || got.Runs[0].HarnessVersion != "copilot version 1.2.3" ||
+		done.Model != "gpt-5.6-sol" || done.HarnessVersion != "copilot version 1.2.3" {
+		t.Fatalf("projected provenance = %+v / %+v", got.Runs[0], done)
+	}
 	if done.P50DurationMs == nil || *done.P50DurationMs != 10 ||
 		done.P95Tokens == nil || *done.P95Tokens != 200 ||
 		done.P50CostUSD == nil || *done.P50CostUSD != 0.5 ||
@@ -105,6 +128,11 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		done.RetryWasteTokens == nil || *done.RetryWasteTokens != 100 ||
 		done.RetryWasteCostUSD == nil || *done.RetryWasteCostUSD != 0.5 {
 		t.Fatalf("projected stage distributions = %+v", done)
+	}
+	if len(got.Models) != 1 ||
+		got.Models[0].InputTokens == nil || *got.Models[0].InputTokens != 0 ||
+		got.Models[0].OutputTokens != nil || got.Models[0].CostUSD != nil {
+		t.Fatalf("projected model usage = %+v", got.Models)
 	}
 
 	data, err := json.Marshal(got.Runs[1])
@@ -146,7 +174,8 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Runs == nil || got.Stages == nil || len(got.Runs) != 0 || len(got.Stages) != 0 {
+	if got.Gaggles == nil || got.Runs == nil || got.Stages == nil || got.Models == nil ||
+		len(got.Gaggles) != 0 || len(got.Runs) != 0 || len(got.Stages) != 0 || len(got.Models) != 0 {
 		t.Fatalf("empty stats = %#v", got)
 	}
 

@@ -542,10 +542,20 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 				problems = append(problems, fmt.Sprintf("gate %q: branch %q is not a producible outcome for this evaluator (never taken)", g.Name, outcome))
 			}
 		}
+		var uncovered []string
 		for _, outcome := range producible {
 			if _, ok := g.Branches[outcome]; !ok {
-				problems = append(problems, fmt.Sprintf("gate %q: producible outcome %q has no branch (would fail closed at evaluation time)", g.Name, outcome))
+				uncovered = append(uncovered, outcome)
 			}
+		}
+		if len(uncovered) == 1 {
+			problems = append(problems, fmt.Sprintf("gate %q: producible outcome %q has no branch (would fail closed at evaluation time)", g.Name, uncovered[0]))
+		} else if len(uncovered) > 1 {
+			quoted := make([]string, len(uncovered))
+			for i, outcome := range uncovered {
+				quoted[i] = fmt.Sprintf("%q", outcome)
+			}
+			problems = append(problems, fmt.Sprintf("gate %q: producible outcomes %s have no branches (would fail closed at evaluation time)", g.Name, strings.Join(quoted, ", ")))
 		}
 	}
 	return problems

@@ -15,12 +15,13 @@
 # so running one from the repo root leaves a stray multi-MB executable named
 # after the package. /bin/ does not cover that path, and `git add -A` will
 # happily commit it — a 33MB `goobers` binary reached main this way in 6ee0756.
-# One entry per cmd/ package; the canonical build is `make build` -> bin/.
+# One entry per root-buildable command package; `make build` writes cmd/* to bin/.
 /config-sync
 /goober-runtime
 /goobers
 /operator
 /scheduler
+/stress
 /validate
 # The same stray also lands next to the source when `go build .` (or a subagent's
 # `go build ./cmd/<name>`) runs from inside the package dir — /goobers above is
@@ -34,6 +35,7 @@
 /cmd/validate/validate
 coverage.out
 coverage.html
+/stress-results/
 *.test
 *.out
 

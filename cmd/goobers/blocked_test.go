@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -27,41 +28,138 @@ func seedBlockedRecords(t *testing.T, recs map[string]blockedRecord) string {
 	return root
 }
 
-// TestBlockedListReportsRecords is #973: `blocked list` prints every recorded
-// entry, including a "pr/"-prefixed key, sorted for determinism.
+// TestBlockedListReportsRecords covers #1169's presentation contract, including
+// scoped keys written before itemId was stored alongside the map key.
 func TestBlockedListReportsRecords(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	root := seedBlockedRecords(t, map[string]blockedRecord{
-		"955":    {Blockers: []string{"956", "957"}, RunID: "run-a", Stage: "implement", Reason: "sibling ordering", RecordedAt: time.Unix(1, 0).UTC()},
-		"pr/966": {Blockers: []string{"969"}, RunID: "run-b", Stage: "gather-pr-context", Reason: "duplicate pr", RecordedAt: time.Unix(2, 0).UTC()},
+		blockedRecordKey(repo, "102"):     {Repository: repo, Blockers: []string{"148", "144"}},
+		blockedRecordKey(repo, "pr/1058"): {Repository: repo, Blockers: []string{"1076", "1044"}},
 	})
 
 	code, stdout, stderr := runArgs(t, "blocked", "list", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	for _, want := range []string{"955", "pr/966", "956", "969", "sibling ordering", "duplicate pr"} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
-		}
+	want := "#102 blocked by #144, #148\nPR #1058 blocked by #1044, #1076\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
 
-// TestBlockedListJSON is #973: --json emits the raw record map.
-func TestBlockedListJSON(t *testing.T) {
+func TestBlockedListQualifiesMultipleRepositories(t *testing.T) {
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	webRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	root := seedBlockedRecords(t, map[string]blockedRecord{
-		"955": {Blockers: []string{"956"}, RunID: "run-a", RecordedAt: time.Unix(1, 0).UTC()},
+		blockedRecordKey(webRepo, "pr/1058"): {
+			Repository: webRepo,
+			ItemID:     "pr/1058",
+			Blockers:   []string{"1044"},
+		},
+		blockedRecordKey(apiRepo, "102"): {
+			Repository: apiRepo,
+			ItemID:     "102",
+			Blockers:   []string{"148"},
+		},
+	})
+
+	code, stdout, stderr := runArgs(t, "blocked", "list", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	want := "acme/api#102 blocked by acme/api#148\nPR acme/web#1058 blocked by acme/web#1044\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+// TestBlockedListJSON pins both record ordering and struct field ordering.
+func TestBlockedListJSON(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	root := seedBlockedRecords(t, map[string]blockedRecord{
+		blockedRecordKey(repo, "pr/1058"): {Repository: repo, Blockers: []string{"1076", "1044"}},
+		blockedRecordKey(repo, "102"):     {Repository: repo, Blockers: []string{"148", "144"}},
 	})
 
 	code, stdout, stderr := runArgs(t, "blocked", "list", "--json", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	var got map[string]blockedRecord
+	var got []blockedListRecord
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout)
 	}
-	if rec, ok := got["955"]; !ok || rec.RunID != "run-a" {
-		t.Fatalf("parsed records = %+v, want a 955 entry from run-a", got)
+	want := `[
+  {
+    "ref": "#102",
+    "kind": "issue",
+    "blockedBy": [
+      {
+        "ref": "#144",
+        "kind": "issue"
+      },
+      {
+        "ref": "#148",
+        "kind": "issue"
+      }
+    ]
+  },
+  {
+    "ref": "#1058",
+    "kind": "pull_request",
+    "blockedBy": [
+      {
+        "ref": "#1044",
+        "kind": "issue"
+      },
+      {
+        "ref": "#1076",
+        "kind": "issue"
+      }
+    ]
+  }
+]
+`
+	if stdout != want {
+		t.Fatalf("stdout = %q, want stable JSON %q", stdout, want)
+	}
+}
+
+func TestBlockedListOrdersMixedReferences(t *testing.T) {
+	for _, input := range [][]string{
+		{"2", "10", "1a"},
+		{"2", "1a", "10"},
+		{"10", "2", "1a"},
+		{"10", "1a", "2"},
+		{"1a", "2", "10"},
+		{"1a", "10", "2"},
+	} {
+		sort.Slice(input, func(i, j int) bool {
+			return blockedNumberLess(input[i], input[j])
+		})
+		if got := strings.Join(input, ","); got != "2,10,1a" {
+			t.Fatalf("mixed reference order = %q, want %q", got, "2,10,1a")
+		}
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	records := blockedListRecords(map[string]blockedRecord{
+		"record-10": {Repository: repo, ItemID: "10", Blockers: []string{"10", "1a", "2"}},
+		"record-1a": {Repository: repo, ItemID: "1a"},
+		"record-2":  {Repository: repo, ItemID: "2"},
+	})
+	if len(records) != 3 {
+		t.Fatalf("record count = %d, want 3", len(records))
+	}
+	if got := records[0].Ref + "," + records[1].Ref + "," + records[2].Ref; got != "#2,#10,#1a" {
+		t.Fatalf("record order = %q, want %q", got, "#2,#10,#1a")
+	}
+	blockedBy := records[1].BlockedBy
+	if len(blockedBy) != 3 {
+		t.Fatalf("blockedBy count = %d, want 3", len(blockedBy))
+	}
+	if got := blockedBy[0].Ref + "," + blockedBy[1].Ref + "," + blockedBy[2].Ref; got != "#2,#10,#1a" {
+		t.Fatalf("blockedBy order = %q, want %q", got, "#2,#10,#1a")
 	}
 }
 
@@ -140,6 +238,32 @@ func TestBlockedClearResolvesScopedKeyAndRejectsAmbiguousID(t *testing.T) {
 	}
 	if _, ok := recs[apiKey]; !ok {
 		t.Fatalf("API record was removed with web record: %+v", recs)
+	}
+}
+
+func TestBlockedClearResolvesQualifiedDisplayRef(t *testing.T) {
+	webRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	webKey := blockedRecordKey(webRepo, "955")
+	apiKey := blockedRecordKey(apiRepo, "955")
+	root := seedBlockedRecords(t, map[string]blockedRecord{
+		webKey: {Repository: webRepo, ItemID: "955", Blockers: []string{"956"}},
+		apiKey: {Repository: apiRepo, ItemID: "955", Blockers: []string{"957"}},
+	})
+
+	code, stdout, stderr := runArgs(t, "blocked", "clear", "acme/web#955", root)
+	if code != 0 {
+		t.Fatalf("clear: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(layoutFor(root)))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := recs[webKey]; ok {
+		t.Fatalf("web record still present: %+v", recs)
+	}
+	if _, ok := recs[apiKey]; !ok {
+		t.Fatalf("API record was removed: %+v", recs)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 type harnessFakeRunner struct{ exit int }
 
 func (r *harnessFakeRunner) Run(context.Context, harness.ProcessRequest) (harness.ProcessResult, error) {
-	return harness.ProcessResult{ExitCode: r.exit}, nil
+	return harness.ProcessResult{ExitCode: r.exit, Transcript: []byte("copilot version 1.2.3\n")}, nil
 }
 
 // TestPreflightAgenticHarnesses is the #238 control: an agentic stage's unusable
@@ -37,12 +37,12 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if err := preflightAgenticHarnesses(goobers, agentic); err == nil {
+	if _, err := preflightAgenticHarnesses(goobers, agentic); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if err := preflightAgenticHarnesses(goobers, deterministicOnly); err != nil {
+	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
@@ -50,8 +50,27 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
-	if err := preflightAgenticHarnesses(goobers, agentic); err != nil {
+	info, err := preflightAgenticHarnesses(goobers, agentic)
+	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
+	}
+	if got := info[apiv1.HarnessCopilot].Version; got != "copilot version 1.2.3" {
+		t.Fatalf("preflight version = %q", got)
+	}
+
+	gateOnly := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
+		Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+		Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+	}}}}}
+	info, err = preflightAgenticHarnesses(
+		map[string]apiv1.GooberSpec{"reviewer": {}},
+		gateOnly,
+	)
+	if err != nil {
+		t.Fatalf("reviewer-only default harness preflight: %v", err)
+	}
+	if got := info[apiv1.HarnessCopilot].Version; got != "copilot version 1.2.3" {
+		t.Fatalf("reviewer preflight version = %q", got)
 	}
 }
 
@@ -101,7 +120,7 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	err := preflightAgenticHarnesses(goobers, agentic)
+	_, err := preflightAgenticHarnesses(goobers, agentic)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}

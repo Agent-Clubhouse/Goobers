@@ -55,7 +55,9 @@ func TestMain(m *testing.M) {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) error { return nil }
+	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) (harnessPreflightInfo, error) {
+		return harnessPreflightInfo{}, nil
+	}
 
 	baseAPIListenAddress := apiListenAddress
 	apiListenAddress = func(c *instance.Config) string {

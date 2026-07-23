@@ -84,6 +84,7 @@ type Executor struct {
 	instructions    string
 	assets          *gooberassets.Bundle
 	model           string
+	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
 	resultPath      string
 	verdictPath     string
@@ -93,14 +94,6 @@ type Executor struct {
 
 // Option configures an Executor at construction.
 type Option func(*Executor)
-
-// WithResultPath overrides the workspace-relative path a task's result JSON
-// must be written to (default DefaultResultPath).
-func WithResultPath(path string) Option { return func(e *Executor) { e.resultPath = path } }
-
-// WithVerdictPath overrides the workspace-relative path a reviewer gate's
-// verdict JSON must be written to (default DefaultVerdictPath).
-func WithVerdictPath(path string) Option { return func(e *Executor) { e.verdictPath = path } }
 
 // WithTimeout bounds every harness session this Executor drives.
 func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout = d } }
@@ -122,6 +115,11 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 			}
 		}
 	}
+}
+
+// WithHarnessVersion supplies the version captured by startup preflight.
+func WithHarnessVersion(version string) Option {
+	return func(e *Executor) { e.harnessVersion = version }
 }
 
 // WithAssetBundle supplies the goober's optional static assets.
@@ -295,6 +293,7 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, error) {
+	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
@@ -322,7 +321,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
-	telemetry.RecordAgentUsage(ctx, out.Metrics)
+	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	if out.TranscriptSchema == "" {
 		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
 		output := e.scrubber.Scrub(out.Transcript)

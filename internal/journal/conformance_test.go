@@ -28,6 +28,8 @@ func baseNormativeEvent() Event {
 		Target:              "local-ci",
 		Escalated:           true,
 		Status:              "success",
+		WorkflowVersion:     3,
+		WorkflowDigest:      "sha256:definition",
 		Ref:                 &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain"},
 		Name:                "plan.txt",
 		ExternalRef:         &ExternalRef{Provider: "github", Kind: "issue", ID: "101", URL: "https://x/101"},
@@ -68,6 +70,8 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"Target", func(e Event) Event { e.Target = "implement"; return e }},
 		{"Escalated", func(e Event) Event { e.Escalated = false; return e }},
 		{"Status", func(e Event) Event { e.Status = "failure"; return e }},
+		{"WorkflowVersion", func(e Event) Event { e.WorkflowVersion = 4; return e }},
+		{"WorkflowDigest", func(e Event) Event { e.WorkflowDigest = "sha256:other"; return e }},
 		{"Name", func(e Event) Event { e.Name = "other.txt"; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
 		{"ExternalRef.Provider", func(e Event) Event { r := *e.ExternalRef; r.Provider = "ado"; e.ExternalRef = &r; return e }},
@@ -299,11 +303,11 @@ func replay2ndRun(t *testing.T, replay func(t *testing.T) []Event) []NormativeEv
 	return out
 }
 
-// TestMonotonicSeq covers both the happy path (a real journal's seq values,
+// TestConformanceMonotonicSeq covers both the happy path (a real journal's seq values,
 // which are always exactly 1..N per appendEvent's increment-then-assign
 // contract) and the failure modes a hand-built or corrupted Event slice could
 // exhibit: a gap, a duplicate, and reordering.
-func TestMonotonicSeq(t *testing.T) {
+func TestConformanceMonotonicSeq(t *testing.T) {
 	valid := []Event{{Seq: 1}, {Seq: 2}, {Seq: 3}}
 	if err := MonotonicSeq(valid); err != nil {
 		t.Errorf("MonotonicSeq(valid) = %v, want nil", err)

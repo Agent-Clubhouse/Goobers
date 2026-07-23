@@ -75,6 +75,7 @@ type schedulerSetup struct {
 type schedulerDefinitions struct {
 	Set               *instance.ConfigSet
 	Validation        *validate.Report
+	HarnessPreflight  harnessPreflightInfo
 	Runner            *runner.Runner
 	Runners           map[string]*runner.Runner
 	Entries           []localscheduler.WorkflowEntry
@@ -243,7 +244,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
-	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier)
+	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
+		l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +339,8 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows)
+	if err != nil {
 		return nil, err
 	}
 	repoRefs, err := repoRefsByWorkflow(set)
@@ -359,7 +363,10 @@ func buildSchedulerDefinitions(
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
-		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle])
+		rn, manager, err := buildRuntimeRunner(
+			scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -448,6 +455,7 @@ func buildSchedulerDefinitions(
 	return &schedulerDefinitions{
 		Set:               set,
 		Validation:        report,
+		HarnessPreflight:  harnessInfo,
 		Runner:            firstRunner,
 		Runners:           runners,
 		Entries:           entries,
@@ -468,6 +476,7 @@ func buildRetainedLegacyRunner(
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
+	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
 	retained, err := retainedLegacyRuntimeExists(l)
 	if err != nil || !retained {
@@ -475,7 +484,10 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{})
+	return buildRuntimeRunner(
+		l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota,
+		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
+	)
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -506,8 +518,11 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject)
+	runnerCfg, manager, err := buildRunnerConfig(
+		l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+	)
 	if err != nil {
 		return nil, nil, err
 	}

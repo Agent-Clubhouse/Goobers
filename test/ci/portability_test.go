@@ -9,10 +9,11 @@ import (
 )
 
 // Toolchain de-bashing guard (#630). CI orchestration lives in this Go program
-// and the coverage gate in test/coveragegate — not in shell scripts. These
-// tests give that property teeth: they fail if a shell (bash/sh/*.sh) creeps
-// back onto the build/CI/test path, so the toolchain cannot silently re-bash and
-// reintroduce a Unix-shell dependency the Windows port would trip over.
+// and the coverage/stress gates in test/coveragegate and test/stress — not in
+// shell scripts. These tests give that property teeth: they fail if a shell
+// (bash/sh/*.sh) creeps back onto the build/CI/test path, so the toolchain cannot
+// silently re-bash and reintroduce a Unix-shell dependency the Windows port
+// would trip over.
 
 // allowedToolBinaries are the only executables the merge gate may invoke — real
 // toolchain binaries resolved on PATH, never a shell interpreter or a project
@@ -44,7 +45,7 @@ func TestChecksInvokeOnlyAllowlistedToolBinaries(t *testing.T) {
 	commands := []string{"config-sync", "goobers", "operator", "scheduler"}
 
 	for _, goos := range []string{"linux", "darwin", "windows"} {
-		for _, current := range checks(commands, tools, metadata, goos) {
+		for _, current := range checks(commands, tools, metadata, goos, "test-timings/unit.json") {
 			binary, _ := commandInvocation(current, goos, func(string) string { return "" })
 			base := strings.ToLower(filepath.Base(binary))
 			if isShellInterpreter(base) {
@@ -114,10 +115,14 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 	for _, want := range []string{
 		"run ./test/ci",           // ci: -> the Go merge-gate orchestrator
 		"run ./test/ci fast",      // verify-fast: -> the same orchestrator's subset
+		"run ./test/ci full",      // verify-full: -> its serialized Make-target mode
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
+		"run ./test/deadcode",
 		"run ./test/integration",
 		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
+		"run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)",
+		"run ./test/stress", // stress: -> the Go repeated-test orchestrator
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)
@@ -151,7 +156,8 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 		{
 			target: "ci",
 			want: makeTarget{
-				recipes: []string{"$(GO) run ./test/ci"},
+				prerequisites: []string{"deadcode"},
+				recipes:       []string{"$(GO) run ./test/ci"},
 			},
 		},
 		{
@@ -167,18 +173,15 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			},
 		},
 		{
+			target: "vulncheck",
+			want: makeTarget{
+				recipes: []string{"$(GOVULNCHECK) ./..."},
+			},
+		},
+		{
 			target: "verify-full",
 			want: makeTarget{
-				prerequisites: []string{
-					"ci",
-					"test-integration-strict",
-					"test-e2e",
-					"test-envtest",
-					"cover-check",
-					"sandbox-check",
-					"linux-node-validation",
-					"test-shipped-workflows",
-				},
+				recipes: []string{`$(GO) run ./test/ci full "$(MAKE)"`},
 			},
 		},
 	}
@@ -194,18 +197,6 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 				test.target, got.prerequisites, got.recipes, test.want.prerequisites, test.want.recipes)
 		}
 	}
-
-	notParallel := makeTargetDefinitions(makefile, ".NOTPARALLEL")
-	serialized := false
-	for _, definition := range notParallel {
-		if slices.Contains(definition.prerequisites, "verify-full") {
-			serialized = true
-			break
-		}
-	}
-	if !serialized {
-		t.Error("verify-full prerequisites must be serialized to protect shared coverage.out writes")
-	}
 }
 
 func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
@@ -217,9 +208,28 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"test-integration-strict", "sandbox-check", "linux-node-validation"} {
+	for _, target := range []string{"deadcode", "vulncheck", "test-integration-strict", "test-conformance", "sandbox-check", "linux-node-validation"} {
 		if !strings.Contains(workflow, "run: make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
+		}
+	}
+	if !strings.Contains(workflow, "needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]") {
+		t.Error("required CI aggregate must fail when the vulnerability scan or journal conformance gate fails")
+	}
+}
+
+func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "vulnerability-scan.yml"))
+	if err != nil {
+		t.Fatalf("read vulnerability workflow: %v", err)
+	}
+	workflow := string(data)
+
+	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck"} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}
 	}
 }

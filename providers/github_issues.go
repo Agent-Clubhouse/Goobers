@@ -331,9 +331,10 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 // ClaimWorkItem writes a best-effort claiming marker (a label plus a run-id
 // breadcrumb comment) so concurrent runs never double-process an item (WF-031). The
 // winner is the run whose claim breadcrumb has the smallest server-assigned comment
-// id; because those ids are monotonic and a racer only reads after its own comment
-// persists, exactly one run is recognized as the winner. The runner's lease ledger
-// remains the claim source of truth (BL-005); this marker only mirrors it.
+// id in the current claim epoch; because those ids are monotonic and a racer only
+// reads after its own comment persists, exactly one run is recognized as the winner.
+// The runner's lease ledger remains the claim source of truth (BL-005); this marker
+// only mirrors it.
 func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return ClaimResult{}, err
@@ -378,6 +379,66 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
 }
 
+// ReleaseWorkItemClaim ends the current provider claim epoch and removes its label
+// mirror. A ledger-authorized owner may also retire a historical provider winner.
+// The release breadcrumb lands first so a successful release never leaves later
+// claimers stuck behind the durable breadcrumb from the previous owner.
+func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if req.ID == "" {
+		return WorkItem{}, fmt.Errorf("issue id is required")
+	}
+	if req.RunID == "" {
+		return WorkItem{}, fmt.Errorf("run id is required to release an item")
+	}
+	label := req.ClaimLabel
+	if label == "" {
+		label = LabelClaimed
+	}
+
+	winner, claimed, err := p.claimWinner(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if claimed && winner != req.RunID {
+		if !req.LedgerAuthorized {
+			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
+		}
+	}
+	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	releasedRunID := req.RunID
+	if claimed {
+		releasedRunID = winner
+	}
+	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
+		return WorkItem{}, err
+	}
+	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+		return WorkItem{}, err
+	}
+	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.ID),
+		URL:       final.URL,
+		Operation: "claim-release",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
+			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
+		},
+	})
+	return final, nil
+}
+
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
 func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
@@ -399,25 +460,40 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
 }
 
-// claimWinner reads the issue comments and returns the run id of the recognized
-// claimer: the claim breadcrumb with the smallest comment id. ok is false when no
-// claim breadcrumb exists yet.
+// claimWinner reads trusted issue comments and returns the run id of the recognized
+// claimer in the current epoch. Only the authenticated provider identity can change
+// epoch state; issue comments from other users are untrusted. A matching release
+// breadcrumb ends an epoch, so stale winner and losing-racer breadcrumbs cannot
+// block the next owner.
 func (p *GitHubProvider) claimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
+	markerAuthor, err := p.AuthenticatedLogin(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve claim marker author: %w", err)
+	}
 	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
 		return "", false, err
 	}
-	claims := make([]githubComment, 0, len(raw))
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
+	winner := ""
 	for _, c := range raw {
-		if claimRunID(c.Body) != "" {
-			claims = append(claims, c)
+		if !strings.EqualFold(c.User.Login, markerAuthor) {
+			continue
+		}
+		if releasedBy := claimReleaseRunID(c.Body); releasedBy != "" {
+			if winner == releasedBy {
+				winner = ""
+			}
+			continue
+		}
+		if winner == "" {
+			winner = claimRunID(c.Body)
 		}
 	}
-	if len(claims) == 0 {
+	if winner == "" {
 		return "", false, nil
 	}
-	sort.Slice(claims, func(i, j int) bool { return claims[i].ID < claims[j].ID })
-	return claimRunID(claims[0].Body), true, nil
+	return winner, true, nil
 }
 
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes
@@ -470,8 +546,12 @@ func mapGitHubComment(c githubComment) Comment {
 	}
 }
 
-// claimBreadcrumbPattern matches the machine-parseable line in a claim comment.
-var claimBreadcrumbPattern = regexp.MustCompile(`(?m)^goobers-claim:\s*run=(\S+)\s*$`)
+var (
+	// claimBreadcrumbPattern matches the machine-parseable line in a claim comment.
+	claimBreadcrumbPattern = regexp.MustCompile(`(?m)^goobers-claim:\s*run=(\S+)\s*$`)
+	// claimReleaseBreadcrumbPattern matches the boundary ending one claim epoch.
+	claimReleaseBreadcrumbPattern = regexp.MustCompile(`(?m)^goobers-claim-release:\s*run=(\S+)\s*$`)
+)
 
 // claimBreadcrumb renders a claim comment body: a machine-parseable marker line
 // plus a human-readable note.
@@ -479,10 +559,22 @@ func claimBreadcrumb(runID string) string {
 	return fmt.Sprintf("goobers-claim: run=%s\n\nClaimed by Goobers run `%s` for exactly-once processing.", runID, runID)
 }
 
+func claimReleaseBreadcrumb(runID string) string {
+	return fmt.Sprintf("goobers-claim-release: run=%s\n\nReleased by Goobers run `%s`; a later run may claim this item.", runID, runID)
+}
+
 // claimRunID extracts the run id from a claim breadcrumb body, or "" if the body is
 // not a claim breadcrumb.
 func claimRunID(body string) string {
 	m := claimBreadcrumbPattern.FindStringSubmatch(body)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
+}
+
+func claimReleaseRunID(body string) string {
+	m := claimReleaseBreadcrumbPattern.FindStringSubmatch(body)
 	if len(m) != 2 {
 		return ""
 	}

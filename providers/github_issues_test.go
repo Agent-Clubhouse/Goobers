@@ -469,6 +469,99 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 }
 
+func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	ctx := context.Background()
+
+	first, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil || !first.Claimed {
+		t.Fatalf("first claim = %+v, %v", first, err)
+	}
+	// Preserve a losing racer breadcrumb from the old epoch. Releasing run-A
+	// must retire this too rather than promote it to the next winner.
+	if err := p.postComment(ctx, repo, "7", claimBreadcrumb("run-racer")); err != nil {
+		t.Fatalf("post losing racer breadcrumb: %v", err)
+	}
+	released, err := p.ReleaseWorkItemClaim(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+
+	next, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
+	if err != nil {
+		t.Fatalf("follow-up claim: %v", err)
+	}
+	if !next.Claimed || next.ClaimedBy != "run-B" {
+		t.Fatalf("follow-up claim = %+v, want run-B to own the new epoch", next)
+	}
+	if !next.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("follow-up item labels = %v, want %q restored", next.Item.Labels, LabelClaimed)
+	}
+}
+
+func TestGitHubClaimIgnoresForgedRelease(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	ctx := context.Background()
+
+	first, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil || !first.Claimed {
+		t.Fatalf("first claim = %+v, %v", first, err)
+	}
+	m.mu.Lock()
+	m.nextID++
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   m.nextID,
+		"body": claimReleaseBreadcrumb("run-A"),
+		"user": map[string]string{"login": "mallory"},
+	})
+	m.mu.Unlock()
+
+	other, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
+	if err != nil {
+		t.Fatalf("claim after forged release: %v", err)
+	}
+	if other.Claimed || other.ClaimedBy != "run-A" {
+		t.Fatalf("claim after forged release = %+v, want run-A to remain owner", other)
+	}
+}
+
+func TestGitHubLedgerAuthorizedReleaseReconcilesHistoricalWinner(t *testing.T) {
+	m := newIssueMock()
+	m.labels = append(m.labels, LabelClaimed)
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   int64(1),
+		"body": claimBreadcrumb("historical-run"),
+		"user": map[string]string{"login": "goobers"},
+	})
+	m.nextID = 1
+	p, repo := newIssueProvider(t, m)
+
+	released, err := p.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository:       repo,
+		ID:               "7",
+		RunID:            "current-run",
+		LedgerAuthorized: true,
+	})
+	if err != nil {
+		t.Fatalf("ledger-authorized release: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+	winner, claimed, err := p.claimWinner(context.Background(), repo, "7")
+	if err != nil {
+		t.Fatalf("claimWinner after reconciliation: %v", err)
+	}
+	if claimed {
+		t.Fatalf("claimWinner after reconciliation = %q, want no active claim", winner)
+	}
+}
+
 func TestGitHubRateLimitBackoffAndTelemetry(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0

@@ -86,6 +86,19 @@ func WithRateLimitObserver(observer RateLimitObserver) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.rateObserver = observer }
 }
 
+// WithHTTPClient overrides the HTTP client every provider request is sent
+// through. It exists so a caller can wrap the default client with a
+// conditional-GET (ETag) caching layer that turns unchanged per-tick list GETs
+// into zero-quota 304s (#1053). A nil client is ignored so the constructor's
+// default still applies; a wrapper is expected to embed its own inner client.
+func WithHTTPClient(client HTTPClient) func(*GitHubProvider) {
+	return func(p *GitHubProvider) {
+		if client != nil {
+			p.Client = client
+		}
+	}
+}
+
 // WithMaxRateLimitRetries overrides how many times a rate-limited request is
 // retried before the error is surfaced.
 func WithMaxRateLimitRetries(n int) func(*GitHubProvider) {
