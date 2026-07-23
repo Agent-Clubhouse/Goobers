@@ -152,6 +152,109 @@ func (db *DB) Runs() ([]RunSummary, error) {
 	return out, rows.Err()
 }
 
+// RunRef is a run's identity plus the immutable ordering key the run list
+// pages by. It is deliberately light: the read service uses it only to decide
+// WHICH runs to open — the authoritative summary is always hydrated from the
+// journal, never trusted from the index (DASH-18).
+type RunRef struct {
+	RunID     string
+	StartedAt time.Time
+}
+
+// RunListFilter is the index-pushable subset of the run-list filters — the
+// stable identity/time columns whose vocabulary is byte-identical between the
+// journal identity and the runs table. Phase/stage/outcome filters are NOT
+// here: they are re-applied against the journal-hydrated summary so a lagging
+// index status can never wrongly include or hide a run.
+type RunListFilter struct {
+	Gaggle      string
+	Workflow    string
+	TriggerKind string
+	Since       time.Time // inclusive lower bound on started_at; zero = unbounded
+	Until       time.Time // inclusive upper bound on started_at; zero = unbounded
+}
+
+// RunRefPage returns up to limit run references matching filter, ordered by
+// (started_at DESC, run_id ASC) — the exact order runSummariesForStage sorts
+// by — strictly after the (cursorStartedAt, cursorRunID) keyset. A zero
+// cursorStartedAt / empty cursorRunID starts from the newest run. started_at
+// is stored fixed-width (see timeFormat) so the SQL text comparisons agree
+// with chronological order.
+func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursorRunID string, limit int) ([]RunRef, error) {
+	query := "SELECT run_id, started_at FROM runs WHERE 1=1"
+	var args []any
+	if filter.Gaggle != "" {
+		query += " AND gaggle = ?"
+		args = append(args, filter.Gaggle)
+	}
+	if filter.Workflow != "" {
+		query += " AND workflow = ?"
+		args = append(args, filter.Workflow)
+	}
+	if filter.TriggerKind != "" {
+		query += " AND trigger_kind = ?"
+		args = append(args, filter.TriggerKind)
+	}
+	if !filter.Since.IsZero() {
+		query += " AND started_at >= ?"
+		args = append(args, formatTime(filter.Since).String)
+	}
+	if !filter.Until.IsZero() {
+		query += " AND started_at <= ?"
+		args = append(args, formatTime(filter.Until).String)
+	}
+	if cursorRunID != "" {
+		cursorText := formatTime(cursorStartedAt).String
+		query += " AND (started_at < ? OR (started_at = ? AND run_id > ?))"
+		args = append(args, cursorText, cursorText, cursorRunID)
+	}
+	query += " ORDER BY started_at DESC, run_id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query run refs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RunRef
+	for rows.Next() {
+		var ref RunRef
+		var startedAt sql.NullString
+		if err := rows.Scan(&ref.RunID, &startedAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan run ref: %w", err)
+		}
+		if ref.StartedAt, err = parseTime(startedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// IndexedRunIDs returns the set of run_ids present in the index. The read
+// service diffs this against the run directories on disk to detect runs that
+// were never ingested (e.g. imported or migrated telemetry) so they can be
+// backfilled before a list is served — the index is thereby kept complete and
+// can never silently hide a run.
+func (db *DB) IndexedRunIDs() (map[string]struct{}, error) {
+	rows, err := db.sql.Query("SELECT run_id FROM runs")
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query run ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("rollup: scan run id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 // StageAttempts returns every stage attempt for runID, ordered by stage then
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
