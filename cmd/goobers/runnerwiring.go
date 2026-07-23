@@ -1103,7 +1103,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1148,14 +1148,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
-	instructionsByGoober := make(map[string]string, len(goobers))
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
-		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
-		if err != nil {
-			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
+		if _, ok := instructionsByGoober[name]; !ok {
+			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
-		instructionsByGoober[name] = string(instructions)
 		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)

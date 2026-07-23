@@ -1292,6 +1292,7 @@ func TestRunnerInputsFromMissingUpstreamOutputFailsClosed(t *testing.T) {
 
 func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	machine := fixtureMachine(t)
+	const gooberDigest = "sha256:resolved-goobers"
 	byTask := map[string]stubTaskResult{
 		"run-1:implement": {
 			status: apiv1.ResultSuccess, summary: "wrote a diff",
@@ -1301,12 +1302,13 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
-		RunID:   "run-1",
-		Machine: machine,
-		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
-		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+		RunID:        "run-1",
+		Machine:      machine,
+		GooberDigest: gooberDigest,
+		Gaggle:       "acme-web",
+		Trigger:      journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:         &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1330,6 +1332,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.WorkflowDigest != machine.Digest() {
 		t.Errorf("run.yaml workflowDigest = %q, want %q (WF-016 pin)", id.WorkflowDigest, machine.Digest())
+	}
+	if id.GooberDigest != gooberDigest {
+		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
 	}
 	if len(id.Inputs) != 2 ||
 		id.Inputs[0].Name != "item" ||

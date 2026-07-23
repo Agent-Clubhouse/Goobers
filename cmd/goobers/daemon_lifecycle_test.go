@@ -88,7 +88,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg); err != nil {
+	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg); err != nil {
 		t.Fatal(err)
 	}
 	wg.Wait()
@@ -242,7 +242,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRuns(context.Background(), l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ spec:
 
 	resumed, warned, err := resumeInterruptedRunsWithRunners(
 		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines,
-		setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
+		setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
 	)
 	if err != nil {
 		t.Fatal(err)

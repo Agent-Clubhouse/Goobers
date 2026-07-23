@@ -14,8 +14,8 @@ import (
 // map of workflow name -> Starter, not one Starter for everything.
 //
 // StartRequest/StartResult mirror runner.StartInput/Result field-for-field
-// where they overlap (RunID, Gaggle, Trigger, RepoRef, Item), so adapting a
-// *runner.Runner into a Starter is a straight field copy. They're declared
+// where they overlap (RunID, GooberDigest, Gaggle, Trigger, RepoRef, Item), so
+// adapting a *runner.Runner into a Starter is a straight field copy. They're declared
 // locally rather than imported from internal/runner so this package builds and
 // tests independently of #17's landing order — see the Starter seam thread on
 // #mission-runner-core for the coordination.
@@ -29,13 +29,24 @@ type Starter interface {
 // using this exact id rather than minting its own, so claim-ledger identity and
 // run identity are the same value throughout.
 type StartRequest struct {
-	RunID   string
-	Gaggle  string
-	Trigger journal.Trigger
-	RepoRef apiv1.RepoRef
+	RunID        string
+	GooberDigest string
+	Gaggle       string
+	Trigger      journal.Trigger
+	RepoRef      apiv1.RepoRef
 	// Item is the originating backlog item for a claimed unit of work. Nil for
 	// a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
+}
+
+type gooberDigestStarter struct {
+	digest string
+	next   Starter
+}
+
+func (s gooberDigestStarter) Start(ctx context.Context, req StartRequest) (StartResult, error) {
+	req.GooberDigest = s.digest
+	return s.next.Start(ctx, req)
 }
 
 // StartResult is a run's outcome as of the moment Start returns — which may be

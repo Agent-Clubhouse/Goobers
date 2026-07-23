@@ -1248,6 +1248,7 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 		Workflow:        "implement",
 		WorkflowVersion: 7,
 		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goobers",
 		Gaggle:          "acme-web",
 		Readiness:       apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
 		Schedules:       []Schedule{fakeSchedule{d: time.Hour}},
@@ -1265,9 +1266,14 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	spans.mu.Unlock()
 	starter.mu.Lock()
 	startedRunID := starter.starts[0].RunID
+	startedGooberDigest := starter.starts[0].GooberDigest
 	starter.mu.Unlock()
+	if startedGooberDigest != "sha256:goobers" {
+		t.Fatalf("starter goober digest = %q, want %q", startedGooberDigest, "sha256:goobers")
+	}
 	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" ||
 		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
+		got.GooberDigest != "sha256:goobers" ||
 		got.RunID == "" || got.RunID != startedRunID || got.Action != "dispatch" {
 		t.Fatalf("scheduler span attrs = %+v, want pinned workflow identity and candidate run id %q", got, startedRunID)
 	}
