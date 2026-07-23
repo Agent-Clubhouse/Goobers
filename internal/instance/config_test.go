@@ -31,6 +31,11 @@ repos:
       env: GITHUB_TOKEN
 runner:
   livenessTimeout: 3m
+telemetry:
+  retention:
+    enabled: true
+    window: 30d
+    maxRuns: 25
 runConditions:
   maxParallelRuns: 2
   stalledRunTimeout: 30m
@@ -54,6 +59,13 @@ notifications: true
 	}
 	if !cfg.TelemetryEnabled() {
 		t.Fatalf("expected telemetry enabled by default")
+	}
+	if cfg.Telemetry.Retention == nil || !cfg.Telemetry.Retention.Enabled ||
+		cfg.Telemetry.Retention.Window != "30d" || cfg.Telemetry.Retention.MaxRuns != 25 {
+		t.Fatalf("unexpected telemetry retention config: %+v", cfg.Telemetry.Retention)
+	}
+	if got, err := cfg.Telemetry.Retention.WindowDuration(); err != nil || got != 30*24*time.Hour {
+		t.Fatalf("telemetry WindowDuration = %s, %v; want 30d", got, err)
 	}
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
@@ -348,6 +360,7 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 	if zero.Enabled || zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
 		t.Fatalf("zero retention config is not disabled: %+v", zero)
 	}
+
 	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
 		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want 0, nil", got, err)
 	}
@@ -360,6 +373,31 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 	} {
 		if err := (&Config{Retention: cfg}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.") {
 			t.Fatalf("Validate(%+v) error = %v, want retention error", cfg, err)
+		}
+	}
+}
+
+func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
+	var zero TelemetryRetentionConfig
+	if zero.Enabled {
+		t.Fatal("zero telemetry retention config must disable automatic pruning")
+	}
+	if got, err := zero.WindowDuration(); err != nil || got != DefaultTelemetryRetentionWindow {
+		t.Fatalf("default WindowDuration = %s, %v; want %s", got, err, DefaultTelemetryRetentionWindow)
+	}
+	if got := zero.MaxRunLimit(); got != DefaultTelemetryRetentionMaxRuns {
+		t.Fatalf("default MaxRunLimit = %d, want %d", got, DefaultTelemetryRetentionMaxRuns)
+	}
+
+	for _, cfg := range []TelemetryRetentionConfig{
+		{Window: "not-a-duration"},
+		{Window: "0d"},
+		{Window: "-1h"},
+		{MaxRuns: -1},
+	} {
+		if err := (&Config{Telemetry: TelemetryConfig{Retention: &cfg}}).Validate(); err == nil ||
+			!strings.Contains(err.Error(), "telemetry.retention.") {
+			t.Fatalf("Validate(%+v) error = %v, want telemetry retention error", cfg, err)
 		}
 	}
 }

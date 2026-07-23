@@ -207,6 +207,13 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
+	if _, err := os.Stat(filepath.Join(dir, filePruning)); err == nil {
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, fmt.Errorf("journal: run %q is reserved for telemetry pruning", id.RunID)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, fmt.Errorf("journal: inspect telemetry pruning reservation: %w", err)
+	}
 
 	// The log may have changed while acquireRunLock blocked behind a live
 	// writer. Refresh both the completed events and torn-tail length under the

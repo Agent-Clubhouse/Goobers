@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -18,6 +19,12 @@ import (
 // TEL-032) and the per-run primitive Rebuild uses to rederive the whole store
 // from the journals (the rollup is derived state, never the source of truth).
 func (db *DB) IngestRun(runDir string) error {
+	return journal.WithPruneProtection(runDir, func() error {
+		return db.ingestRun(runDir)
+	})
+}
+
+func (db *DB) ingestRun(runDir string) error {
 	identity, err := readRunIdentity(runDir)
 	if err != nil {
 		return err
@@ -67,6 +74,27 @@ func deleteRun(tx *sql.Tx, runID string) error {
 			return fmt.Errorf("rollup: clear %s for run %s: %w", table, runID, err)
 		}
 	}
+	return nil
+}
+
+// DeleteRun removes every rollup row derived from one run in a single
+// transaction. The caller coordinates deletion of the source journal.
+func (db *DB) DeleteRun(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("rollup: run id is required")
+	}
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("rollup: begin delete tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := deleteRun(tx, runID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rollup: commit delete for run %s: %w", runID, err)
+	}
+	checkpointWAL(db.sql)
 	return nil
 }
 

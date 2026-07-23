@@ -47,8 +47,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors|export [flags] [path]
-                                query aggregates or export journaled OTLP windows
+  goobers telemetry stats|errors|export|prune [flags] [path]
+                                query, export, or prune run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -150,8 +150,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors|export [flags] [path]
-                                query aggregates or export journaled OTLP windows
+  goobers telemetry stats|errors|export|prune [flags] [path]
+                                query, export, or prune run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -906,11 +906,12 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors|export> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
+prune:  remove terminal runs outside the configured retention bounds
 
 ### telemetry errors
 Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]
@@ -926,6 +927,15 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry prune
+Usage: goobers telemetry prune [--dry-run] [path]
+
+Remove terminal run journals and all of their SQLite rollup rows when either
+telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active
+and paused runs are never removed. The configured 90d/500-run defaults apply
+when a bound is omitted. This explicit command works even when automatic
+retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.
 
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]

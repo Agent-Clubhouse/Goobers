@@ -69,9 +69,10 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers telemetry`](#goobers-telemetry) | query aggregates or export journaled OTLP windows |
+| [`goobers telemetry`](#goobers-telemetry) | query, export, or prune run telemetry |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
@@ -1429,14 +1430,15 @@ $ goobers status --watch
 
 ## `goobers telemetry`
 
-query aggregates or export journaled OTLP windows
+query, export, or prune run telemetry
 
 ~~~text
-Usage: goobers telemetry <stats|errors|export> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
+prune:  remove terminal runs outside the configured retention bounds
 ~~~
 
 **Examples**
@@ -1445,6 +1447,7 @@ export: re-emit a span-start-time window from journaled OTLP/JSON
 $ goobers telemetry stats
 $ goobers telemetry errors
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
+$ goobers telemetry prune --dry-run
 ~~~
 
 ## `goobers telemetry errors`
@@ -1484,6 +1487,27 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry prune`
+
+remove terminal runs outside configured retention bounds
+
+~~~text
+Usage: goobers telemetry prune [--dry-run] [path]
+
+Remove terminal run journals and all of their SQLite rollup rows when either
+telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active
+and paused runs are never removed. The configured 90d/500-run defaults apply
+when a bound is omitted. This explicit command works even when automatic
+retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry prune --dry-run
+$ goobers telemetry prune
 ~~~
 
 ## `goobers telemetry stats`

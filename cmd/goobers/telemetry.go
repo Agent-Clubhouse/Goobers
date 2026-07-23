@@ -17,10 +17,11 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <stats|errors|export> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]\n\n" +
 	"stats:  success rate / durations per workflow + stage\n" +
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
-	"export: re-emit a span-start-time window from journaled OTLP/JSON\n"
+	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
+	"prune:  remove terminal runs outside the configured retention bounds\n"
 
 func runTelemetry(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", telemetryHelp) }
@@ -37,6 +38,63 @@ func runTelemetry(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+const telemetryPruneHelp = "Usage: goobers telemetry prune [--dry-run] [path]\n\n" +
+	"Remove terminal run journals and all of their SQLite rollup rows when either\n" +
+	"telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active\n" +
+	"and paused runs are never removed. The configured 90d/500-run defaults apply\n" +
+	"when a bound is omitted. This explicit command works even when automatic\n" +
+	"retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.\n"
+
+func runTelemetryPrune(args []string, stdout, stderr io.Writer) int {
+	return runTelemetryPruneAt(args, stdout, stderr, time.Now())
+}
+
+func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time) int {
+	fs := flag.NewFlagSet("telemetry prune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", false, "report eligible terminal runs without deleting them")
+	fs.Usage = helpUsage(stderr, "telemetry prune")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	retentionConfig := instance.TelemetryRetentionConfig{}
+	if config.Telemetry.Retention != nil {
+		retentionConfig = *config.Telemetry.Retention
+	}
+	results, err := pruneTelemetryRetention(layout, retentionConfig, nil, now, *dryRun)
+	if err != nil {
+		pf(stderr, "error: prune telemetry: %v\n", err)
+		return 1
+	}
+	if len(results) == 0 {
+		pln(stdout, "no telemetry runs eligible for pruning")
+		return 0
+	}
+	verb := "pruned"
+	if *dryRun {
+		verb = "would prune"
+	}
+	for _, result := range results {
+		pf(stdout, "%s run=%q reason=%s\n", verb, result.RunID, result.Reason)
+	}
+	return 0
 }
 
 const telemetryExportHelp = "Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]\n\n" +
