@@ -30,6 +30,7 @@
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
+| [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
@@ -543,6 +544,29 @@ config, 2 = usage/IO error.
 $ goobers features
 $ goobers features --dsl-version 1.4
 $ goobers features --used
+~~~
+
+## `goobers gather-implement-context`
+
+load first-pass implementation review and hot-file context (a workflow stage)
+
+~~~text
+Usage: goobers gather-implement-context [path]
+
+Emit bounded first-pass implementation context: the shipped merge-review
+verdict taxonomy and a hot-file map aggregated from currently-open goober
+pull requests plus exact base-sync conflict files journaled in the last 30
+days. The result is a workflow-stage artifact carried to implement
+through the runner's ordinary contextPointers path. maxHotFiles defaults
+to 100 and is capped at 500. Exit codes: 0 = context gathered (an empty
+hot-file map is valid), 1 = business/provider/journal error, 2 = usage/IO
+error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-implement-context
 ~~~
 
 ## `goobers gather-pr-context`

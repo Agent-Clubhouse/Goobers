@@ -73,7 +73,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942): invoked by the runner as a deterministic
@@ -83,4 +83,6 @@ workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
 environment variables the runner sets — see internal/executor/env.go —
 falling back to an optional trailing [path] argument (default ".") for
 standalone/manual invocation.
+gather-implement-context uses the same deterministic stage contract to supply
+first-pass review and hot-file evidence.
 `

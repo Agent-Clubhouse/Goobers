@@ -57,6 +57,24 @@ spec:
         - claim-backlog-items
       expectedOutputs:
         - claimed-item
+      next: gather-implement-context
+
+    # First-pass enrichment: one bounded journal artifact carries the shipped
+    # reviewer verdict taxonomy and a hot-file map from current sibling PRs plus
+    # exact conflict files in recent run journals. It reaches implement through
+    # the same accumulated ContextPointers path as reviewer verdicts on repass,
+    # without changing the invocation schema.
+    - name: gather-implement-context
+      type: deterministic
+      goal: Gather the reviewer verdict taxonomy and current/recent-conflict hot-file map for implementation.
+      run:
+        command: ["goobers", "gather-implement-context"]
+      inputs:
+        resultFile: "implementation-context.json"
+        maxHotFiles: "100"
+      capabilities:
+        - github:pr:write
+        - journal:read
       next: implement
 
     # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped

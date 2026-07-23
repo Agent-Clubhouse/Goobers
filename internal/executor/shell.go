@@ -210,6 +210,11 @@ func stageInvokesProviderBuiltin(command []string) bool {
 	return ok
 }
 
+const (
+	gatherContextCommand            = "gather-implement-context"
+	implementationContextResultFile = "implementation-context.json"
+)
+
 var providerStageResultFiles = map[string]string{
 	"apply-verdict":          "verdict-result.json",
 	"backlog-dedupe":         "dedupe-candidates.json",
@@ -230,6 +235,7 @@ var providerStageResultFiles = map[string]string{
 	"respond-to-findings":    "remediation-response.json",
 	"set-milestone":          "milestone-result.json",
 	"update-behind-pr":       "update-behind-result.json",
+	gatherContextCommand:     implementationContextResultFile,
 }
 
 // ProviderStageResultFile returns the shared result-file default for a

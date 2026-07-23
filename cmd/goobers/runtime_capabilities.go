@@ -374,6 +374,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-sibling-context"]).
 			withHelp("load other open PRs as review evidence (a workflow stage)", gatherSiblingContextHelp).
 			withExamples("goobers gather-sibling-context"),
+		command(gatherContextID, apicontract.ActionWorkflowExecution, runGatherImplementContext).
+			withSynopsis(synopsisByID[gatherContextID]).
+			withHelp("load first-pass implementation review and hot-file context (a workflow stage)", gatherImplementContextHelp).
+			withExamples("goobers gather-implement-context"),
 		command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict).
 			withSynopsis(synopsisByID["apply-verdict"]).
 			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
