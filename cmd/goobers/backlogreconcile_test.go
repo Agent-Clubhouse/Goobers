@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/localscheduler"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -141,6 +145,113 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 		t.Fatalf("stdout = %q, want no work after reconciliation", stdout)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelClaimed})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+}
+
+func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+
+	baseHandler := server.server.Config.Handler
+	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/7/comments") {
+			http.Error(w, "comment rejected", http.StatusUnprocessableEntity)
+			return
+		}
+		baseHandler.ServeHTTP(w, r)
+	})
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		time.Now,
+	)
+	if err == nil {
+		t.Fatal("reconcileBacklogMetadata error = nil, want comment failure")
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+}
+
+func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
+	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+
+	lockPath := filepath.Join(root, "scheduler", claimLockFileName)
+	probe := make(chan error, 1)
+	var once sync.Once
+	baseHandler := server.server.Config.Handler
+	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7") {
+			once.Do(func() {
+				held, err := platformlock.TryAcquire(lockPath)
+				if err == nil {
+					err = held.Release()
+				}
+				probe <- err
+			})
+		}
+		baseHandler.ServeHTTP(w, r)
+	})
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	if err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		time.Now,
+	); err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	if err := <-probe; err != nil {
+		if errors.Is(err, platformlock.ErrHeld) {
+			t.Fatal("claim lock was held during provider I/O")
+		}
+		t.Fatalf("probe claim lock: %v", err)
+	}
+}
+
+func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Tracker with stale reference", "goobers:approved", providers.LabelReady, providers.LabelTracking)
+	server.addIssue(8, "Unrelated contradiction", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.mu.Lock()
+	server.issues[7].body = "- [ ] #999"
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	if err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		time.Now,
+	); err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelTracking})
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 

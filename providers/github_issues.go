@@ -297,19 +297,19 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 		}
 	}
 
+	if req.Comment != "" {
+		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
+			return WorkItem{}, err
+		}
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+
 	if labelsChanged(req) {
 		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
 			return WorkItem{}, err
 		}
 		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
 		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
 	}
 
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)

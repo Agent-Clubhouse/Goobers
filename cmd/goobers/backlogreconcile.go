@@ -25,6 +25,11 @@ type backlogMetadataCorrection struct {
 	orphanedClaim bool
 }
 
+type inspectedBacklogItem struct {
+	item       providers.WorkItem
+	correction backlogMetadataCorrection
+}
+
 func reconcileBacklogMetadata(
 	ctx context.Context,
 	l instance.Layout,
@@ -43,66 +48,81 @@ func reconcileBacklogMetadata(
 		return fmt.Errorf("list trusted backlog items: %w", err)
 	}
 
+	observedAt := now()
 	botLogin := ""
+	inspected := make([]inspectedBacklogItem, 0, len(items))
+	needsClaimSnapshot := false
 	for _, item := range items {
 		if !hasReconciledMetadataLabel(item) {
 			continue
 		}
+		current, err := provider.GetWorkItem(ctx, repo, item.ID)
+		if err != nil {
+			return fmt.Errorf("refresh issue #%s: %w", item.ID, err)
+		}
+		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt)
+		if err != nil {
+			return fmt.Errorf("inspect issue #%s: %w", item.ID, err)
+		}
+		botLogin = login
+		if !correction.checkClaim && len(correction.removeLabels) == 0 {
+			continue
+		}
+		if correction.checkClaim {
+			needsClaimSnapshot = true
+		}
+		inspected = append(inspected, inspectedBacklogItem{item: current, correction: correction})
+	}
+
+	var claimSnapshot []localscheduler.ClaimEntry
+	if needsClaimSnapshot {
 		lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-		err := withClaimLock(lockPath, claimLockOperationBacklogReconcile, func() error {
-			current, err := provider.GetWorkItem(ctx, repo, item.ID)
+		if err := withClaimLock(lockPath, claimLockOperationBacklogReconcile, func() error {
+			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 			if err != nil {
-				return fmt.Errorf("refresh issue #%s: %w", item.ID, err)
+				return fmt.Errorf("open claim ledger: %w", err)
 			}
-			correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, now())
-			if err != nil {
-				return fmt.Errorf("inspect issue #%s: %w", item.ID, err)
-			}
-			botLogin = login
-			if !correction.checkClaim && len(correction.removeLabels) == 0 {
-				return nil
-			}
-			if correction.checkClaim {
-				ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-				if err != nil {
-					return fmt.Errorf("open claim ledger: %w", err)
-				}
-				if !hasLiveClaim(ledger.Snapshot(), current.ID, providerGaggle(), string(repo.Provider), now()) {
-					correction.orphanedClaim = true
-					correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
-					correction.reasons = append(correction.reasons,
-						"removed `goobers:claimed` because no live claim-ledger lease backs it")
-				}
-			}
-			correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
-			if len(correction.removeLabels) == 0 {
-				return nil
-			}
-			comment := reconciliationComment(correction.reasons)
-			if correction.orphanedClaim {
-				if _, err := provider.ReconcileOrphanedWorkItemClaim(
-					ctx,
-					repo,
-					current.ID,
-					correction.removeLabels,
-					comment,
-				); err != nil {
-					return fmt.Errorf("reconcile issue #%s: %w", current.ID, err)
-				}
-				return nil
-			}
-			if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository:   repo,
-				ID:           current.ID,
-				RemoveLabels: correction.removeLabels,
-				Comment:      comment,
-			}); err != nil {
+			claimSnapshot = ledger.Snapshot()
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+
+	for _, inspectedItem := range inspected {
+		current := inspectedItem.item
+		correction := inspectedItem.correction
+		if correction.checkClaim &&
+			!hasLiveClaim(claimSnapshot, current.ID, providerGaggle(), string(repo.Provider), observedAt) {
+			correction.orphanedClaim = true
+			correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
+			correction.reasons = append(correction.reasons,
+				"removed `goobers:claimed` because no live claim-ledger lease backs it")
+		}
+		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
+		if len(correction.removeLabels) == 0 {
+			continue
+		}
+		comment := reconciliationComment(correction.reasons)
+		if correction.orphanedClaim {
+			if _, err := provider.ReconcileOrphanedWorkItemClaim(
+				ctx,
+				repo,
+				current.ID,
+				correction.removeLabels,
+				comment,
+			); err != nil {
 				return fmt.Errorf("reconcile issue #%s: %w", current.ID, err)
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           current.ID,
+			RemoveLabels: correction.removeLabels,
+			Comment:      comment,
+		}); err != nil {
+			return fmt.Errorf("reconcile issue #%s: %w", current.ID, err)
 		}
 	}
 	return nil
@@ -205,6 +225,9 @@ func trackingItemHasOpenChildren(
 		}
 		child, err := provider.GetWorkItem(ctx, repo, id)
 		if err != nil {
+			if providers.IsNotFoundError(err) {
+				continue
+			}
 			return false, err
 		}
 		if strings.EqualFold(child.State, "open") {
