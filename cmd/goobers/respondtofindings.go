@@ -107,6 +107,13 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		return failFindingResponseValidation(err, stderr)
 	}
 	if *checkOnly {
+		if err := writeProviderStageResult(
+			providerInput("resultFile", remediationResponseArtifactName),
+			map[string]interface{}{},
+		); err != nil {
+			pf(stderr, "error: write finding-response validation result: %v\n", err)
+			return 2
+		}
 		pf(stdout, "validated complete finding response account for %d finding(s)\n", len(responses))
 		return 0
 	}
