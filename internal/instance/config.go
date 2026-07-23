@@ -212,7 +212,7 @@ func (c TelemetryRetentionConfig) WindowDuration() (time.Duration, error) {
 		if err != nil {
 			return 0, fmt.Errorf("telemetry.retention.window %q must be a duration or whole number of days", value)
 		}
-		const maxDurationDays = int64((1<<63 - 1) / int64(24*time.Hour))
+		const maxDurationDays = (1<<63 - 1) / int64(24*time.Hour)
 		if days <= 0 || days > maxDurationDays {
 			return 0, fmt.Errorf("telemetry.retention.window must be positive, got %s", value)
 		}
