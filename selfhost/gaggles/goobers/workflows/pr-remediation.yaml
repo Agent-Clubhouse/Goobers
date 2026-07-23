@@ -164,6 +164,7 @@ spec:
         - needsAgent
         - conflict
         - conflictLocations
+        - attemptedHeadSha
         - rebaseBaseSha
       next: rebase-gate
 
@@ -175,10 +176,10 @@ spec:
     # escalates (goobers:merge-escalated, clearing needs-remediation) if
     # that diff is byte-identical to the immediately prior recorded cycle's
     # (stuck, no progress), the liberal repass budget is exhausted, or a
-    # rebase conflict lands inside a function a merged sibling substantially
-    # restructured. That structural case escalates on cycle one and includes
-    # both PRs' relevant hunks; otherwise this records the advanced cycle state
-    # as a new sticky comment.
+    # rebase conflict from this exact PR head lands inside a function a merged
+    # sibling substantially restructured. That structural case escalates on
+    # cycle one and includes both PRs' relevant hunks; otherwise this records
+    # the advanced cycle state as a new sticky comment.
     - name: remediation-checkpoint
       type: deterministic
       goal: Detect a stuck PR (no-progress repeat or budget exhaustion) and escalate, or record the advanced cycle state.
@@ -188,6 +189,7 @@ spec:
         selectedNumber: selectedNumber
         conflict: conflict
         conflictLocations: conflictLocations
+        attemptedHeadSha: attemptedHeadSha
         rebaseBaseSha: rebaseBaseSha
       inputs:
         resultFile: "checkpoint-result.json"

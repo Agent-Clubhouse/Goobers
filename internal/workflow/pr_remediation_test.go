@@ -427,7 +427,7 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	if !ok {
 		t.Fatal("remediation-checkpoint not found")
 	}
-	for _, output := range []string{"conflict", "conflictLocations", "rebaseBaseSha"} {
+	for _, output := range []string{"conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
 		if !containsString(rebase.ExpectedOutputs, output) {
 			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
 		}

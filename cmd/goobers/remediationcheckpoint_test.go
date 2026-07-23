@@ -536,7 +536,7 @@ const structuralCollisionSiblingPatch = `@@ -1,13 +1,9 @@ func runStatus() {
 +	return statusFrame{}
 +}`
 
-func TestRemediationCheckpointEscalatesFirstSameFunctionStructuralCollision(t *testing.T) {
+func TestRemediationCheckpointHydratesMissingSiblingPatchAndEscalatesFirstStructuralCollision(t *testing.T) {
 	baseSHA, headSHA, mergeSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
 	now := time.Now().UTC()
 	st := &remediationCheckpointServerState{
@@ -549,21 +549,13 @@ func TestRemediationCheckpointEscalatesFirstSameFunctionStructuralCollision(t *t
 			number: 609, state: "closed", merged: true, updatedAt: now,
 			mergeSHA: mergeSHA,
 			files: []providers.ChangedFile{{
-				Path: "status.go", Status: "modified", Patch: structuralCollisionSiblingPatch,
+				Path: "status.go", Status: "modified",
 			}},
 		}},
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
-	locations, err := json.Marshal([]rebaseConflictLocation{{
-		Path: "status.go", Scope: "func runStatus() {",
-	}})
-	if err != nil {
-		t.Fatalf("marshal conflict locations: %v", err)
-	}
-	t.Setenv("GOOBERS_INPUT_CONFLICT", "true")
-	t.Setenv("GOOBERS_INPUT_CONFLICTLOCATIONS", string(locations))
-	t.Setenv("GOOBERS_INPUT_REBASEBASESHA", mergeSHA)
+	setStructuralCollisionInputs(t, headSHA, mergeSHA)
 
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
@@ -600,6 +592,20 @@ func TestRemediationCheckpointEscalatesFirstSameFunctionStructuralCollision(t *t
 	}
 }
 
+func setStructuralCollisionInputs(t *testing.T, attemptedHeadSHA, rebaseBaseSHA string) {
+	t.Helper()
+	locations, err := json.Marshal([]rebaseConflictLocation{{
+		Path: "status.go", Scope: "func runStatus() {",
+	}})
+	if err != nil {
+		t.Fatalf("marshal conflict locations: %v", err)
+	}
+	t.Setenv("GOOBERS_INPUT_CONFLICT", "true")
+	t.Setenv("GOOBERS_INPUT_CONFLICTLOCATIONS", string(locations))
+	t.Setenv("GOOBERS_INPUT_ATTEMPTEDHEADSHA", attemptedHeadSHA)
+	t.Setenv("GOOBERS_INPUT_REBASEBASESHA", rebaseBaseSHA)
+}
+
 func TestRemediationCheckpointIgnoresStructuralSiblingAlreadyInSelectedBase(t *testing.T) {
 	baseSHA, headSHA, liveBaseSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
 	st := &remediationCheckpointServerState{
@@ -618,15 +624,7 @@ func TestRemediationCheckpointIgnoresStructuralSiblingAlreadyInSelectedBase(t *t
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
-	locations, err := json.Marshal([]rebaseConflictLocation{{
-		Path: "status.go", Scope: "func runStatus() {",
-	}})
-	if err != nil {
-		t.Fatalf("marshal conflict locations: %v", err)
-	}
-	t.Setenv("GOOBERS_INPUT_CONFLICT", "true")
-	t.Setenv("GOOBERS_INPUT_CONFLICTLOCATIONS", string(locations))
-	t.Setenv("GOOBERS_INPUT_REBASEBASESHA", liveBaseSHA)
+	setStructuralCollisionInputs(t, headSHA, liveBaseSHA)
 
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
@@ -640,6 +638,55 @@ func TestRemediationCheckpointIgnoresStructuralSiblingAlreadyInSelectedBase(t *t
 	state, ok := parseRemediationStateComment(st.comments[0])
 	if !ok || state.Escalated || state.Cycles != 1 {
 		t.Fatalf("checkpoint state = %+v, ok = %v, want non-escalated cycle 1", state, ok)
+	}
+}
+
+func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidence(t *testing.T) {
+	baseSHA, attemptedHeadSHA, mergeSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", "--branch", "goobers/impl/remediation-364", origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "concurrent.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatalf("write concurrent change: %v", err)
+	}
+	runGitT(t, concurrent, "add", "concurrent.txt")
+	runGitT(t, concurrent, "commit", "-m", "concurrent PR update")
+	runGitT(t, concurrent, "push", "origin", "HEAD")
+	currentHeadSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: currentHeadSHA, baseSHA: baseSHA,
+		liveBaseSHA: mergeSHA, labels: []string{needsRemediationLabel},
+		files: []providers.ChangedFile{{
+			Path: "status.go", Status: "modified", Patch: structuralCollisionCurrentPatch,
+		}},
+		siblings: []remediationCheckpointSibling{{
+			number: 609, state: "closed", merged: true, updatedAt: time.Now().UTC(),
+			mergeSHA: mergeSHA,
+			files: []providers.ChangedFile{{
+				Path: "status.go", Status: "modified", Patch: structuralCollisionSiblingPatch,
+			}},
+		}},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	setStructuralCollisionInputs(t, attemptedHeadSHA, mergeSHA)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want ordinary checkpoint for a new PR head", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.HeadSHA != currentHeadSHA {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want current head recorded without escalation", state, ok)
 	}
 }
 

@@ -591,6 +591,7 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	const prBranch = "goobers/impl/run-c"
 	origin := initConflictingPRBranch(t, prBranch)
 	wt := prWorktree(t, origin, prBranch)
+	attemptedHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
 
 	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
 	server := st.start(t, "your-org", "your-repo", 57)
@@ -622,6 +623,9 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"rebaseBaseSha":"`) {
 		t.Fatalf("rebase-result.json = %s, want the exact failed-rebase base SHA", data)
+	}
+	if !strings.Contains(string(data), `"attemptedHeadSha":"`+attemptedHeadSHA+`"`) {
+		t.Fatalf("rebase-result.json = %s, want attempted head SHA %q", data, attemptedHeadSHA)
 	}
 
 	// The worktree must not be mid-rebase (no unmerged/conflicted paths) —

@@ -126,7 +126,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		}); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%s", needsRemediationLabel, selectedNumber), err, "rebase-result.json")
 		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, rebaseBaseSHA); err != nil {
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, preRebaseSHA, rebaseBaseSHA); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -134,7 +134,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, rebaseBaseSHA); err != nil {
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, preRebaseSHA, rebaseBaseSHA); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -154,6 +154,7 @@ func writeRebaseResult(
 	resultFile, selectedNumber, head string,
 	conflict, needsAgent bool,
 	conflictLocations []rebaseConflictLocation,
+	attemptedHeadSHA string,
 	rebaseBaseSHA string,
 ) error {
 	locationsJSON, err := json.Marshal(conflictLocations)
@@ -166,6 +167,7 @@ func writeRebaseResult(
 		"needsAgent":        strconv.FormatBool(needsAgent),
 		"conflict":          strconv.FormatBool(conflict),
 		"conflictLocations": string(locationsJSON),
+		"attemptedHeadSha":  attemptedHeadSHA,
 		"rebaseBaseSha":     rebaseBaseSHA,
 	})
 	if err != nil {

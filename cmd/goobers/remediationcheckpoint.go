@@ -428,7 +428,8 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var structuralCollisions []structuralCollision
-	if conflicted && !forced {
+	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
+	if conflicted && !forced && attemptedHeadSHA != "" && attemptedHeadSHA == current.HeadSHA {
 		conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
 		if err != nil {
 			pf(stderr, "error: %v\n", err)

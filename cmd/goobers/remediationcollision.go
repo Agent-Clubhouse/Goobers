@@ -214,7 +214,7 @@ func hunkTouchesFunction(hunk patchHunk, function string) bool {
 		return true
 	}
 	for _, line := range strings.Split(hunk.Text, "\n") {
-		if len(line) < 2 || (line[0] != '+' && line[0] != '-') {
+		if len(line) < 2 || (line[0] != '+' && line[0] != '-' && line[0] != ' ') {
 			continue
 		}
 		if functionScopeKey(strings.TrimSpace(line[1:])) == function {
@@ -517,6 +517,31 @@ func hydrateCurrentPatches(dir, base string, files []providers.ChangedFile) ([]p
 	return out, nil
 }
 
+func hydrateMergedSiblingPatches(dir, mergeSHA string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {
+	out := append([]providers.ChangedFile(nil), files...)
+	for i := range out {
+		if out[i].Patch != "" {
+			continue
+		}
+		args := []string{
+			"diff", "--no-color", "--function-context", "--find-renames",
+			mergeSHA + "^", mergeSHA, "--",
+		}
+		if out[i].PreviousPath != "" {
+			args = append(args, out[i].PreviousPath)
+		}
+		args = append(args, out[i].Path)
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		patch, err := cmd.Output()
+		if err != nil {
+			return nil, gitOutputError("git "+strings.Join(args, " "), err)
+		}
+		out[i].Patch = string(patch)
+	}
+	return out, nil
+}
+
 func changedFilesTouchPath(files []providers.ChangedFile, path string) bool {
 	for _, file := range files {
 		if file.Path == path || file.PreviousPath == path {
@@ -611,6 +636,10 @@ func findStructuralCollisions(
 		}
 		if len(siblingStructuralConflicts) == 0 {
 			continue
+		}
+		files, err = hydrateMergedSiblingPatches(dir, sibling.MergeSHA, files)
+		if err != nil {
+			return nil, fmt.Errorf("load full patch for merged sibling PR #%d: %w", sibling.Number, err)
 		}
 		collisions = append(collisions, matchStructuralCollisions(
 			siblingStructuralConflicts, currentFiles, sibling.Number, files,
