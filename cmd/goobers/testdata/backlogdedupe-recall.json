@@ -1,0 +1,69 @@
+{
+  "items": [
+    {
+      "id": "101",
+      "title": "Prevent duplicate scheduler workflow runs",
+      "body": "Keep workflow dispatch unique when the scheduler restarts."
+    },
+    {
+      "id": "102",
+      "title": "Stop duplicate workflow runs after scheduler restart",
+      "body": "A scheduler restart can dispatch one workflow twice."
+    },
+    {
+      "id": "201",
+      "title": "Document widget rollback procedure",
+      "body": "Add the widget release rollback guide tracked by Fixes #77."
+    },
+    {
+      "id": "202",
+      "title": "Add widget release rollback documentation",
+      "body": "The same widget rollback guide is tracked by Fixes #77."
+    },
+    {
+      "id": "301",
+      "title": "Investigate account synchronization",
+      "body": "External ref OPS-4421 contains the failing identity import request."
+    },
+    {
+      "id": "302",
+      "title": "Handle identity import conflict",
+      "body": "Follow incident ops-4421 for the same account synchronization report."
+    },
+    {
+      "id": "401",
+      "title": "Add dark mode to the dashboard",
+      "body": "Support a dark color palette."
+    },
+    {
+      "id": "402",
+      "title": "Retry database writes with jitter",
+      "body": "Reduce lock contention under load."
+    },
+    {
+      "id": "501",
+      "title": "Scheduler regression",
+      "body": "An active workflow can dispatch twice when the daemon restarts before its lease checkpoint is restored."
+    },
+    {
+      "id": "502",
+      "title": "Run coordination defect",
+      "body": "When the daemon restarts before restoring its lease checkpoint, an active workflow can dispatch twice."
+    }
+  ],
+  "claimedIds": ["101", "102", "202", "302", "401", "501", "502"],
+  "knownDuplicatePairs": [
+    {"olderId": "101", "newerId": "102"},
+    {"olderId": "201", "newerId": "202"},
+    {"olderId": "301", "newerId": "302"},
+    {"olderId": "501", "newerId": "502"}
+  ],
+  "knownNonDuplicatePair": {"olderId": "401", "newerId": "402"},
+  "personaOnlyBaseline": {
+    "method": "Recorded curator evaluation of the claimed-items context without dedupe candidate pre-pass",
+    "identifiedPairs": [
+      {"olderId": "101", "newerId": "102"},
+      {"olderId": "501", "newerId": "502"}
+    ]
+  }
+}

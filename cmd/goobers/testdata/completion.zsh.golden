@@ -37,6 +37,7 @@ _goobers_completion()
             'completion:generate a shell completion script'
             'telemetry:query aggregates or export journaled OTLP windows'
             'journal:the one sanctioned edit to the append-only journal'
+            'backlog-dedupe:surface ranked duplicate candidates for curator judgment (a workflow stage)'
             'backlog-query:query/claim one eligible backlog item (a workflow stage)'
             'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
             'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'

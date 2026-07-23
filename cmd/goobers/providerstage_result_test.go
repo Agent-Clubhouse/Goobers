@@ -20,6 +20,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 		errorReason string
 	}{
 		{command: "apply-verdict", errorReason: "selectedNumber is required"},
+		{command: "backlog-dedupe", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "backlog-query", errorReason: "instance.yaml"},
 		{command: "elect-lander", errorReason: "selectedNumber is required"},
 		{command: "gather-pr-context", errorReason: "instance.yaml"},

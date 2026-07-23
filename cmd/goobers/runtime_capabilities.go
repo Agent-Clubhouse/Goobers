@@ -310,6 +310,10 @@ func init() {
 				withHelp("remove a leaked secret from a stored blob (SEC-041)", journalRedactHelp).
 				withExamples("printf %s \"$LEAKED\" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'"),
 		).withHelp("the one sanctioned edit to the append-only journal", journalHelp),
+		command("backlog-dedupe", apicontract.ActionWorkflowExecution, runBacklogDedupe).
+			withSynopsis(synopsisByID["backlog-dedupe"]).
+			withHelp("surface ranked duplicate candidates for curator judgment (a workflow stage)", backlogDedupeHelp).
+			withExamples("goobers backlog-dedupe"),
 		command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery).
 			withSynopsis(synopsisByID["backlog-query"]).
 			withHelp("query/claim one eligible backlog item (a workflow stage)", backlogQueryHelp).

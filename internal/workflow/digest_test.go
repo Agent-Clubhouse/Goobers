@@ -55,7 +55,7 @@ var goldenDigests = map[string]string{
 	// #401: await-ci explicitly declares the github:pr:write capability used
 	// to poll the pull request's checks.
 	"implementation.yaml":   "sha256:23e39af6998f0901a3a1c82e525c111bff6389b9c530f857f4a0aa7976c48d9c",
-	"backlog-curation.yaml": "sha256:e23e5fa4821ceb8e987bf2f21be2dde6b135203c4f1c67f17918c4981514c8b3",
+	"backlog-curation.yaml": "sha256:ac65f7c7cae6f0ced8d0fa7d9ef4616dd8b76a57ead6439203fb62aa09c36c3a",
 	"work-nomination.yaml":  "sha256:67eb702aba404b995e806964a9aaf52f9a176a497fc24848fc8ac3b217d65b73",
 }
 
