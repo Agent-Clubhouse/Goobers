@@ -411,8 +411,9 @@ spec:
                       additionalProperties:
                         type: string
                       description: |-
-                        Selector routes backlog items to this workflow via k8s-style label matching
-                        (WF-040, SCH-010). Used with type=backlog-item.
+                        Selector configures backlog-item filtering. Keys are required labels and
+                        values are ignored; full k8s-style selector matching remains V1
+                        (WF-040, SCH-010).
                       type: object
                     signal:
                       description: Signal is the named external signal for type=signal.
