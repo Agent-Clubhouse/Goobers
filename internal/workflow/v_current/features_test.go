@@ -1,4 +1,4 @@
-package workflow
+package vcurrent
 
 import (
 	"slices"
@@ -671,7 +671,14 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	currentFeatureRegistry = registry
 	t.Cleanup(func() { currentFeatureRegistry = original })
 
-	_, err = compileAcknowledged(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
+	_, err = Compile(Definition{Name: "linear", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement"},
+		},
+	}}, WithPreviewFeatures(true))
 	if err == nil || !strings.Contains(err.Error(), `DSL feature registry is missing: workflow.spec.gaggle`) {
 		t.Fatalf("Compile error = %v, want missing registry feature", err)
 	}

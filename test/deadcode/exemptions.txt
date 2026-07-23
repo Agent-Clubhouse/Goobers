@@ -19,8 +19,11 @@ github.com/goobers/goobers/internal/telemetry/query.MaterializeArtifact # Query 
 github.com/goobers/goobers/internal/telemetry/query.NotConfiguredSource.Query # Explicit unconfigured project-query implementation retained for optional integrations.
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Rollup repair entrypoint retained for maintenance tooling.
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper retained for provider webhook integrations.
+github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
+github.com/goobers/goobers/internal/workflow/v_current.CheckStageContractWarnings # Current-interpreter implementation behind the retained stage-contract advisory facade.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
@@ -67,8 +70,8 @@ github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard
 github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
-github.com/goobers/goobers/internal/workflow.newFeatureRegistryAgainstReleased # Feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
-github.com/goobers/goobers/internal/workflow.validateFeatureRegistryEvolution # Feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
+github.com/goobers/goobers/internal/workflow/v_current.newFeatureRegistryAgainstReleased # Feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
+github.com/goobers/goobers/internal/workflow/v_current.validateFeatureRegistryEvolution # Feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.

@@ -1,4 +1,4 @@
-package workflow
+package model
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestGraphProjectsLinearWorkflow(t *testing.T) {
-	m, err := compileAcknowledged(Definition{Name: "linear", Version: 3, Spec: linearSpec()})
+	m, err := graphMachine(Definition{Name: "linear", Version: 3, Spec: linearGraphSpec()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func graphDefinition() Definition {
 					// durable pause/resume ships — this fixture only needs a
 					// multi-branch gate to exercise graph projection, not
 					// human-gate semantics specifically, so it uses the same
-					// agentic-gate shape gatedSpec() (compile_test.go) already
+					// agentic-gate shape the compiler tests already
 					// does. escalate's terminal-edge projection shape (the
 					// same TargetEscalate handling graphTerminal switches on)
 					// no longer has a dedicated case here since agentic gates
@@ -76,7 +76,7 @@ func graphDefinition() Definition {
 }
 
 func TestGraphProjectionGolden(t *testing.T) {
-	m, err := compileAcknowledged(graphDefinition())
+	m, err := graphMachine(graphDefinition())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +156,11 @@ func TestGraphSerializationIsDeterministic(t *testing.T) {
 		second.Spec.Gates[0].Branches[outcome] = first.Spec.Gates[0].Branches[outcome]
 	}
 
-	m1, err := compileAcknowledged(first)
+	m1, err := graphMachine(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2, err := compileAcknowledged(second)
+	m2, err := graphMachine(second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestGraphSerializationIsDeterministic(t *testing.T) {
 }
 
 func TestGraphProjectsAgenticGateOwner(t *testing.T) {
-	m, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()})
+	m, err := graphMachine(Definition{Name: "gated", Version: 1, Spec: gatedGraphSpec()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,4 +193,54 @@ func TestGraphProjectsAgenticGateOwner(t *testing.T) {
 		}
 	}
 	t.Fatal("review node not projected")
+}
+
+func graphMachine(def Definition) (*Machine, error) {
+	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
+	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	for _, gate := range def.Spec.Gates {
+		gates[gate.Name] = gate
+	}
+	machine := NewMachine(def, tasks, gates)
+	digest, err := ComputeDigest(def)
+	if err != nil {
+		return nil, err
+	}
+	machine.SetDigest(digest)
+	return machine, nil
+}
+
+func linearGraphSpec() apiv1.WorkflowSpec {
+	return apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement"},
+		},
+	}
+}
+
+func gatedGraphSpec() apiv1.WorkflowSpec {
+	return apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					"pass":          TerminalComplete,
+					"fail":          TargetAbort,
+					"needs-changes": "implement",
+				},
+			},
+		},
+	}
 }
