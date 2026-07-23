@@ -26,6 +26,9 @@ the seam a formality. Mint a separate fine-grained PAT per capability class
 your gaggle's workflows actually use, and register each as its own named ref
 in `instance.yaml`:
 
+`configrepo:read` is the runner-only exception: only the workflow-config
+source may materialize it, directly from `workflowSource.token`.
+
 | Capability | Recommended fine-grained PAT permissions | Notes |
 |---|---|---|
 | `github:issues:read` | Issues: Read-only | Backlog polling, triage stages. |
@@ -36,6 +39,7 @@ in `instance.yaml`:
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
+| `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
 | `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use | Copilot model authentication for agentic stages. An existing per-user CLI sign-in is the local default; a configured PAT is injected as `COPILOT_GITHUB_TOKEN` for services/CI. |
 
 Repository access: select **Only select repositories** and list exactly the

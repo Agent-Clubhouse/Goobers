@@ -721,6 +721,16 @@ func TestForeignLayoutDiagnosticsAreActionable(t *testing.T) {
 			},
 		},
 		{
+			name:              "runner-only capability",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "acme",
+			capability:        "configrepo:read",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Goober/coder: spec.capabilities contains runner-only capability "configrepo:read"`,
+			},
+		},
+		{
 			name:            "missing instructions",
 			manifestGaggles: "    - acme",
 			workflowGaggle:  "acme",

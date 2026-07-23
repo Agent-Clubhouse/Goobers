@@ -2,12 +2,14 @@ package instance
 
 import (
 	"context"
-	"net/url"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -76,19 +78,18 @@ func TestGitSourceLocalTracksCommittedMain(t *testing.T) {
 func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 	repo := newGitSourceTestRepo(t, "remote-v1\n")
 	instanceRoot := t.TempDir()
-	repoPath := filepath.ToSlash(repo)
-	if runtime.GOOS == "windows" {
-		repoPath = "/" + repoPath
-	}
-	repositoryURL := (&url.URL{Scheme: "file", Path: repoPath}).String()
+	repositoryURL, servedRepo, auth := newAuthenticatedGitSourceTestServer(t, repo, "workflow-source-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-source-token")
+	registrar := &gitSourceTestRegistrar{}
 
-	source, err := NewGitSource(GitSourceOptions{
-		InstanceRoot: instanceRoot,
-		Repository:   repositoryURL,
-		Ref:          "main",
-	})
+	source, err := NewWorkflowGitSource(instanceRoot, WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Ref:   "main",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, registrar)
 	if err != nil {
-		t.Fatalf("NewGitSource: %v", err)
+		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
 	if source.local || source.mirror == "" {
 		t.Fatalf("remote source = local %v, mirror %q", source.local, source.mirror)
@@ -99,6 +100,9 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertGitSourceTestFile(t, first, "config.txt", "remote-v1\n")
+	if len(registrar.values) != 1 || registrar.values[0] != "workflow-source-token" {
+		t.Fatalf("registered secrets after clone = %q, want workflow-source token", registrar.values)
+	}
 
 	if got := strings.TrimSpace(runGitSourceTest(t, "", "--git-dir="+source.mirror, "rev-parse", "--is-bare-repository")); got != "true" {
 		t.Fatalf("managed repository is bare = %q, want true", got)
@@ -113,6 +117,8 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 	writeGitSourceTestFile(t, repo, "config.txt", "remote-v2\n")
 	runGitSourceTest(t, repo, "add", "config.txt")
 	runGitSourceTest(t, repo, "commit", "-m", "remote v2")
+	runGitSourceTest(t, "", "--git-dir="+servedRepo, "fetch", repo, "+refs/heads/*:refs/heads/*")
+	runGitSourceTest(t, "", "--git-dir="+servedRepo, "update-server-info")
 
 	second, err := source.Resolve(context.Background())
 	if err != nil {
@@ -123,6 +129,96 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		t.Fatalf("snapshot did not advance after remote main update: %s", second)
 	}
 	assertGitSourceTestFile(t, first, "config.txt", "remote-v1\n")
+	if len(registrar.values) != 2 || registrar.values[1] != "workflow-source-token" {
+		t.Fatalf("registered secrets after fetch = %q, want token resolved for each remote operation", registrar.values)
+	}
+	if auth.accepted.Load() == 0 {
+		t.Fatal("authenticated Git server did not receive the workflow-source token")
+	}
+}
+
+func TestWorkflowGitSourceFailsWhenDedicatedTokenIsWrong(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "remote\n")
+	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "correct-workflow-token")
+
+	ambientHome := t.TempDir()
+	credentialURL := strings.Replace(repositoryURL, "https://", "https://x-access-token:correct-workflow-token@", 1)
+	globalConfig := "[url \"" + strings.TrimSuffix(credentialURL, "repo.git") + "\"]\n" +
+		"\tinsteadOf = " + strings.TrimSuffix(repositoryURL, "repo.git") + "\n"
+	if err := os.WriteFile(filepath.Join(ambientHome, ".gitconfig"), []byte(globalConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", ambientHome)
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "wrong-workflow-token")
+
+	source, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, &gitSourceTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+	if _, err := source.Resolve(context.Background()); err == nil {
+		t.Fatal("Resolve succeeded with the wrong dedicated workflow-source token")
+	}
+	if _, err := os.Stat(source.mirror); !os.IsNotExist(err) {
+		t.Fatalf("managed mirror exists after authentication failure: %v", err)
+	}
+	if auth.rejected.Load() == 0 {
+		t.Fatal("authenticated Git server did not receive the wrong workflow-source token")
+	}
+}
+
+func TestWorkflowGitSourceFailsClosedWhenTokenDoesNotResolve(t *testing.T) {
+	t.Setenv("EMPTY_WORKFLOW_SOURCE_TOKEN", "")
+
+	source, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   "https://example.invalid/workflows.git",
+		Token: &TokenRef{Env: "EMPTY_WORKFLOW_SOURCE_TOKEN"},
+	}, &gitSourceTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+	if _, err := source.Resolve(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "configrepo:read") ||
+		!strings.Contains(err.Error(), "empty value") {
+		t.Fatalf("Resolve error = %v, want fail-closed configrepo:read credential error", err)
+	}
+	if _, err := os.Stat(source.mirror); !os.IsNotExist(err) {
+		t.Fatalf("managed mirror exists after credential failure: %v", err)
+	}
+}
+
+func TestNewGitSourceRejectsRemoteWithoutCredentials(t *testing.T) {
+	_, err := NewGitSource(GitSourceOptions{
+		InstanceRoot: t.TempDir(),
+		Repository:   "https://example.com/workflow-config.git",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires configrepo:read credentials") {
+		t.Fatalf("NewGitSource error = %v, want remote credential requirement", err)
+	}
+}
+
+func TestNewGitSourceRejectsUnsupportedRemoteTransport(t *testing.T) {
+	_, err := NewGitSource(GitSourceOptions{
+		InstanceRoot: t.TempDir(),
+		Repository:   "git@example.com:workflow-config.git",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("NewGitSource error = %v, want HTTPS-only transport rejection", err)
+	}
+}
+
+func TestGitSourceEnvExcludesAmbientCredentialRefs(t *testing.T) {
+	t.Setenv("CODE_REPO_TOKEN", "code-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-token")
+	for _, entry := range gitSourceEnv() {
+		if strings.HasPrefix(entry, "CODE_REPO_TOKEN=") || strings.HasPrefix(entry, "WORKFLOW_SOURCE_TOKEN=") {
+			t.Fatalf("git source inherited credential ref: %s", entry)
+		}
+	}
 }
 
 func TestGitSourcePreservesCommittedBlobsWithArchiveAttributes(t *testing.T) {
@@ -232,4 +328,54 @@ func runGitSourceTest(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return string(output)
+}
+
+func newAuthenticatedGitSourceTestServer(t *testing.T, repo, token string) (string, string, *gitSourceAuthRecorder) {
+	t.Helper()
+
+	root := t.TempDir()
+	servedRepo := filepath.Join(root, "repo.git")
+	runGitSourceTest(t, "", "clone", "--bare", repo, servedRepo)
+	runGitSourceTest(t, "", "--git-dir="+servedRepo, "update-server-info")
+
+	files := http.FileServer(http.Dir(root))
+	auth := &gitSourceAuthRecorder{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "x-access-token" || password != token {
+			if ok {
+				auth.rejected.Add(1)
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		auth.accepted.Add(1)
+		files.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	certificate := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: server.Certificate().Raw,
+	})
+	certificatePath := filepath.Join(t.TempDir(), "git-source-test-ca.pem")
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", certificatePath)
+	return server.URL + "/repo.git", servedRepo, auth
+}
+
+type gitSourceAuthRecorder struct {
+	accepted atomic.Int32
+	rejected atomic.Int32
+}
+
+type gitSourceTestRegistrar struct {
+	values []string
+}
+
+func (r *gitSourceTestRegistrar) Register(secret []byte) {
+	r.values = append(r.values, string(secret))
 }

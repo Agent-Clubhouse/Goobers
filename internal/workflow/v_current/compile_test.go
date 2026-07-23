@@ -561,6 +561,26 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].Capabilities = []string{string(capability.ConfigRepoRead)}
+	_, err := compileAcknowledged(Definition{Name: "runner-only-task", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `task "implement" declares runner-only capability "configrepo:read"`) {
+		t.Fatalf("Compile error = %v, want runner-only task capability rejection", err)
+	}
+
+	spec = linearSpec()
+	_, err = compileAcknowledged(
+		Definition{Name: "runner-only-goober", Version: 1, Spec: spec},
+		WithGoobers(map[string]apiv1.GooberSpec{
+			"coder": {Capabilities: []string{string(capability.ConfigRepoRead)}},
+		}),
+	)
+	if err == nil || !strings.Contains(err.Error(), `goober "coder" grants runner-only capability "configrepo:read"`) {
+		t.Fatalf("Compile error = %v, want runner-only goober capability rejection", err)
+	}
+}
+
 func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 	cases := []struct {
 		name    string
