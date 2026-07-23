@@ -22,17 +22,19 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion            = "goobers.dev/v1alpha1"
-	ConfigKind                  = "Instance"
-	DefaultAPIListenAddress     = "127.0.0.1:8080"
-	DefaultWebhookListenAddress = "127.0.0.1:8081"
-	OTLPEndpointEnv             = "GOOBERS_OTLP_ENDPOINT"
-	OTLPInsecureEnv             = "GOOBERS_OTLP_INSECURE"
-	DefaultWorkflowSourceRef    = "main"
-	WorkflowSourceKindLocalDir  = "local-dir"
-	WorkflowSourceKindGit       = "git"
-	DefaultStalledRunTimeout    = 45 * time.Minute
-	DefaultClaimsLockTimeout    = 30 * time.Second
+	ConfigAPIVersion             = "goobers.dev/v1alpha1"
+	ConfigKind                   = "Instance"
+	DefaultAPIListenAddress      = "127.0.0.1:8080"
+	DefaultWebhookListenAddress  = "127.0.0.1:8081"
+	OTLPEndpointEnv              = "GOOBERS_OTLP_ENDPOINT"
+	OTLPInsecureEnv              = "GOOBERS_OTLP_INSECURE"
+	DefaultWorkflowSourceRef     = "main"
+	WorkflowSourceKindLocalDir   = "local-dir"
+	WorkflowSourceKindGit        = "git"
+	DefaultDaemonLivenessTimeout = 2 * time.Minute
+	MinimumDaemonLivenessTimeout = 2 * time.Second
+	DefaultStalledRunTimeout     = 45 * time.Minute
+	DefaultClaimsLockTimeout     = 30 * time.Second
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -121,6 +123,9 @@ type RunnerConfig struct {
 	// stays default-deny — an explicit opt-in list of names, never os.Environ()
 	// passthrough — and declaring a name whose var is unset is a harmless no-op.
 	EnvPassthrough []string `json:"envPassthrough,omitempty" yaml:"envPassthrough,omitempty"`
+	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
+	// the daemon is reported unhealthy. Empty defaults to two minutes.
+	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -260,6 +265,21 @@ func (c RunConditions) ClaimsLockTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout <= 0 {
 		return 0, fmt.Errorf("runConditions.claimsLockTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
+}
+
+// LivenessTimeoutDuration resolves the configured daemon heartbeat deadline.
+func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
+	if c.LivenessTimeout == "" {
+		return DefaultDaemonLivenessTimeout, nil
+	}
+	timeout, err := time.ParseDuration(c.LivenessTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.livenessTimeout %q: %w", c.LivenessTimeout, err)
+	}
+	if timeout < MinimumDaemonLivenessTimeout {
+		return 0, fmt.Errorf("runner.livenessTimeout must be at least %s, got %s", MinimumDaemonLivenessTimeout, timeout)
 	}
 	return timeout, nil
 }
@@ -500,6 +520,9 @@ func (c *Config) Validate() error {
 		if err := runnercap.ValidateToken(c); err != nil {
 			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
 		}
+	}
+	if _, err := c.Runner.LivenessTimeoutDuration(); err != nil {
+		return err
 	}
 	// Fail closed at load on a malformed env-passthrough name (#736): a name
 	// carrying '=', NUL, or shell metacharacters could never be a real env var

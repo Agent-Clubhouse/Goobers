@@ -21,11 +21,14 @@ const health: Health = {
   apiVersion: API_VERSION,
   schemaVersion: SCHEMA_VERSION,
   ready: true,
+  healthy: true,
   instance: { name: "local", environment: "dev" },
   freshness: {
     observedAt: "2026-07-18T00:00:00Z",
     definitionsLoadedAt: "2026-07-18T00:00:00Z",
     journalUpdatedAt: null,
+    lastSchedulerTickAt: null,
+    lastTickAgeMillis: null,
   },
 };
 

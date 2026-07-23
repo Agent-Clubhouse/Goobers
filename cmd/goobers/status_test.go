@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -814,10 +816,42 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		fmt.Sprintf("daemon running: pid %d", os.Getpid()),
 		"uptime 1h30m",
 		"version v0.3.0-test",
+		"last tick 0s ago",
 		"live runs 1",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+	}
+}
+
+func TestStatusDaemonReportsHeldLockWithStaleTicksUnhealthy(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	now := time.Now().UTC()
+	identity := daemonIdentity{
+		PID:          os.Getpid(),
+		StartedAt:    now.Add(-10 * time.Minute),
+		InstanceRoot: root,
+		Version:      "v0.3.0-test",
+	}
+	lockPath := filepath.Join(l.SchedulerDir(), "up.lock")
+	release, err := acquireInstanceLockWithIdentity(lockPath, &identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := daemonstate.Refresh(lockPath, now.Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if code := reportDaemonStatus(l, now, &stdout, io.Discard); code != 1 {
+		t.Fatalf("reportDaemonStatus() = %d, want 1", code)
+	}
+	for _, want := range []string{"daemon unhealthy:", "last tick 3m0s ago", "threshold 2m0s"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 		}
 	}
 }

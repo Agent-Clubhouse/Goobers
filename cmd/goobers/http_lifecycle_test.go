@@ -78,7 +78,7 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", response.StatusCode)
 	}
-	if !health.Ready || health.APIVersion != "v1" || health.SchemaVersion != "v1" {
+	if !health.Ready || !health.Healthy || health.APIVersion != "v1" || health.SchemaVersion != "v1" {
 		t.Fatalf("health = %+v", health)
 	}
 	if health.Instance.Name != "example" || health.Instance.Environment != "dev" {
@@ -86,6 +86,9 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	}
 	if health.Freshness.ObservedAt.IsZero() || health.Freshness.DefinitionsLoadedAt.IsZero() {
 		t.Fatalf("freshness = %+v", health.Freshness)
+	}
+	if health.Freshness.LastSchedulerTickAt == nil || health.Freshness.LastTickAgeMillis == nil {
+		t.Fatalf("scheduler freshness = %+v", health.Freshness)
 	}
 
 	response, err = http.Get("http://" + address + httpapi.InstancePath)

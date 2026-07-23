@@ -41,6 +41,7 @@ export const goWireFixtures = {
     "apiVersion": "v1",
     "schemaVersion": "v1",
     "ready": true,
+    "healthy": true,
     "instance": {
       "name": "fixture",
       "environment": "dev"
@@ -48,7 +49,9 @@ export const goWireFixtures = {
     "freshness": {
       "observedAt": "2026-07-18T12:34:56Z",
       "definitionsLoadedAt": "2026-07-18T12:32:56Z",
-      "journalUpdatedAt": null
+      "journalUpdatedAt": null,
+      "lastSchedulerTickAt": "2026-07-18T12:32:56Z",
+      "lastTickAgeMillis": 120000
     }
   },
   "instance": {

@@ -91,6 +91,7 @@ export interface ContractVersion {
 
 export interface Health extends ContractVersion {
   ready: boolean;
+  healthy: boolean;
   instance: InstanceIdentity;
   freshness: Freshness;
 }
@@ -104,6 +105,8 @@ export interface Freshness {
   observedAt: string;
   definitionsLoadedAt: string;
   journalUpdatedAt: string | null;
+  lastSchedulerTickAt: string | null;
+  lastTickAgeMillis: number | null;
 }
 
 export interface Instance extends ContractVersion {

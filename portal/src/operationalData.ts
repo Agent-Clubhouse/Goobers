@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
   DaemonClient,
@@ -12,9 +19,10 @@ import type {
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
-import { useLiveData } from "./liveData";
+import { useLiveData, type LiveFreshness } from "./liveData";
 
 const PAGE_LIMIT = 100;
+const HEALTH_REFRESH_INTERVAL_MS = 5_000;
 
 // The Overview is a bounded triage surface — active work, what needs attention,
 // and a short window of recent outcomes — not a history browser
@@ -103,6 +111,8 @@ export function useOperationalSnapshot(client: DaemonClient): OperationalSnapsho
       return current;
     });
   }, [freshness]);
+
+  usePeriodicHealth(client, freshness, setState);
 
   useEffect(() => () => request.current?.abort(), []);
 
@@ -307,9 +317,72 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
     });
   }, [freshness]);
 
+  const rememberOverview = useCallback((overview: OperationalOverview) => {
+    data.current = overview;
+  }, []);
+  usePeriodicHealth(client, freshness, setState, rememberOverview);
+
   useEffect(() => () => request.current?.abort(), []);
 
   return { retry: () => void load(), state };
+}
+
+function usePeriodicHealth<T extends { health: Health }>(
+  client: DaemonClient,
+  freshness: LiveFreshness,
+  setState: Dispatch<SetStateAction<QueryState<T>>>,
+  onUpdate?: (data: T) => void,
+): void {
+  useEffect(() => {
+    if (freshness !== "connected") {
+      return;
+    }
+
+    let request: AbortController | undefined;
+    let healthFailed = false;
+    const refreshHealth = () => {
+      request?.abort();
+      const controller = new AbortController();
+      request = controller;
+      void client.getHealth({ signal: controller.signal }).then(
+        (health) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+          const recovered = healthFailed;
+          healthFailed = false;
+          setState((current) => {
+            if (current.status !== "ready" && current.status !== "stale") {
+              return current;
+            }
+            const updated = { ...current.data, health };
+            onUpdate?.(updated);
+            return current.status === "ready" || recovered
+              ? { status: "ready", data: updated }
+              : { status: "stale", data: updated, error: current.error };
+          });
+        },
+        (error: unknown) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+          healthFailed = true;
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read daemon health.");
+          setState((current) =>
+            current.status === "ready" || current.status === "stale"
+              ? { status: "stale", data: current.data, error: queryError }
+              : current,
+          );
+        },
+      );
+    };
+    const timer = window.setInterval(refreshHealth, HEALTH_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      request?.abort();
+    };
+  }, [client, freshness, onUpdate, setState]);
 }
 
 export async function loadOperationalOverview(

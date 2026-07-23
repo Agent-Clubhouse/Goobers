@@ -379,11 +379,14 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       apiVersion: API_VERSION,
       schemaVersion: SCHEMA_VERSION,
       ready: true,
+      healthy: true,
       instance: { name: "local-dev", environment: "dev" },
       freshness: {
         observedAt: "2026-07-18T20:00:00Z",
         definitionsLoadedAt: "2026-07-18T19:59:00Z",
         journalUpdatedAt: "2026-07-18T19:58:00Z",
+        lastSchedulerTickAt: "2026-07-18T19:59:59Z",
+        lastTickAgeMillis: 1_000,
       },
     },
     instance: {

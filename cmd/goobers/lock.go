@@ -10,15 +10,18 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/version"
 )
 
 type daemonIdentity struct {
-	PID          int       `json:"pid"`
-	StartedAt    time.Time `json:"startedAt"`
-	InstanceRoot string    `json:"instanceRoot"`
-	Version      string    `json:"version"`
+	PID                   int       `json:"pid"`
+	StartedAt             time.Time `json:"startedAt"`
+	InstanceRoot          string    `json:"instanceRoot"`
+	Version               string    `json:"version"`
+	LivenessTimeoutMillis int64     `json:"livenessTimeoutMillis,omitempty"`
 }
 
 type lockHolderKind string
@@ -29,12 +32,13 @@ const (
 )
 
 type instanceLockState struct {
-	PID          int            `json:"pid,omitempty"`
-	StartedAt    *time.Time     `json:"startedAt,omitempty"`
-	InstanceRoot string         `json:"instanceRoot,omitempty"`
-	Version      string         `json:"version,omitempty"`
-	HolderKind   lockHolderKind `json:"holderKind"`
-	HolderPID    int            `json:"holderPid"`
+	PID                   int            `json:"pid,omitempty"`
+	StartedAt             *time.Time     `json:"startedAt,omitempty"`
+	InstanceRoot          string         `json:"instanceRoot,omitempty"`
+	Version               string         `json:"version,omitempty"`
+	LivenessTimeoutMillis int64          `json:"livenessTimeoutMillis,omitempty"`
+	HolderKind            lockHolderKind `json:"holderKind"`
+	HolderPID             int            `json:"holderPid"`
 }
 
 // acquireInstanceLock takes a non-blocking exclusive lock on lockPath so a
@@ -46,16 +50,20 @@ func acquireInstanceLock(lockPath string) (release func(), err error) {
 	return acquireInstanceLockWithIdentity(lockPath, nil)
 }
 
-func acquireDaemonLock(lockPath, instanceRoot string) (release func(), err error) {
+func acquireDaemonLockWithTimeout(lockPath, instanceRoot string, livenessTimeout time.Duration) (release func(), err error) {
+	if livenessTimeout <= 0 {
+		return nil, fmt.Errorf("daemon liveness timeout must be positive")
+	}
 	absoluteRoot, err := filepath.Abs(instanceRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve instance root: %w", err)
 	}
 	identity := daemonIdentity{
-		PID:          os.Getpid(),
-		StartedAt:    time.Now().UTC(),
-		InstanceRoot: absoluteRoot,
-		Version:      version.Get().String(),
+		PID:                   os.Getpid(),
+		StartedAt:             time.Now().UTC(),
+		InstanceRoot:          absoluteRoot,
+		Version:               version.Get().String(),
+		LivenessTimeoutMillis: livenessTimeout.Milliseconds(),
 	}
 	return acquireInstanceLockWithIdentity(lockPath, &identity)
 }
@@ -107,6 +115,7 @@ func newInstanceLockState(identity *daemonIdentity, holderKind lockHolderKind, h
 		state.StartedAt = &startedAt
 		state.InstanceRoot = identity.InstanceRoot
 		state.Version = identity.Version
+		state.LivenessTimeoutMillis = identity.LivenessTimeoutMillis
 	}
 	return state
 }
@@ -196,10 +205,11 @@ func (s instanceLockState) daemonIdentity() (*daemonIdentity, error) {
 		return nil, errors.New("decode daemon identity: missing required field")
 	}
 	return &daemonIdentity{
-		PID:          s.PID,
-		StartedAt:    *s.StartedAt,
-		InstanceRoot: s.InstanceRoot,
-		Version:      s.Version,
+		PID:                   s.PID,
+		StartedAt:             *s.StartedAt,
+		InstanceRoot:          s.InstanceRoot,
+		Version:               s.Version,
+		LivenessTimeoutMillis: s.LivenessTimeoutMillis,
 	}, nil
 }
 
@@ -232,4 +242,20 @@ func inspectDaemonLock(lockPath string) (running bool, identity *daemonIdentity,
 
 	identity, err = readDaemonIdentity(held.File())
 	return false, identity, err
+}
+
+func inspectDaemonLiveness(lockPath string, now time.Time) (bool, *daemonIdentity, daemonstate.Liveness, error) {
+	running, identity, err := inspectDaemonLock(lockPath)
+	if err != nil || !running {
+		return running, identity, daemonstate.Liveness{}, err
+	}
+	lastTickAt, err := daemonstate.Read(lockPath)
+	if err != nil {
+		return false, identity, daemonstate.Liveness{}, err
+	}
+	timeout := instance.DefaultDaemonLivenessTimeout
+	if identity != nil && identity.LivenessTimeoutMillis > 0 {
+		timeout = time.Duration(identity.LivenessTimeoutMillis) * time.Millisecond
+	}
+	return true, identity, daemonstate.Evaluate(now, lastTickAt, timeout), nil
 }

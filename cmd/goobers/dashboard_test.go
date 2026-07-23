@@ -21,6 +21,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
@@ -126,6 +127,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 			APIVersion:    readservice.APIVersion,
 			SchemaVersion: readservice.SchemaVersion,
 			Ready:         true,
+			Healthy:       true,
 		}); err != nil {
 			t.Errorf("encode health response: %v", err)
 		}
@@ -136,7 +138,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +182,88 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	}
 }
 
+func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	lastTick := time.Now().UTC().Add(-3 * time.Minute)
+	lastTickAgeMillis := int64((3 * time.Minute) / time.Millisecond)
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+			Healthy:       false,
+			Freshness: readservice.Freshness{
+				ObservedAt:          time.Now().UTC(),
+				LastSchedulerTickAt: &lastTick,
+				LastTickAgeMillis:   &lastTickAgeMillis,
+			},
+		}); err != nil {
+			t.Errorf("encode health response: %v", err)
+		}
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := daemonstate.Refresh(lockPath, time.Now().Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := api.close(); err != nil {
+			t.Errorf("close dashboard API: %v", err)
+		}
+	}()
+	if api.mode != dashboardModeDaemon {
+		t.Fatalf("mode = %q, want daemon for responsive stale daemon", api.mode)
+	}
+	handler, err := newDashboardHandler(
+		fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(dashboardTestIndex)}},
+		api.handler,
+		api.mode,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
+	if index.Code != http.StatusOK || !strings.Contains(index.Body.String(), `content="daemon"`) {
+		t.Fatalf("index response = %d %q", index.Code, index.Body.String())
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %q", response.Code, response.Body.String())
+	}
+	var health readservice.Health
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Healthy {
+		t.Fatal("dashboard masked the stale scheduler heartbeat")
+	}
+	if health.Freshness.LastTickAgeMillis == nil || *health.Freshness.LastTickAgeMillis != lastTickAgeMillis {
+		t.Fatalf("last tick age = %v, want %d", health.Freshness.LastTickAgeMillis, lastTickAgeMillis)
+	}
+}
+
 func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -191,7 +275,7 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,13 +333,14 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 			APIVersion:    readservice.APIVersion,
 			SchemaVersion: readservice.SchemaVersion,
 			Ready:         true,
+			Healthy:       true,
 		}); err != nil {
 			t.Errorf("encode health response: %v", err)
 		}
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}

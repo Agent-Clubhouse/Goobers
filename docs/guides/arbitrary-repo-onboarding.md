@@ -126,6 +126,8 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN
 telemetry:
   enabled: true
+runner:
+  livenessTimeout: 2m
 timezone: America/Los_Angeles
 runConditions:
   maxParallelRuns: 1
@@ -133,6 +135,8 @@ runConditions:
   claimsLockTimeout: 30s
 ```
 
+`runner.livenessTimeout` defaults to two minutes and marks a daemon unhealthy
+when its scheduler tick heartbeat in `scheduler/up.lock` is older than that.
 `timezone` is an IANA location used for every workflow schedule; omit it for
 UTC. Token references may use `token.file` instead of `token.env`, but never an
 inline token value. `stalledRunTimeout` defaults to 45 minutes and escalates a
