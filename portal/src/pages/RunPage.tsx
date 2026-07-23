@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  DaemonClient,
-  RunDetail,
-  RunEvent,
-  WorkflowGraph,
-  WorkflowGraphNode,
-} from "../api/types";
+import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
+import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
   eventHeading,
@@ -183,12 +178,12 @@ function RunDetailWorkspace({
           className="run-graph-panel"
         >
           {run.graphStatus === "pinned" && run.graph ? (
-            <RunTopologyGraph
+            <WorkflowTopologyGraph
               graph={run.graph}
               nodeStates={nodeStates}
-              onSelectNode={setSelectedNodeId}
-              selectedNodeId={selectedNodeId}
-              selectedSeq={selectedSeq}
+              onSelectStage={setSelectedNodeId}
+              selectedStageId={selectedNodeId}
+              stateSeq={selectedSeq}
             />
           ) : (
             <div className="empty-detail" role="status">
@@ -206,106 +201,6 @@ function RunDetailWorkspace({
         />
       </section>
     </>
-  );
-}
-
-function RunTopologyGraph({
-  graph,
-  nodeStates,
-  onSelectNode,
-  selectedNodeId,
-  selectedSeq,
-}: {
-  graph: WorkflowGraph;
-  nodeStates: Record<string, RunNodeState>;
-  onSelectNode: (nodeId: string) => void;
-  selectedNodeId?: string;
-  selectedSeq: number;
-}) {
-  const nodeRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  const moveSelection = (targetIndex: number) => {
-    const node = graph.nodes[targetIndex];
-    if (!node) {
-      return;
-    }
-    onSelectNode(node.id);
-    nodeRefs.current[targetIndex]?.focus();
-  };
-
-  const onNodeKeyDown = (
-    event: React.KeyboardEvent<HTMLButtonElement>,
-    node: WorkflowGraphNode,
-    index: number,
-  ) => {
-    let targetIndex: number | undefined;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      targetIndex = (index + 1) % graph.nodes.length;
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      targetIndex = (index - 1 + graph.nodes.length) % graph.nodes.length;
-    } else if (event.key === "Home") {
-      targetIndex = 0;
-    } else if (event.key === "End") {
-      targetIndex = graph.nodes.length - 1;
-    }
-    if (targetIndex !== undefined) {
-      event.preventDefault();
-      moveSelection(targetIndex);
-    } else if (event.key === "Enter" || event.key === " ") {
-      onSelectNode(node.id);
-    }
-  };
-
-  return (
-    <div
-      aria-label={`${graph.name} pinned execution graph`}
-      className="run-topology"
-      data-responsive-layout="compact-under-820"
-      role="group"
-    >
-      <p className="run-graph-pin">
-        Pinned v{graph.version} · <span className="mono">{graph.digest}</span>
-      </p>
-      <ol className="run-topology-list">
-        {graph.nodes.map((node, index) => {
-          const state = nodeStates[node.id] ?? "pending";
-          const outgoing = graph.edges.filter((edge) => edge.source === node.id);
-          return (
-            <li className="run-topology-step" key={node.id}>
-              <button
-                aria-label={`${node.id}, ${node.kind}, ${nodeStateLabel(state)} at sequence ${selectedSeq}`}
-                aria-pressed={selectedNodeId === node.id}
-                className={`run-topology-node run-node-${node.kind} run-node-state-${state}`}
-                onClick={() => onSelectNode(node.id)}
-                onKeyDown={(event) => onNodeKeyDown(event, node, index)}
-                ref={(element) => {
-                  nodeRefs.current[index] = element;
-                }}
-                type="button"
-              >
-                <span className="graph-node-kind">{node.kind}</span>
-                <strong>{node.id}</strong>
-                <span className="run-node-state">{nodeStateLabel(state)}</span>
-                {(node.owner || node.evaluator) && (
-                  <span className="run-node-owner">{node.owner || `${node.evaluator} evaluator`}</span>
-                )}
-              </button>
-              {outgoing.length > 0 && (
-                <ul aria-label={`Outgoing branches from ${node.id}`} className="run-graph-edges">
-                  {outgoing.map((edge, edgeIndex) => (
-                    <li key={`${edge.source}-${edge.target}-${edge.outcome ?? edgeIndex}`}>
-                      <span>{edge.outcome || "next"}</span>
-                      <span aria-hidden="true">→</span>
-                      <strong>{edge.target || edge.terminal}</strong>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          );
-        })}
-      </ol>
-    </div>
   );
 }
 
@@ -404,6 +299,3 @@ function EventLedger({
   );
 }
 
-function nodeStateLabel(state: RunNodeState): string {
-  return state.charAt(0).toUpperCase() + state.slice(1);
-}

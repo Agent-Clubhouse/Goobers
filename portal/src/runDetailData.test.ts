@@ -87,15 +87,36 @@ describe("run detail projection", () => {
     expect(eventSummary(unsupported)).not.toContain("privateImplementationDetail");
   });
 
-  it("applies an API-shaped terminal event to the previously active node", () => {
+  it("applies an API-shaped terminal event to the previously active node and skips no-work nodes", () => {
     const events = [
       event(1, "stage.started", { stage: "implement", attempt: 1 }),
       event(2, "run.finished", { status: "aborted" }),
     ];
 
+    // review was never entered before the run ended: it is a no-work node and
+    // must read "skipped", not stay "pending" (DASH-19 regression guard).
     expect(deriveNodeStates(graph, events, 2)).toEqual({
       implement: "aborted",
+      review: "skipped",
+    });
+  });
+
+  it("keeps no-work nodes pending before terminal and skipped at/after it", () => {
+    const events = [
+      event(1, "stage.started", { stage: "implement", attempt: 1 }),
+      event(2, "stage.finished", { stage: "implement", attempt: 1, status: "success" }),
+      event(3, "run.finished", { status: "completed" }),
+    ];
+
+    // Before the run is terminal, an unvisited node may still run → pending.
+    expect(deriveNodeStates(graph, events, 2)).toEqual({
+      implement: "completed",
       review: "pending",
+    });
+    // As of the terminal sequence, the unvisited node is skipped and stays so.
+    expect(deriveNodeStates(graph, events, 3)).toEqual({
+      implement: "completed",
+      review: "skipped",
     });
   });
 });

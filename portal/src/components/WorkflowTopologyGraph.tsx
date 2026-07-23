@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { WorkflowGraph, WorkflowGraphNode } from "../api/types";
+import type { RunNodeState } from "../runDetailData";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -13,14 +14,30 @@ const FALLBACK_VIEWPORT_WIDTH = 720;
 const FALLBACK_VIEWPORT_HEIGHT = 360;
 const PAN_DISTANCE = 120;
 
+// A node counts as traversed — its incoming edge is on the executed path — once
+// it has been entered (any state other than the two the run never visited).
+function nodeTraversed(state: RunNodeState | undefined): boolean {
+  return state !== undefined && state !== "pending" && state !== "skipped";
+}
+
+function runStateLabel(state: RunNodeState): string {
+  return state.charAt(0).toUpperCase() + state.slice(1);
+}
+
 export function WorkflowTopologyGraph({
   graph,
   onSelectStage,
   selectedStageId,
+  nodeStates,
+  stateSeq,
 }: {
   graph: WorkflowGraph;
   onSelectStage: (stageId: string) => void;
   selectedStageId?: string;
+  // When present, the graph is a live run overlay: each node paints its
+  // as-of-sequence run state and the executed path is emphasized (DASH-19).
+  nodeStates?: Record<string, RunNodeState>;
+  stateSeq?: number;
 }) {
   const layout = useMemo(() => layoutWorkflowGraph(graph), [graph]);
   const markerId = `workflow-arrow-${useId().replaceAll(":", "")}`;
@@ -138,6 +155,11 @@ export function WorkflowTopologyGraph({
 
   return (
     <div className="workflow-graph-shell">
+      {nodeStates && (
+        <p className="run-graph-pin">
+          Pinned v{graph.version} · <span className="mono">{graph.digest}</span>
+        </p>
+      )}
       {navigationRequired && (
         <div aria-label="Graph view controls" className="workflow-graph-controls" role="group">
           <button onClick={() => pan(-PAN_DISTANCE, 0)} type="button">
@@ -161,9 +183,9 @@ export function WorkflowTopologyGraph({
           >
             -
           </button>
-          <output aria-live="polite" className="graph-zoom-value">
+          <span aria-live="polite" className="graph-zoom-value">
             {Math.round(zoom * 100)}%
-          </output>
+          </span>
           <button
             aria-label="Zoom in"
             disabled={zoom >= MAX_GRAPH_ZOOM}
@@ -178,7 +200,7 @@ export function WorkflowTopologyGraph({
         </div>
       )}
       <div
-        aria-label={`${graph.name} execution graph`}
+        aria-label={`${graph.name} ${nodeStates ? "pinned " : ""}execution graph`}
         className="workflow-graph-viewport"
         data-responsive-layout="scroll-under-820"
         data-zoom={zoom.toFixed(2)}
@@ -216,10 +238,22 @@ export function WorkflowTopologyGraph({
                   <path className="workflow-graph-arrow" d="M 0 0 L 8 4 L 0 8 z" />
                 </marker>
               </defs>
-              {layout.edges.map((edge) => (
+              {layout.edges.map((edge) => {
+                const traversed =
+                  nodeStates !== undefined &&
+                  nodeTraversed(nodeStates[edge.edge.source]) &&
+                  nodeTraversed(nodeStates[edge.edge.target]);
+                return (
                 <g key={edge.id}>
                   <path
-                    className={`workflow-graph-edge ${edge.repass ? "workflow-graph-edge-repass" : ""}`}
+                    className={[
+                      "workflow-graph-edge",
+                      edge.repass ? "workflow-graph-edge-repass" : "",
+                      nodeStates ? "workflow-graph-edge-declared" : "",
+                      traversed ? "workflow-graph-edge-traversed" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                     d={edge.path}
                     markerEnd={`url(#${markerId})`}
                   />
@@ -233,7 +267,8 @@ export function WorkflowTopologyGraph({
                     </text>
                   )}
                 </g>
-              ))}
+                );
+              })}
             </svg>
             {layout.nodes.map((layoutNode) => {
               if (layoutNode.type === "terminal") {
@@ -253,12 +288,28 @@ export function WorkflowTopologyGraph({
               const { node } = layoutNode;
               const index = layout.stageOrder.findIndex((stage) => stage.id === node.id);
               const actor = nodeActor(node);
+              const runState = nodeStates?.[node.id];
+              const stateText = runState ? runStateLabel(runState) : "Configured";
+              const seqSuffix = stateSeq !== undefined ? ` at sequence ${stateSeq}` : "";
+              // In a live run overlay the label is concise and state-first
+              // ("review, gate, Running at sequence 6"); on the definition page
+              // it stays the richer configured-topology label.
+              const ariaLabel = runState
+                ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}`
+                : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured`;
               return (
                 <button
-                  aria-label={`${node.id}, ${nodeKindLabel(node)}, ${actor}, configured`}
+                  aria-label={ariaLabel}
                   aria-pressed={selectedStageId === node.id}
-                  className={`workflow-graph-node workflow-node-${node.kind}`}
+                  className={[
+                    "workflow-graph-node",
+                    `workflow-node-${node.kind}`,
+                    runState ? `run-node-state-${runState}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   data-node-kind={node.kind}
+                  data-run-state={runState}
                   key={node.id}
                   onClick={() => onSelectStage(node.id)}
                   onKeyDown={(event) => {
@@ -291,7 +342,7 @@ export function WorkflowTopologyGraph({
                   <span className="graph-node-kind">{nodeKindLabel(node)}</span>
                   <strong>{node.id}</strong>
                   <span className="workflow-node-actor">{actor}</span>
-                  <span className="graph-node-state">Configured</span>
+                  <span className="graph-node-state">{stateText}</span>
                 </button>
               );
             })}
