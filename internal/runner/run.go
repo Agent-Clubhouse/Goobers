@@ -2033,7 +2033,15 @@ func retryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.Attem
 	}
 	switch result.Error.Code {
 	case "nonzero_exit", baseSyncConflictErrorCode:
-		return journal.AttemptPolicy, gate.OutcomeFail, true
+		want := g.Automated.Params["equals"]
+		if want == "" {
+			want = string(apiv1.ResultSuccess)
+		}
+		outcome := gate.OutcomeFail
+		if string(result.Status) == want {
+			outcome = gate.OutcomePass
+		}
+		return journal.AttemptPolicy, outcome, true
 	default:
 		return "", "", false
 	}

@@ -267,6 +267,7 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 		wantLocalCI       int
 		wantGateCalls     int
 		wantRetryAttempts []int
+		statusEquals      string
 	}{
 		{
 			name:              "converges_at_budget",
@@ -286,6 +287,15 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 			wantGateCalls:     0,
 			wantRetryAttempts: []int{1, 2, 3},
 		},
+		{
+			name:          "failure_is_expected",
+			landings:      1,
+			wantPhase:     journal.PhaseCompleted,
+			wantImplement: 1,
+			wantLocalCI:   0,
+			wantGateCalls: 0,
+			statusEquals:  string(apiv1.ResultFailure),
+		},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +314,10 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 			runID := "run-sync-conflict-" + tt.name
 			deterministic.runDir = filepath.Join(runsDir, runID)
 			repo.runDir = deterministic.runDir
+			var gateParams map[string]string
+			if tt.statusEquals != "" {
+				gateParams = map[string]string{"equals": tt.statusEquals}
+			}
 			machine, err := workflow.Compile(workflow.Definition{
 				Name:    "implementation",
 				Version: 1,
@@ -323,7 +337,7 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 					Gates: []apiv1.Gate{{
 						Name:      "local-gate",
 						Evaluator: apiv1.EvaluatorAutomated,
-						Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+						Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: gateParams},
 						Branches: map[string]string{
 							"pass":                  workflow.TerminalComplete,
 							"fail":                  "implement",
