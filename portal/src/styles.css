@@ -1271,10 +1271,120 @@ summary:focus-visible {
   font-weight: 720;
 }
 
+.usage-description,
 .error-signature-description {
   color: var(--muted);
   font-size: 11px;
   margin: -4px 0 10px;
+}
+
+.usage-analytics {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.usage-header,
+.usage-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns:
+    minmax(175px, 1fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr)
+    minmax(210px, 1.1fr);
+}
+
+.usage-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  padding: 9px 13px;
+  text-transform: uppercase;
+}
+
+.usage-row {
+  align-items: stretch;
+  min-height: 92px;
+  padding: 12px 13px;
+}
+
+.usage-row + .usage-row {
+  border-top: 1px solid var(--line);
+}
+
+.usage-row > .distribution-name {
+  align-self: center;
+}
+
+.usage-metric-link {
+  border-radius: 7px;
+  color: inherit;
+  display: grid;
+  gap: 9px;
+  padding: 8px;
+  text-decoration: none;
+}
+
+.usage-metric-link:hover {
+  background: var(--surface);
+}
+
+.usage-metric-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.usage-metric-heading > strong {
+  display: none;
+}
+
+.usage-metric-heading small,
+.usage-percentiles small,
+.usage-waste-values small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage-percentiles,
+.usage-waste-values {
+  display: grid;
+  gap: 9px;
+}
+
+.usage-percentiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.usage-waste-values {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.usage-percentiles > span,
+.usage-waste-values > span {
+  display: grid;
+  gap: 3px;
+}
+
+.usage-percentiles strong,
+.usage-waste-values strong,
+.usage-no-waste strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.usage-no-waste {
+  align-items: center;
+  color: var(--muted-strong);
+  display: flex;
+  min-height: 30px;
 }
 
 .insight-inline-error {
@@ -3331,6 +3441,14 @@ a.telemetry-error-row:hover {
     grid-template-columns: minmax(180px, 0.8fr) minmax(180px, 1.2fr) 16px;
   }
 
+  .usage-header,
+  .usage-row {
+    gap: 10px;
+    grid-template-columns:
+      minmax(150px, 1fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr)
+      minmax(175px, 1fr);
+  }
+
   .error-signature-header,
   .error-signature-row {
     grid-template-columns: minmax(180px, 1.2fr) minmax(115px, 0.7fr) 55px minmax(145px, 1fr) 16px;
@@ -3692,6 +3810,20 @@ a.telemetry-error-row:hover {
   .insight-outcome-header > span:nth-child(n + 3),
   .insight-outcome-row > :nth-child(n + 3) {
     display: none;
+  }
+
+  .usage-header {
+    display: none;
+  }
+
+  .usage-row {
+    gap: 10px;
+    grid-template-columns: 1fr;
+  }
+
+  .usage-metric-heading > strong {
+    display: block;
+    font-size: 10px;
   }
 
   .error-signature-header,

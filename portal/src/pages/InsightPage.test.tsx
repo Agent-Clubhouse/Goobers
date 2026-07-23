@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -125,6 +125,91 @@ describe("Insight page", () => {
           stage: undefined,
           outcome: "finished",
           population: undefined,
+          since: expect.stringMatching(/Z$/),
+          until: expect.stringMatching(/Z$/),
+        }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it("shows measured AI usage and keeps missing runner usage unmeasured", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Credits, cost, and tokens" }),
+    ).toBeInTheDocument();
+    const costLinks = screen.getAllByRole("link", { name: /^View AI cost runs behind/ });
+    expect(costLinks).toHaveLength(3);
+    expect(costLinks[0]).toHaveAccessibleName(
+      /core \/ implementation \/ implement: 4 samples, P50 \$1\.25, P95 \$2\.50/,
+    );
+    expect(costLinks[1]).toHaveAccessibleName(
+      /core \/ implementation \/ review: 4 samples, P50 \$0\.40, P95 \$0\.80/,
+    );
+
+    const tokenLink = screen.getByRole("link", {
+      name: /View token usage runs behind core \/ implementation \/ implement/,
+    });
+    const costLink = screen.getByRole("link", {
+      name: /View AI cost runs behind core \/ implementation \/ implement/,
+    });
+    const wasteLink = screen.getByRole("link", {
+      name: /View retry-waste runs behind core \/ implementation \/ implement/,
+    });
+    for (const link of [tokenLink, costLink, wasteLink]) {
+      expect(link).toHaveAttribute(
+        "href",
+        expect.stringMatching(
+          /#\/runs\?.*gaggle=core.*workflow=implementation.*stage=implement.*outcome=finished.*population=attempts.*since=.*until=/,
+        ),
+      );
+    }
+    expect(screen.getAllByText("24,000 tokens").length).toBeGreaterThan(0);
+    expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
+    expect(screen.getByText("$0.75")).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Workflow · core / implementation" }),
+    );
+    expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(2);
+    expect(
+      screen.queryByRole("link", {
+        name: /View AI cost runs behind tools \/ implementation \/ implement/,
+      }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Stage · tools / implementation / implement" }),
+    );
+
+    const unmeasuredTokens = screen.getByRole("link", {
+      name: /View token usage runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
+    const unmeasuredCost = screen.getByRole("link", {
+      name: /View AI cost runs behind tools \/ implementation \/ implement: Unmeasured/,
+    });
+    expect(within(unmeasuredTokens).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(screen.getByText("No retry waste")).toBeInTheDocument();
+    expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
+    expect(within(unmeasuredTokens).queryByText("0 tokens")).not.toBeInTheDocument();
+
+    await user.click(unmeasuredCost);
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listRuns).toHaveBeenCalledWith(
+        expect.objectContaining({
+          gaggle: "tools",
+          workflow: "implementation",
+          stage: "implement",
+          outcome: "finished",
+          population: "attempts",
           since: expect.stringMatching(/Z$/),
           until: expect.stringMatching(/Z$/),
         }),

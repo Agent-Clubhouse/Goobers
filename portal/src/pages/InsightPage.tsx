@@ -86,8 +86,8 @@ export function InsightPage({
         <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
-          Success, failure-reason, and latency diagnostics for the selected operational scope.
-          Every metric opens the runs behind it.
+          Success, failure-reason, AI usage, and latency diagnostics for the selected
+          operational scope. Every metric opens the runs behind it.
         </p>
       </header>
 
@@ -151,7 +151,8 @@ function InsightContent({
 }) {
   const summary = scopeMetric(scope, snapshot.stats, snapshot.filters);
   const breakdown = outcomeBreakdown(scope, snapshot.stats, snapshot.filters);
-  const stages = stagesInScope(scope, snapshot.stats.stages)
+  const usageStages = stagesInScope(scope, snapshot.stats.stages).sort(compareUsageStages);
+  const stages = usageStages
     .filter((stage) => stage.durationSamples > 0)
     .sort(
       (left, right) =>
@@ -168,6 +169,7 @@ function InsightContent({
 
   if (
     !hasOutcomes &&
+    usageStages.length === 0 &&
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
@@ -211,6 +213,23 @@ function InsightContent({
               <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
             ))}
           </div>
+        </section>
+      )}
+
+      {usageStages.length > 0 && (
+        <section className="content-section">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">AI usage</p>
+              <h2>Credits, cost, and tokens</h2>
+            </div>
+            <span className="section-count">Ordered by P95 cost</span>
+          </div>
+          <p className="usage-description">
+            Stage measurements roll up under the selected workflow, gaggle, or instance.
+            Runners that do not report usage remain unmeasured.
+          </p>
+          <UsageAnalytics filters={snapshot.filters} stages={usageStages} />
         </section>
       )}
 
@@ -409,6 +428,156 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
         {metric.total}
       </a>
     </div>
+  );
+}
+
+function UsageAnalytics({
+  filters,
+  stages,
+}: {
+  filters: TelemetryStatsOptions;
+  stages: TelemetryStageStats[];
+}) {
+  return (
+    <div className="usage-analytics">
+      <div aria-hidden="true" className="usage-header">
+        <span>Stage</span>
+        <span>Tokens</span>
+        <span>AI cost</span>
+        <span>Retry waste</span>
+      </div>
+      {stages.map((stage) => {
+        const label = `${stage.gaggle} / ${stage.workflow} / ${stage.stage}`;
+        const href = routeHash({
+          page: "runs",
+          filters: drillFilters(
+            filters,
+            stage.gaggle,
+            stage.workflow,
+            stage.stage,
+            "finished",
+            "attempts",
+          ),
+        });
+        return (
+          <div className="usage-row" key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}>
+            <span className="distribution-name">
+              <strong>{stage.stage}</strong>
+              <small>
+                {stage.gaggle} / {stage.workflow} · {stage.totalAttempts}{" "}
+                {stage.totalAttempts === 1 ? "attempt" : "attempts"}
+              </small>
+            </span>
+            <UsagePercentiles
+              ariaLabel={`View token usage runs behind ${label}: ${formatSamples(stage.tokenSamples)}, P50 ${formatMeasuredTokens(stage.p50Tokens)}, P95 ${formatMeasuredTokens(stage.p95Tokens)}`}
+              formatter={formatMeasuredTokens}
+              href={href}
+              label="Tokens"
+              p50={stage.p50Tokens}
+              p95={stage.p95Tokens}
+              samples={stage.tokenSamples}
+            />
+            <UsagePercentiles
+              ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(stage.costSamples)}, P50 ${formatMeasuredCost(stage.p50CostUSD)}, P95 ${formatMeasuredCost(stage.p95CostUSD)}`}
+              formatter={formatMeasuredCost}
+              href={href}
+              label="AI cost"
+              p50={stage.p50CostUSD}
+              p95={stage.p95CostUSD}
+              samples={stage.costSamples}
+            />
+            <RetryWasteMetric href={href} label={label} stage={stage} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function UsagePercentiles({
+  ariaLabel,
+  formatter,
+  href,
+  label,
+  p50,
+  p95,
+  samples,
+}: {
+  ariaLabel: string;
+  formatter: (value: number | undefined) => string;
+  href: string;
+  label: string;
+  p50?: number;
+  p95?: number;
+  samples: number;
+}) {
+  return (
+    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
+      <span className="usage-metric-heading">
+        <strong>{label}</strong>
+        <small>{formatSamples(samples)}</small>
+      </span>
+      <span className="usage-percentiles">
+        <span>
+          <small>P50</small>
+          <strong>{formatter(p50)}</strong>
+        </span>
+        <span>
+          <small>P95</small>
+          <strong>{formatter(p95)}</strong>
+        </span>
+      </span>
+    </a>
+  );
+}
+
+function RetryWasteMetric({
+  href,
+  label,
+  stage,
+}: {
+  href: string;
+  label: string;
+  stage: TelemetryStageStats;
+}) {
+  const description =
+    stage.retryWasteAttempts === 0
+      ? "no superseded attempts"
+      : `${stage.retryWasteAttempts} superseded ${stage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(stage.retryWasteTokens)}, ${formatMeasuredCost(stage.retryWasteCostUSD)}`;
+  return (
+    <a
+      aria-label={`View retry-waste runs behind ${label}: ${description}`}
+      className="usage-metric-link usage-waste-link"
+      href={href}
+    >
+      <span className="usage-metric-heading">
+        <strong>Retry waste</strong>
+        <small>
+          {stage.retryWasteAttempts} superseded{" "}
+          {stage.retryWasteAttempts === 1 ? "attempt" : "attempts"}
+        </small>
+      </span>
+      {stage.retryWasteAttempts === 0 ? (
+        <span className="usage-no-waste">
+          <strong>No retry waste</strong>
+        </span>
+      ) : (
+        <span className="usage-waste-values">
+          <span>
+            <small>Attempts</small>
+            <strong>{stage.retryWasteAttempts}</strong>
+          </span>
+          <span>
+            <small>Tokens</small>
+            <strong>{formatMeasuredTokens(stage.retryWasteTokens)}</strong>
+          </span>
+          <span>
+            <small>Cost</small>
+            <strong>{formatMeasuredCost(stage.retryWasteCostUSD)}</strong>
+          </span>
+        </span>
+      )}
+    </a>
   );
 }
 
@@ -645,6 +814,16 @@ function stagesInScope(
   }
 }
 
+function compareUsageStages(left: TelemetryStageStats, right: TelemetryStageStats): number {
+  return (
+    (right.p95CostUSD ?? -1) - (left.p95CostUSD ?? -1) ||
+    (right.p95Tokens ?? -1) - (left.p95Tokens ?? -1) ||
+    left.gaggle.localeCompare(right.gaggle) ||
+    left.workflow.localeCompare(right.workflow) ||
+    left.stage.localeCompare(right.stage)
+  );
+}
+
 function sumGaggles(
   gaggles: TelemetryGaggleStats[],
   filters: TelemetryStatsOptions,
@@ -789,4 +968,24 @@ function formatRate(value: number | undefined): string {
 
 function formatMeasuredDuration(value: number | undefined): string {
   return value === undefined ? "Unmeasured" : formatDuration(value);
+}
+
+function formatMeasuredTokens(value: number | undefined): string {
+  return value === undefined ? "Unmeasured" : `${value.toLocaleString("en-US")} tokens`;
+}
+
+function formatMeasuredCost(value: number | undefined): string {
+  if (value === undefined) {
+    return "Unmeasured";
+  }
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
+function formatSamples(samples: number): string {
+  return samples === 0 ? "Unmeasured" : `${samples} ${samples === 1 ? "sample" : "samples"}`;
 }
