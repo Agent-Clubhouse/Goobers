@@ -1062,6 +1062,7 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 	for k := range selector {
 		labels = append(labels, k)
 	}
+	sort.Strings(labels)
 	return &backlogCounter{
 		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
 		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},

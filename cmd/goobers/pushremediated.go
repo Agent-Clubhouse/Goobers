@@ -96,7 +96,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken)
+	provider := newCachedGitHubProvider(root, prToken)
 
 	selectedNumber, ok, err := claimedPullRequestNumber(root)
 	if err != nil {

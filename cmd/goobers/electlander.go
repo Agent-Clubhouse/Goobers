@@ -260,7 +260,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token)
+	provider := newCachedGitHubProvider(root, token)
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

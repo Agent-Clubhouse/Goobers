@@ -220,7 +220,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	provider := newCachedGitHubProvider(root, prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -47,7 +48,10 @@ func TestBuildBacklogCounter(t *testing.T) {
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
-			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers:ready": "true"}}},
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{
+				"goobers:ready":    "true",
+				"goobers:approved": "true",
+			}}},
 		}}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 		if err != nil {
@@ -64,8 +68,8 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.repo.Owner != "acme" || bc.repo.Name != "web" {
 			t.Fatalf("repo = %+v, want acme/web", bc.repo)
 		}
-		if len(bc.labels) != 1 || bc.labels[0] != "goobers:ready" {
-			t.Fatalf("labels = %v, want [goobers:ready] (the selector's keys)", bc.labels)
+		if got, want := bc.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+			t.Fatalf("labels = %v, want canonical order %v", got, want)
 		}
 		if bc.schedulerDir != "/instance/scheduler" {
 			t.Fatalf("schedulerDir = %q, want /instance/scheduler", bc.schedulerDir)

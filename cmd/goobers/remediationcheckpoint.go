@@ -339,7 +339,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token)
+	provider := newCachedGitHubProvider(root, token)
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
