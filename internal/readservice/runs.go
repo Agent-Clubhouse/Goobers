@@ -1660,7 +1660,33 @@ func collectStageAttempts(
 	}
 	for _, record := range records {
 		event := record.Event
-		if !event.KnownSchema() || event.Stage == "" || (stage != "" && event.Stage != stage) {
+		if !event.KnownSchema() {
+			continue
+		}
+		// A terminal run closes any attempt still open. A gate whose evaluation
+		// errors terminally emits no stage.finished (and its error is not an
+		// executor_error), so without this its attempt would project as
+		// permanently "running" — the DASH-20 regression. run.finished carries
+		// no stage, so it must be handled before the per-stage filter.
+		if event.Type == journal.EventRunFinished {
+			finished := event.Time
+			for st := range byStage {
+				for i := range byStage[st] {
+					if byStage[st][i].FinishedSeq != 0 {
+						continue
+					}
+					attempt := &byStage[st][i]
+					attempt.Status = string(apiv1.ResultFailure)
+					attempt.FinishedSeq = event.Seq
+					attempt.FinishedAt = &finished
+					if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
+						attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
+					}
+				}
+			}
+			continue
+		}
+		if event.Stage == "" || (stage != "" && event.Stage != stage) {
 			continue
 		}
 		attempts := byStage[event.Stage]
