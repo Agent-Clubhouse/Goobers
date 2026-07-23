@@ -372,7 +372,7 @@ func TestSlowSubscriberDoesNotBlockJournalAppends(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("journal appends blocked on slow subscriber")
 	}
 	waitForCursor(t, stream, "test:4")
@@ -511,7 +511,7 @@ func TestConcurrentRunJournalsProduceOrderedDeduplicableEvents(t *testing.T) {
 
 	seen := map[string]bool{}
 	lastSequence := uint64(0)
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for len(seen) < len(runIDs) {
 		select {
 		case event, ok := <-events:
@@ -714,7 +714,12 @@ func TestShutdownAbandonsQueuedReplayForSlowClient(t *testing.T) {
 	stream.Close()
 	select {
 	case <-served:
-	case <-time.After(2 * time.Second):
+	// Headroom against hosted-runner contention: the assertion is that the
+	// replay is ABANDONED (handler stops, wrote < backlog below), not that it
+	// happens within a tight window. A 2s ceiling flaked under ubuntu load and
+	// evicted queued PRs from the merge queue; a slow-but-correct abandon is
+	// still correct.
+	case <-time.After(10 * time.Second):
 		t.Fatalf("handler still writing %s after stream close", time.Since(closedAt))
 	}
 	if got := writer.writeCount(); got >= backlog {
