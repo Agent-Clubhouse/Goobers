@@ -56,10 +56,6 @@ type remediationResponseResult struct {
 	Findings       []recordedFindingDisposition `json:"findings"`
 }
 
-type remediationContextArtifact struct {
-	Verdict *apiv1.Verdict `json:"verdict"`
-}
-
 func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("respond-to-findings", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -205,7 +201,7 @@ func readRemediationResponseInputs(root, runID string) (apiv1.Verdict, string, b
 		}
 	}
 	if contextRef == nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("gather-pr-context produced no pr-context.json artifact")
+		return apiv1.Verdict{}, "", false, fmt.Errorf("gather-pr-context produced no remediation-brief.json artifact")
 	}
 	if !implementFound {
 		return apiv1.Verdict{}, "", false, fmt.Errorf("no implement stage result found")
@@ -219,16 +215,22 @@ func readRemediationResponseInputs(root, runID string) (apiv1.Verdict, string, b
 
 	data, err := rd.ArtifactBytes(*contextRef)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("read pr-context.json artifact: %w", err)
+		return apiv1.Verdict{}, "", false, fmt.Errorf("read remediation-brief.json artifact: %w", err)
 	}
-	var context remediationContextArtifact
-	if err := json.Unmarshal(data, &context); err != nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("unmarshal pr-context.json artifact: %w", err)
+	var brief apiv1.RemediationBrief
+	if err := json.Unmarshal(data, &brief); err != nil {
+		return apiv1.Verdict{}, "", false, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
 	}
-	if context.Verdict == nil {
+	if brief.Schema != apiv1.RemediationBriefVersion {
+		return apiv1.Verdict{}, "", false, fmt.Errorf(
+			"remediation-brief.json artifact schema is %q, want %q",
+			brief.Schema, apiv1.RemediationBriefVersion,
+		)
+	}
+	if brief.GatherPRContext.Verdict == nil {
 		return apiv1.Verdict{}, rawResponses, published == "true", nil
 	}
-	return *context.Verdict, rawResponses, published == "true", nil
+	return *brief.GatherPRContext.Verdict, rawResponses, published == "true", nil
 }
 
 func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDisposition, error) {
