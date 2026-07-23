@@ -15,6 +15,8 @@ spec:
   # workflow) — repo:push is the whole grant.
   capabilities:
     - repo:push
+  policyActions:
+    - modify-repository
   skills:
     - implement
     - run-tests

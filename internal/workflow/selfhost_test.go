@@ -3,6 +3,8 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -34,7 +36,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -54,6 +56,93 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	actions := map[string]bool{}
+
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author"} {
+		var goober apiv1.Goober
+		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
+		if err != nil {
+			t.Fatalf("read %s goober: %v", name, err)
+		}
+		if err := yaml.Unmarshal(raw, &goober); err != nil {
+			t.Fatalf("unmarshal %s goober: %v", name, err)
+		}
+		for _, action := range append(goober.Spec.PolicyActions, goober.Spec.ConditionalPolicyActions...) {
+			actions[action] = true
+		}
+	}
+
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
+		var workflow apiv1.Workflow
+		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if err := yaml.Unmarshal(raw, &workflow); err != nil {
+			t.Fatalf("unmarshal %s: %v", file, err)
+		}
+		for _, task := range workflow.Spec.Tasks {
+			for _, action := range task.PolicyActions {
+				actions[action] = true
+			}
+		}
+	}
+
+	audit, err := os.ReadFile(filepath.Join("..", "..", "docs", "requirements", "pr-lifecycle.md"))
+	if err != nil {
+		t.Fatalf("read policy audit: %v", err)
+	}
+	var missing []string
+	for action := range actions {
+		if !strings.Contains(string(audit), "`"+action+"`") {
+			missing = append(missing, action)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) != 0 {
+		t.Fatalf("capability-vs-policy audit omits declared selfhost actions: %v", missing)
+	}
+}
+
+func TestSelfhostRemediationRejectsOmittedPersonaActions(t *testing.T) {
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+
+	var implementer apiv1.Goober
+	raw, err := os.ReadFile(filepath.Join(root, "goobers", "implementer", "goober.yaml"))
+	if err != nil {
+		t.Fatalf("read implementer goober: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &implementer); err != nil {
+		t.Fatalf("unmarshal implementer goober: %v", err)
+	}
+
+	var remediation apiv1.Workflow
+	raw, err = os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
+	if err != nil {
+		t.Fatalf("read pr-remediation workflow: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &remediation); err != nil {
+		t.Fatalf("unmarshal pr-remediation workflow: %v", err)
+	}
+	for index := range remediation.Spec.Tasks {
+		if remediation.Spec.Tasks[index].Name == "implement" {
+			remediation.Spec.Tasks[index].PolicyActions = nil
+			break
+		}
+	}
+
+	_, err = compileAcknowledged(
+		Definition{Name: remediation.Name, Version: 1, Spec: remediation.Spec},
+		WithGoobers(map[string]apiv1.GooberSpec{implementer.Name: implementer.Spec}),
+	)
+	const want = `task "implement" invokes goober "implementer" whose persona prescribes policy action "modify-repository", but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("compile error = %v, want containing %q", err, want)
 	}
 }
 

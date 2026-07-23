@@ -78,6 +78,8 @@ spec:
         # yet, so this reuses github:pr:write the same way #361's post-merge
         # stage does for its own PR reads.
         - github:pr:write
+      policyActions:
+        - claim-backlog-items
       expectedOutputs:
         - claimed-item
       next: implement
@@ -104,6 +106,8 @@ spec:
       capabilities:
         - repo:push
         - agent:model
+      policyActions:
+        - modify-repository
       retry:
         maxAttempts: 2
         backoffSeconds: 15
@@ -149,6 +153,8 @@ spec:
         command: ["goobers", "push-branch"]
       capabilities:
         - repo:push
+      policyActions:
+        - push-repository-branch
       next: open-pr
 
     - name: open-pr
@@ -168,6 +174,8 @@ spec:
         resultFile: "pr-result.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - open-or-update-pr
       expectedOutputs:
         - pull-request-url
         # Well-known handoff key for ci-poll's inputsFrom below.
@@ -219,6 +227,8 @@ spec:
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
+      policyActions:
+        - update-issue
       # Terminal: no `next`. The core loop's product — issue in, PR out — is
       # complete once the issue carries the closing breadcrumb. There is no
       # merge stage anywhere in this workflow: merge-review owns that
@@ -234,6 +244,8 @@ spec:
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
+      policyActions:
+        - update-issue
       # Terminal @escalate, NOT @abort. The issue still has to leave
       # goobers:ready (that is this PR's whole point), but the run's phase is
       # what every escalation surface selects on: `goobers run` exit 3, the
@@ -254,6 +266,8 @@ spec:
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
+      policyActions:
+        - update-issue
       next: "@abort"
 
   gates:

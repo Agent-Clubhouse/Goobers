@@ -65,6 +65,17 @@ type GooberSpec struct {
 	// capability are simply never materialized (ARCHITECTURE.md §5, SEC-042).
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// PolicyActions is the closed vocabulary of externally mutating actions
+	// this goober's persona unconditionally prescribes. Every agentic task that
+	// invokes the goober must redeclare these actions and their capabilities.
+	// +optional
+	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
+	// ConditionalPolicyActions lists persona actions that are prescribed only
+	// when an invoking task explicitly declares the action and grants its
+	// capability. This supports opt-in authority such as issue self-approval
+	// without making it part of every invocation.
+	// +optional
+	ConditionalPolicyActions []string `json:"conditionalPolicyActions,omitempty" yaml:"conditionalPolicyActions,omitempty"`
 	// Skills are the named skills available to this goober.
 	// +optional
 	Skills []string `json:"skills,omitempty" yaml:"skills,omitempty"`

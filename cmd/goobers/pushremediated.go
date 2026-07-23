@@ -92,11 +92,13 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken)
+	prProvider := newGitHubProvider(prToken)
+	issuesProvider := newGitHubProvider(issuesToken)
 
 	selectedNumber, ok, err := claimedPullRequestNumber(root)
 	if err != nil {
@@ -126,7 +128,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+	prs, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
@@ -149,7 +151,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return writePushRemediatedResult(selectedNumber, false, "", stderr)
 	}
 
-	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
+	rawComments, err := prProvider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
 	}
@@ -185,7 +187,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+	if _, err := issuesProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: strconv.Itoa(selectedNumber), RemoveLabels: []string{needsRemediationLabel},
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%d", needsRemediationLabel, selectedNumber), err, "")

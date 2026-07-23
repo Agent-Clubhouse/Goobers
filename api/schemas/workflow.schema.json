@@ -128,6 +128,12 @@
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "policyActions": {
+          "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Agentic tasks must include every unconditional action declared by their referenced goober, and compiler admission requires each action's canonical capability.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "requiredCapabilities": {
           "description": "Runner (toolchain/platform) capabilities this stage needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101) — distinct from credential capabilities above.",
           "type": "array",

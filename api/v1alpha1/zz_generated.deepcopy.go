@@ -469,6 +469,16 @@ func (in *GooberSpec) DeepCopyInto(out *GooberSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.PolicyActions != nil {
+		in, out := &in.PolicyActions, &out.PolicyActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ConditionalPolicyActions != nil {
+		in, out := &in.ConditionalPolicyActions, &out.ConditionalPolicyActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Skills != nil {
 		in, out := &in.Skills, &out.Skills
 		*out = make([]string, len(*in))
@@ -972,6 +982,11 @@ func (in *Task) DeepCopyInto(out *Task) {
 	}
 	if in.Capabilities != nil {
 		in, out := &in.Capabilities, &out.Capabilities
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PolicyActions != nil {
+		in, out := &in.PolicyActions, &out.PolicyActions
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

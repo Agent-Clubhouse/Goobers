@@ -59,6 +59,7 @@ type remediationCheckpointServerState struct {
 	labels           []string
 	comments         []string
 	siblings         []remediationCheckpointSibling
+	labelRemovalAuth string
 }
 
 type remediationCheckpointSibling struct {
@@ -152,6 +153,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels/", prefix, st.number), func(w http.ResponseWriter, r *http.Request) {
 		label := strings.TrimPrefix(r.URL.Path, fmt.Sprintf("%s/issues/%d/labels/", prefix, st.number))
 		st.mu.Lock()
+		st.labelRemovalAuth = r.Header.Get("Authorization")
 		kept := st.labels[:0]
 		for _, l := range st.labels {
 			if l != label {

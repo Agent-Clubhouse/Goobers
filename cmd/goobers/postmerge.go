@@ -204,23 +204,18 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Two capabilities are actually used: github:pr:write (poll/list PRs)
-	// and github:issues:write (label the other PRs — GitHub's issues API
-	// also covers PR labels — and close the referenced issue). Both are
-	// checked explicitly before any call is made, matching #360's
-	// capability-absent-refuses-first contract; in V0 both resolve to the
-	// identical repo credential (runnerwiring.go's credentialedCapabilities),
-	// so only the first token is actually needed to construct the provider.
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	provider := newGitHubProvider(prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	issuesProvider := newGitHubProvider(issuesToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -248,7 +243,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		if pollErr != nil {
 			return nil
 		}
-		postMergeErrs = performPostMerge(ctx, provider, repo, root, pullNumber, poll, stdout, stderr)
+		postMergeErrs = performPostMerge(ctx, provider, issuesProvider, repo, root, pullNumber, poll, stdout, stderr)
 		if len(postMergeErrs) > 0 {
 			return nil
 		}
@@ -270,7 +265,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func performPostMerge(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+func performPostMerge(ctx context.Context, provider, issuesProvider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
 	var errs []error
 	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
@@ -296,7 +291,7 @@ func performPostMerge(ctx context.Context, provider *providers.GitHubProvider, r
 	}
 	errs = append(errs, undemoteErrs...)
 
-	closed, closeErrs := closeReferencedIssues(ctx, provider, repo, poll.Body, pullNumber)
+	closed, closeErrs := closeReferencedIssues(ctx, issuesProvider, repo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}

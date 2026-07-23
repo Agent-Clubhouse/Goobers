@@ -369,6 +369,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
 		}
 	}
+	problems = append(problems, policyActionProblems(def, goobers)...)
 	if goobers == nil {
 		return problems
 	}

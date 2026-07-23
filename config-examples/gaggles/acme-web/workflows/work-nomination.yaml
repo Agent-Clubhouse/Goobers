@@ -63,6 +63,10 @@ spec:
         - repo:read
         - telemetry:read
         - github:issues:write
+      policyActions:
+        - comment-on-issue
+        - create-issue
+        - label-issue
       inputs:
         # Noise controls (issue #26 scope): bound how many issues one run may
         # file, and how far back "already covered" looks when deduping.
