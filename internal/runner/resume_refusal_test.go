@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -35,6 +36,22 @@ func newRefusalRun(t *testing.T, runsDir, runID, digest string) {
 	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
 		t.Fatalf("append stage.finished: %v", err)
 	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+func newGooberRefusalRun(t *testing.T, runsDir, runID, workflowDigest, gooberDigest string) {
+	t.Helper()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: "goober-fixture", WorkflowVersion: 1,
+		WorkflowDigest: workflowDigest, GooberDigest: gooberDigest, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
 	if err := jr.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -182,6 +199,47 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	}
 	if !strings.Contains(runFinishedErr.Message, "sha256:pinned-to-the-old-workflow-shape") || !strings.Contains(runFinishedErr.Message, machine.Digest()) {
 		t.Fatalf("run.finished error message %q must name both the pinned and the offered digest", runFinishedErr.Message)
+	}
+}
+
+func TestRunnerResumeGooberDigestMismatchFailsBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement",
+			Goober: "coder", Next: workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "goober-fixture", Version: 1, Spec: spec},
+		workflow.WithGoobers(map[string]apiv1.GooberSpec{
+			"coder": {Instructions: "coder.md", Harness: apiv1.HarnessCopilot},
+		}),
+		workflow.WithGooberInstructions(map[string]string{"coder": "new instructions"}),
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-goober-digest-mismatch"
+	newGooberRefusalRun(t, runsDir, runID, machine.Digest(), "sha256:old-goober")
+
+	det := &countingDeterministic{}
+	r, _, _ := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor dispatched %d times, want 0", det.calls)
 	}
 }
 

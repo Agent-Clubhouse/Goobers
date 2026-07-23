@@ -12,6 +12,7 @@ const (
 	AttrWorkflow               = "goobers.workflow"
 	AttrWorkflowVersion        = "goobers.workflow.version"
 	AttrWorkflowDigest         = "goobers.workflow.digest"
+	AttrGooberDigest           = "goobers.goober.digest"
 	AttrGoober                 = "goobers.goober"
 	AttrModel                  = "goobers.model"
 	AttrHarnessVersion         = "goobers.harness.version"
@@ -45,6 +46,7 @@ func AllAttributes() []Attribute {
 		AttrWorkflow,
 		AttrWorkflowVersion,
 		AttrWorkflowDigest,
+		AttrGooberDigest,
 		AttrGoober,
 		AttrModel,
 		AttrHarnessVersion,
@@ -113,6 +115,7 @@ type RunAttributes struct {
 	WorkflowID      string
 	WorkflowVersion string
 	WorkflowDigest  string
+	GooberDigest    string
 	RunID           string
 	ItemID          string
 	ItemURL         string
@@ -124,6 +127,7 @@ type TaskAttributes struct {
 	WorkflowID      string
 	WorkflowVersion string
 	WorkflowDigest  string
+	GooberDigest    string
 	RunID           string
 	TaskID          string
 	TaskType        string
@@ -142,6 +146,7 @@ type GateAttributes struct {
 	WorkflowID      string
 	WorkflowVersion string
 	WorkflowDigest  string
+	GooberDigest    string
 	RunID           string
 	GateID          string
 	Decision        string
@@ -160,6 +165,7 @@ type SchedulerAttributes struct {
 	WorkflowID      string
 	WorkflowVersion string
 	WorkflowDigest  string
+	GooberDigest    string
 	RunID           string
 	Action          string
 	ItemID          string
