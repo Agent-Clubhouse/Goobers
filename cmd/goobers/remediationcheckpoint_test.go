@@ -597,6 +597,46 @@ func TestRemediationCheckpointHydratesMissingSiblingPatchAndEscalatesFirstStruct
 	}
 }
 
+func TestRemediationCheckpointEscalatesForStructuralSiblingMergedBeforeLookback(t *testing.T) {
+	now := time.Now().UTC()
+	oldBaseTime := now.Add(-90 * 24 * time.Hour).Format(time.RFC3339)
+	t.Setenv("GIT_AUTHOR_DATE", oldBaseTime)
+	t.Setenv("GIT_COMMITTER_DATE", oldBaseTime)
+	baseSHA, headSHA, mergeSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		liveBaseSHA: mergeSHA, labels: []string{needsRemediationLabel},
+		files: []providers.ChangedFile{{
+			Path: "status.go", Status: "modified", Patch: structuralCollisionCurrentPatch,
+		}},
+		siblings: []remediationCheckpointSibling{{
+			number: 609, state: "closed", merged: true,
+			updatedAt: now.Add(-45 * 24 * time.Hour), mergeSHA: mergeSHA,
+			files: []providers.ChangedFile{{
+				Path: "status.go", Status: "modified", Patch: structuralCollisionSiblingPatch,
+			}},
+		}},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	setStructuralCollisionInputs(t, headSHA, mergeSHA)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "substantially restructured") {
+		t.Fatalf("stdout = %q, want structural-collision escalation for sibling merged before fixed lookback", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || !state.Escalated || state.Cycles != 1 {
+		t.Fatalf("first checkpoint state = %+v, ok = %v, want escalation for stale-base sibling", state, ok)
+	}
+}
+
 func setStructuralCollisionInputs(t *testing.T, attemptedHeadSHA, rebaseBaseSHA string) {
 	t.Helper()
 	locations, err := json.Marshal([]rebaseConflictLocation{{

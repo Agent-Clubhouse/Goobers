@@ -403,6 +403,20 @@ func commitIntroducedBetween(dir, commit, oldBase, liveBase string) (bool, error
 	return !inOld, nil
 }
 
+func gitCommitTime(dir, revision string) (time.Time, error) {
+	cmd := exec.Command("git", "show", "-s", "--format=%ct", revision)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return time.Time{}, gitOutputError("git show -s --format=%ct "+revision, err)
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse commit time for %s: %w", revision, err)
+	}
+	return time.Unix(seconds, 0).UTC(), nil
+}
+
 func goFunctionAtRevision(dir, revision, path, function string) (goFunctionSnapshot, bool, error) {
 	lsTree := exec.Command("git", "ls-tree", "-z", revision, "--", path)
 	lsTree.Dir = dir
@@ -595,9 +609,17 @@ func findStructuralCollisions(
 	if err != nil {
 		return nil, fmt.Errorf("load full patch for selected PR #%d: %w", selected.Number, err)
 	}
+	closedSince := time.Now().UTC().Add(-siblingOverlapLookback)
+	selectedBaseTime, err := gitCommitTime(dir, selected.BaseSHA)
+	if err != nil {
+		return nil, fmt.Errorf("resolve selected PR #%d base time: %w", selected.Number, err)
+	}
+	if selectedBaseTime.Before(closedSince) {
+		closedSince = selectedBaseTime
+	}
 	closedPRs, err := provider.ListRecentlyClosedPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	}, time.Now().UTC().Add(-siblingOverlapLookback))
+	}, closedSince)
 	if err != nil {
 		return nil, fmt.Errorf("list recently closed pull requests: %w", err)
 	}
