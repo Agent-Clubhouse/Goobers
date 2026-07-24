@@ -21,6 +21,7 @@ func TestRunVersionsHuman(t *testing.T) {
 		"goobers support matrix",
 		"DSL versions:",
 		supportmatrix.CurrentDSLVersion,
+		supportmatrix.NextDSLVersion,
 		string(supportmatrix.LevelSupported),
 		"minimum Go toolchain:",
 		supportmatrix.Get().MinGoVersion,

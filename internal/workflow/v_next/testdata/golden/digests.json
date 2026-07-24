@@ -1,0 +1,14 @@
+{
+  "gated.yaml": {
+    "machine": "sha256:d7abdb2bd030eb712df077b9d88912febd8eb5facca5f1434cd855ff6e23fc19",
+    "semantics": "sha256:088c13660af165a112f9a8b7136ac3d45eb219f422bf1fe30b5c3d724c03b1c3"
+  },
+  "linear.yaml": {
+    "machine": "sha256:218be60f784097fb2f0326db38290e651f650ae26d6c43a26f1b5e2cc768ac00",
+    "semantics": "sha256:84271d3ed7659d9ff030caaf49787c10641f12426fcbd374420c14646de2c72f"
+  },
+  "runtime-policy.yaml": {
+    "machine": "sha256:bfc92dc4f85277bc15aa4fe025bebdffec4bd8467c104ade629c84bfd60a99ae",
+    "semantics": "sha256:58359444129981d07e023386fcf093f10fd0f7c6d8ef78c0649c430c8a1b048e"
+  }
+}

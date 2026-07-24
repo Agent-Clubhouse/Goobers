@@ -37,10 +37,14 @@ const (
 	LevelUnsupported Level = "unsupported"
 )
 
-// CurrentDSLVersion is the language version implemented by the current
-// interpreter. New interpreters add another SupportMatrix entry rather than
-// changing this version's feature membership.
-const CurrentDSLVersion = "1.4"
+const (
+	// CurrentDSLVersion is the stable language version used for transitional
+	// unpinned workflows.
+	CurrentDSLVersion = "1.4"
+	// NextDSLVersion is the copy-forward language version with its own
+	// interpreter and semantics.
+	NextDSLVersion = "2.0"
+)
 
 // VersionSupport describes the host's lifecycle contract for one DSL version.
 type VersionSupport struct {
@@ -62,6 +66,7 @@ type Version struct {
 
 var dslVersions = SupportMatrix{
 	CurrentDSLVersion: {Level: LevelSupported},
+	NextDSLVersion:    {Level: LevelSupported},
 }
 
 // Lookup returns the support declaration for a DSL version.
