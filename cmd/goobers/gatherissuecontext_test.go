@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 func seedRemediationBriefRun(t *testing.T, root, runID string, brief apiv1.RemediationBrief) {
@@ -127,5 +128,61 @@ func TestGatherIssueContextWithUnresolvableClosingIssueEmitsEmptySection(t *test
 	}
 	if len(got.GatherIssueContext.Issues) != 0 {
 		t.Fatalf("gatherIssueContext.issues = %v, want empty", got.GatherIssueContext.Issues)
+	}
+}
+
+// TestGatherIssueContextUsesIssuesCredentialForIssueReads pins the capability
+// split: PR listing authenticates with github:pr:write and originating-issue
+// reads with github:issues:write, which per-capability credential overrides may
+// back with different tokens. The PR is served by a server that does not know
+// the issue, and the issue only by a second server reachable with the issues
+// token; if GetWorkItem authenticated with the PR credential (the prior bug) it
+// would 404 the issue and drop it from the context.
+func TestGatherIssueContextUsesIssuesCredentialForIssueReads(t *testing.T) {
+	const runID = "run-945-creds"
+	const prToken, issuesToken = "pr-token", "issues-token"
+	root := initDemo(t)
+
+	prServer := newFakeGitHubServer(t, "your-org", "your-repo")
+	prServer.addOpenPR(77, "goobers/implementation/run-77", "main", "head-sha", "base-sha", false, nil, nil)
+	prServer.setPRBody(77, "Fixes #945")
+
+	issuesServer := newFakeGitHubServer(t, "your-org", "your-repo")
+	issuesServer.addIssue(945, "Originating issue")
+	issuesServer.issues[945].body = "issue-body-from-issues-credential"
+
+	prev := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		if token == issuesToken {
+			return issuesServer.newGitHubProvider(token, opts...)
+		}
+		return prServer.newGitHubProvider(token, opts...)
+	}
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	seedRemediationBriefRun(t, root, runID, issueContextBrief())
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", prToken)
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", issuesToken)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	if code, stdout, stderr := runArgs(t, "gather-issue-context", root); code != 0 {
+		t.Fatalf("gather-issue-context: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, remediationBriefResultFile))
+	if err != nil {
+		t.Fatalf("read remediation brief: %v", err)
+	}
+	var got apiv1.RemediationBrief
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal remediation brief: %v", err)
+	}
+	if got.GatherIssueContext == nil || len(got.GatherIssueContext.Issues) != 1 {
+		t.Fatalf("expected issue #945 resolved via the issues credential, got %#v", got.GatherIssueContext)
+	}
+	if body := got.GatherIssueContext.Issues[0].Body; body != "issue-body-from-issues-credential" {
+		t.Fatalf("issue body = %q, want it fetched from the issues-credential server", body)
 	}
 }

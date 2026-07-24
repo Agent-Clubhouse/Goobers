@@ -56,21 +56,28 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	// The PR listing and the originating-issue reads authenticate with
+	// distinct capabilities (github:pr:write vs github:issues:write), which
+	// per-capability credential overrides may back with different tokens.
+	// Use each capability's own provider so issue resolution never fails on a
+	// PR-scoped credential.
+	prProvider := newCachedGitHubProvider(root, prToken)
+	issuesProvider := newCachedGitHubProvider(root, issuesToken)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	issues := make([]apiv1.RemediationIssue, 0)
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+	prs, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository:     repo,
 		Base:           brief.Base,
 		SkipCheckState: true,
@@ -93,7 +100,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		refs := closingIssueNumbers(prBody)
 		issues = make([]apiv1.RemediationIssue, 0, len(refs))
 		for _, number := range refs {
-			item, issueErr := provider.GetWorkItem(ctx, repo, number)
+			item, issueErr := issuesProvider.GetWorkItem(ctx, repo, number)
 			if providers.IsNotFoundError(issueErr) {
 				pf(stderr, "warning: originating issue #%s no longer resolves; omitting it from issue context\n", number)
 				continue
