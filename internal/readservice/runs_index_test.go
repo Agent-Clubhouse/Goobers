@@ -198,6 +198,114 @@ func TestListRunsReconcileRefreshesAfterInterval(t *testing.T) {
 	}
 }
 
+// TestListRunsReconcileDiscoversRunAddedAfterFirstScan proves the incremental
+// scan still backfills: a run written to disk after the first reconcile (e.g. an
+// imported/migrated journal) bumps its parent directory's mtime past the
+// watermark, so the next reconcile past the TTL window rediscovers and ingests
+// it rather than skipping it forever.
+func TestListRunsReconcileDiscoversRunAddedAfterFirstScan(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 6)
+	// Full index of the seeded runs: the first reconcile has nothing to backfill
+	// and simply records the watermark.
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	nowVal := base
+	indexed.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return nowVal
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		nowVal = nowVal.Add(d)
+	}
+
+	before := listAllPages(t, indexed, RunListOptions{Limit: 50})
+	if len(before) != 6 {
+		t.Fatalf("first list returned %d runs, want 6", len(before))
+	}
+
+	// Write a new, complete run to disk after the first reconcile. Creating the
+	// directory bumps the parent runs-dir mtime beyond the recorded watermark.
+	started := time.Date(2026, 7, 1, 13, 0, 0, 0, time.UTC)
+	newRun, clock := createFixtureRun(
+		t, layout, machine, "run-added", machine.Def.Name, "goobers",
+		started, journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	appendFixtureStageAttempt(t, newRun, clock, "success")
+	finishFixtureRun(t, newRun, clock, journal.PhaseCompleted)
+
+	// Within the throttle window the new run is not yet visible.
+	if got := listAllPages(t, indexed, RunListOptions{Limit: 50}); len(got) != 6 {
+		t.Fatalf("in-window list returned %d runs, want 6 (reconcile throttled)", len(got))
+	}
+
+	// Past the window the incremental scan must rediscover it.
+	advance(reconcileInterval + time.Millisecond)
+	after := listAllPages(t, indexed, RunListOptions{Limit: 50})
+	if len(after) != 7 {
+		t.Fatalf("post-window list returned %d runs, want 7 (incremental reconcile must backfill the added run)", len(after))
+	}
+	found := false
+	for _, id := range after {
+		if id == "run-added" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("added run not discovered by incremental reconcile: %v", after)
+	}
+}
+
+// TestListRunsReconcileSkipsUnchangedDirs proves the per-scan cost is bounded:
+// once the watermark is recorded, a later reconcile over an unchanged run tree
+// inspects no directory entries at all — the parent mtime gate skips the ReadDir
+// entirely rather than re-walking every (already-indexed) run and orphan dir.
+func TestListRunsReconcileSkipsUnchangedDirs(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 10)
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	nowVal := base
+	indexed.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return nowVal
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		nowVal = nowVal.Add(d)
+	}
+
+	var inspected atomic.Int64
+	reconcileInspectObserver = func(string) { inspected.Add(1) }
+	t.Cleanup(func() { reconcileInspectObserver = nil })
+
+	// First reconcile is a full scan (zero watermark) and inspects every entry.
+	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
+		t.Fatalf("first ListRuns: %v", err)
+	}
+	if inspected.Load() == 0 {
+		t.Fatal("full first reconcile inspected no entries; expected the whole tree")
+	}
+
+	// A second reconcile past the TTL over an unchanged tree must skip every
+	// parent via the watermark and inspect nothing.
+	inspected.Store(0)
+	advance(reconcileInterval + time.Millisecond)
+	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
+		t.Fatalf("second ListRuns: %v", err)
+	}
+	if got := inspected.Load(); got != 0 {
+		t.Fatalf("incremental reconcile inspected %d entries over an unchanged tree, want 0", got)
+	}
+}
+
 func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 	_, layout, machine := fixtureService(t)
 	seedVariedRuns(t, layout, machine, 37)
