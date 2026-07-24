@@ -168,8 +168,67 @@ type RunnerConfig struct {
 
 // APIConfig configures the daemon's read-only HTTP API.
 type APIConfig struct {
-	// Listen is a host:port address. Only loopback hosts are accepted.
+	// Listen is a host:port address. A loopback host keeps the tier-1
+	// local-trust posture (SEC-040). A non-loopback host is refused at load
+	// time unless both TLS and Auth are configured — fail closed, with no
+	// insecure override (#640).
 	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	// TLS serves the API over HTTPS from an on-disk certificate/key pair.
+	// Required for a non-loopback listen address.
+	TLS *APITLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
+	// Auth replaces the tier-1 null authenticator (SEC-043). Required for a
+	// non-loopback listen address.
+	Auth *APIAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// APITLSConfig points at the API server's TLS certificate and private key.
+// Paths only — key material never appears in instance.yaml (CFG-009).
+type APITLSConfig struct {
+	CertFile string `json:"certFile" yaml:"certFile"`
+	KeyFile  string `json:"keyFile" yaml:"keyFile"`
+}
+
+// APIAuthConfig selects the daemon API authenticator behind the
+// httpapi.Authenticator seam. OIDC bearer-token validation is the only
+// implementation; Entra ID is a configured issuer, not a code path.
+type APIAuthConfig struct {
+	OIDC *OIDCAuthConfig `json:"oidc,omitempty" yaml:"oidc,omitempty"`
+}
+
+// DefaultOIDCRolesClaim is the token claim consulted for role values when
+// api.auth.oidc.rolesClaim is not set.
+const DefaultOIDCRolesClaim = "roles"
+
+// OIDCAuthConfig validates bearer JWTs against one configured issuer and maps
+// issuer claims onto the instance roles (view/operate/admin, #644).
+type OIDCAuthConfig struct {
+	// Issuer is the OIDC issuer URL, exactly as tokens state it in iss.
+	// Discovery uses <issuer>/.well-known/openid-configuration.
+	Issuer string `json:"issuer" yaml:"issuer"`
+	// Audience is the aud claim value tokens must carry.
+	Audience string `json:"audience" yaml:"audience"`
+	// RolesClaim names the claim carrying role/group values (e.g. "roles",
+	// "groups"). Empty defaults to DefaultOIDCRolesClaim.
+	RolesClaim string `json:"rolesClaim,omitempty" yaml:"rolesClaim,omitempty"`
+	// Roles maps claim values onto instance roles. Deny by default: an
+	// authenticated principal whose claim values match nothing gets no role.
+	Roles OIDCRoleMapping `json:"roles" yaml:"roles"`
+}
+
+// OIDCRoleMapping lists the issuer claim values granted each instance role.
+// Roles are ordered: admin implies operate, operate implies view.
+type OIDCRoleMapping struct {
+	View    []string `json:"view,omitempty" yaml:"view,omitempty"`
+	Operate []string `json:"operate,omitempty" yaml:"operate,omitempty"`
+	Admin   []string `json:"admin,omitempty" yaml:"admin,omitempty"`
+}
+
+// RolesClaimName returns the configured roles claim, defaulting to "roles".
+func (c OIDCAuthConfig) RolesClaimName() string {
+	if c.RolesClaim == "" {
+		return DefaultOIDCRolesClaim
+	}
+	return c.RolesClaim
 }
 
 // WebhookConfig configures the optional GitHub webhook receiver. The daemon
@@ -625,8 +684,8 @@ func LoadConfig(path string) (*Config, error) {
 // IANA timezone — fail closed at load time rather than at the first cron
 // tick that tries to use it.
 func (c *Config) Validate() error {
-	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
-		return fmt.Errorf("api.listen: %w", err)
+	if err := c.validateAPIConfig(); err != nil {
+		return err
 	}
 	if c.WorkflowSource != nil {
 		if err := c.WorkflowSource.Validate(); err != nil {
@@ -1079,8 +1138,97 @@ func validHeaderName(name string) bool {
 	return true
 }
 
-func validateAPIListenAddress(address string) error {
-	return validateLoopbackListenAddress(address)
+// validateAPIConfig checks the API listener posture. A loopback bind keeps
+// the tier-1 local-trust default. A non-loopback bind is refused unless BOTH
+// TLS and an authenticator are configured (#640, SEC-043): the daemon must
+// never expose an unauthenticated or plaintext API off-box by accident, and
+// there is deliberately no insecure override.
+func (c *Config) validateAPIConfig() error {
+	address := c.APIListenAddress()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("api.listen: must be a host:port address: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("api.listen: host is required; wildcard listeners are not allowed")
+	}
+	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
+		return fmt.Errorf("api.listen: port %q must be a number from 0 through 65535", port)
+	}
+	if c.API.TLS != nil {
+		if c.API.TLS.CertFile == "" || c.API.TLS.KeyFile == "" {
+			return fmt.Errorf("api.tls: certFile and keyFile are both required")
+		}
+	}
+	if c.API.Auth != nil {
+		if c.API.Auth.OIDC == nil {
+			return fmt.Errorf("api.auth: oidc is required — it is the only supported authenticator (SEC-043)")
+		}
+		if err := c.API.Auth.OIDC.Validate(); err != nil {
+			return fmt.Errorf("api.auth.oidc: %w", err)
+		}
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	if c.API.TLS == nil || c.API.Auth == nil {
+		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
+			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
+			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
+	}
+	return nil
+}
+
+// Validate checks the OIDC issuer/audience/role-mapping shape without
+// contacting the issuer.
+func (c OIDCAuthConfig) Validate() error {
+	if c.Issuer == "" {
+		return fmt.Errorf("issuer is required")
+	}
+	issuer, err := url.Parse(c.Issuer)
+	if err != nil || !issuer.IsAbs() || issuer.Host == "" {
+		return fmt.Errorf("issuer must be an absolute http(s) URL")
+	}
+	switch strings.ToLower(issuer.Scheme) {
+	case "https":
+	case "http":
+		if !isLoopbackHost(issuer.Hostname()) {
+			return fmt.Errorf("issuer %q must use https; http is allowed only for a loopback development issuer", c.Issuer)
+		}
+	default:
+		return fmt.Errorf("issuer must be an absolute http(s) URL")
+	}
+	if issuer.RawQuery != "" || issuer.Fragment != "" {
+		return fmt.Errorf("issuer must not carry a query or fragment")
+	}
+	if c.Audience == "" {
+		return fmt.Errorf("audience is required")
+	}
+	mapped := 0
+	seen := make(map[string]string)
+	for _, group := range []struct {
+		role   string
+		values []string
+	}{
+		{role: "view", values: c.Roles.View},
+		{role: "operate", values: c.Roles.Operate},
+		{role: "admin", values: c.Roles.Admin},
+	} {
+		for _, value := range group.values {
+			if value == "" {
+				return fmt.Errorf("roles.%s must not contain empty claim values", group.role)
+			}
+			if prior, duplicate := seen[value]; duplicate {
+				return fmt.Errorf("claim value %q is mapped to both %s and %s; roles are ordered (admin ⊇ operate ⊇ view), map each value once", value, prior, group.role)
+			}
+			seen[value] = group.role
+			mapped++
+		}
+	}
+	if mapped == 0 {
+		return fmt.Errorf("roles must map at least one claim value to view, operate, or admin — an empty mapping denies every principal")
+	}
+	return nil
 }
 
 func validateLoopbackListenAddress(address string) error {

@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +25,26 @@ func WithReadTimeout(timeout time.Duration) ServerOption {
 			return errors.New("http server read timeout must be positive")
 		}
 		server.ReadTimeout = timeout
+		return nil
+	}
+}
+
+// WithTLS serves the listener over TLS from an on-disk certificate/key pair.
+// The pair is loaded eagerly so a bad path or mismatched pair fails server
+// construction rather than the first connection.
+func WithTLS(certFile, keyFile string) ServerOption {
+	return func(server *http.Server) error {
+		if certFile == "" || keyFile == "" {
+			return errors.New("http server TLS requires both a certificate file and a key file")
+		}
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return fmt.Errorf("load TLS certificate: %w", err)
+		}
+		server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS12,
+		}
 		return nil
 	}
 }
@@ -65,6 +87,25 @@ func NewServer(address string, handler http.Handler, errorLog *log.Logger, opts 
 			return nil, fmt.Errorf("configure HTTP server: %w", err)
 		}
 	}
+	// Fail closed off-loopback (#640, SEC-043): a non-loopback bind is refused
+	// unless the transport is encrypted AND a real authenticator gates the
+	// handler. Config validation enforces the same rule at load time; this
+	// second gate makes an accidentally open network API structurally
+	// impossible no matter how the server is wired, and there is no override.
+	if !loopbackAddress(address) {
+		if httpServer.TLSConfig == nil {
+			return nil, fmt.Errorf(
+				"refusing to serve the HTTP API on non-loopback address %s without TLS; configure api.tls or bind a loopback address (SEC-043, #640)",
+				address,
+			)
+		}
+		if !handlerAuthenticated(handler) {
+			return nil, fmt.Errorf(
+				"refusing to serve the HTTP API on non-loopback address %s without an authenticator; configure api.auth or bind a loopback address (SEC-043, #640)",
+				address,
+			)
+		}
+	}
 	server := &Server{
 		address: address,
 		http:    httpServer,
@@ -90,14 +131,26 @@ func (s *Server) Start() error {
 		return fmt.Errorf("listen on %s: %w", s.address, err)
 	}
 	s.listener = listener
+	serve := s.http.Serve
+	if s.http.TLSConfig != nil {
+		serve = func(listener net.Listener) error { return s.http.ServeTLS(listener, "", "") }
+	}
 	go func() {
 		defer close(s.done)
 		defer close(s.errors)
-		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.errors <- err
 		}
 	}()
 	return nil
+}
+
+// Scheme is the URL scheme the server answers on.
+func (s *Server) Scheme() string {
+	if s.http.TLSConfig != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // Address returns the bound listener address after Start.
@@ -112,6 +165,29 @@ func (s *Server) Address() string {
 
 // Errors reports an unexpected serving failure.
 func (s *Server) Errors() <-chan error { return s.errors }
+
+// loopbackAddress reports whether address provably binds a loopback host.
+// Anything unparsable or ambiguous (an empty/wildcard host, a hostname other
+// than localhost) counts as non-loopback so the hardening gate fails closed.
+func loopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// handlerAuthenticated reports whether the handler advertises a real (non-
+// null) Authenticator. Handlers that do not advertise at all count as
+// unauthenticated — fail closed.
+func handlerAuthenticated(handler http.Handler) bool {
+	authed, ok := handler.(interface{ authenticatedTransport() bool })
+	return ok && authed.authenticatedTransport()
+}
 
 // Shutdown gracefully stops accepting requests and waits for active handlers.
 func (s *Server) Shutdown(ctx context.Context) error {
