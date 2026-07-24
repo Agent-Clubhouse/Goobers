@@ -401,6 +401,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).
 			withExamples("goobers gather-pr-context"),
+		command("gather-review-threads", apicontract.ActionWorkflowExecution, runGatherReviewThreads).
+			withSynopsis(synopsisByID["gather-review-threads"]).
+			withHelp("add native reviews and anchored inline threads to a remediation brief (a workflow stage)", gatherReviewThreadsHelp).
+			withExamples("goobers gather-review-threads"),
 		command("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
