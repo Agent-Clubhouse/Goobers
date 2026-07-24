@@ -83,18 +83,21 @@ type RemediationNativeReview struct {
 
 // RemediationInlineComment is one line-level PR review comment.
 type RemediationInlineComment struct {
-	Author       string `json:"author,omitempty"`
-	Body         string `json:"body"`
-	Path         string `json:"path"`
-	Line         int    `json:"line,omitempty"`
-	OriginalLine int    `json:"originalLine,omitempty"`
-	Side         string `json:"side,omitempty"`
-	DiffHunk     string `json:"diffHunk,omitempty"`
-	InReplyTo    int64  `json:"inReplyTo,omitempty"`
-	IsResolved   bool   `json:"isResolved"`
-	IsOutdated   bool   `json:"isOutdated"`
-	CreatedAt    string `json:"createdAt,omitempty"`
-	URL          string `json:"url,omitempty"`
+	Author            string `json:"author,omitempty"`
+	Body              string `json:"body"`
+	Path              string `json:"path"`
+	Line              int    `json:"line,omitempty"`
+	OriginalLine      int    `json:"originalLine,omitempty"`
+	Side              string `json:"side,omitempty"`
+	StartLine         int    `json:"startLine,omitempty"`
+	OriginalStartLine int    `json:"originalStartLine,omitempty"`
+	StartSide         string `json:"startSide,omitempty"`
+	DiffHunk          string `json:"diffHunk,omitempty"`
+	InReplyTo         int64  `json:"inReplyTo,omitempty"`
+	IsResolved        bool   `json:"isResolved"`
+	IsOutdated        bool   `json:"isOutdated"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	URL               string `json:"url,omitempty"`
 }
 
 // RemediationSiblingContext is the optional section owned by

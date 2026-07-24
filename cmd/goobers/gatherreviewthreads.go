@@ -88,18 +88,21 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 			createdAt = comment.CreatedAt.Format(time.RFC3339)
 		}
 		comments = append(comments, apiv1.RemediationInlineComment{
-			Author:       comment.Author,
-			Body:         comment.Body,
-			Path:         comment.Path,
-			Line:         comment.Line,
-			OriginalLine: comment.OriginalLine,
-			Side:         comment.Side,
-			DiffHunk:     comment.DiffHunk,
-			InReplyTo:    comment.InReplyTo,
-			IsResolved:   comment.IsResolved,
-			IsOutdated:   comment.IsOutdated,
-			CreatedAt:    createdAt,
-			URL:          comment.URL,
+			Author:            comment.Author,
+			Body:              comment.Body,
+			Path:              comment.Path,
+			Line:              comment.Line,
+			OriginalLine:      comment.OriginalLine,
+			Side:              comment.Side,
+			StartLine:         comment.StartLine,
+			OriginalStartLine: comment.OriginalStartLine,
+			StartSide:         comment.StartSide,
+			DiffHunk:          comment.DiffHunk,
+			InReplyTo:         comment.InReplyTo,
+			IsResolved:        comment.IsResolved,
+			IsOutdated:        comment.IsOutdated,
+			CreatedAt:         createdAt,
+			URL:               comment.URL,
 		})
 	}
 	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{

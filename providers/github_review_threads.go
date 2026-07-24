@@ -19,6 +19,9 @@ const pullRequestReviewThreadsQuery = `query($owner: String!, $name: String!, $n
           line
           originalLine
           diffSide
+          startLine
+          originalStartLine
+          startDiffSide
           comments(first: 100) {
             nodes {
               databaseId
@@ -45,26 +48,32 @@ type githubNativeReview struct {
 }
 
 type githubInlineReviewComment struct {
-	ID           int64      `json:"id"`
-	Body         string     `json:"body"`
-	Path         string     `json:"path"`
-	Line         *int       `json:"line"`
-	OriginalLine *int       `json:"original_line"`
-	Side         string     `json:"side"`
-	DiffHunk     string     `json:"diff_hunk"`
-	InReplyTo    int64      `json:"in_reply_to_id"`
-	CreatedAt    *time.Time `json:"created_at"`
-	HTMLURL      string     `json:"html_url"`
-	User         githubUser `json:"user"`
+	ID                int64      `json:"id"`
+	Body              string     `json:"body"`
+	Path              string     `json:"path"`
+	Line              *int       `json:"line"`
+	OriginalLine      *int       `json:"original_line"`
+	Side              string     `json:"side"`
+	StartLine         *int       `json:"start_line"`
+	OriginalStartLine *int       `json:"original_start_line"`
+	StartSide         string     `json:"start_side"`
+	DiffHunk          string     `json:"diff_hunk"`
+	InReplyTo         int64      `json:"in_reply_to_id"`
+	CreatedAt         *time.Time `json:"created_at"`
+	HTMLURL           string     `json:"html_url"`
+	User              githubUser `json:"user"`
 }
 
 type githubReviewThreadState struct {
-	IsResolved   bool
-	IsOutdated   bool
-	Path         string
-	Line         int
-	OriginalLine int
-	Side         string
+	IsResolved        bool
+	IsOutdated        bool
+	Path              string
+	Line              int
+	OriginalLine      int
+	Side              string
+	StartLine         int
+	OriginalStartLine int
+	StartSide         string
 }
 
 type githubReviewThreadsPage struct {
@@ -72,13 +81,16 @@ type githubReviewThreadsPage struct {
 		PullRequest *struct {
 			ReviewThreads struct {
 				Nodes []struct {
-					IsResolved   bool   `json:"isResolved"`
-					IsOutdated   bool   `json:"isOutdated"`
-					Path         string `json:"path"`
-					Line         *int   `json:"line"`
-					OriginalLine *int   `json:"originalLine"`
-					DiffSide     string `json:"diffSide"`
-					Comments     struct {
+					IsResolved        bool   `json:"isResolved"`
+					IsOutdated        bool   `json:"isOutdated"`
+					Path              string `json:"path"`
+					Line              *int   `json:"line"`
+					OriginalLine      *int   `json:"originalLine"`
+					DiffSide          string `json:"diffSide"`
+					StartLine         *int   `json:"startLine"`
+					OriginalStartLine *int   `json:"originalStartLine"`
+					StartDiffSide     string `json:"startDiffSide"`
+					Comments          struct {
 						Nodes []struct {
 							DatabaseID int64 `json:"databaseId"`
 						} `json:"nodes"`
@@ -184,20 +196,35 @@ func (p *GitHubProvider) listInlinePullRequestComments(ctx context.Context, repo
 			if side == "" {
 				side = state.Side
 			}
+			startLine := state.StartLine
+			if comment.StartLine != nil {
+				startLine = *comment.StartLine
+			}
+			originalStartLine := state.OriginalStartLine
+			if comment.OriginalStartLine != nil {
+				originalStartLine = *comment.OriginalStartLine
+			}
+			startSide := comment.StartSide
+			if startSide == "" {
+				startSide = state.StartSide
+			}
 			comments = append(comments, PullRequestInlineComment{
-				ID:           comment.ID,
-				Author:       comment.User.Login,
-				Body:         comment.Body,
-				Path:         path,
-				Line:         line,
-				OriginalLine: originalLine,
-				Side:         side,
-				DiffHunk:     comment.DiffHunk,
-				InReplyTo:    comment.InReplyTo,
-				IsResolved:   state.IsResolved,
-				IsOutdated:   state.IsOutdated,
-				CreatedAt:    comment.CreatedAt,
-				URL:          comment.HTMLURL,
+				ID:                comment.ID,
+				Author:            comment.User.Login,
+				Body:              comment.Body,
+				Path:              path,
+				Line:              line,
+				OriginalLine:      originalLine,
+				Side:              side,
+				StartLine:         startLine,
+				OriginalStartLine: originalStartLine,
+				StartSide:         startSide,
+				DiffHunk:          comment.DiffHunk,
+				InReplyTo:         comment.InReplyTo,
+				IsResolved:        state.IsResolved,
+				IsOutdated:        state.IsOutdated,
+				CreatedAt:         comment.CreatedAt,
+				URL:               comment.HTMLURL,
 			})
 		}
 		return nil
@@ -227,12 +254,19 @@ func (p *GitHubProvider) pullRequestReviewThreadStates(ctx context.Context, repo
 				IsOutdated: thread.IsOutdated,
 				Path:       thread.Path,
 				Side:       thread.DiffSide,
+				StartSide:  thread.StartDiffSide,
 			}
 			if thread.Line != nil {
 				state.Line = *thread.Line
 			}
 			if thread.OriginalLine != nil {
 				state.OriginalLine = *thread.OriginalLine
+			}
+			if thread.StartLine != nil {
+				state.StartLine = *thread.StartLine
+			}
+			if thread.OriginalStartLine != nil {
+				state.OriginalStartLine = *thread.OriginalStartLine
 			}
 			for _, comment := range thread.Comments.Nodes {
 				if comment.DatabaseID != 0 {

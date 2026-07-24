@@ -26,7 +26,7 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 			_, _ = w.Write([]byte(`[{"id":1,"user":{"login":"goobers-bot"},"state":"CHANGES_REQUESTED","body":"Fix both findings.","commit_id":"head-1","submitted_at":"2026-07-23T10:00:00Z","html_url":"https://example/reviews/1"}]`))
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/web/pulls/42/comments":
 			_, _ = w.Write([]byte(`[
-				{"id":101,"user":{"login":"alice"},"body":"Guard this write.","path":"worker.go","line":42,"original_line":40,"side":"RIGHT","diff_hunk":"@@ -38,3 +40,5 @@","created_at":"2026-07-23T10:05:00Z","html_url":"https://example/comments/101"},
+				{"id":101,"user":{"login":"alice"},"body":"Guard this write.","path":"worker.go","line":42,"original_line":40,"side":"RIGHT","start_line":40,"original_start_line":38,"start_side":"RIGHT","diff_hunk":"@@ -38,3 +40,5 @@","created_at":"2026-07-23T10:05:00Z","html_url":"https://example/comments/101"},
 				{"id":102,"user":{"login":"bob"},"body":"Still reproducible.","path":"worker.go","line":42,"original_line":40,"side":"RIGHT","diff_hunk":"@@ -38,3 +40,5 @@","in_reply_to_id":101,"created_at":"2026-07-23T10:06:00Z","html_url":"https://example/comments/102"},
 				{"id":201,"user":{"login":"carol"},"body":"Old location.","path":"legacy.go","line":null,"original_line":9,"side":"RIGHT","diff_hunk":"@@ -8,2 +8,2 @@","created_at":"2026-07-23T09:00:00Z","html_url":"https://example/comments/201"}
 			]`))
@@ -47,7 +47,7 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 					t.Fatalf("first reviewThreads cursor = %v, want nil", request.Variables["after"])
 				}
 				_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
-					{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","comments":{"nodes":[{"databaseId":101},{"databaseId":102}]}}
+					{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","startLine":40,"originalStartLine":38,"startDiffSide":"RIGHT","comments":{"nodes":[{"databaseId":101},{"databaseId":102}]}}
 				],"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"}}}}}}`))
 				return
 			}
@@ -88,12 +88,14 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 	}
 	live := got.InlineComments[0]
 	if live.Path != "worker.go" || live.Line != 42 || live.OriginalLine != 40 ||
-		live.Side != "RIGHT" || live.DiffHunk != "@@ -38,3 +40,5 @@" ||
+		live.Side != "RIGHT" || live.StartLine != 40 || live.OriginalStartLine != 38 ||
+		live.StartSide != "RIGHT" || live.DiffHunk != "@@ -38,3 +40,5 @@" ||
 		live.IsResolved || live.IsOutdated {
 		t.Fatalf("live inline comment = %+v, want intact live anchor", live)
 	}
 	reply := got.InlineComments[1]
-	if reply.InReplyTo != 101 || reply.IsResolved || reply.IsOutdated {
+	if reply.InReplyTo != 101 || reply.StartLine != 40 || reply.OriginalStartLine != 38 ||
+		reply.StartSide != "RIGHT" || reply.IsResolved || reply.IsOutdated {
 		t.Fatalf("reply = %+v, want live parent thread state", reply)
 	}
 	outdated := got.InlineComments[2]
