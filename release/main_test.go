@@ -138,8 +138,10 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers --version",
-		"The release installer already ran guided setup for `./my-instance`",
-		"do not initialize that instance again",
+		"The release installer already ran guided setup at the requested instance path",
+		"default `./goobers-instance`",
+		"replace `./my-instance` with that same path",
+		"quoting it if needed",
 		"directly from an extracted archive instead",
 		"goobers init --template=quickstart ./tutorial-instance",
 		"goobers run " + instance.GuidedWorkflowImplementation + " ./my-instance",
@@ -153,6 +155,9 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
 	}
+	if strings.Contains(string(readme), "installer already ran guided setup for `./my-instance`") {
+		t.Errorf("README.md claims the installer initialized the direct-archive example path:\n%s", readme)
+	}
 	if got := strings.Count(string(readme), "goobers init --guided ./my-instance"); got != 1 {
 		t.Errorf("README.md guided init count = %d, want one direct-archive command:\n%s", got, readme)
 	}
@@ -161,8 +166,10 @@ func TestRunEndToEnd(t *testing.T) {
 		"bundled README onboarding",
 		string(readme),
 		"goobers --version",
-		"The release installer already ran guided setup for `./my-instance`",
-		"do not initialize that instance again",
+		"The release installer already ran guided setup at the requested instance path",
+		"default `./goobers-instance`",
+		"replace `./my-instance` with that same path",
+		"quoting it if needed",
 		"directly from an extracted archive instead",
 		"goobers init --guided ./my-instance",
 		"goobers run "+instance.GuidedWorkflowImplementation+" ./my-instance",
@@ -175,6 +182,10 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers --version",
+		"requested instance path",
+		"default `./goobers-instance`",
+		"replace `./my-instance` with that same path",
+		"quoting it if needed",
 		"goobers init --guided ./my-instance",
 		"goobers init --template=quickstart ./tutorial-instance",
 		"goobers run " + instance.GuidedWorkflowImplementation + " ./my-instance",
@@ -188,11 +199,17 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("docs/guides/quickstart.md retains source-checkout command %q:\n%s", stale, quickstart)
 		}
 	}
+	if strings.Contains(string(quickstart), "installer and bundled README already run guided setup") {
+		t.Errorf("docs/guides/quickstart.md conflates installer and direct-archive paths:\n%s", quickstart)
+	}
 	assertSubstringsInOrder(
 		t,
 		"bundled quickstart direct onboarding",
 		string(quickstart),
 		"goobers --version",
+		"default `./goobers-instance`",
+		"replace `./my-instance` with that same path",
+		"quoting it if needed",
 		"goobers init --guided ./my-instance",
 		"goobers validate ./my-instance",
 		"goobers run "+instance.GuidedWorkflowImplementation+" ./my-instance",

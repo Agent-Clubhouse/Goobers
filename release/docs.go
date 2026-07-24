@@ -30,12 +30,13 @@ const (
 		"`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each\n" +
 		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing\n" +
 		"pieces are left untouched.\n\n"
-	quickstartInstalledInit = "## 2. Use the guided instance\n\n" +
-		"The release installer and bundled README already run guided setup for\n" +
-		"`./my-instance`; if you used either path, do not initialize it again. Continue\n" +
-		"with step 3 below.\n\n" +
-		"If you opened this guide directly from an extracted archive, create the same\n" +
-		"guided instance now:\n\n" +
+	quickstartInstalledInit = "## 2. Use or create a guided instance\n\n" +
+		"The release installer already ran guided setup at the requested instance path\n" +
+		"(default `./goobers-instance`). If you used the installer, do not initialize that\n" +
+		"instance again. In the commands below, replace `./my-instance` with that same path,\n" +
+		"quoting it if needed.\n\n" +
+		"If you already followed the bundled README and created `./my-instance`, continue\n" +
+		"with step 3 below. Otherwise, create that guided instance now:\n\n" +
 		"```sh\n" +
 		"goobers init --guided ./my-instance\n" +
 		"```\n\n" +
@@ -182,9 +183,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				installed: fmt.Sprintf(
 					"This copy is bundled with release `%s` and assumes `goobers` is installed on `PATH`.\n\n"+
 						"```sh\ngoobers --version\n```\n\n"+
-						"The release installer already ran guided setup for `./my-instance`. If you used\n"+
-						"the installer, do not initialize that instance again; skip the direct-archive\n"+
-						"step below and continue with the existing instance.\n\n"+
+						"The release installer already ran guided setup at the requested instance path\n"+
+						"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
+						"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
+						"quoting it if needed.\n\n"+
 						"If you opened this README directly from an extracted archive instead, create the\n"+
 						"guided instance now:\n\n"+
 						"```sh\ngoobers init --guided ./my-instance\n\n",

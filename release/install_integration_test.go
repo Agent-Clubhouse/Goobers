@@ -38,7 +38,9 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 	releaseRoot := filepath.Join(root, "release")
 	releaseDocs := map[string][]byte{
 		"README.md": []byte("# Goobers v1.2.3\n\n" +
-			"The release installer already ran guided setup for `./my-instance`; do not initialize it again.\n\n" +
+			"The release installer already ran guided setup at the requested instance path " +
+			"(default `./goobers-instance`). Do not initialize it again; replace `./my-instance` " +
+			"below with that same path, quoting it if needed.\n\n" +
 			"If you opened this README directly from an extracted archive instead:\n\n" +
 			"```sh\ngoobers init --guided ./my-instance\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
@@ -153,8 +155,10 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		t,
 		"installed README onboarding",
 		string(installedReadme),
-		"The release installer already ran guided setup",
-		"do not initialize it again",
+		"The release installer already ran guided setup at the requested instance path",
+		"default `./goobers-instance`",
+		"replace `./my-instance` below with that same path",
+		"quoting it if needed",
 		"directly from an extracted archive instead",
 		"goobers init --guided ./my-instance",
 	)
@@ -178,6 +182,31 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		if !strings.Contains(string(downloads), want) {
 			t.Errorf("downloads lack %q:\n%s", want, downloads)
 		}
+	}
+
+	defaultInstallDir := filepath.Join(root, "default-bin")
+	defaultDataDir := filepath.Join(root, "default-data")
+	defaultCurlCalls := filepath.Join(root, "default-curl-calls")
+	defaultGoobersCalls := filepath.Join(root, "default-goobers-calls")
+	cmd = exec.Command("sh", scriptPath, "v1.2.3")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FIXTURE_DIR="+fixtures,
+		"CURL_CALLS="+defaultCurlCalls,
+		"GOOBERS_CALLS="+defaultGoobersCalls,
+		"GOOBERS_INSTALL_DIR="+defaultInstallDir,
+		"XDG_DATA_HOME="+defaultDataDir,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("installer with default instance path: %v\n%s", err, output)
+	}
+	defaultCalls, err := os.ReadFile(defaultGoobersCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(defaultCalls), "init --guided ./goobers-instance") {
+		t.Errorf("default-path binary calls:\n%s", defaultCalls)
 	}
 
 	if err := os.WriteFile(archive, []byte("corrupt"), 0o644); err != nil {
