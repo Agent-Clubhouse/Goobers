@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -1007,9 +1008,10 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 }
 
-// TestRebasePRRefusesWithoutCapability proves rebase-pr fails closed before
-// any git/provider call when a required capability is absent.
-func TestRebasePRRefusesWithoutCapability(t *testing.T) {
+// TestRebasePRFailureEchoesSelectedNumber proves rebase-pr fails closed before
+// any git/provider call when a required capability is absent while preserving
+// the selected PR handoff needed by remediation-checkpoint.
+func TestRebasePRFailureEchoesSelectedNumber(t *testing.T) {
 	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-363-nocap")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
@@ -1022,5 +1024,15 @@ func TestRebasePRRefusesWithoutCapability(t *testing.T) {
 	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "rebase-result.json"))
+	if result["selectedNumber"] != "58" {
+		t.Fatalf("selectedNumber = %v, want 58", result["selectedNumber"])
+	}
+	if result["head"] != "goobers/impl/run-d" {
+		t.Fatalf("head = %v, want goobers/impl/run-d", result["head"])
+	}
+	if result[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
 	}
 }

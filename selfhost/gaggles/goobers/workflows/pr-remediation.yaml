@@ -154,8 +154,8 @@ spec:
     #     BEFORE spending an agentic session on it, and then routes into
     #     implement (#392).
     #
-    # selectedNumber is echoed forward in this stage's own result
-    # (writeRebaseResult) alongside needsAgent/conflict: a gate never
+    # selectedNumber is echoed forward in this stage's own result on both
+    # success and failure alongside the route/error details: a gate never
     # updates Task.InputsFrom's upstream-Outputs chain (only a task does —
     # see apply-verdict's own doc comment for the established convention),
     # so remediation-checkpoint (after rebase-gate) can only read it if
