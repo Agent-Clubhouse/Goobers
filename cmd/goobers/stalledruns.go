@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -95,12 +96,16 @@ func sweepStalledRuns(
 		return err
 	}
 
-	var sweepErr error
+	// Accumulate per-entry failures into a slice, then bound the aggregate at
+	// the end: a sweep over a pathological number of orphan/bad run directories
+	// must never build an unbounded error message that then bloats the
+	// scheduler journal when persisted (#1166, #1414).
+	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
 	for _, runsDir := range runDirs {
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("read runs directory %s: %w", runsDir, err))
+			sweepErrs = append(sweepErrs, fmt.Errorf("read runs directory %s: %w", runsDir, err))
 			continue
 		}
 		for _, entry := range entries {
@@ -113,17 +118,17 @@ func sweepStalledRuns(
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
 				continue
 			}
 			identity, err := reader.Identity()
 			if err != nil {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("read run %q identity: %w", entry.Name(), err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q identity: %w", entry.Name(), err))
 				continue
 			}
 			phase, err := reader.Phase()
 			if err != nil {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("read run %q phase: %w", identity.RunID, err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q phase: %w", identity.RunID, err))
 				continue
 			}
 			if phase != journal.PhaseRunning {
@@ -131,11 +136,11 @@ func sweepStalledRuns(
 			}
 			events, err := reader.Events()
 			if err != nil {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("read run %q events: %w", identity.RunID, err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, err))
 				continue
 			}
 			if len(events) == 0 {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("running run %q has no journal events", identity.RunID))
+				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 				continue
 			}
 			if events[len(events)-1].Type == journal.EventGatePaused {
@@ -158,13 +163,13 @@ func sweepStalledRuns(
 					if prepare != nil {
 						terminalPreparer, err = prepare(runLayout)
 						if err != nil {
-							sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
+							sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
 							continue
 						}
 					}
 					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
 					if managerErr != nil {
-						sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
+						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
 						continue
 					}
 					runRunner, err = runner.New(runner.Config{
@@ -177,7 +182,7 @@ func sweepStalledRuns(
 						NotifyTerminal: notify,
 					})
 					if err != nil {
-						sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
+						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
 						continue
 					}
 					terminalizers[runsDir] = runRunner
@@ -204,9 +209,9 @@ func sweepStalledRuns(
 				}
 			}
 			if err != nil {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("escalate stalled run %q (%s): %w", identity.RunID, result.Phase, err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("escalate stalled run %q (%s): %w", identity.RunID, result.Phase, err))
 			}
 		}
 	}
-	return sweepErr
+	return boundedagg.Join(sweepErrs...)
 }
