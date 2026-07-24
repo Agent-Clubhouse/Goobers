@@ -111,7 +111,7 @@ func validateSupportMatrixEvolution(released, current SupportMatrix, latestRelea
 				)
 			}
 			if compareReleaseVersions(transitionRelease, baseline) <= 0 &&
-				!(baseline.development && transitionRelease.development) {
+				(!baseline.development || !transitionRelease.development) {
 				return fmt.Errorf(
 					"DSL version %q new lifecycle transition %q must be later than latest release %q",
 					candidate.Version,
