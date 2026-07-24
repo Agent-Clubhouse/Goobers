@@ -85,7 +85,7 @@ func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: successInvoker()})
+	env.RegisterActivity(&Activities{Goober: successInvoker(), Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("legacy workflow error: %v", err)
@@ -109,7 +109,7 @@ func TestRunRejectsExplicitlyDisabledPreviewFeatures(t *testing.T) {
 func TestLinearFlowCompletes(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: successInvoker()})
+	env.RegisterActivity(&Activities{Goober: successInvoker(), Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, runInput("linear", linearSpec()))
 
@@ -140,7 +140,7 @@ func TestGateBlocksRun(t *testing.T) {
 	inv.review = func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 		return apiv1.Verdict{Decision: apiv1.VerdictFail, Summary: "rejected"}, nil
 	}
-	env.RegisterActivity(&Activities{Goober: inv})
+	env.RegisterActivity(&Activities{Goober: inv, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, runInput("gated", gatedSpec()))
 
@@ -173,7 +173,7 @@ func TestGatePassContinues(t *testing.T) {
 		gotLimits = env.Limits
 		return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 	}
-	env.RegisterActivity(&Activities{Goober: inv})
+	env.RegisterActivity(&Activities{Goober: inv, Workspaces: testWorkspaces(t)})
 
 	spec := gatedSpec()
 	spec.Gates[0].Agentic.TimeoutSeconds = 37
@@ -203,7 +203,7 @@ func TestGateLoopThenPass(t *testing.T) {
 		}
 		return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 	}
-	env.RegisterActivity(&Activities{Goober: inv})
+	env.RegisterActivity(&Activities{Goober: inv, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, runInput("gated", gatedSpec()))
 
@@ -244,7 +244,7 @@ func TestDeterministicTask(t *testing.T) {
 			gotLimits = invocation.Limits
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 		},
-	}})
+	}, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, runInput("det", spec))
 
@@ -295,7 +295,8 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 			gotInterval = invocation.Inputs["pollIntervalSeconds"]
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 		}},
-		Auto: &fixtureAuto{ciStatus: "passing"},
+		Auto:       &fixtureAuto{ciStatus: "passing"},
+		Workspaces: testWorkspaces(t),
 	})
 
 	env.ExecuteWorkflow(Run, runInput("ci-cadence", spec))

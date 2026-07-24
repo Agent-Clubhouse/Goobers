@@ -150,6 +150,10 @@ func init() {
 			withSynopsis(synopsisByID["service"]).
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
 			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
+		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
+			withSynopsis(synopsisByID["worker"]).
+			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
+			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).

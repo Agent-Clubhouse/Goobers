@@ -21,6 +21,7 @@ _goobers_completion()
             'config:inspect instance configuration and compare workflow definitions'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'service:install and manage the platform-supervised daemon'
+            'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
             'dashboard:serve and open the local operations portal'
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'

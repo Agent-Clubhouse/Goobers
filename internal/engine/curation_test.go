@@ -107,7 +107,7 @@ func TestBacklogCurationDryRun(t *testing.T) {
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: inv, Det: det})
+	env.RegisterActivity(&Activities{Goober: inv, Det: det, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, curationRunInput(spec))
 
@@ -201,7 +201,7 @@ func TestBacklogCurationRerunIsNoOp(t *testing.T) {
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: inv, Det: det})
+	env.RegisterActivity(&Activities{Goober: inv, Det: det, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, curationRunInput(spec))
 

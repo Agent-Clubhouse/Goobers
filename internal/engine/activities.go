@@ -3,9 +3,15 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+
+	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // Activity names. The workflow refers to activities by these names so it is
@@ -27,39 +33,163 @@ type Activities struct {
 	Goober invoke.Goober
 	Det    invoke.Deterministic
 	Auto   invoke.Automated
+	// Workspaces provisions the fresh working copy each stage attempt runs
+	// in. Required for any stage that executes in a workspace (agentic tasks,
+	// deterministic tasks, agentic reviewer gates); an automated gate's checks
+	// are pure functions over env.Inputs and get no workspace, matching the
+	// local runner (#112).
+	Workspaces WorkspaceProvisioner
 }
 
 // ErrNotConfigured is returned by an activity whose backing seam was not wired.
 var ErrNotConfigured = errors.New("engine: activity dependency not configured")
 
+// classifySeamError converts a seam error into a typed Temporal application
+// error so the attempt class survives into workflow history (#622). The
+// invoke-level infrastructure marker cannot cross the activity boundary — the
+// SDK serializes errors — so the class is committed here, at the last point
+// the marker is visible; the workflow's retry loop and the history→journal
+// projection (#629) both read it back from the recorded type alone.
+func classifySeamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if invoke.IsInfrastructureFailure(err) {
+		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
+	}
+	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
+}
+
+// provisionWorkspace provisions the working copy for one stage attempt and
+// stamps its path into env's required workspace field. It fails closed
+// (#621/#156): a missing provisioner, a provision failure, or an empty path
+// is an error — the stage never dispatches with a partial envelope, which is
+// what previously made every capability-scoped credential fail closed the
+// moment a real executor was wired.
+func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool) (Workspace, error) {
+	if a.Workspaces == nil {
+		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
+	}
+	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
+		RunID:           env.RunID,
+		Stage:           strings.TrimPrefix(env.TaskID, env.RunID+":"),
+		Gaggle:          env.Gaggle,
+		Workflow:        env.WorkflowID,
+		BranchNamespace: env.BranchNamespace,
+		RepoRef:         env.RepoRef,
+		Mode:            mode,
+		SyncBase:        syncBase,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
+	}
+	if ws == nil || ws.Path() == "" {
+		removeWorkspace(ctx, ws)
+		return nil, fmt.Errorf("workspace provisioner returned no path for stage %q (the closed invocation schema requires workspace)", env.TaskID)
+	}
+	env.Workspace = ws.Path()
+	return ws, nil
+}
+
+// removeWorkspace tears one attempt's working copy down. Best-effort by
+// design: a teardown failure never overrides the stage's own result/error
+// (the local runner's additive removeErr contract, issue #136); until the
+// history→journal projection (#629) exists there is no journal to surface it
+// to. Detached from ctx so an already-expired attempt still cleans up.
+func removeWorkspace(ctx context.Context, ws Workspace) {
+	if ws == nil {
+		return
+	}
+	_ = ws.Remove(context.WithoutCancel(ctx))
+}
+
 // InvokeGoober executes an agentic task.
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	if a.Goober == nil {
-		return apiv1.ResultEnvelope{}, ErrNotConfigured
+		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
-	return a.Goober.Invoke(ctx, env)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	defer removeWorkspace(ctx, ws)
+	res, err := a.Goober.Invoke(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	return res, nil
 }
 
-// ReviewGoober executes an agentic reviewer gate.
+// ReviewGoober executes an agentic reviewer gate. Like the local runner, the
+// reviewer runs a real goober subprocess and therefore gets a repository
+// workspace (unlike an automated gate).
 func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	if a.Goober == nil {
-		return apiv1.Verdict{}, ErrNotConfigured
+		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
-	return a.Goober.Review(ctx, env)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
+	if err != nil {
+		return apiv1.Verdict{}, classifySeamError(err)
+	}
+	defer removeWorkspace(ctx, ws)
+	verdict, err := a.Goober.Review(ctx, env)
+	if err != nil {
+		return apiv1.Verdict{}, classifySeamError(err)
+	}
+	return verdict, nil
 }
 
-// RunDeterministic executes a deterministic task.
+// RunDeterministic executes a deterministic task in the workspace mode the
+// task's run block declares (repo by default, scratch on request).
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if a.Det == nil {
-		return apiv1.ResultEnvelope{}, ErrNotConfigured
+		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
-	return a.Det.Run(ctx, env, run)
+	// Dispatch distinguishes absent from zero-value (#626): no stage may run
+	// with an empty effective command, whatever the workflow handed us.
+	if len(run.Command) == 0 {
+		return apiv1.ResultEnvelope{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command; refusing to execute (fail closed)", env.TaskID))
+	}
+	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase)
+	if err != nil {
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			// Mirror the local runner's dispatchTask (#813): a genuine base
+			// merge conflict is a business failure the definition routes (a
+			// status-equals gate dispatching remediation), never a dispatch
+			// error burning the retry budget. The conflict-detail artifact
+			// stays a local-runner surface for now — the projection (#629)
+			// commits workflow-derived bytes only.
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}, nil
+		}
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	defer removeWorkspace(ctx, ws)
+	res, err := a.Det.Run(ctx, env, run)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	return res, nil
 }
 
-// EvaluateAutomated runs an automated gate check.
+// EvaluateAutomated runs an automated gate check. Automated gates are pure
+// functions over env.Inputs and never receive a workspace, matching the local
+// runner (#112) — no provisioning here.
 func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	if a.Auto == nil {
-		return "", ErrNotConfigured
+		return "", classifySeamError(ErrNotConfigured)
 	}
-	return a.Auto.Evaluate(ctx, gate, env)
+	outcome, err := a.Auto.Evaluate(ctx, gate, env)
+	if err != nil {
+		return "", classifySeamError(err)
+	}
+	return outcome, nil
 }

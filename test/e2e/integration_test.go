@@ -159,7 +159,7 @@ func (s *runEnvStarter) Start(_ context.Context, in engine.RunInput) (engine.Sta
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&engine.Activities{Goober: s.goober})
+	env.RegisterActivity(&engine.Activities{Goober: s.goober, Workspaces: tempWorkspaces{t: s.t}})
 	env.ExecuteWorkflow(engine.Run, in)
 
 	if !env.IsWorkflowCompleted() {
@@ -245,6 +245,22 @@ type fakePreparer struct{ dir string }
 func (p fakePreparer) Prepare(context.Context, apiv1.InvocationEnvelope) (gooberruntime.ExecutionEnvironment, error) {
 	return gooberruntime.ExecutionEnvironment{WorkspaceDir: p.dir, RepoDir: p.dir}, nil
 }
+
+// tempWorkspaces is the e2e engine.WorkspaceProvisioner — the engine fails
+// closed without one (#621), since the closed invocation schema requires the
+// envelope's workspace field. Temp-dir backed, standing in for the worker
+// host's worktree-backed implementation (#632) at the same cluster boundary
+// fakePreparer covers for the goober runtime.
+type tempWorkspaces struct{ t *testing.T }
+
+func (p tempWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
+	return tempWorkspace{dir: p.t.TempDir()}, nil
+}
+
+type tempWorkspace struct{ dir string }
+
+func (w tempWorkspace) Path() string                 { return w.dir }
+func (w tempWorkspace) Remove(context.Context) error { return nil }
 
 func itemID(in engine.RunInput) string {
 	if in.Item != nil {
