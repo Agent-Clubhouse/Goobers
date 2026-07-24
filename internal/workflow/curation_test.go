@@ -48,7 +48,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Fatalf("backlog-curation warnings = %v, want warning-clean reference config", warnings)
 	}
 
-	// Structural shape: sample-ready-pool -> query-backlog ->
+	// Structural shape: reconcile-backlog -> sample-ready-pool -> query-backlog ->
 	// surface-duplicates (deterministic) -> curate (agentic) -> release-claim
 	// (deterministic, terminal). No gates — curation is issues-only with no
 	// review/CI loop (ARCHITECTURE.md §12 reserves reviewer gates for the
@@ -56,8 +56,20 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	// release-claim (issue #234) is the explicit claim-ledger release
 	// curation needs since it never reaches issue-close-out's release
 	// (implementation-only).
-	if w.Spec.Start != "sample-ready-pool" {
-		t.Errorf("start = %q, want sample-ready-pool", w.Spec.Start)
+	if w.Spec.Start != "reconcile-backlog" {
+		t.Errorf("start = %q, want reconcile-backlog", w.Spec.Start)
+	}
+	reconcile, ok := m.Task("reconcile-backlog")
+	if !ok {
+		t.Fatal("reconcile-backlog task not found")
+	}
+	if reconcile.Next != "sample-ready-pool" || reconcile.Type != apiv1.TaskDeterministic ||
+		reconcile.Run == nil || len(reconcile.Run.Command) != 3 ||
+		reconcile.Run.Command[1] != "backlog-query" || reconcile.Run.Command[2] != "--reconcile" {
+		t.Errorf("reconcile-backlog = %+v, want deterministic reconciliation task", reconcile)
+	}
+	if reconcile.Inputs["resultFile"] != "backlog-reconciliation.json" {
+		t.Errorf("reconcile-backlog resultFile = %q", reconcile.Inputs["resultFile"])
 	}
 	health, ok := m.Task("sample-ready-pool")
 	if !ok {
@@ -93,6 +105,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 	if query.Inputs["staleAutoClose"] != "false" {
 		t.Errorf("query-backlog staleAutoClose = %q, want false", query.Inputs["staleAutoClose"])
+	}
+	if query.Inputs["reconcileMetadata"] != "false" {
+		t.Errorf("query-backlog reconcileMetadata = %q, want false after dedicated reconciliation", query.Inputs["reconcileMetadata"])
 	}
 	curate, ok := m.Task("curate")
 	if !ok {
@@ -173,6 +188,28 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 		} {
 			if !strings.Contains(instructions, required) {
 				t.Errorf("%s does not define %q", path, required)
+			}
+		}
+	}
+}
+
+func TestCuratorActionOutputsDelegateDeterministicCounts(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		instructions := string(raw)
+		normalized := strings.Join(strings.Fields(instructions), " ")
+		if !strings.Contains(normalized, "Do not report `reconciled` or `bounced`: the deterministic reconciliation stage") {
+			t.Errorf("%s does not delegate deterministic reconciliation and bounce counts", path)
+		}
+		for _, output := range []string{"`ready`", "`needsHuman`", "`closed`", "`deduped`", "`split`", "`stale`", "`milestoned`"} {
+			if !strings.Contains(instructions, output) {
+				t.Errorf("%s does not require output %s", path, output)
 			}
 		}
 	}

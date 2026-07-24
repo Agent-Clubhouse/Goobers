@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -54,7 +55,7 @@ func (db *DB) ingestRun(runDir string) error {
 	if err := insertEvents(tx, runID, events); err != nil {
 		return err
 	}
-	if err := insertBacklogProjections(tx, identity, events); err != nil {
+	if err := insertBacklogProjections(tx, runDir, identity, events); err != nil {
 		return err
 	}
 	if err := insertSpans(tx, runID, spans); err != nil {
@@ -69,7 +70,7 @@ func (db *DB) ingestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -362,24 +363,25 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	return nil
 }
 
-var curationOutputKeys = []string{
+var curationAgentOutputKeys = []string{
 	"ready",
 	"needsHuman",
 	"closed",
 	"deduped",
 	"split",
 	"stale",
-	"reconciled",
 	"milestoned",
-	"bounced",
 }
 
-func insertBacklogProjections(tx *sql.Tx, id runIdentity, events []journalEvent) error {
+func insertBacklogProjections(tx *sql.Tx, runDir string, id runIdentity, events []journalEvent) error {
 	if id.Workflow == "backlog-curation" {
 		if err := insertCurationAction(tx, id.RunID, events); err != nil {
 			return err
 		}
 		if err := insertReadyPoolSample(tx, id.RunID, events); err != nil {
+			return err
+		}
+		if err := insertReadyLabelTransitions(tx, runDir, id.RunID, events); err != nil {
 			return err
 		}
 	}
@@ -392,7 +394,7 @@ func insertBacklogProjections(tx *sql.Tx, id runIdentity, events []journalEvent)
 }
 
 func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error {
-	counts := make([]int, len(curationOutputKeys))
+	counts := make([]int, 9)
 	reported := false
 	status := ""
 	occurredAt := time.Time{}
@@ -401,21 +403,32 @@ func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error
 			status = ev.Status
 			occurredAt = ev.Time
 		}
+		if ev.Type == eventStageFinished && ev.Stage == "reconcile-backlog" && ev.Status == stageStatusSuccess {
+			if count, ok := nonnegativeOutputInt(ev.Outputs, "reconciled"); ok {
+				counts[6] = count
+			}
+		}
 		if ev.Type != eventStageFinished || ev.Stage != "curate" || ev.Status != stageStatusSuccess {
 			continue
 		}
 		valid := true
-		for i, key := range curationOutputKeys {
+		for i, key := range curationAgentOutputKeys {
 			count, ok := nonnegativeOutputInt(ev.Outputs, key)
 			if !ok {
 				valid = false
 				break
 			}
-			counts[i] = count
+			if i < 6 {
+				counts[i] = count
+			} else {
+				counts[7] = count
+			}
 		}
 		reported = valid
 		if !valid {
-			counts = make([]int, len(curationOutputKeys))
+			reconciled := counts[6]
+			counts = make([]int, 9)
+			counts[6] = reconciled
 		}
 		if occurredAt.IsZero() {
 			occurredAt = ev.Time
@@ -435,6 +448,62 @@ func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error
 		counts[5], counts[6], counts[7], counts[8], formatTime(occurredAt))
 	if err != nil {
 		return fmt.Errorf("rollup: insert curation action for run %s: %w", runID, err)
+	}
+	return nil
+}
+
+type readyPoolArtifact struct {
+	ReadyTransitions []struct {
+		EventID    int64     `json:"eventId"`
+		ItemID     string    `json:"itemId"`
+		Label      string    `json:"label"`
+		Added      bool      `json:"added"`
+		OccurredAt time.Time `json:"occurredAt"`
+	} `json:"readyTransitions"`
+}
+
+func insertReadyLabelTransitions(tx *sql.Tx, runDir, runID string, events []journalEvent) error {
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "sample-ready-pool" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		for i := len(ev.Artifacts) - 1; i >= 0; i-- {
+			ref := ev.Artifacts[i]
+			if ref.MediaType != "application/json" {
+				continue
+			}
+			data, readErr := reader.ArtifactBytes(journal.Ref{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType,
+			})
+			if readErr != nil {
+				return fmt.Errorf("rollup: read ready-pool artifact for run %s: %w", runID, readErr)
+			}
+			var artifact readyPoolArtifact
+			if unmarshalErr := json.Unmarshal(data, &artifact); unmarshalErr != nil {
+				return fmt.Errorf("rollup: decode ready-pool artifact for run %s: %w", runID, unmarshalErr)
+			}
+			for _, transition := range artifact.ReadyTransitions {
+				if transition.EventID <= 0 || transition.ItemID == "" || transition.Label == "" || transition.OccurredAt.IsZero() {
+					return fmt.Errorf("rollup: invalid ready-label transition in run %s", runID)
+				}
+				kind := "not-ready"
+				if transition.Added {
+					kind = "ready"
+				}
+				if _, insertErr := tx.Exec(`
+					INSERT OR IGNORE INTO ready_label_transitions (
+						run_id, event_id, item_id, transition, occurred_at
+					) VALUES (?, ?, ?, ?, ?)`,
+					runID, transition.EventID, transition.ItemID, kind, formatTime(transition.OccurredAt)); insertErr != nil {
+					return fmt.Errorf("rollup: insert ready-label transition %d: %w", transition.EventID, insertErr)
+				}
+			}
+			break
+		}
 	}
 	return nil
 }
@@ -468,11 +537,11 @@ func insertReadyClaims(tx *sql.Tx, runID string, events []journalEvent) error {
 		if ev.Type != eventStageFinished || ev.Stage != "query-backlog" || ev.Status != stageStatusSuccess {
 			continue
 		}
-		updatedText, ok := ev.Outputs["updatedAt"].(string)
+		readyText, ok := ev.Outputs["readyAt"].(string)
 		if !ok {
 			continue
 		}
-		readyAt, err := time.Parse(time.RFC3339Nano, updatedText)
+		readyAt, err := time.Parse(time.RFC3339Nano, readyText)
 		if err != nil || ev.Time.Before(readyAt) {
 			continue
 		}

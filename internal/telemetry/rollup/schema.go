@@ -377,4 +377,20 @@ CREATE INDEX IF NOT EXISTS idx_curation_actions_time ON curation_actions(occurre
 CREATE INDEX IF NOT EXISTS idx_ready_pool_samples_time ON ready_pool_samples(observed_at);
 CREATE INDEX IF NOT EXISTS idx_ready_claims_time ON ready_claims(claimed_at);
 `,
+	// v12 (CURE-7): preserve provider-issued ready-label transitions from each
+	// curation health snapshot. Snapshots overlap by design; event_id provides
+	// lossless deduplication when computing ready cohorts and bounce rates.
+	`
+CREATE TABLE IF NOT EXISTS ready_label_transitions (
+	run_id       TEXT NOT NULL,
+	event_id     INTEGER NOT NULL,
+	item_id      TEXT NOT NULL,
+	transition   TEXT NOT NULL,
+	occurred_at  TEXT NOT NULL,
+	PRIMARY KEY (run_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_time ON ready_label_transitions(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_item ON ready_label_transitions(item_id, occurred_at);
+`,
 }

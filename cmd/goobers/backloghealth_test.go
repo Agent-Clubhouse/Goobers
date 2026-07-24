@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,11 +16,12 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
 	oneHourAgo := now.Add(-time.Hour)
 	threeHoursAgo := now.Add(-3 * time.Hour)
+	justUpdated := now.Add(-time.Minute)
 	items := []providers.WorkItem{
-		{ID: "1", State: "open", Labels: []string{"goobers:ready"}, UpdatedAt: &oneHourAgo},
-		{ID: "2", State: "open", Labels: []string{"goobers:ready"}, CreatedAt: &threeHoursAgo},
-		{ID: "3", State: "open", Labels: []string{"goobers:needs-human"}, UpdatedAt: &threeHoursAgo},
-		{ID: "4", State: "closed", Labels: []string{"goobers:ready"}, UpdatedAt: &threeHoursAgo},
+		{ID: "1", State: "open", Labels: []string{"goobers:ready"}, ReadyAt: &oneHourAgo, UpdatedAt: &justUpdated},
+		{ID: "2", State: "open", Labels: []string{"goobers:ready"}, ReadyAt: &threeHoursAgo},
+		{ID: "3", State: "open", Labels: []string{"goobers:needs-human"}, ReadyAt: &threeHoursAgo},
+		{ID: "4", State: "closed", Labels: []string{"goobers:ready"}, ReadyAt: &threeHoursAgo},
 	}
 
 	got := measureReadyPool(items, "goobers:ready", now)
@@ -55,6 +57,20 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Ready", "goobers:approved", "goobers:ready")
 	server.addIssue(8, "Parked", "goobers:approved", "goobers:needs-human")
+	server.addIssue(9, "Bounced", "goobers:approved", "goobers:ready")
+	readyAt := time.Now().UTC().Add(-2 * time.Hour)
+	server.setLabelEventTime(7, providers.LabelReady, true, readyAt)
+	server.setLabelEventTime(9, providers.LabelReady, true, readyAt.Add(-time.Hour))
+	if _, err := server.newGitHubProvider("token").UpdateWorkItem(
+		context.Background(),
+		providers.UpdateWorkItemRequest{
+			Repository:   providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+			ID:           "9",
+			RemoveLabels: []string{providers.LabelReady},
+		},
+	); err != nil {
+		t.Fatalf("remove ready label: %v", err)
+	}
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "health-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	workDir := t.TempDir()
@@ -74,5 +90,12 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	}
 	if got.ReadyPoolDepth != 1 || got.ReadyPoolStarved || got.ReadyPoolObservedAt == "" {
 		t.Fatalf("snapshot = %#v", got)
+	}
+	if len(got.ReadyTransitions) != 3 || !got.ReadyTransitions[0].Added ||
+		!got.ReadyTransitions[1].Added || got.ReadyTransitions[2].Added {
+		t.Fatalf("ready transitions = %#v", got.ReadyTransitions)
+	}
+	if got.AverageReadyAgeSeconds < (2*time.Hour - time.Minute).Seconds() {
+		t.Fatalf("average ready age = %f, want label age near two hours", got.AverageReadyAgeSeconds)
 	}
 }

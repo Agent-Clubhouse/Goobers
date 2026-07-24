@@ -79,6 +79,7 @@ type WorkItem struct {
 	URL            string                 `json:"url,omitempty"`
 	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
 	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
+	ReadyAt        *time.Time             `json:"readyAt,omitempty"`
 	BlockedByCount int                    `json:"-"`
 	Raw            interface{}            `json:"raw,omitempty"`
 }
@@ -91,6 +92,15 @@ func (w WorkItem) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// WorkItemLabelTransition is one provider-issued label add/remove event.
+type WorkItemLabelTransition struct {
+	EventID    int64     `json:"eventId"`
+	ItemID     string    `json:"itemId"`
+	Label      string    `json:"label"`
+	Added      bool      `json:"added"`
+	OccurredAt time.Time `json:"occurredAt"`
 }
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).

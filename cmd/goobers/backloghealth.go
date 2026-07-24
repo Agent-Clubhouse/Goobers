@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,15 +17,17 @@ import (
 )
 
 const backlogHealthHelp = "Usage: goobers backlog-health [path]\n\n" +
-	"Snapshot the current ready backlog depth and age into a flat stage result\n" +
-	"for telemetry rollups. Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.\n"
+	"Snapshot ready-pool depth and age from provider label-event timestamps, and\n" +
+	"persist the paginated ready-transition ledger for telemetry rollups. Exit\n" +
+	"codes: 0 = OK, 1 = provider/IO error, 2 = usage error.\n"
 
 type backlogHealthReport struct {
-	ReadyPoolDepth         int     `json:"readyPoolDepth"`
-	AverageReadyAgeSeconds float64 `json:"averageReadyAgeSeconds"`
-	OldestReadyAgeSeconds  float64 `json:"oldestReadyAgeSeconds"`
-	ReadyPoolStarved       bool    `json:"readyPoolStarved"`
-	ReadyPoolObservedAt    string  `json:"readyPoolObservedAt"`
+	ReadyPoolDepth         int                                 `json:"readyPoolDepth"`
+	AverageReadyAgeSeconds float64                             `json:"averageReadyAgeSeconds"`
+	OldestReadyAgeSeconds  float64                             `json:"oldestReadyAgeSeconds"`
+	ReadyPoolStarved       bool                                `json:"readyPoolStarved"`
+	ReadyPoolObservedAt    string                              `json:"readyPoolObservedAt"`
+	ReadyTransitions       []providers.WorkItemLabelTransition `json:"readyTransitions,omitempty"`
 }
 
 func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
@@ -54,20 +58,30 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", "goobers:ready")
-	labels := []string{readyLabel}
+	var labels []string
 	if trustLabel != "" {
-		labels = append([]string{trustLabel}, labels...)
+		labels = []string{trustLabel}
 	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	items, err := newCachedGitHubProvider(root, token).ListWorkItems(ctx, providers.ListWorkItemsRequest{
+	issueProvider := newCachedGitHubProvider(root, token)
+	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repo,
 		Labels:     labels,
-		State:      "open",
+		State:      "all",
 	})
 	if err != nil {
 		return failProviderStage(stderr, "snapshot ready backlog", err, "backlog-health.json")
+	}
+	transitions, err := issueProvider.ListWorkItemLabelTransitions(ctx, repo, readyLabel)
+	if err != nil {
+		return failProviderStage(stderr, "read ready-label transitions", err, "backlog-health.json")
+	}
+	transitions = transitionsForItems(transitions, items)
+	if err := annotateReadyTimes(items, readyLabel, transitions); err != nil {
+		pf(stderr, "error: snapshot ready backlog: %v\n", err)
+		return 1
 	}
 
 	observedAt := time.Now().UTC()
@@ -78,6 +92,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(repo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
+	report.ReadyTransitions = transitions
 	data, err := json.Marshal(report)
 	if err != nil {
 		pf(stderr, "error: marshal backlog health: %v\n", err)
@@ -99,13 +114,9 @@ func measureReadyPool(items []providers.WorkItem, readyLabel string, observedAt 
 		if !item.HasLabel(readyLabel) || (item.State != "" && !strings.EqualFold(item.State, "open")) {
 			continue
 		}
-		readyAt := item.UpdatedAt
-		if readyAt == nil {
-			readyAt = item.CreatedAt
-		}
 		age := float64(0)
-		if readyAt != nil && observedAt.After(*readyAt) {
-			age = observedAt.Sub(*readyAt).Seconds()
+		if item.ReadyAt != nil && observedAt.After(*item.ReadyAt) {
+			age = observedAt.Sub(*item.ReadyAt).Seconds()
 		}
 		report.ReadyPoolDepth++
 		totalAge += age
@@ -118,6 +129,59 @@ func measureReadyPool(items []providers.WorkItem, readyLabel string, observedAt 
 		report.AverageReadyAgeSeconds = totalAge / float64(report.ReadyPoolDepth)
 	}
 	return report
+}
+
+func transitionsForItems(
+	transitions []providers.WorkItemLabelTransition,
+	items []providers.WorkItem,
+) []providers.WorkItemLabelTransition {
+	ids := make(map[string]bool, len(items))
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	filtered := make([]providers.WorkItemLabelTransition, 0, len(transitions))
+	for _, transition := range transitions {
+		if ids[transition.ItemID] {
+			filtered = append(filtered, transition)
+		}
+	}
+	return filtered
+}
+
+func annotateReadyTimes(
+	items []providers.WorkItem,
+	readyLabel string,
+	transitions []providers.WorkItemLabelTransition,
+) error {
+	ordered := append([]providers.WorkItemLabelTransition(nil), transitions...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].OccurredAt.Equal(ordered[j].OccurredAt) {
+			return ordered[i].EventID < ordered[j].EventID
+		}
+		return ordered[i].OccurredAt.Before(ordered[j].OccurredAt)
+	})
+	active := make(map[string]time.Time)
+	for _, transition := range ordered {
+		if transition.Label != readyLabel {
+			continue
+		}
+		if transition.Added {
+			active[transition.ItemID] = transition.OccurredAt
+		} else {
+			delete(active, transition.ItemID)
+		}
+	}
+	for i := range items {
+		if !items[i].HasLabel(readyLabel) {
+			continue
+		}
+		readyAt, ok := active[items[i].ID]
+		if !ok {
+			return fmt.Errorf("issue %s has %q but no active label-add event", items[i].ID, readyLabel)
+		}
+		items[i].ReadyAt = &readyAt
+	}
+	return nil
 }
 
 func unclaimedReadyItems(

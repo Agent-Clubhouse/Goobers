@@ -254,6 +254,45 @@ func TestGitHubListComments(t *testing.T) {
 	}
 }
 
+func TestGitHubListWorkItemLabelTransitionsPaginatesAndFilters(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/app/issues/events" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
+		}
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Link", fmt.Sprintf("<%s%s?page=2&per_page=100>; rel=\"next\"", srv.URL, r.URL.Path))
+			writeJSON(t, w, []map[string]any{
+				{"id": 10, "event": "labeled", "created_at": "2026-07-20T10:00:00Z", "label": map[string]string{"name": LabelReady}, "issue": map[string]any{"number": 7}},
+				{"id": 11, "event": "labeled", "created_at": "2026-07-20T11:00:00Z", "label": map[string]string{"name": "other"}, "issue": map[string]any{"number": 7}},
+				{"id": 12, "event": "labeled", "created_at": "2026-07-20T12:00:00Z", "label": map[string]string{"name": LabelReady}, "issue": map[string]any{"number": 8, "pull_request": map[string]string{"url": "pr"}}},
+			})
+			return
+		}
+		writeJSON(t, w, []map[string]any{
+			{"id": 13, "event": "unlabeled", "created_at": "2026-07-21T10:00:00Z", "label": map[string]string{"name": LabelReady}, "issue": map[string]any{"number": 7}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	p := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = srv.URL })
+
+	got, err := p.ListWorkItemLabelTransitions(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		LabelReady,
+	)
+	if err != nil {
+		t.Fatalf("ListWorkItemLabelTransitions: %v", err)
+	}
+	if len(got) != 2 || got[0].EventID != 10 || !got[0].Added ||
+		got[1].EventID != 13 || got[1].Added || got[1].ItemID != "7" {
+		t.Fatalf("transitions = %#v", got)
+	}
+}
+
 func TestGitHubAuthenticatedLogin(t *testing.T) {
 	m := newIssueMock()
 	p, _ := newIssueProvider(t, m)

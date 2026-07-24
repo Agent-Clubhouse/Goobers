@@ -261,7 +261,8 @@ envelope: `status` and a one-paragraph `summary` of what you curated (counts
 of deduped/closed/tagged/split/marked-ready/marked-needs-human). Do not also
 emit a per-item breakdown. Set these numeric scalar `outputs` on every
 successful run: `ready`, `needsHuman`, `closed`, `deduped`, `split`, `stale`,
-`reconciled`, `milestoned`, and `bounced` (a ready item moved back to
-not-ready). Use `0` for actions that did not occur. These counts are the
-telemetry record; structured or bulk data belongs in artifacts, and each
-item's details remain in its explanatory issue comment.
+and `milestoned`. Use `0` for actions that did not occur. These counts are the
+telemetry record; structured or bulk data belongs in artifacts, and each item's
+details remain in its explanatory issue comment. Do not report `reconciled` or
+`bounced`: the deterministic reconciliation stage and provider label-event
+ledger record those actions directly.

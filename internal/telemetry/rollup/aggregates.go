@@ -353,11 +353,18 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	if err != nil {
 		return StatsResult{}, err
 	}
-	curation, err := db.curationStats(req)
+	var readyTransitions []storedReadyLabelTransition
+	if !agentStatsActive(req) && (req.Workflow == "" || req.Workflow == "backlog-curation") {
+		readyTransitions, err = db.readyLabelTransitions(req)
+		if err != nil {
+			return StatsResult{}, err
+		}
+	}
+	curation, err := db.curationStats(req, readyTransitions)
 	if err != nil {
 		return StatsResult{}, err
 	}
-	readyPool, err := db.readyPoolHealth(req, curation)
+	readyPool, err := db.readyPoolHealth(req, curation, readyTransitions)
 	if err != nil {
 		return StatsResult{}, err
 	}

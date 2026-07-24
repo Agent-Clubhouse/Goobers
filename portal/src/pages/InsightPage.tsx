@@ -302,7 +302,9 @@ function CurationHealth({
           <dd>{formatSeconds(readyPool.averageClaimAgeSeconds)}</dd>
         </div>
         <div>
-          <dt>Bounce rate</dt>
+          <dt title="Share of items marked ready in the selected window that later moved to not-ready">
+            Bounce rate
+          </dt>
           <dd>{readyPool.bounceRate === undefined ? "Unmeasured" : `${(readyPool.bounceRate * 100).toFixed(1)}%`}</dd>
         </div>
         <div>

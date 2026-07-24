@@ -41,6 +41,7 @@ type journalEvent struct {
 	Escalated       bool                `json:"escalated,omitempty"`
 	Status          string              `json:"status,omitempty"`
 	Outputs         map[string]any      `json:"outputs,omitempty"`
+	Artifacts       []journalRef        `json:"artifacts,omitempty"`
 	Actor           string              `json:"actor,omitempty"`
 	WorkflowVersion int                 `json:"workflowVersion,omitempty"`
 	WorkflowDigest  string              `json:"workflowDigest,omitempty"`

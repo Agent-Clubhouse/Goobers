@@ -19,8 +19,27 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
-  start: sample-ready-pool
+  start: reconcile-backlog
   tasks:
+    # Repair deterministic metadata drift first so this run's health snapshot
+    # includes any ready -> not-ready transitions the repair creates.
+    - name: reconcile-backlog
+      type: deterministic
+      goal: Reconcile drifted backlog labels and publish the actual correction count.
+      run:
+        command: ["goobers", "backlog-query", "--reconcile"]
+      inputs:
+        trustLabel: "goobers:approved"
+        staleAfterDays: "90"
+        staleAutoClose: "false"
+        resultFile: "backlog-reconciliation.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - backlog-reconciliation
+      next: sample-ready-pool
     - name: sample-ready-pool
       type: deterministic
       goal: Snapshot ready-pool depth and age before this curation pass.
@@ -74,6 +93,9 @@ spec:
         # Conservative default: a stale signal permits label + ask, never close.
         # Set true explicitly to allow the curator to close a stale item.
         staleAutoClose: "false"
+        # The dedicated first stage already reconciled and the health snapshot
+        # captured its transitions; avoid a second provider-wide sweep here.
+        reconcileMetadata: "false"
       capabilities:
         - github:issues:write
         # Same open-PR eligibility backstop as implementation.yaml's
@@ -125,8 +147,9 @@ spec:
         - create-issue
         - edit-issue
         - label-issue
-      # Per-item details stay in issue comments. Scalar action counts are
-      # journaled in outputs so telemetry can project a durable per-run record.
+      # Per-item details stay in issue comments. Agent-owned scalar action
+      # counts are journaled in outputs; deterministic reconciliation mutations
+      # and ready-label transitions are projected from provider-issued records.
       next: release-claim
     # Explicit release (issue #234): curation touches issues only — there is
     # no CI-poll or reviewer loop, and it never opens a PR or closes the
