@@ -11,6 +11,24 @@ func TestDSLMatrixSatisfiesSupportPolicy(t *testing.T) {
 	}
 }
 
+func TestSupportPolicyAllowsCoexistingVersionWithInitialHistory(t *testing.T) {
+	released := GetDSL()
+	current := GetDSL()
+	current["2.0"] = VersionSupport{
+		Level: LevelSupported,
+		History: []SupportTransition{
+			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+		},
+	}
+
+	if err := ValidateSupportPolicy(current); err != nil {
+		t.Fatalf("coexisting DSL version violates support policy: %v", err)
+	}
+	if err := validateSupportMatrixEvolution(released, current, initialSupportVersion); err != nil {
+		t.Fatalf("coexisting DSL version evolution was rejected: %v", err)
+	}
+}
+
 func TestSupportPolicyRejectsInvalidMatrices(t *testing.T) {
 	transition := func(level Level, version string) SupportTransition {
 		return SupportTransition{Level: level, SinceVersion: version}
