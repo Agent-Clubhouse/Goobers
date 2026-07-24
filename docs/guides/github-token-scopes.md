@@ -142,7 +142,7 @@ repos:
       appId: 123456            # or the App's client ID string
       installationId: 987654
       privateKey:
-        file: /run/secrets/goobers-app.pem   # env: or store: work too
+        file: /run/secrets/goobers-app.pem   # env: works too; store: not yet (#683)
 ```
 
 Exactly one identity mechanism per repo: `github-app` **forbids** `token`
@@ -158,10 +158,14 @@ copied PAT. Access is also auditable as the **App's own identity** — commits,
 PRs, and API calls attribute to the app, not to whichever employee's PAT
 happened to be pasted into the instance — and the blast radius is pinned to
 the installation's repository list and permission set rather than a person's
-entire grant. The remaining long-lived secret is the App private key, which
-never leaves the daemon process (stages, git subprocesses, and providers only
-ever see minted tokens) and can itself live in a secret store via
-`privateKey.store`.
+entire grant. Goobers narrows it further: every mint asks GitHub to scope the
+token to the one configured repository, so even when several repos share an
+App installation, a leaked token cannot reach a sibling repo. The remaining
+long-lived secret is the App private key, which never leaves the daemon
+process (stages, git subprocesses, and providers only ever see minted
+tokens). Today the key ref must be `privateKey.env` or `privateKey.file`; a
+store-backed ref (`privateKey.store`) fails closed at startup until
+secret-store resolution is wired through this path (#683).
 
 **Installation permissions.** Grant the App the union of what the selected
 workflows' capabilities need — same table as above: Contents (Read and write
