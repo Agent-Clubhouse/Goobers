@@ -37,7 +37,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 ## Validation
 
-No cluster is required:
+No cluster is required — `make deploy-validate` runs the kustomize builds, or by hand:
 
 ```sh
 kubectl kustomize deploy/reference/goobers-system
