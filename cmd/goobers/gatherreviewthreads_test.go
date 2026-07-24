@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -89,6 +90,9 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	dir := t.TempDir()
 	t.Chdir(dir)
 
