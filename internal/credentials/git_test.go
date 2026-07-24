@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -12,6 +13,13 @@ func TestWriteAskpassScriptContainsNoSecretMaterial(t *testing.T) {
 	path, err := WriteAskpassScript(dir)
 	if err != nil {
 		t.Fatalf("WriteAskpassScript: %v", err)
+	}
+	wantBase := askpassScriptName
+	if runtime.GOOS == "windows" {
+		wantBase = askpassScriptNameWindows
+	}
+	if got := filepath.Base(path); got != wantBase {
+		t.Fatalf("askpass helper name = %q, want %q", got, wantBase)
 	}
 	fakeToken := "ghp_shouldNeverAppearOnDiskAnywhere"
 	// Exercise the full seam as a caller would: resolve, then build the env
