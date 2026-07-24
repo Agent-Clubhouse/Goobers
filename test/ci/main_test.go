@@ -50,6 +50,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
+		"tidy-check",
 		"vet",
 		"build-config-sync",
 		"portal-install",
@@ -71,7 +72,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[10]
+	testCheck := gotChecks[11]
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -98,20 +99,20 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
-	shippedCheck := gotChecks[9]
+	shippedCheck := gotChecks[10]
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
 		t.Fatalf("shipped workflow check = %#v", shippedCheck)
 	}
 
-	buildCheck := gotChecks[6]
+	buildCheck := gotChecks[7]
 	if got := filepath.ToSlash(strings.Join(buildCheck.args, " ")); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
 		t.Fatalf("goobers build args = %q", got)
 	}
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, versionPackage+".Version=v1.2.3") {
 		t.Fatalf("goobers build args missing metadata: %q", got)
 	}
-	validateCheck := gotChecks[7]
+	validateCheck := gotChecks[8]
 	if got := filepath.ToSlash(strings.Join(validateCheck.args, " ")); got != "run ./test/configvalidate bin/goobers" {
 		t.Fatalf("validate-configs args = %q", got)
 	}
@@ -161,6 +162,34 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 			t.Errorf("fast check %q is absent from the merge tier", current.label)
 		}
 	}
+}
+
+func TestChecksRunTidyDiffWithConfiguredGo(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		nil,
+		toolchain{goCommand: "custom-go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	for _, current := range got {
+		if current.label != "tidy-check" {
+			continue
+		}
+		if current.command != "custom-go" {
+			t.Errorf("tidy-check command = %q, want custom-go", current.command)
+		}
+		if want := []string{"mod", "tidy", "-diff"}; !reflect.DeepEqual(current.args, want) {
+			t.Errorf("tidy-check args = %q, want %q", current.args, want)
+		}
+		if len(current.env) != 0 {
+			t.Errorf("tidy-check environment overrides = %q, want inherited module settings", current.env)
+		}
+		return
+	}
+	t.Fatal("checks do not include tidy-check")
 }
 
 func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
@@ -217,10 +246,10 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		"windows",
 		"",
 	)
-	if args := filepath.ToSlash(strings.Join(got[5].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
+	if args := filepath.ToSlash(strings.Join(got[6].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
-	if args := filepath.ToSlash(strings.Join(got[6].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
+	if args := filepath.ToSlash(strings.Join(got[7].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {
@@ -247,7 +276,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
 		t.Fatalf("check order = %q", labels)
 	}
 }

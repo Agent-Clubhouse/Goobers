@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/providers"
 )
@@ -316,6 +317,57 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 	}
 	if !sawComments || !sawBlocker {
 		t.Fatalf("provider requests = %v, want blocker comment and live-blocker lookups", paths)
+	}
+}
+
+func TestPRSelectCrownedLanderOutranksAgedUnrelatedPR(t *testing.T) {
+	const (
+		ordinaryNumber  = 1
+		landerNumber    = 103
+		dependentNumber = 201
+	)
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for _, number := range []int{ordinaryNumber, landerNumber} {
+		server.addIssue(number, "eligible pr")
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head-"+strconv.Itoa(number), "base", false, nil, nil)
+	}
+	server.addIssue(dependentNumber, "parked cluster member")
+	server.addOpenPR(dependentNumber, "goobers/implementation/"+strconv.Itoa(dependentNumber), "main", "head-201", "base", false, []string{blockedOnSiblingLabel}, nil)
+	server.addComment(dependentNumber, blockedOnSiblingCommentFor(t, landerNumber))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-crowned-lander")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	ordinary := providers.PullRequestSummary{Number: ordinaryNumber, HeadSHA: "head-1"}
+	if _, err := observePRSelectEligibility(
+		root,
+		repo,
+		[]providers.PullRequestSummary{ordinary},
+		[]providers.PullRequestSummary{ordinary},
+		prSelectCompleteSnapshot,
+		time.Now().UTC().Add(-2*prSelectAgingInterval),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("selected-pr.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["number"] != strconv.Itoa(landerNumber) {
+		t.Fatalf("selected PR = %q, want crowned lander #%d ahead of 30-minute-old unrelated PR #%d", result["number"], landerNumber, ordinaryNumber)
 	}
 }
 

@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -789,12 +790,37 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	if matches > 1 {
 		return "", fmt.Errorf("localscheduler: workflow %q is ambiguous across gaggles", workflow)
 	}
-	tick := TickResult{Fire: true, LastEval: now}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now,
+	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
-		fireReason(tick, journal.TriggerManual))
+		"manual")
+}
+
+// TriggerPriority immediately re-evaluates one exact workflow after a prior run
+// publishes state that can change its selection order. It is an output-driven
+// signal, not a bypass: normal readiness admission still applies.
+func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	if strings.TrimSpace(sourceRun) == "" {
+		return "", errors.New("localscheduler: priority trigger source run is required")
+	}
+	return s.triggerWorkflow(ctx, entry, now,
+		journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + sourceRun},
+		"priority re-tick requested by run "+sourceRun)
+}
+
+func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string) (runID string, err error) {
+	tick := TickResult{Fire: true, LastEval: now}
+	if reason == "" {
+		reason = fireReason(tick, trigger.Kind)
+	}
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason)
 	if !admitted {
-		return "", &TriggerRejectedError{Workflow: workflow, Reason: skipReason}
+		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
 	return runID, nil
 }

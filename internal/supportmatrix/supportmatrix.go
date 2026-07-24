@@ -9,6 +9,7 @@ package supportmatrix
 
 import (
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,16 +38,27 @@ const (
 	LevelUnsupported Level = "unsupported"
 )
 
-// CurrentDSLVersion is the language version implemented by the current
-// interpreter. New interpreters add another SupportMatrix entry rather than
-// changing this version's feature membership.
-const CurrentDSLVersion = "1.4"
+const (
+	// CurrentDSLVersion is the stable language version used for transitional
+	// unpinned workflows.
+	CurrentDSLVersion = "1.4"
+	// NextDSLVersion is the copy-forward language version with its own
+	// interpreter and semantics.
+	NextDSLVersion = "2.0"
+)
+
+// SupportTransition records when a DSL version entered one lifecycle level.
+type SupportTransition struct {
+	Level        Level  `json:"level"`
+	SinceVersion string `json:"sinceVersion"`
+}
 
 // VersionSupport describes the host's lifecycle contract for one DSL version.
 type VersionSupport struct {
-	Level            Level  `json:"level"`
-	UnsupportedAfter string `json:"unsupportedAfter,omitempty"`
-	Replacement      string `json:"replacement,omitempty"`
+	Level            Level               `json:"level"`
+	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
+	Replacement      string              `json:"replacement,omitempty"`
+	History          []SupportTransition `json:"history"`
 }
 
 // SupportMatrix is the host-declared DSL version support surface.
@@ -54,20 +66,32 @@ type SupportMatrix map[string]VersionSupport
 
 // Version is one stable, ordered row of a SupportMatrix.
 type Version struct {
-	Version          string `json:"version"`
-	Level            Level  `json:"level"`
-	UnsupportedAfter string `json:"unsupportedAfter,omitempty"`
-	Replacement      string `json:"replacement,omitempty"`
+	Version          string              `json:"version"`
+	Level            Level               `json:"level"`
+	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
+	Replacement      string              `json:"replacement,omitempty"`
+	History          []SupportTransition `json:"history"`
 }
 
-var dslVersions = SupportMatrix{
-	CurrentDSLVersion: {Level: LevelSupported},
-}
+var dslVersions = mustSupportMatrix(SupportMatrix{
+	CurrentDSLVersion: {
+		Level: LevelSupported,
+		History: []SupportTransition{
+			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+		},
+	},
+	NextDSLVersion: {
+		Level: LevelSupported,
+		History: []SupportTransition{
+			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+		},
+	},
+})
 
 // Lookup returns the support declaration for a DSL version.
 func (m SupportMatrix) Lookup(version string) (VersionSupport, bool) {
 	support, ok := m[version]
-	return support, ok
+	return cloneVersionSupport(support), ok
 }
 
 // Versions returns the matrix in numeric major/minor order.
@@ -79,6 +103,7 @@ func (m SupportMatrix) Versions() []Version {
 			Level:            support.Level,
 			UnsupportedAfter: support.UnsupportedAfter,
 			Replacement:      support.Replacement,
+			History:          slices.Clone(support.History),
 		})
 	}
 	sort.Slice(versions, func(i, j int) bool {
@@ -102,9 +127,14 @@ func (m SupportMatrix) Versions() []Version {
 func GetDSL() SupportMatrix {
 	out := make(SupportMatrix, len(dslVersions))
 	for version, support := range dslVersions {
-		out[version] = support
+		out[version] = cloneVersionSupport(support)
 	}
 	return out
+}
+
+func cloneVersionSupport(support VersionSupport) VersionSupport {
+	support.History = slices.Clone(support.History)
+	return support
 }
 
 func parseDSLVersion(version string) (major, minor int, ok bool) {

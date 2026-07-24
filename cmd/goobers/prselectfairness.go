@@ -41,6 +41,7 @@ type prSelectPriority struct {
 	Wait              time.Duration
 	AgingBoost        int64
 	EffectivePriority int64
+	CrownedLander     bool
 	StarvationGuarded bool
 }
 
@@ -279,6 +280,7 @@ func rankEligiblePullRequests(
 			Wait:              wait,
 			AgingBoost:        agingBoost,
 			EffectivePriority: int64(blockedDependents[pr.Number]) + agingBoost,
+			CrownedLander:     blockedDependents[pr.Number] > 0,
 			StarvationGuarded: wait >= prSelectStarvationLimit,
 		}
 		priorities[pr.Number] = priority
@@ -297,6 +299,9 @@ func rankEligiblePullRequests(
 		}
 		if left.StarvationGuarded && !left.EligibleSince.Equal(right.EligibleSince) {
 			return left.EligibleSince.Before(right.EligibleSince)
+		}
+		if left.CrownedLander != right.CrownedLander {
+			return left.CrownedLander
 		}
 		if left.EffectivePriority != right.EffectivePriority {
 			return left.EffectivePriority > right.EffectivePriority

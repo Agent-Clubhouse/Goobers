@@ -48,8 +48,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # The DSL compatibility test executes the registry from the latest
-          # reachable SemVer tag, so shallow history would erase its baseline.
+          # The DSL compatibility tests execute lifecycle declarations from the
+          # latest reachable SemVer tag, so shallow history would erase their baseline.
           fetch-depth: 0
 
       # Track the toolchain declared in go.mod (currently go 1.26.5) rather than a

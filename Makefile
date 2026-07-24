@@ -66,6 +66,11 @@ help:
 tidy:
 	$(GO) mod tidy
 
+## tidy-check: Fail if go.mod/go.sum differ from tidy output (CI gate).
+.PHONY: tidy-check
+tidy-check:
+	$(GO) mod tidy -diff
+
 ## generate: Regenerate CRD DeepCopy methods and the portal API contract.
 .PHONY: generate
 generate:

@@ -348,7 +348,30 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 	return options, nil
 }
 
+// statusClientClosedRequest mirrors nginx's 499: the client aborted the request
+// before the server finished. net/http has no named constant for it.
+const statusClientClosedRequest = 499
+
+// clientCancelled reports whether err is a client-initiated cancellation of the
+// request (the browser navigated away, refreshed, or aborted an in-flight
+// fetch) and, if so, reports it quietly with a 499. The read services surface
+// cancellation only by returning the request context's Canceled error, so the
+// error alone is a reliable signal. Such an error is not a server fault: see
+// #1367, where on a busy instance the portal aborts and re-fires reads faster
+// than the daemon answers, and logging every cancellation as an error buries
+// genuine failures in noise.
+func clientCancelled(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, context.Canceled) {
+		writeError(w, statusClientClosedRequest, "request_cancelled", "the client cancelled the request")
+		return true
+	}
+	return false
+}
+
 func writeReadError(w http.ResponseWriter, errorLog *log.Logger, operation string, err error) {
+	if clientCancelled(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, readservice.ErrInvalidArgument):
 		writeError(w, http.StatusBadRequest, "invalid_argument", "request parameters are invalid")

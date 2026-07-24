@@ -6,6 +6,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
+	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
 type versionedInterpreter struct {
@@ -46,6 +47,26 @@ var currentInterpreter = versionedInterpreter{
 	taskInvocationInputs:        vcurrent.TaskInvocationInputs,
 	taskLimits:                  vcurrent.TaskLimits,
 	gateLimits:                  vcurrent.GateLimits,
+}
+
+var nextInterpreter = versionedInterpreter{
+	compile:                     compileNext,
+	checkWarnings:               vnext.CheckWarnings,
+	checkReachability:           vnext.CheckReachability,
+	checkSchedules:              vnext.CheckSchedules,
+	checkTriggerFields:          vnext.CheckTriggerFields,
+	checkWorkflowAdmission:      vnext.CheckWorkflowAdmission,
+	checkGateParameters:         vnext.CheckGateParameters,
+	checkGateOutcomes:           vnext.CheckGateOutcomes,
+	checkStageRequiredInputs:    vnext.CheckStageRequiredInputs,
+	checkStageContracts:         vnext.CheckStageContracts,
+	checkStageContractWarnings:  vnext.CheckStageContractWarnings,
+	checkStageTimeoutCoherence:  vnext.CheckStageTimeoutCoherence,
+	featuresForWorkflow:         featuresForNextWorkflow,
+	checkWorkflowFeatureSupport: checkNextWorkflowFeatureSupport,
+	taskInvocationInputs:        vnext.TaskInvocationInputs,
+	taskLimits:                  vnext.TaskLimits,
+	gateLimits:                  vnext.GateLimits,
 }
 
 type compileConfig struct {
@@ -132,6 +153,23 @@ func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 	return vcurrent.Compile(def, opts...)
 }
 
+func compileNext(def Definition, config compileConfig) (*Machine, error) {
+	var opts []vnext.Option
+	if config.goobersSet {
+		opts = append(opts, vnext.WithGoobers(config.goobers))
+	}
+	if config.knownChecksSet {
+		opts = append(opts, vnext.WithKnownChecks(config.knownChecks))
+	}
+	if config.knownHarnessesSet {
+		opts = append(opts, vnext.WithKnownHarnesses(config.knownHarnesses))
+	}
+	if config.previewFeaturesSet {
+		opts = append(opts, vnext.WithPreviewFeatures(config.allowPreviewFeatures))
+	}
+	return vnext.Compile(def, opts...)
+}
+
 func interpreterForDefinition(def Definition) (*versionedInterpreter, error) {
 	return interpreterForVersion(def.DSLVersion)
 }
@@ -162,6 +200,8 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	switch version {
 	case vcurrent.DSLVersion:
 		return &currentInterpreter, nil
+	case vnext.DSLVersion:
+		return &nextInterpreter, nil
 	default:
 		return nil, fmt.Errorf("DSL version %q is declared %s but has no interpreter", version, support.Level)
 	}

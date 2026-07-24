@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"sort"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
+	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
 // FeatureID is the stable, author-facing name of a DSL capability.
@@ -42,14 +45,38 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 	return vcurrent.NewFeatureRegistry(features)
 }
 
-// LookupFeature returns support metadata from the current interpreter.
+// LookupFeature returns support metadata across registered interpreters.
 func LookupFeature(id FeatureID) (Feature, bool) {
-	return vcurrent.LookupFeature(id)
+	for _, feature := range AllFeatures() {
+		if feature.ID == id {
+			return feature, true
+		}
+	}
+	return Feature{}, false
 }
 
-// AllFeatures returns a stable snapshot of current DSL features.
+// AllFeatures returns a stable snapshot of features across registered DSL
+// interpreters.
 func AllFeatures() []Feature {
-	return vcurrent.AllFeatures()
+	features := vcurrent.AllFeatures()
+	byID := make(map[FeatureID]int, len(features))
+	for i, feature := range features {
+		byID[feature.ID] = i
+	}
+	for _, feature := range vnext.AllFeatures() {
+		converted := nextFeature(feature)
+		i, ok := byID[converted.ID]
+		if !ok {
+			byID[converted.ID] = len(features)
+			features = append(features, converted)
+			continue
+		}
+		features[i].DSLVersions = append(features[i].DSLVersions, converted.DSLVersions...)
+	}
+	sort.Slice(features, func(i, j int) bool {
+		return features[i].ID < features[j].ID
+	})
+	return features
 }
 
 // FeaturesAtDSLVersion filters features to one DSL version.
@@ -88,4 +115,55 @@ func CheckWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDia
 // CheckGooberFeatureSupport resolves a goober and applies support policy.
 func CheckGooberFeatureSupport(spec apiv1.GooberSpec, allowPreview bool) []FeatureDiagnostic {
 	return vcurrent.CheckGooberFeatureSupport(spec, allowPreview)
+}
+
+func featuresForNextWorkflow(def Definition) ([]Feature, error) {
+	features, err := vnext.FeaturesForWorkflow(def)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Feature, len(features))
+	for i, feature := range features {
+		out[i] = nextFeature(feature)
+	}
+	return out, nil
+}
+
+func checkNextWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
+	diagnostics := vnext.CheckWorkflowFeatureSupport(def, allowPreview)
+	out := make([]FeatureDiagnostic, len(diagnostics))
+	for i, diagnostic := range diagnostics {
+		out[i] = FeatureDiagnostic{
+			Feature:  nextFeature(diagnostic.Feature),
+			Blocking: diagnostic.Blocking,
+			Message:  diagnostic.Message,
+		}
+	}
+	return out
+}
+
+func nextFeature(feature vnext.Feature) Feature {
+	out := Feature{
+		ID:                    FeatureID(feature.ID),
+		Level:                 SupportLevel(feature.Level),
+		SinceVersion:          feature.SinceVersion,
+		Replacement:           FeatureID(feature.Replacement),
+		RemovalTargetVersion:  feature.RemovalTargetVersion,
+		LastSupportingVersion: feature.LastSupportingVersion,
+		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),
+		History:               make([]SupportTransition, len(feature.History)),
+	}
+	for i, support := range feature.DSLVersions {
+		out.DSLVersions[i] = DSLFeatureSupport{
+			Version: support.Version,
+			Level:   SupportLevel(support.Level),
+		}
+	}
+	for i, transition := range feature.History {
+		out.History[i] = SupportTransition{
+			Level:        SupportLevel(transition.Level),
+			SinceVersion: transition.SinceVersion,
+		}
+	}
+	return out
 }

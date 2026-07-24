@@ -64,7 +64,10 @@ func renderFeatureMatrix() (string, error) {
 		fmt.Fprintf(&b, "### %s -> %s\n\n", from, to)
 		fmt.Fprintf(&b, "- Added: %s\n", markdownFeatureList(delta.Added))
 		fmt.Fprintf(&b, "- Removed: %s\n", markdownFeatureList(delta.Removed))
-		fmt.Fprintf(&b, "- Level changes: %s\n\n", markdownFeatureList(delta.LevelChanges))
+		fmt.Fprintf(&b, "- Level changes: %s\n", markdownFeatureList(delta.LevelChanges))
+		if i < len(versions)-1 {
+			b.WriteString("\n")
+		}
 	}
 	return b.String(), nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,6 +114,87 @@ func listAllPages(t *testing.T, s *Local, options RunListOptions) []string {
 			return ids
 		}
 		options.Cursor = page.NextCursor
+	}
+}
+
+// TestListRunsReconcileCollapsesConcurrentBurst proves the fan-out fix: the
+// Overview fires one ListRuns per phase concurrently, and each formerly ran a
+// full run-directory reconcile scan. Under a fixed clock the whole burst must
+// collapse to a single scan.
+func TestListRunsReconcileCollapsesConcurrentBurst(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 20)
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+	fixed := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	indexed.now = func() time.Time { return fixed }
+
+	var scans atomic.Int64
+	reconcileScanObserver = func() { scans.Add(1) }
+	t.Cleanup(func() { reconcileScanObserver = nil })
+
+	const concurrency = 8
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
+				t.Errorf("ListRuns: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("concurrent ListRuns burst ran %d reconcile scans, want 1", got)
+	}
+}
+
+// TestListRunsReconcileRefreshesAfterInterval proves the throttle is a window,
+// not a one-shot: within reconcileInterval a repeat list reuses the prior scan,
+// but once the window elapses the next list scans again so imported/migrated
+// runs are still eventually reconciled.
+func TestListRunsReconcileRefreshesAfterInterval(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 12)
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	nowVal := base
+	indexed.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return nowVal
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		nowVal = nowVal.Add(d)
+	}
+
+	var scans atomic.Int64
+	reconcileScanObserver = func() { scans.Add(1) }
+	t.Cleanup(func() { reconcileScanObserver = nil })
+
+	list := func() {
+		if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+	}
+
+	list() // first ever list: scans (lastReconcile was zero)
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("first list ran %d scans, want 1", got)
+	}
+	advance(reconcileInterval - time.Millisecond)
+	list() // within the window: throttled
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("in-window list ran %d scans total, want 1", got)
+	}
+	advance(2 * time.Millisecond) // now past the window
+	list()
+	if got := scans.Load(); got != 2 {
+		t.Fatalf("post-window list ran %d scans total, want 2", got)
 	}
 }
 

@@ -186,6 +186,7 @@ spec:
         - selectedBaseSha
         - decision
         - verdictAuthor
+        - priorityDispatchRequested
       next: published-verdict
 
     - name: elect-lander

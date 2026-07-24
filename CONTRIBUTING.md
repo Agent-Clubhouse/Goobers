@@ -21,6 +21,7 @@ Node.js 24 with npm, Git, and
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
+make tidy-check  # check that go.mod/go.sum match tidy output
 make ci          # merge gate: full Go, config, and portal validation
 make verify-full # ci plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities
@@ -34,12 +35,14 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 | Tier | Composition | Use |
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
-| `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
+| `make ci` | The portable merge gate: fast-tier checks plus module tidiness, shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
 | `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, journal conformance, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 `make vulncheck` is a separate, network-backed static-analysis gate. It runs the
 pinned `govulncheck` version used by pull-request and scheduled CI without adding
 network access to the hermetic merge-tier test process.
+`make tidy-check` reproduces the merge tier's `go mod tidy -diff` check with the
+same configured Go command and inherited module settings.
 
 The subset relationship is executable rather than documentary:
 `verify-fast` selects checks from the same Go check list as `ci`, while
@@ -204,6 +207,22 @@ baseline is empty and no feature may enter `removed`. Registry validation and
 out-of-order, or too-early transitions. CI checks out complete tag history so
 the release baseline cannot silently disappear. When changing the current
 feature matrix, regenerate it with `make docs`.
+
+Whole DSL versions have a separate support window in
+`internal/supportmatrix`. After a supported DSL minor is superseded, it must
+remain loadable as `supported` or `deprecated` for at least three minor
+releases: a version superseded in `v1.1.0` cannot become `unsupported` before
+`v1.4.0`. It must also spend at least one released minor as `deprecated`, so a
+version deprecated in `v1.3.x` cannot become unsupported before `v1.4.0`;
+direct `supported -> unsupported` transitions are forbidden. Keep each
+`VersionSupport.History` complete and release-ordered. The support-matrix
+policy guard rejects invalid histories and windows. It also compares the
+current matrix with the matrix executed from the latest reachable canonical
+SemVer tag: released versions and history cannot be removed or rewritten, and
+a version may become `unsupported` only when that tagged matrix already marks
+it `deprecated`. Adding deprecated and unsupported history in one change does
+not satisfy the released-minor window; before the first tag, no version may
+become unsupported.
 
 ## Commit messages
 
