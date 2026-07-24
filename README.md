@@ -29,6 +29,7 @@ clustered orchestration over a large monorepo.
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
+| `samples/` | Versioned, disposable onboarding targets | Active |
 | `skills/` | Portable agent skills for authoring Goobers config | Active |
 | `test/` | CI + e2e harness | Active |
 

@@ -1,0 +1,21 @@
+{
+  "name": "@goobers/getting-started-task-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Disposable TypeScript task API for the Goobers getting-started tutorial",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "ci": "npm ci --ignore-scripts --no-audit --no-fund && npm test",
+    "start": "npm run build && node dist/src/index.js",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.1",
+    "typescript": "^5.9.3"
+  }
+}
