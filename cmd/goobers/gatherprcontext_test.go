@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -650,6 +651,43 @@ func TestSelectRemediationCandidatesNoneEligible(t *testing.T) {
 	}
 	if len(candidates) != 0 || priority != remediationPriorityNone {
 		t.Fatalf("candidates = %v, priority = %d, want none", candidates, priority)
+	}
+}
+
+func TestFilterRemediationPullRequestsExcludesNeedsHuman(t *testing.T) {
+	prs := []providers.PullRequestSummary{
+		{
+			Number: 1398,
+			Labels: []string{needsRemediationLabel, providers.LabelNeedsHuman},
+		},
+		{
+			Number: 1399,
+			Labels: []string{needsRemediationLabel},
+		},
+	}
+
+	filtered, err := filterRemediationPullRequests(
+		context.Background(),
+		nil,
+		providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+		prs,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("filterRemediationPullRequests: %v", err)
+	}
+	candidates, priority, err := selectRemediationCandidates(filtered, func(providers.PullRequestSummary) (bool, error) {
+		t.Fatal("behindBase probe should not run for a needs-remediation candidate")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("selectRemediationCandidates: %v", err)
+	}
+	if priority != remediationPriorityNeedsRemediation {
+		t.Fatalf("priority = %d, want %d", priority, remediationPriorityNeedsRemediation)
+	}
+	if len(candidates) != 1 || candidates[0].Number != 1399 {
+		t.Fatalf("candidates = %+v, want only PR #1399", candidates)
 	}
 }
 
