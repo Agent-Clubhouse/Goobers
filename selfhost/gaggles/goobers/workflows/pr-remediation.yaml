@@ -382,6 +382,12 @@ spec:
       goal: Force-push (with lease) the remediated branch to the PR and clear the needs-remediation label.
       run:
         command: ["goobers", "push-remediated"]
+      # Typed transient failures use the runner's separate bounded
+      # infrastructure allowance; keep policy failures fail-fast and wait out
+      # a typical merge-queue ownership window before that retry.
+      retry:
+        maxAttempts: 1
+        backoffSeconds: 120
       inputs:
         resultFile: "push-remediated-result.json"
       capabilities:

@@ -458,6 +458,9 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 		!containsString(push.ExpectedOutputs, "published") {
 		t.Errorf("push-remediated result contract = inputs %v outputs %v, want durable published status", push.Inputs, push.ExpectedOutputs)
 	}
+	if push.Retry == nil || push.Retry.MaxAttempts != 1 || push.Retry.BackoffSeconds != 120 {
+		t.Errorf("push-remediated retry = %+v, want fail-fast policy attempts with a 120s infrastructure backoff", push.Retry)
+	}
 
 	// pr-remediation is the ONLY workflow that pushes to existing PR
 	// branches, and it must never gain the merge capability (design doc §2's

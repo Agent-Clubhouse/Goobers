@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -251,6 +252,110 @@ func (p *GitHubProvider) allIssueComments(ctx context.Context, repo RepositoryRe
 		return nil
 	})
 	return all, err
+}
+
+type githubIssueEvent struct {
+	ID        int64        `json:"id"`
+	Event     string       `json:"event"`
+	CreatedAt time.Time    `json:"created_at"`
+	Label     *githubLabel `json:"label"`
+	Issue     githubIssue  `json:"issue"`
+}
+
+// ListWorkItemLabelTransitions returns the complete paginated repository event
+// history for one issue label. Event IDs are stable provider cursors, so callers
+// can persist and deduplicate overlapping snapshots without losing transitions.
+func (p *GitHubProvider) ListWorkItemLabelTransitions(
+	ctx context.Context,
+	repo RepositoryRef,
+	label string,
+) ([]WorkItemLabelTransition, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if label == "" {
+		return nil, fmt.Errorf("label is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "events")
+	if err != nil {
+		return nil, err
+	}
+	return p.listWorkItemLabelTransitions(ctx, endpoint, label, "")
+}
+
+// ListWorkItemLabelTransitionsForItem returns one issue's complete paginated
+// label history without scanning repository-wide events.
+func (p *GitHubProvider) ListWorkItemLabelTransitionsForItem(
+	ctx context.Context,
+	repo RepositoryRef,
+	id, label string,
+) ([]WorkItemLabelTransition, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	if label == "" {
+		return nil, fmt.Errorf("label is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "events")
+	if err != nil {
+		return nil, err
+	}
+	return p.listWorkItemLabelTransitions(ctx, endpoint, label, id)
+}
+
+func (p *GitHubProvider) listWorkItemLabelTransitions(
+	ctx context.Context,
+	endpoint, label, itemID string,
+) ([]WorkItemLabelTransition, error) {
+	endpoint, err := addQuery(endpoint, url.Values{"per_page": []string{"100"}})
+	if err != nil {
+		return nil, err
+	}
+	var transitions []WorkItemLabelTransition
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var events []githubIssueEvent
+		if err := json.Unmarshal(page, &events); err != nil {
+			return fmt.Errorf("decode issue events page: %w", err)
+		}
+		for _, event := range events {
+			if event.Label == nil || event.Label.Name != label ||
+				(itemID == "" && event.Issue.PullRequest != nil) {
+				continue
+			}
+			added := false
+			switch event.Event {
+			case "labeled":
+				added = true
+			case "unlabeled":
+			default:
+				continue
+			}
+			eventItemID := itemID
+			if eventItemID == "" {
+				eventItemID = strconv.Itoa(event.Issue.Number)
+			}
+			transitions = append(transitions, WorkItemLabelTransition{
+				EventID:    event.ID,
+				ItemID:     eventItemID,
+				Label:      label,
+				Added:      added,
+				OccurredAt: event.CreatedAt,
+			})
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(transitions, func(i, j int) bool {
+		if transitions[i].OccurredAt.Equal(transitions[j].OccurredAt) {
+			return transitions[i].EventID < transitions[j].EventID
+		}
+		return transitions[i].OccurredAt.Before(transitions[j].OccurredAt)
+	})
+	return transitions, nil
 }
 
 // UpdateWorkItem applies title/body edits, label add/remove, milestone assignment,

@@ -42,11 +42,43 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles []TelemetryGaggleStats `json:"gaggles"`
-	Runs    []TelemetryRunStats    `json:"runs"`
-	Stages  []TelemetryStageStats  `json:"stages"`
-	Usage   []TelemetryUsageStats  `json:"usage"`
-	Models  []TelemetryModelStats  `json:"models"`
+	Gaggles   []TelemetryGaggleStats `json:"gaggles"`
+	Runs      []TelemetryRunStats    `json:"runs"`
+	Stages    []TelemetryStageStats  `json:"stages"`
+	Usage     []TelemetryUsageStats  `json:"usage"`
+	Models    []TelemetryModelStats  `json:"models"`
+	Curation  TelemetryCurationStats `json:"curation"`
+	ReadyPool TelemetryReadyPool     `json:"readyPool"`
+}
+
+// TelemetryCurationStats is the windowed action rollup for backlog curation.
+type TelemetryCurationStats struct {
+	Runs         int `json:"runs"`
+	ReportedRuns int `json:"reportedRuns"`
+	Ready        int `json:"ready"`
+	NeedsHuman   int `json:"needsHuman"`
+	Closed       int `json:"closed"`
+	Deduped      int `json:"deduped"`
+	Split        int `json:"split"`
+	Stale        int `json:"stale"`
+	Reconciled   int `json:"reconciled"`
+	Milestoned   int `json:"milestoned"`
+	Bounced      int `json:"bounced"`
+}
+
+// TelemetryReadyPool is the latest ready-pool snapshot plus windowed quality
+// and flow measures.
+type TelemetryReadyPool struct {
+	ObservedAt                *time.Time `json:"observedAt,omitempty"`
+	Depth                     *int       `json:"depth,omitempty"`
+	AverageAgeSeconds         *float64   `json:"averageAgeSeconds,omitempty"`
+	OldestAgeSeconds          *float64   `json:"oldestAgeSeconds,omitempty"`
+	Starved                   *bool      `json:"starved,omitempty"`
+	ClaimAgeSamples           int        `json:"claimAgeSamples"`
+	AverageClaimAgeSeconds    *float64   `json:"averageClaimAgeSeconds,omitempty"`
+	BounceRate                *float64   `json:"bounceRate,omitempty"`
+	ForwardCurationThroughput int        `json:"forwardCurationThroughput"`
+	ImplementationDemand      int        `json:"implementationDemand"`
 }
 
 // TelemetryGaggleStats is the run aggregate for one gaggle.
@@ -254,6 +286,37 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
 		Usage:   make([]TelemetryUsageStats, 0, len(stats.Usage)),
 		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
+		Curation: TelemetryCurationStats{
+			Runs:         stats.Curation.Runs,
+			ReportedRuns: stats.Curation.ReportedRuns,
+			Ready:        stats.Curation.Ready,
+			NeedsHuman:   stats.Curation.NeedsHuman,
+			Closed:       stats.Curation.Closed,
+			Deduped:      stats.Curation.Deduped,
+			Split:        stats.Curation.Split,
+			Stale:        stats.Curation.Stale,
+			Reconciled:   stats.Curation.Reconciled,
+			Milestoned:   stats.Curation.Milestoned,
+			Bounced:      stats.Curation.Bounced,
+		},
+		ReadyPool: TelemetryReadyPool{
+			ClaimAgeSamples:           stats.ReadyPool.ClaimAgeSamples,
+			ForwardCurationThroughput: stats.ReadyPool.ForwardCurationThroughput,
+			ImplementationDemand:      stats.ReadyPool.ImplementationDemand,
+		},
+	}
+	if stats.ReadyPool.HasSample {
+		result.ReadyPool.ObservedAt = timePointer(stats.ReadyPool.ObservedAt)
+		result.ReadyPool.Depth = intPointer(stats.ReadyPool.Depth)
+		result.ReadyPool.AverageAgeSeconds = float64Pointer(stats.ReadyPool.AverageAgeSeconds)
+		result.ReadyPool.OldestAgeSeconds = float64Pointer(stats.ReadyPool.OldestAgeSeconds)
+		result.ReadyPool.Starved = boolPointer(stats.ReadyPool.Starved)
+	}
+	if stats.ReadyPool.ClaimAgeSamples > 0 {
+		result.ReadyPool.AverageClaimAgeSeconds = float64Pointer(stats.ReadyPool.AverageClaimAgeSeconds)
+	}
+	if stats.ReadyPool.HasBounceRate {
+		result.ReadyPool.BounceRate = float64Pointer(stats.ReadyPool.BounceRate)
 	}
 	for _, stat := range stats.Gaggles {
 		item := TelemetryGaggleStats{
@@ -623,5 +686,8 @@ func formatCursorTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func float64Pointer(value float64) *float64 { return &value }
-func int64Pointer(value int64) *int64       { return &value }
+func float64Pointer(value float64) *float64  { return &value }
+func int64Pointer(value int64) *int64        { return &value }
+func intPointer(value int) *int              { return &value }
+func boolPointer(value bool) *bool           { return &value }
+func timePointer(value time.Time) *time.Time { return &value }

@@ -335,7 +335,65 @@ CREATE TABLE IF NOT EXISTS run_goober_digests (
 	goober_digest TEXT NOT NULL
 );
 `,
-	// v11 (issue #1411): incremental scheduler-log ingest. Before this, every
+	// v11 (CURE-7): project scalar curation outcomes and deterministic ready-pool
+	// snapshots from stage.finished outputs. These remain derived from journals,
+	// preserving the two-store doctrine while making curation and backlog health
+	// directly queryable.
+	`
+CREATE TABLE IF NOT EXISTS curation_actions (
+	run_id             TEXT PRIMARY KEY,
+	status             TEXT,
+	reported           INTEGER NOT NULL,
+	ready_count        INTEGER NOT NULL,
+	needs_human_count  INTEGER NOT NULL,
+	closed_count       INTEGER NOT NULL,
+	deduped_count      INTEGER NOT NULL,
+	split_count        INTEGER NOT NULL,
+	stale_count        INTEGER NOT NULL,
+	reconciled_count   INTEGER NOT NULL,
+	milestoned_count   INTEGER NOT NULL,
+	bounced_count      INTEGER NOT NULL,
+	occurred_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ready_pool_samples (
+	run_id                    TEXT PRIMARY KEY,
+	depth                     INTEGER NOT NULL,
+	average_age_seconds       REAL NOT NULL,
+	oldest_age_seconds        REAL NOT NULL,
+	observed_at               TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ready_claims (
+	run_id             TEXT NOT NULL,
+	seq                INTEGER NOT NULL,
+	item_id             TEXT,
+	ready_age_seconds   REAL NOT NULL,
+	claimed_at          TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_curation_actions_time ON curation_actions(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_ready_pool_samples_time ON ready_pool_samples(observed_at);
+CREATE INDEX IF NOT EXISTS idx_ready_claims_time ON ready_claims(claimed_at);
+`,
+	// v12 (CURE-7): preserve provider-issued ready-label transitions from each
+	// curation health snapshot. Snapshots overlap by design; event_id provides
+	// lossless deduplication when computing ready cohorts and bounce rates.
+	`
+CREATE TABLE IF NOT EXISTS ready_label_transitions (
+	run_id       TEXT NOT NULL,
+	event_id     INTEGER NOT NULL,
+	item_id      TEXT NOT NULL,
+	transition   TEXT NOT NULL,
+	occurred_at  TEXT NOT NULL,
+	PRIMARY KEY (run_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_time ON ready_label_transitions(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_item ON ready_label_transitions(item_id, occurred_at);
+`,
+	// v13 (issue #1411): incremental scheduler-log ingest. Before this, every
 	// IngestSchedulerLog deleted and re-inserted scheduler_events and
 	// scheduler_errors from the ENTIRE instance journal on every scheduler
 	// tick — O(journal size) writes that churned the WAL and, on a large
