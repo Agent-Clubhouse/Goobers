@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATHER ISSUE CONTEXT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gather-issue-context \- add originating issue bodies to a remediation brief (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gather-issue-context\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gather-issue-context [path]
+
+Read this run's latest remediation brief, resolve the selected PR's
+Fixes/Closes/Resolves issue references, and replace only the brief's
+gatherIssueContext section with the originating issue bodies. Missing
+PRs, absent references, and referenced issues that no longer resolve
+produce an empty issues list rather than failing the remediation cycle.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = issue context
+gathered (possibly empty), 1 = business/provider/journal error, 2 =
+usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gather-issue-context
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
