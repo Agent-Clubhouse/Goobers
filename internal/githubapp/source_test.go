@@ -135,7 +135,7 @@ func (f *fakeAppAPI) handler() http.Handler {
 			token = f.nextToken(n)
 		}
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, token, f.expiresAt().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, token, f.expiresAt().Format(time.RFC3339))
 	})
 }
 
@@ -306,7 +306,7 @@ func TestTokenMintErrorsAreActionableAndSecretFree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.status)
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			}))
 			defer srv.Close()
 			source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(keyPEM), BaseURL: srv.URL})
@@ -346,7 +346,7 @@ func TestTokenRejectsMalformedMintResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusCreated)
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			}))
 			defer srv.Close()
 			source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(keyPEM), BaseURL: srv.URL})

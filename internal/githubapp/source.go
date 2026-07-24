@@ -202,7 +202,7 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: exchange App JWT for installation token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: read token response: %w", err)
