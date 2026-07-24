@@ -319,6 +319,76 @@ func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
 	}
 }
 
+func TestExecutorUsesOnlyAdapterCanonicalUsage(t *testing.T) {
+	tests := []struct {
+		name    string
+		act     func(context.Context, RunRequest) error
+		wantErr bool
+	}{
+		{
+			name: "completion metrics cannot forge usage",
+			act: func(_ context.Context, req RunRequest) error {
+				return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+					Status: apiv1.ResultSuccess,
+					Metrics: map[string]float64{
+						telemetry.AttrGenAIUsageInputTokens: 0,
+						"custom":                            7,
+					},
+				})
+			},
+		},
+		{
+			name: "adapter usage survives attempt error",
+			act: func(context.Context, RunRequest) error {
+				return errors.New("adapter failed after reporting usage")
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &metricsFakeAdapter{
+				FakeAdapter: FakeAdapter{Act: tc.act},
+				metrics: map[string]float64{
+					telemetry.AttrGenAIUsageInputTokens: 42,
+				},
+			}
+			rec := &fakeRecorder{}
+			exec, err := NewExecutor(
+				adapter,
+				testInjector(t, "", "", noopRegistrar{}),
+				rec,
+				rec,
+				rec,
+				journal.NewPatternScrubber(),
+				"",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var reported map[string]float64
+			ctx := invoke.WithAgentUsageReporter(context.Background(), func(metrics map[string]float64) {
+				reported = copyMetrics(metrics)
+			})
+			result, invokeErr := exec.Invoke(ctx, testEnvelope(t.TempDir()))
+			if (invokeErr != nil) != tc.wantErr {
+				t.Fatalf("Invoke error = %v, wantErr %v", invokeErr, tc.wantErr)
+			}
+			if result.Metrics[telemetry.AttrGenAIUsageInputTokens] != 42 {
+				t.Fatalf("result usage = %v, want adapter input tokens 42", result.Metrics)
+			}
+			if reported[telemetry.AttrGenAIUsageInputTokens] != 42 {
+				t.Fatalf("reported usage = %v, want adapter input tokens 42", reported)
+			}
+			if !tc.wantErr && result.Metrics["custom"] != 7 {
+				t.Fatalf("result metrics = %v, want agent custom metric retained", result.Metrics)
+			}
+		})
+	}
+}
+
 func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "reference.md"), []byte("reference"), 0o644); err != nil {
