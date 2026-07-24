@@ -35,8 +35,9 @@ type GitHubProvider struct {
 	// quotaGate reserves provider budget before each attempted request.
 	quotaGate         QuotaRequestGate
 	quotaGateInClient bool
-	// maxRetries bounds rate-limit retries on a single request.
-	maxRetries int
+	// maxRetries bounds transport and server-error retries on a single request.
+	maxRetries          int
+	maxRateLimitRetries int
 	// maxRateLimitWait bounds the total time one request spends sleeping on
 	// rate-limit backoff before giving up with a typed RateLimitError (#614).
 	maxRateLimitWait time.Duration
@@ -49,13 +50,14 @@ type GitHubProvider struct {
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
 func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvider {
 	p := &GitHubProvider{
-		BaseURL:          "https://api.github.com",
-		Token:            token,
-		maxRetries:       defaultRateLimitRetries,
-		maxRateLimitWait: defaultRateLimitMaxWait,
-		now:              time.Now,
-		sleep:            contextSleep,
-		jitter:           randomJitter,
+		BaseURL:             "https://api.github.com",
+		Token:               token,
+		maxRetries:          defaultRateLimitRetries,
+		maxRateLimitRetries: defaultRateLimitRetries,
+		maxRateLimitWait:    defaultRateLimitMaxWait,
+		now:                 time.Now,
+		sleep:               contextSleep,
+		jitter:              randomJitter,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -121,6 +123,12 @@ func WithHTTPClient(client HTTPClient) func(*GitHubProvider) {
 // WithMaxRateLimitRetries overrides how many times a rate-limited request is
 // retried before the error is surfaced.
 func WithMaxRateLimitRetries(n int) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.maxRateLimitRetries = n }
+}
+
+// WithMaxTransientRetries overrides how many times a request with a transport
+// failure or 5xx response is retried before the error is surfaced.
+func WithMaxTransientRetries(n int) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.maxRetries = n }
 }
 
@@ -2152,9 +2160,9 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 }
 
 // send issues one GitHub request, retrying transient failures — rate limits,
-// 5xx server errors, and transport errors — with bounded backoff (up to
-// p.maxRetries attempts and, for rate limits, up to maxRateLimitWait total
-// sleep, honoring X-RateLimit-Reset/Retry-After). It returns the final
+// 5xx server errors, and transport errors — with independent bounded retry
+// budgets. Rate-limit retries also honor maxRateLimitWait total sleep and
+// X-RateLimit-Reset/Retry-After. It returns the final
 // response for the caller to consume and close; a nil error guarantees a
 // non-nil response. A rate limit that cannot be absorbed within those
 // budgets returns a typed *RateLimitError (#614) rather than the response,
@@ -2171,7 +2179,8 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 		maxWait = defaultRateLimitMaxWait
 	}
 	var rateLimitWaited time.Duration
-	for attempt := 0; ; attempt++ {
+	var rateLimitRetries, transientRetries int
+	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
 			return nil, err
@@ -2195,19 +2204,20 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 			// Transport error (connection reset, DNS blip, timeout): retry with
 			// backoff rather than fail the stage on a single network hiccup
 			// (#139). No response to close on this path.
-			if attempt < p.maxRetries {
-				if serr := p.sleep(ctx, backoffDuration(attempt)); serr != nil {
+			if transientRetries < p.maxRetries {
+				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}
+				transientRetries++
 				continue
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		p.observeQuota(ctx, resp)
 		if isRateLimited(resp) {
-			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
+			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
 			_ = resp.Body.Close()
-			if attempt >= p.maxRetries || wait > maxWait-rateLimitWaited {
+			if rateLimitRetries >= p.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
 				// Waiting can't help within this request's budget — the
 				// retry allowance is spent, or the reset is further out than
 				// the wait budget allows (#614). Fail FAST with the typed
@@ -2227,15 +2237,17 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 			ev.Outcome = RateLimitOutcomeRetry
 			p.observeRateLimit(ctx, ev)
 			rateLimitWaited += wait
+			rateLimitRetries++
 			continue
 		}
-		if resp.StatusCode >= 500 && attempt < p.maxRetries {
+		if resp.StatusCode >= 500 && transientRetries < p.maxRetries {
 			// Server-side error: retry with backoff. GitHub 5xx is usually
 			// transient; without this a single blip fails the stage attempt.
 			_ = resp.Body.Close()
-			if err := p.sleep(ctx, backoffDuration(attempt)); err != nil {
+			if err := p.sleep(ctx, backoffDuration(transientRetries)); err != nil {
 				return nil, err
 			}
+			transientRetries++
 			continue
 		}
 		return resp, nil

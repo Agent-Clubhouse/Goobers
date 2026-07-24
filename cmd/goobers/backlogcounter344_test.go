@@ -204,6 +204,60 @@ func TestBacklogCounterPaginatesAndTracksProviderQuota(t *testing.T) {
 	}
 }
 
+func TestBacklogCounterRetriesTransientFailureWithinQuota(t *testing.T) {
+	t.Setenv("BACKLOG_TOK", "backlog-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	resetAt := now.Add(time.Hour)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "temporary provider failure", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("X-RateLimit-Remaining", "1")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
+		_, _ = w.Write([]byte(`[{"number":1,"title":"ready issue","state":"open"}]`))
+	}))
+	defer server.Close()
+
+	prev := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
+			provider.BaseURL = server.URL
+		})...)
+	}
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 3, resetAt)
+	admission := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
+	counter := &backlogCounter{
+		ref:      "acme/web",
+		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		resolver: resolver,
+		reg:      &backlogTestRegistrar{},
+		quota:    quota,
+	}
+	ctx := localscheduler.WithProviderPollBudget(context.Background(), admission)
+	count, err := counter.EligibleCount(ctx)
+	if err != nil {
+		t.Fatalf("EligibleCount: %v", err)
+	}
+	if count != 1 || requests != 2 {
+		t.Fatalf("count=%d requests=%d, want success after one transient retry", count, requests)
+	}
+	next := quota.ReserveCurrentPolls(apiv1.ProviderGitHub, 1)
+	if next.RemainingBefore != 1 {
+		t.Fatalf("remaining quota before next poll = %d, want both attempts charged", next.RemainingBefore)
+	}
+}
+
 func TestBacklogCounterStopsPaginationAtBudget(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})

@@ -34,13 +34,9 @@ func TestBacklogQueryServerErrorWritesTypedErrorResult(t *testing.T) {
 
 	prev := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-		// WithMaxRateLimitRetries(0): send() also retries a bare 5xx with
-		// exponential backoff before giving up (providers/github.go:1235) —
-		// zeroing it here keeps this test fast without changing what's
-		// under test (failProviderStage's classification of the FINAL
-		// give-up error), since the fake server always 503s regardless of
-		// attempt count anyway.
-		return providers.NewGitHubProvider(token, append(opts, func(p *providers.GitHubProvider) { p.BaseURL = srv.URL }, providers.WithMaxRateLimitRetries(0))...)
+		// Keep this test focused on failProviderStage's classification of the
+		// final give-up error; the fake server always 503s.
+		return providers.NewGitHubProvider(token, append(opts, func(p *providers.GitHubProvider) { p.BaseURL = srv.URL }, providers.WithMaxTransientRetries(0))...)
 	}
 	t.Cleanup(func() { newGitHubProvider = prev })
 
@@ -151,7 +147,7 @@ func TestBacklogQueryNetworkErrorWritesTypedErrorResult(t *testing.T) {
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
 		return providers.NewGitHubProvider(token, append(opts,
 			func(p *providers.GitHubProvider) { p.BaseURL = unreachable },
-			providers.WithMaxRateLimitRetries(0), // send() also retries transport errors; zero for a fast test.
+			providers.WithMaxTransientRetries(0),
 		)...)
 	}
 	t.Cleanup(func() { newGitHubProvider = prev })

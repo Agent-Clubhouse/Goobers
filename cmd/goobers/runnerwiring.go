@@ -1057,9 +1057,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 			providers.WithQuotaRequestGate(accounting),
 		)
 	}
-	// Disable retries so an admitted poll does not spend unbudgeted quota on a
-	// repeated request. ListWorkItems still follows pagination: each response
-	// updates the shared quota ledger through the observer above.
+	// Fail fast on rate limits so polling waits for the scheduler's next
+	// reset-aware admission. Transport and 5xx retries remain enabled and each
+	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
 	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
