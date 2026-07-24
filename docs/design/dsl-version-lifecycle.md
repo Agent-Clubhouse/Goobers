@@ -177,15 +177,19 @@ Load-time behaviour is enforced in the config loader (`internal/configsync/loade
 
 #### 3.3.1 The support *window* (the "how long" promise)
 
-The lifecycle is only worth something if the durations are promised, not vibes. Proposed policy
-(borrowed from Kubernetes' API deprecation policy, §5.1 — numbers are the strawman for review):
+The lifecycle is only worth something if the durations are promised, not vibes. The ratified policy
+(borrowed from Kubernetes' API deprecation policy, §5.1) is:
 
-- A **supported** minor stays loadable (supported or deprecated) for **≥ N minor releases** after
-  the release that supersedes it.
+- A **supported** minor stays loadable (supported or deprecated) for **at least 3 minor releases**
+  after the release that supersedes it. For example, a version superseded in `v1.1.0` cannot become
+  unsupported before `v1.4.0`.
 - A version must spend **≥1 released minor in `deprecated`** before it may go `unsupported`. No
-  version jumps straight from supported to a load error.
+  version jumps straight from supported to a load error; a version deprecated in `v1.3.x` cannot
+  become unsupported before `v1.4.0`.
 - The window is a *promise about the interpreter's continued existence*, which §3.4 is what actually
   makes cheap.
+- `SupportMatrix` entries retain their ordered, release-stamped lifecycle history. CI validates the
+  compiled-in matrix against both floors so an invalid transition or shortened window cannot ship.
 
 ### 3.4 Multi-version runtime coexistence — N interpreters in one binary
 
@@ -315,7 +319,14 @@ A small compiled-in table, the single authority the binary declares:
 type Level int
 const ( Preview Level = iota; Supported; Deprecated; Unsupported ) // SupportedLTS deferred (§9)
 
-type SupportMatrix map[string]VersionSupport // "1.2" -> {Level, UnsupportedAfter, Replacement}
+type SupportTransition struct { Level Level; SinceVersion string }
+type VersionSupport struct {
+    Level Level
+    UnsupportedAfter string
+    Replacement string
+    History []SupportTransition
+}
+type SupportMatrix map[string]VersionSupport // "1.2" -> current support + ordered history
 ```
 
 Printed by `goobers versions`, consumed by the loader (§6.3) and the router (§3.4). Generated /
@@ -404,7 +415,7 @@ interpreter *stayed* frozen.
 - **DVL-4** (#864) — Version router: split `internal/workflow` into a dispatcher + first versioned interpreter package (`v_current`), with per-version golden fixtures.
 - **DVL-5** (#865) — Second interpreter (copy-forward drill): cut a `v_next`, freeze `v_current`, prove both compile independently — validates the coexistence model end-to-end.
 - **DVL-6** (#866) — `goobers fix --to <version>` migrator scaffold (one-step, diff-emitting).
-- **DVL-7** (#867) — Support-window *policy* doc + CI guard (extends #429): no straight-to-unsupported, ≥1 minor deprecated. (No LTS window — deferred, §9.)
+- **DVL-7** (#867) — Support-window *policy* doc + CI guard (extends #429): ≥3 minor releases loadable after supersession, no straight-to-unsupported, ≥1 minor deprecated. (No LTS window — deferred, §9.)
 - **DVL-8** (#868) — Per-version feature matrix + release-note support-delta (extends #430/#433).
 - **DVL-9** (#869) — Forward-only binary-maintenance policy (resourcing stance): `--version` semantics + PATCH-means-no-contract-change guard, documented (extends #431). The frozen-version must-fix corner (§8.7) is explicitly *not* in scope.
 
