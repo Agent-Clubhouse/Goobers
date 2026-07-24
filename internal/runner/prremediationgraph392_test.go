@@ -157,6 +157,7 @@ func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.Invocat
 type remediationWalkOptions struct {
 	maxRepasses      int
 	validationStatus apiv1.ResultStatus
+	rebaseStatus     apiv1.ResultStatus
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -167,6 +168,12 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 	opts := remediationWalkOptions{validationStatus: apiv1.ResultSuccess}
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	if opts.validationStatus == "" {
+		opts.validationStatus = apiv1.ResultSuccess
+	}
+	if opts.rebaseStatus == "" {
+		opts.rebaseStatus = apiv1.ResultSuccess
 	}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -181,6 +188,18 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 
 	// The selection outcome that routes down the agentic path: a substantive
 	// finding present, so rebase-pr reports needsAgent=true.
+	attemptedHeadSHA, rebaseBaseSHA := "deadbeef", "base-sha"
+	if opts.rebaseStatus == apiv1.ResultFailure {
+		attemptedHeadSHA, rebaseBaseSHA = "", ""
+	}
+	rebaseResult := stubTaskResult{status: opts.rebaseStatus, outputs: map[string]interface{}{
+		"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
+		"conflict": "false", "conflictLocations": "[]",
+		"attemptedHeadSha": attemptedHeadSHA, "rebaseBaseSha": rebaseBaseSHA,
+	}}
+	if opts.rebaseStatus == apiv1.ResultFailure {
+		rebaseResult.errorInfo = &apiv1.ErrorInfo{Code: "provider_error", Message: "rebase failed"}
+	}
 	byTask := map[string]stubTaskResult{
 		runID + ":update-behind-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"selectedNumber": "77", "needsFullRemediation": "true",
@@ -208,10 +227,7 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
 			artifactMediaType: "application/json",
 		},
-		runID + ":rebase-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
-			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
-		}},
+		runID + ":rebase-pr": rebaseResult,
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
@@ -319,6 +335,21 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if !goober.sawCIContext {
 		t.Error("implementer context is missing gather-ci-failures.artifact[0]")
+	}
+}
+
+func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-rebase-failure", goober, remediationWalkOptions{
+		rebaseStatus: apiv1.ResultFailure,
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	wantPrefix := []string{"update-behind-pr", "gather-pr-context", "rebase-pr", "remediation-checkpoint"}
+	if len(visited) < len(wantPrefix) || strings.Join(visited[:len(wantPrefix)], ",") != strings.Join(wantPrefix, ",") {
+		t.Fatalf("stage order = %v, want prefix %v", visited, wantPrefix)
 	}
 }
 

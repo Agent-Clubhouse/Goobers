@@ -145,6 +145,11 @@ func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head string, err
 	payload := map[string]interface{}{
 		"selectedNumber":              selectedNumber,
 		"head":                        head,
+		"needsAgent":                  "true",
+		"conflict":                    "false",
+		"conflictLocations":           "[]",
+		"attemptedHeadSha":            "",
+		"rebaseBaseSha":               "",
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,

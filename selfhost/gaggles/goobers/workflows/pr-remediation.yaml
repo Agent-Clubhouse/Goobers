@@ -154,15 +154,12 @@ spec:
     #     BEFORE spending an agentic session on it, and then routes into
     #     implement (#392).
     #
-    # selectedNumber is echoed forward in this stage's own result on both
-    # success and failure alongside the route/error details: a gate never
-    # updates Task.InputsFrom's upstream-Outputs chain (only a task does —
-    # see apply-verdict's own doc comment for the established convention),
-    # so remediation-checkpoint (after rebase-gate) can only read it if
-    # THIS stage re-emits it, same as gather-sibling-context re-emitting
-    # pr-select's selectedNumber two hops ahead of apply-verdict. head is
-    # echoed too but not currently consumed downstream — remediation-
-    # checkpoint (#393) re-lists PRs itself and reads Head from there.
+    # Every failure result sets needsAgent=true and preserves every declared
+    # output, using empty defaults when rebase evidence is unavailable. A gate
+    # never updates Task.InputsFrom's upstream-Outputs chain (only a task does —
+    # see apply-verdict's own doc comment for the established convention), so
+    # remediation-checkpoint (after rebase-gate) can only read these values if
+    # THIS stage emits them on both success and failure.
     - name: rebase-pr
       type: deterministic
       goal: Rebase the selected PR onto its base; force-push and clear the label if clean, else defer to agentic remediation.

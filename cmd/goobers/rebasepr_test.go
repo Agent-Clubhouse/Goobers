@@ -1008,10 +1008,10 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 }
 
-// TestRebasePRFailureEchoesSelectedNumber proves rebase-pr fails closed before
-// any git/provider call when a required capability is absent while preserving
-// the selected PR handoff needed by remediation-checkpoint.
-func TestRebasePRFailureEchoesSelectedNumber(t *testing.T) {
+// TestRebasePRFailureWritesDownstreamContract proves rebase-pr fails closed
+// before any git/provider call when a required capability is absent while
+// preserving every output needed to route through remediation-checkpoint.
+func TestRebasePRFailureWritesDownstreamContract(t *testing.T) {
 	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-363-nocap")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
@@ -1026,13 +1026,19 @@ func TestRebasePRFailureEchoesSelectedNumber(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
 	}
 	result := readProviderStageResult(t, filepath.Join(workDir, "rebase-result.json"))
-	if result["selectedNumber"] != "58" {
-		t.Fatalf("selectedNumber = %v, want 58", result["selectedNumber"])
+	want := map[string]interface{}{
+		"selectedNumber":         "58",
+		"head":                   "goobers/impl/run-d",
+		"needsAgent":             "true",
+		"conflict":               "false",
+		"conflictLocations":      "[]",
+		"attemptedHeadSha":       "",
+		"rebaseBaseSha":          "",
+		executor.OutputErrorCode: errorCodeProvider,
 	}
-	if result["head"] != "goobers/impl/run-d" {
-		t.Fatalf("head = %v, want goobers/impl/run-d", result["head"])
-	}
-	if result[executor.OutputErrorCode] != errorCodeProvider {
-		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
 	}
 }
