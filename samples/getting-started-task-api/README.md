@@ -44,20 +44,19 @@ throwaway repository. An offline flow can read and display the same catalog
 without contacting GitHub. The issue order is stable; the first entry is the
 shortest happy-path implementation.
 
-## Reproduce the first pull request
+## Quickstart compatibility
 
 ```text
-npm run proof
+go test ./cmd/goobers -run '^TestGettingStartedSampleQuickstartThroughRealRunner$'
 ```
 
-This deterministic quickstart proof materializes the pinned fixture in a
-temporary Git repository, claims the first seed issue, runs a scripted agent
-harness through implementation and independent review, executes the focused
-service tests, pushes the run branch, and records the pull request through an
-offline provider double. The harness replaces only the external model and
-hosting boundaries, following the same fixture convention as Goobers'
-conformance tests. The proof removes its checkout and bare remote before
-returning.
+Run this acceptance check from the Goobers source repository. It materializes
+the pinned fixture in a temporary Git repository and drives the real Goobers
+local runner through backlog claim, implementation, review, branch push, and
+the production `open-pr` command. Only the external coding-model adapter and
+GitHub HTTP endpoint are replaced with deterministic test doubles. The check
+asserts that the pushed branch resolves the first seeded issue and that the
+provider receives the resulting pull request.
 
 ## Disposal
 
