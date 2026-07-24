@@ -162,7 +162,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 		{name: "empty result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "  "}, wantWarn: true},
 		{name: "configured result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "claimed-item.json"}},
 		{name: "read only query", command: []string{"goobers", "backlog-query"}},
-		{name: "unrelated claim flag", command: []string{"goobers", "pr-select", "--claim"}},
+		{name: "unrelated claim flag", command: []string{"goobers", "status", "--claim"}},
 		{name: "shell command", command: []string{"sh", "-c", "goobers backlog-query --claim"}, wantWarn: true},
 	}
 	for _, tc := range cases {

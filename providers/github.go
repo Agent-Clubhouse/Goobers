@@ -1285,6 +1285,7 @@ func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) Pul
 		Base:       pr.Base.Ref,
 		HeadSHA:    pr.Head.SHA,
 		BaseSHA:    pr.Base.SHA,
+		MergeSHA:   pr.MergeCommitSHA,
 		Draft:      pr.Draft,
 		Labels:     labels,
 		CheckState: checkState,
@@ -1321,9 +1322,42 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	}
 	out := make([]ChangedFile, 0, len(files))
 	for _, f := range files {
-		out = append(out, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+		out = append(out, ChangedFile{
+			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
+			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+		})
 	}
 	return out, nil
+}
+
+// RepositoryFileContent returns one file's contents at ref.
+func (p *GitHubProvider) RepositoryFileContent(ctx context.Context, repo RepositoryRef, path, ref string) ([]byte, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "contents", path)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"ref": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.sendWithAccept(ctx, http.MethodGet, endpoint, nil, "application/vnd.github.raw+json")
+	if err != nil {
+		return nil, err
+	}
+	content, _, err := readPage(resp, http.MethodGet, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
 }
 
 // CompareCommits reports base and head's common ancestor plus the
@@ -1363,7 +1397,10 @@ func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef,
 	}
 	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
 	for _, f := range files {
-		out.Files = append(out.Files, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+		out.Files = append(out.Files, ChangedFile{
+			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
+			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+		})
 	}
 	return out, nil
 }
@@ -2106,6 +2143,10 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 // that only need a decoded body should use doStatus; getAllPages uses send
 // directly so it can read the Link header for pagination (#139).
 func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	return p.sendWithAccept(ctx, method, endpoint, body, "application/vnd.github+json")
+}
+
+func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint string, body interface{}, accept string) (*http.Response, error) {
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
@@ -2120,7 +2161,7 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Accept", accept)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
@@ -2326,6 +2367,7 @@ type githubPullRequestDetail struct {
 	State          string        `json:"state"`
 	Merged         bool          `json:"merged"`
 	MergedAt       *time.Time    `json:"merged_at"`
+	MergeCommitSHA string        `json:"merge_commit_sha"`
 	ClosedAt       *time.Time    `json:"closed_at"`
 	Mergeable      *bool         `json:"mergeable"`
 	MergeableState string        `json:"mergeable_state"`
@@ -2366,11 +2408,12 @@ type githubBranchRule struct {
 }
 
 type githubPullRequestFile struct {
-	Filename  string `json:"filename"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Patch     string `json:"patch"`
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Patch            string `json:"patch"`
 }
 
 // githubCompareResponse is the shape of GET .../compare/{base}...{head}.
