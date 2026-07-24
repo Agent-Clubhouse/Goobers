@@ -9,6 +9,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// ReasonProviderQuotaBudget identifies scheduler decisions caused by a
+// provider's polling budget.
 const ReasonProviderQuotaBudget = "provider-quota-budget"
 
 // ProviderQuotaGate is the scheduler's view of provider quota. Exhausted gates
@@ -50,6 +52,8 @@ type ProviderPollReservation struct {
 	WindowVersion uint64
 }
 
+// Reservation returns a refundable token when the budget reserved quota from
+// an active provider window.
 func (b ProviderPollBudget) Reservation() (ProviderPollReservation, bool) {
 	if !b.Known || b.Allowed <= 0 || b.WindowVersion == 0 {
 		return ProviderPollReservation{}, false
@@ -108,6 +112,7 @@ type ProviderQuotaState struct {
 	nextVersion uint64
 }
 
+// NewProviderQuotaState returns an empty per-provider quota ledger.
 func NewProviderQuotaState() *ProviderQuotaState {
 	return &ProviderQuotaState{windows: make(map[apiv1.Provider]providerQuotaWindow)}
 }
@@ -153,6 +158,8 @@ func (s *ProviderQuotaState) Exhausted(now time.Time) (time.Time, bool) {
 	return s.ExhaustedFor(apiv1.ProviderGitHub, now)
 }
 
+// ExhaustedFor reports whether a provider's active quota window has no
+// remaining polling budget.
 func (s *ProviderQuotaState) ExhaustedFor(provider apiv1.Provider, now time.Time) (time.Time, bool) {
 	provider = quotaProvider(provider)
 	s.mu.Lock()
