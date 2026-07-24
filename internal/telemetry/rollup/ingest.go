@@ -379,15 +379,63 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 	return runnerJSON(m)
 }
 
-// IngestSchedulerLog reads the instance journal and its rolling scheduler
-// spans, including claim transitions and scheduler starvation signals, then
-// (re)populates their rollup rows. Idempotent (delete-then-insert over the
-// instance-level data), so it is safe to call incrementally or as part of
-// Rebuild.
-// Historical duplicate seq values are corruption, but retaining the first
-// occurrence keeps one bad record from permanently preventing all rollup.
+// schedulerCursor is the incremental-ingest watermark (#1411): how far into the
+// instance journal IngestSchedulerLog has read (byteOffset) and the highest
+// event seq it has applied (lastSeq).
+type schedulerCursor struct {
+	byteOffset int64
+	lastSeq    uint64
+}
+
+// readSchedulerCursor loads the ingest watermark. With no cursor row yet — a
+// fresh Rebuild, or the first ingest after upgrading from the old full-replay
+// path — it seeds lastSeq from whatever scheduler_events a prior full replay
+// left, so the first incremental pass re-reads the journal head once but writes
+// nothing for events already stored (ON CONFLICT makes each a no-op), then
+// records the cursor so every later pass reads only the new tail.
+func readSchedulerCursor(sqlDB *sql.DB) (schedulerCursor, error) {
+	var c schedulerCursor
+	err := sqlDB.QueryRow(`SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
+		Scan(&c.byteOffset, &c.lastSeq)
+	if err == sql.ErrNoRows {
+		var seed uint64
+		if err := sqlDB.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
+			return schedulerCursor{}, fmt.Errorf("rollup: seed scheduler cursor: %w", err)
+		}
+		return schedulerCursor{byteOffset: 0, lastSeq: seed}, nil
+	}
+	if err != nil {
+		return schedulerCursor{}, fmt.Errorf("rollup: read scheduler cursor: %w", err)
+	}
+	return c, nil
+}
+
+func writeSchedulerCursor(tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
+	if _, err := tx.Exec(`
+		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
+		VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
+		byteOffset, lastSeq); err != nil {
+		return fmt.Errorf("rollup: write scheduler cursor: %w", err)
+	}
+	return nil
+}
+
+// IngestSchedulerLog rolls up the instance journal (claim transitions,
+// scheduler decisions, starvation and error signals) and its rolling scheduler
+// spans. It is incremental (#1411): a per-tick call reads only the journal tail
+// past the last ingested offset and inserts only events above the seq
+// watermark, so a steady-state ingest with nothing new performs no writes and
+// the WAL stops churning. Idempotent — safe to call repeatedly or as part of
+// Rebuild; INSERT ... ON CONFLICT keeps a re-read after a journal reset, or a
+// historical duplicate seq (corruption), from ever duplicating a row (the first
+// occurrence wins, so one bad record can't block all rollup).
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
-	events, err := readInstanceEvents(schedulerDir)
+	cursor, err := readSchedulerCursor(db.sql)
+	if err != nil {
+		return err
+	}
+	events, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -402,13 +450,20 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	if _, err := tx.Exec(`DELETE FROM scheduler_events`); err != nil {
-		return fmt.Errorf("rollup: clear scheduler_events: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM scheduler_errors`); err != nil {
-		return fmt.Errorf("rollup: clear scheduler_errors: %w", err)
-	}
+	// Incremental replay (#1411): the journal is append-only and immutable, so
+	// events at or below the watermark are already stored. Skip them (bounds
+	// the per-tick work to genuinely new events), and INSERT ... ON CONFLICT so
+	// even a re-read after a reset from the head — or a torn tail that later
+	// completes — never duplicates a row. No DELETE-then-reinsert of the whole
+	// table: that was O(journal) writes every tick and churned the WAL.
+	maxSeq := cursor.lastSeq
 	for _, ev := range events {
+		if ev.Seq <= cursor.lastSeq {
+			continue
+		}
+		if ev.Seq > maxSeq {
+			maxSeq = ev.Seq
+		}
 		switch ev.Type {
 		case eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
@@ -421,7 +476,8 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 			if ev.Type == eventError && ev.Error != nil {
 				if _, err := tx.Exec(`
 					INSERT INTO scheduler_errors (seq, code, error_class, message, occurred_at)
-					VALUES (?, ?, ?, ?, ?)`,
+					VALUES (?, ?, ?, ?, ?)
+					ON CONFLICT(seq) DO NOTHING`,
 					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
 					nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
@@ -447,6 +503,9 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		if err := insertSpans(tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
 			return err
 		}
+	}
+	if err := writeSchedulerCursor(tx, newOffset, maxSeq); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rollup: commit scheduler ingest tx: %w", err)
