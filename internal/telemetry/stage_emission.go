@@ -181,6 +181,7 @@ func isPlainDir(path string) bool {
 
 func validMetric(metric stageMetric) bool {
 	return metric.Name != "" &&
+		!IsCanonicalAgentUsageMetric(metric.Name) &&
 		metric.Value != nil &&
 		!math.IsNaN(*metric.Value) &&
 		!math.IsInf(*metric.Value, 0) &&

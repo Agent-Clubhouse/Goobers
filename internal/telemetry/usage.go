@@ -22,6 +22,20 @@ type ModelUsage struct {
 	CostUSD                *float64
 }
 
+// IsCanonicalAgentUsageMetric reports whether name is owned by the harness
+// adapter rather than by an agent-authored completion envelope.
+func IsCanonicalAgentUsageMetric(name string) bool {
+	switch name {
+	case AttrGenAIUsageInputTokens,
+		AttrGenAIUsageOutputTokens,
+		AttrCopilotPremiumRequests,
+		AttrUsageCostUSD:
+		return true
+	default:
+		return false
+	}
+}
+
 // RecordAgentUsage copies canonical usage metrics onto the active agentic span.
 func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsage []ModelUsage) {
 	if len(metrics) == 0 && len(modelUsage) == 0 {

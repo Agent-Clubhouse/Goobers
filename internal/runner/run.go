@@ -882,6 +882,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			var firstClass journal.AttemptClass
 			var instructionAddendum string
 			var taskRerun *rerunContext
+			var resumedResult *apiv1.ResultEnvelope
 			if rerun != nil && rerun.stage == t.Name {
 				taskRerun = rerun
 				startAttempt = int32(rerun.attempt)
@@ -893,16 +894,35 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if rerun != nil && rerun.stage == t.Name {
 					interruptedClass = resume.class
 				}
+				var interruptedBudgetResult apiv1.ResultEnvelope
+				if t.Type == apiv1.TaskAgentic {
+					limits, err := workflow.TaskLimits(in.Machine, t)
+					if err != nil {
+						return Result{}, fmt.Errorf("project stage %q limits: %w", t.Name, err)
+					}
+					if usageBudgetConfigured(limits) {
+						interruptedBudgetResult = interruptedStageBudgetFailure(limits)
+						resumedResult = &interruptedBudgetResult
+					}
+				}
 				// The attempt in flight when the runner was interrupted is
 				// terminal now. Preserve a human rerun's class for an auditable
 				// matched start/finish; ordinary crash recovery remains infra-
 				// tagged. The next dispatch advances the attempt count.
 				if !resume.recorded {
+					errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
+					runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
+					if resumedResult != nil {
+						errorDetail = errorDetailFrom(interruptedBudgetResult)
+						// This is the stage's terminal budget result, not the
+						// retryable interruption marker recovery skips.
+						runnerDetail = nil
+					}
 					if err := jr.Append(journal.Event{
 						Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
 						Status: string(apiv1.ResultFailure),
-						Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
-						Runner: map[string]any{interruptedAttemptMarkerKey: true},
+						Error:  errorDetail,
+						Runner: runnerDetail,
 					}); err != nil {
 						return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
 					}
@@ -916,15 +936,24 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					}
 					branchRecorded = true
 				}
-				startAttempt = int32(resume.attempt) + 1
-				if rerun != nil && rerun.stage == t.Name {
-					firstClass = journal.AttemptHuman
-				} else {
-					firstClass = journal.AttemptInfra
+				if resumedResult == nil {
+					startAttempt = int32(resume.attempt) + 1
+					if rerun != nil && rerun.stage == t.Name {
+						firstClass = journal.AttemptHuman
+					} else {
+						firstClass = journal.AttemptInfra
+					}
 				}
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+			var result apiv1.ResultEnvelope
+			var produced []apiv1.ContextPointer
+			var err error
+			if resumedResult != nil {
+				result = *resumedResult
+			} else {
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
 			}
@@ -1894,6 +1923,14 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 }
 
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	var usageLimits apiv1.Limits
+	if t.Type == apiv1.TaskAgentic {
+		var err error
+		usageLimits, err = workflow.TaskLimits(in.Machine, t)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err)
+		}
+	}
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1929,6 +1966,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	}
 
 	var lastErr error
+	cumulativeUsage := newStageUsageTotals()
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
@@ -1964,7 +2002,25 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if class == journal.AttemptHuman {
 			attemptAddendum = instructionAddendum
 		}
+		var usage attemptUsageCollector
+		if t.Type == apiv1.TaskAgentic {
+			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
+		}
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		if t.Type == apiv1.TaskAgentic {
+			attemptUsage, usageReported := usage.snapshot()
+			accumulateStageUsage(cumulativeUsage, attemptUsage)
+			// A pre-harness dispatch failure consumed no model budget. Once the
+			// adapter ran (even if it reported no measures), missing configured
+			// usage fails closed.
+			if dispatchErr == nil || usageReported {
+				var budgetExceeded bool
+				result, budgetExceeded = enforceStageBudget(usageLimits, attemptUsage, cumulativeUsage, result)
+				if budgetExceeded {
+					dispatchErr = nil
+				}
+			}
+		}
 		// A branchless no-work result with no provider mutations touched no
 		// external ref. Delay branch provenance until an attempt proves otherwise.
 		if !*branchRecorded && machineUsesRepo(in.Machine) &&
@@ -2326,7 +2382,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		// (and a pre-commit timeout) falls through to the normal retry/fail path.
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
-				salvaged.Transcript = result.Transcript
+				salvaged = withSalvagedDiagnostics(salvaged, result)
 				return salvaged, nil, nil, nil
 			}
 		}
@@ -2334,6 +2390,12 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	salvaged.Transcript = attempt.Transcript
+	salvaged.Metrics = attempt.Metrics
+	return salvaged
 }
 
 // salvageTimeout implements Task.OnTimeout == salvage (#724): when an agentic
