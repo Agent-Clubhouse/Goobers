@@ -80,11 +80,18 @@ type Authenticator struct {
 	client     *http.Client
 	parser     *jwt.Parser
 
-	mu              sync.Mutex
-	jwksURI         string
-	keys            map[string]*rsa.PublicKey
-	lastRefresh     time.Time
+	mu      sync.Mutex
+	jwksURI string
+	keys    map[string]*rsa.PublicKey
+	// lastAttempt is when the last refresh was started, successful or not:
+	// failures arm the throttle too, so an unreachable issuer cannot be
+	// re-fetched by every unknown-kid request.
+	lastAttempt     time.Time
 	refreshInterval time.Duration
+	// refreshDone is non-nil while one goroutine fetches the JWKS outside
+	// the lock; concurrent unknown-kid requests wait on it instead of
+	// stacking fetches.
+	refreshDone chan struct{}
 }
 
 // New constructs an Authenticator. The issuer is not contacted here: JWKS
@@ -228,23 +235,59 @@ func (a *Authenticator) keyFunc(ctx context.Context) jwt.Keyfunc {
 }
 
 // signingKey resolves kid against the cached JWKS, refetching at most once
-// per refreshInterval when the kid is unknown (key rotation).
+// per refreshInterval when the kid is unknown (key rotation). The throttle
+// counts attempts rather than successes, and the network fetch runs outside
+// a.mu — cached-kid authentications never wait on issuer I/O, so a slow or
+// down issuer cannot stall requests whose keys are already known.
 func (a *Authenticator) signingKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if key, ok := a.keys[kid]; ok {
-		return key, nil
+	for {
+		if key, ok := a.keys[kid]; ok {
+			a.mu.Unlock()
+			return key, nil
+		}
+		if a.refreshDone == nil {
+			break
+		}
+		// Another request is already fetching; wait for its result so a
+		// legitimately rotated token succeeds without a second fetch.
+		done := a.refreshDone
+		a.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		a.mu.Lock()
 	}
-	if !a.lastRefresh.IsZero() && time.Since(a.lastRefresh) < a.refreshInterval {
+	if !a.lastAttempt.IsZero() && time.Since(a.lastAttempt) < a.refreshInterval {
+		a.mu.Unlock()
 		return nil, fmt.Errorf("issuer JWKS has no signing key %q", kid)
 	}
-	if err := a.refreshKeysLocked(ctx); err != nil {
+	a.lastAttempt = time.Now()
+	done := make(chan struct{})
+	a.refreshDone = done
+	jwksURI := a.jwksURI
+	a.mu.Unlock()
+
+	keys, resolvedURI, err := a.fetchKeys(ctx, jwksURI)
+
+	a.mu.Lock()
+	a.refreshDone = nil
+	if err == nil {
+		a.jwksURI = resolvedURI
+		a.keys = keys
+	}
+	key, ok := a.keys[kid]
+	a.mu.Unlock()
+	close(done)
+	if err != nil {
 		return nil, err
 	}
-	if key, ok := a.keys[kid]; ok {
-		return key, nil
+	if !ok {
+		return nil, fmt.Errorf("issuer JWKS has no signing key %q", kid)
 	}
-	return nil, fmt.Errorf("issuer JWKS has no signing key %q", kid)
+	return key, nil
 }
 
 type discoveryDocument struct {
@@ -264,24 +307,27 @@ type jwksKey struct {
 	E   string `json:"e"`
 }
 
-func (a *Authenticator) refreshKeysLocked(ctx context.Context) error {
-	if a.jwksURI == "" {
+// fetchKeys runs discovery (when jwksURI is still unknown) and fetches the
+// JWKS. It performs network I/O and must be called without holding a.mu; the
+// caller installs the returned key set and resolved jwks_uri.
+func (a *Authenticator) fetchKeys(ctx context.Context, jwksURI string) (map[string]*rsa.PublicKey, string, error) {
+	if jwksURI == "" {
 		discovery := strings.TrimSuffix(a.issuer, "/") + "/.well-known/openid-configuration"
 		var document discoveryDocument
 		if err := a.fetchJSON(ctx, discovery, &document); err != nil {
-			return fmt.Errorf("OIDC discovery: %w", err)
+			return nil, "", fmt.Errorf("OIDC discovery: %w", err)
 		}
 		if document.Issuer != a.issuer {
-			return fmt.Errorf("OIDC discovery document declares issuer %q, want %q", document.Issuer, a.issuer)
+			return nil, "", fmt.Errorf("OIDC discovery document declares issuer %q, want %q", document.Issuer, a.issuer)
 		}
 		if document.JWKSURI == "" {
-			return errors.New("OIDC discovery document carries no jwks_uri")
+			return nil, "", errors.New("OIDC discovery document carries no jwks_uri")
 		}
-		a.jwksURI = document.JWKSURI
+		jwksURI = document.JWKSURI
 	}
 	var document jwksDocument
-	if err := a.fetchJSON(ctx, a.jwksURI, &document); err != nil {
-		return fmt.Errorf("fetch JWKS: %w", err)
+	if err := a.fetchJSON(ctx, jwksURI, &document); err != nil {
+		return nil, "", fmt.Errorf("fetch JWKS: %w", err)
 	}
 	keys := make(map[string]*rsa.PublicKey, len(document.Keys))
 	for _, key := range document.Keys {
@@ -290,13 +336,11 @@ func (a *Authenticator) refreshKeysLocked(ctx context.Context) error {
 		}
 		public, err := rsaPublicKey(key)
 		if err != nil {
-			return fmt.Errorf("parse JWKS key %q: %w", key.Kid, err)
+			return nil, "", fmt.Errorf("parse JWKS key %q: %w", key.Kid, err)
 		}
 		keys[key.Kid] = public
 	}
-	a.keys = keys
-	a.lastRefresh = time.Now()
-	return nil
+	return keys, jwksURI, nil
 }
 
 func (a *Authenticator) fetchJSON(ctx context.Context, endpoint string, target any) error {

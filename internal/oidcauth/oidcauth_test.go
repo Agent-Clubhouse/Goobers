@@ -46,7 +46,10 @@ type fakeIssuer struct {
 
 	mu             sync.Mutex
 	keys           map[string]*rsa.PrivateKey
-	declaredIssuer string // overrides the discovery document's issuer when set
+	declaredIssuer string        // overrides the discovery document's issuer when set
+	jwksStatus     int           // non-zero forces this status on /jwks
+	jwksGate       chan struct{} // when set, /jwks blocks until it is closed
+	jwksEntered    chan struct{} // when set, closed once /jwks starts serving
 	jwksFetches    atomic.Int32
 }
 
@@ -69,6 +72,22 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		issuer.jwksFetches.Add(1)
+		issuer.mu.Lock()
+		status := issuer.jwksStatus
+		gate := issuer.jwksGate
+		entered := issuer.jwksEntered
+		issuer.jwksEntered = nil
+		issuer.mu.Unlock()
+		if entered != nil {
+			close(entered)
+		}
+		if gate != nil {
+			<-gate
+		}
+		if status != 0 {
+			w.WriteHeader(status)
+			return
+		}
 		issuer.mu.Lock()
 		defer issuer.mu.Unlock()
 		keys := make([]map[string]string, 0, len(issuer.keys))
@@ -105,6 +124,19 @@ func (f *fakeIssuer) addKey(kid string, key *rsa.PrivateKey) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.keys[kid] = key
+}
+
+func (f *fakeIssuer) setJWKSStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksStatus = status
+}
+
+func (f *fakeIssuer) stallJWKS(gate, entered chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksGate = gate
+	f.jwksEntered = entered
 }
 
 func (f *fakeIssuer) baseClaims() jwt.MapClaims {
@@ -295,13 +327,104 @@ func TestJWKSRefreshOnRotationIsRateLimited(t *testing.T) {
 	// Once the interval elapses the unknown kid triggers one refetch and the
 	// rotated key validates.
 	authenticator.mu.Lock()
-	authenticator.lastRefresh = time.Now().Add(-2 * authenticator.refreshInterval)
+	authenticator.lastAttempt = time.Now().Add(-2 * authenticator.refreshInterval)
 	authenticator.mu.Unlock()
 	if _, err := authenticate(t, authenticator, rotated); err != nil {
 		t.Fatalf("Authenticate after rotation: %v", err)
 	}
 	if got := issuer.jwksFetches.Load(); got != fetches+1 {
 		t.Fatalf("JWKS fetched %d times, want %d", got, fetches+1)
+	}
+}
+
+func TestFailedJWKSRefreshIsRateLimited(t *testing.T) {
+	keyA, _ := testKeys(t)
+	issuer := newFakeIssuer(t)
+	issuer.addKey("key-1", keyA)
+	issuer.setJWKSStatus(http.StatusInternalServerError)
+	authenticator := newTestAuthenticator(t, issuer, nil)
+
+	token := mintToken(t, keyA, jwt.SigningMethodRS256, "key-1", issuer.baseClaims())
+	if _, err := authenticate(t, authenticator, token); err == nil {
+		t.Fatal("expected authentication to fail while the issuer JWKS is down")
+	}
+	fetches := issuer.jwksFetches.Load()
+	if fetches == 0 {
+		t.Fatal("expected a JWKS fetch attempt")
+	}
+
+	// A failed attempt arms the same throttle as a successful refresh — a
+	// down issuer must not be re-fetched by every unknown-kid request.
+	if _, err := authenticate(t, authenticator, token); err == nil {
+		t.Fatal("expected authentication to fail inside the refresh interval")
+	}
+	if got := issuer.jwksFetches.Load(); got != fetches {
+		t.Fatalf("JWKS fetched %d times, want %d (failed attempt rate limited)", got, fetches)
+	}
+
+	// Once the interval elapses and the issuer recovers, one refetch succeeds.
+	issuer.setJWKSStatus(0)
+	authenticator.mu.Lock()
+	authenticator.lastAttempt = time.Now().Add(-2 * authenticator.refreshInterval)
+	authenticator.mu.Unlock()
+	if _, err := authenticate(t, authenticator, token); err != nil {
+		t.Fatalf("Authenticate after issuer recovery: %v", err)
+	}
+}
+
+func TestCachedKeyAuthenticationDoesNotBlockOnIssuerFetch(t *testing.T) {
+	keyA, keyB := testKeys(t)
+	issuer := newFakeIssuer(t)
+	issuer.addKey("key-1", keyA)
+	authenticator := newTestAuthenticator(t, issuer, nil)
+
+	cached := mintToken(t, keyA, jwt.SigningMethodRS256, "key-1", issuer.baseClaims())
+	if _, err := authenticate(t, authenticator, cached); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	// Stall the issuer, then trigger a refresh with a rotated key's kid.
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	issuer.stallJWKS(gate, entered)
+	issuer.addKey("key-2", keyB)
+	authenticator.mu.Lock()
+	authenticator.lastAttempt = time.Now().Add(-2 * authenticator.refreshInterval)
+	authenticator.mu.Unlock()
+
+	rotated := mintToken(t, keyB, jwt.SigningMethodRS256, "key-2", issuer.baseClaims())
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := authenticate(t, authenticator, rotated)
+		refreshDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(gate)
+		t.Fatal("timed out waiting for the JWKS refresh to reach the issuer")
+	}
+
+	// A token whose kid is already cached must validate while the refresh is
+	// still blocked on issuer I/O.
+	cachedDone := make(chan error, 1)
+	go func() {
+		_, err := authenticate(t, authenticator, cached)
+		cachedDone <- err
+	}()
+	select {
+	case err := <-cachedDone:
+		if err != nil {
+			t.Fatalf("cached-kid Authenticate during refresh: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(gate)
+		t.Fatal("cached-kid authentication blocked behind the issuer fetch")
+	}
+
+	close(gate)
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("Authenticate with rotated key: %v", err)
 	}
 }
 
