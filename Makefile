@@ -179,6 +179,19 @@ build-%:
 
 build-goobers: portal-build
 
+## image: Build the goobers container image (packaging/docker/Dockerfile) via docker.
+# Optional path — not part of `ci`, `build`, or `go run ./release`; requires a
+# local docker. Override the tag with IMAGE=<repo>:<tag>. CI publishing on
+# tagged releases is a follow-up.
+IMAGE ?= goobers:$(VERSION)
+.PHONY: image
+image:
+	docker build -f packaging/docker/Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		-t $(IMAGE) .
+
 ## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
