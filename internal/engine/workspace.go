@@ -30,6 +30,12 @@ type WorkspaceRequest struct {
 	// a repository working copy; apiv1.WorkspaceScratch an empty disposable
 	// directory — the same vocabulary as DeterministicRun.Workspace.
 	Mode apiv1.WorkspaceMode
+	// SyncBase asks a repo-mode provisioner to merge the freshly fetched base
+	// ref into the run branch before handing the workspace over —
+	// DeterministicRun.SyncBase (#813), threaded exactly as the local runner's
+	// createStageWorkspace threads it into worktree.CreateOptions. Never set
+	// for scratch mode (compilation rejects the combination).
+	SyncBase bool
 }
 
 // Workspace is one provisioned stage-attempt working copy.

@@ -663,13 +663,19 @@ type resumeContext struct {
 	recorded bool
 }
 
+// BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
+// conflict surfaces under (#813). Exported so the Temporal engine's activity
+// host reports the identical normative error code instead of a string copy
+// that can drift (the #624 shared-constant pattern).
+const BaseSyncConflictErrorCode = "base_sync_conflict"
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
-	baseSyncConflictErrorCode   = "base_sync_conflict"
+	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
 
 type baseSyncConflictArtifact struct {

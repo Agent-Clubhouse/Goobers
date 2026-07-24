@@ -284,6 +284,62 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	}
 }
 
+// TestDeterministicRunThreadsSyncBase: a stage declaring run.syncBase (#813)
+// reaches the workspace provisioner with SyncBase set — a shipped DSL feature
+// must never be silently dropped on dispatch (#626's fail-closed stance).
+func TestDeterministicRunThreadsSyncBase(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "local-ci",
+		Tasks: []apiv1.Task{{
+			Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "ci against fresh base",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true},
+		}},
+	}
+	workspaces := testWorkspaces(t)
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Det: &capturingDeterministic{}, Workspaces: workspaces})
+	env.ExecuteWorkflow(Run, runInput("sync-base", spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	provisioned := workspaces.provisioned()
+	if len(provisioned) != 1 || !provisioned[0].SyncBase {
+		t.Fatalf("workspace requests = %+v, want one repo-mode request with SyncBase set", provisioned)
+	}
+}
+
+// TestRunDeterministicBaseSyncConflictIsBusinessFailure ports the local
+// runner's #813 conversion: a genuine base merge conflict during syncBase
+// provisioning is a business failure the definition routes (base_sync_conflict,
+// retryable), never a dispatch error consuming the retry budget — and the
+// executor never runs against the unsynced workspace.
+func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
+	workspaces := testWorkspaces(t)
+	workspaces.provisionErrs = []error{&worktree.BaseSyncConflictError{
+		Branch: "goobers/implementation/run-x", BaseRef: "main", ConflictingFiles: []string{"main.go"},
+	}}
+	det := &capturingDeterministic{}
+	a := &Activities{Det: det, Workspaces: workspaces}
+	res, err := a.RunDeterministic(context.Background(),
+		apiv1.InvocationEnvelope{TaskID: "run-x:local-ci", RunID: "run-x"},
+		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true})
+	if err != nil {
+		t.Fatalf("RunDeterministic error = %v, want a business-failure envelope", err)
+	}
+	if res.Status != apiv1.ResultFailure || res.Error == nil {
+		t.Fatalf("result = %+v, want a failure envelope with error detail", res)
+	}
+	if res.Error.Code != runner.BaseSyncConflictErrorCode || !res.Error.Retryable {
+		t.Fatalf("error = %+v, want retryable %q (the local runner's #813 code)", res.Error, runner.BaseSyncConflictErrorCode)
+	}
+	if got := det.captured(); len(got) != 0 {
+		t.Fatalf("executor dispatched %d times against a conflicted workspace, want 0", len(got))
+	}
+}
+
 // TestGateVerdictSurfacesAsRepassContextPointer is #412's engine-side
 // acceptance, mirroring the local walk: after an agentic gate evaluates, the
 // next dispatch — the repass back to the subject stage, and every dispatch

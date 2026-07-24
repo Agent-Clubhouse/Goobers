@@ -32,6 +32,12 @@ type WorktreeWorkspaces struct {
 func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
 	switch req.Mode {
 	case apiv1.WorkspaceScratch:
+		if req.SyncBase {
+			// Compilation rejects the combination (v_current checks); this
+			// guards a request constructed without it, same as the local
+			// runner's createStageWorkspace.
+			return nil, fmt.Errorf("workerhost: scratch workspace for stage %q: syncBase requires a repo workspace", req.Stage)
+		}
 		if p.ScratchDir == "" {
 			return nil, fmt.Errorf("workerhost: scratch workspace for stage %q: no scratch dir configured", req.Stage)
 		}
@@ -69,6 +75,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			OwnerRunID: req.RunID,
 			BaseRef:    baseRef,
 			Branch:     branch,
+			SyncBase:   req.SyncBase,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workerhost: create worktree for stage %q: %w", req.Stage, err)

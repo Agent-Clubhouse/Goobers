@@ -10,6 +10,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // Activity names. The workflow refers to activities by these names so it is
@@ -64,7 +66,7 @@ func classifySeamError(err error) error {
 // is an error — the stage never dispatches with a partial envelope, which is
 // what previously made every capability-scoped credential fail closed the
 // moment a real executor was wired.
-func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode) (Workspace, error) {
+func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool) (Workspace, error) {
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
@@ -76,6 +78,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		BranchNamespace: env.BranchNamespace,
 		RepoRef:         env.RepoRef,
 		Mode:            mode,
+		SyncBase:        syncBase,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
@@ -105,7 +108,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if a.Goober == nil {
 		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, classifySeamError(err)
 	}
@@ -124,7 +127,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if a.Goober == nil {
 		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
@@ -147,8 +150,26 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if len(run.Command) == 0 {
 		return apiv1.ResultEnvelope{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command; refusing to execute (fail closed)", env.TaskID))
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace)
+	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase)
 	if err != nil {
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			// Mirror the local runner's dispatchTask (#813): a genuine base
+			// merge conflict is a business failure the definition routes (a
+			// status-equals gate dispatching remediation), never a dispatch
+			// error burning the retry budget. The conflict-detail artifact
+			// stays a local-runner surface for now — the projection (#629)
+			// commits workflow-derived bytes only.
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}, nil
+		}
 		return apiv1.ResultEnvelope{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
