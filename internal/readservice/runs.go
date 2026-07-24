@@ -505,6 +505,19 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 // every run it executes, so the set difference is empty and this only lists
 // directory names (never parses a journal). An individual run that fails to
 // ingest simply stays out of this pass rather than failing the whole list.
+//
+// The scan is incremental. A new or removed run directory bumps its parent's
+// mtime, so a parent whose mtime has not advanced past the last successful
+// reconcile's watermark cannot hold anything new and is skipped without a
+// ReadDir. Steady-state reconcile therefore costs one stat per run-parent
+// directory rather than one ReadDir over every run — bounded by newly-appeared
+// runs, not by history or by the orphan directories that accumulate alongside
+// it. The first reconcile (zero watermark) still full-scans so nothing on disk
+// is missed on startup. This bound is safe because a run that is actively
+// executing is ingested into the index at write time by the runner; reconcile
+// is only a backstop for imported/migrated/externally-added runs, whose
+// appearance necessarily bumps a parent mtime, so a bounded incremental scan
+// can never hide a live run.
 func (s *Local) reconcileIndex(ctx context.Context) error {
 	// Serialize reconciliation and throttle it: concurrent callers block here,
 	// and once the first completes the rest observe a fresh lastReconcile and
@@ -526,7 +539,31 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Watermarks are compared against filesystem mtimes, so they are real wall
+	// clock and independent of the injectable s.now() used only for TTL
+	// throttling. newWatermark tracks the newest parent mtime across every parent
+	// (skipped ones included), and advances the stored watermark only on success.
+	previousWatermark := s.reconcileWatermark
+	fullScan := previousWatermark.IsZero()
+	newWatermark := previousWatermark
 	for _, runsDir := range runDirs {
+		// Stat the parent before reading it: a run directory added concurrently
+		// with or after this stat lands on a strictly later mtime (on any
+		// fine-grained filesystem), so the next reconcile still rediscovers it.
+		info, err := os.Stat(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("inspect runs directory: %w", err)
+		}
+		if mtime := info.ModTime(); mtime.After(newWatermark) {
+			newWatermark = mtime
+		}
+		if !fullScan && !info.ModTime().After(previousWatermark) {
+			continue
+		}
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -538,6 +575,9 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if reconcileInspectObserver != nil {
+				reconcileInspectObserver(entry.Name())
+			}
 			if !entry.IsDir() || !apiv1.ValidRunID(entry.Name()) {
 				continue
 			}
@@ -547,6 +587,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
 		}
 	}
+	s.reconcileWatermark = newWatermark
 	s.lastReconcile = s.now()
 	return nil
 }
@@ -556,6 +597,13 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 // that a burst of concurrent/rapid ListRuns collapses to a single scan. Always
 // nil in production.
 var reconcileScanObserver func()
+
+// reconcileInspectObserver, when non-nil, is invoked with each directory entry
+// name a reconcile scan actually inspects — i.e. one it reaches inside a parent
+// it did not skip via the mtime watermark. It is a test seam proving the
+// incremental scan does near-zero work when no run directory has changed. Always
+// nil in production.
+var reconcileInspectObserver func(name string)
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
 	return s.runSummariesForStage(ctx, skipUnreadable, "")
