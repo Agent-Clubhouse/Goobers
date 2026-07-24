@@ -114,11 +114,36 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
-	if got := siblings.Next; got != "implement" {
-		t.Errorf("gather-sibling-context next = %q, want implement", got)
+	if got := siblings.Next; got != "gather-issue-context" {
+		t.Errorf("gather-sibling-context next = %q, want gather-issue-context", got)
 	}
 	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
 		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
+
+	issues, ok := m.Task("gather-issue-context")
+	if !ok {
+		t.Fatal("gather-issue-context stage not found")
+	}
+	if issues.Run == nil ||
+		len(issues.Run.Command) != 2 ||
+		issues.Run.Command[0] != "goobers" ||
+		issues.Run.Command[1] != "gather-issue-context" {
+		t.Errorf("gather-issue-context command = %v, want [goobers gather-issue-context]", issues.Run)
+	}
+	if issues.Run != nil && issues.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-issue-context workspace = %q, want scratch", issues.Run.Workspace)
+	}
+	if issues.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-issue-context resultFile = %q, want remediation-brief.json", issues.Inputs["resultFile"])
+	}
+	if len(issues.Capabilities) != 2 ||
+		issues.Capabilities[0] != "github:pr:write" ||
+		issues.Capabilities[1] != "github:issues:write" {
+		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:write]", issues.Capabilities)
+	}
+	if issues.Next != "implement" {
+		t.Errorf("gather-issue-context next = %q, want implement", issues.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -312,6 +337,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	}
 	if !strings.Contains(implement.Goal, "remediation-brief.json") {
 		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
+	}
+	if !strings.Contains(implement.Goal, "originating issue body") {
+		t.Fatalf("implement goal does not direct the agent to originating issue context: %q", implement.Goal)
 	}
 }
 
