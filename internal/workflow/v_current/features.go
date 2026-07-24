@@ -380,6 +380,8 @@ const (
 	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
 	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
 	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
+	featureGaggleSandbox                  FeatureID = "gaggle.spec.sandbox"
+	featureGaggleCheckoutSparse           FeatureID = "gaggle.spec.project.checkout.sparse"
 	featureGooberGaggle                   FeatureID = "goober.spec.gaggle"
 	featureGooberRole                     FeatureID = "goober.spec.role"
 	featureGooberDisplayName              FeatureID = "goober.spec.displayName"
@@ -497,6 +499,8 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTerminalComplete,
 		featureWorkflowTerminalAbort,
 		featureWorkflowTerminalEscalate,
+		featureGaggleSandbox,
+		featureGaggleCheckoutSparse,
 		featureGooberGaggle,
 		featureGooberRole,
 		featureGooberDisplayName,
@@ -611,11 +615,16 @@ func currentFeatures(sinceVersion string) []Feature {
 // and config-examples model, which must validate without a preview
 // acknowledgement (an earlier placeholder marked *every* field preview, so
 // guided-init tripped VER002 on every standard field, #1196). Only genuinely
-// unproven features stay preview — here, container-image stages, whose
-// execution path is deferred (#1102) and is exercised by nothing in the
-// canonical set. Promoting a feature to GA is a one-line removal from this map.
+// unproven features stay preview — container-image stages, whose execution
+// path is deferred (#1102) and is exercised by nothing in the canonical set;
+// sparse checkout, accepted but inert on the local runner (#649); and the
+// per-gaggle sandbox posture override, whose enforcement is landing behind
+// the default-off instance opt-in (#1305). Promoting a feature to GA is a
+// one-line removal from this map.
 var previewFeatures = map[FeatureID]struct{}{
-	featureStageImage: {},
+	featureStageImage:           {},
+	featureGaggleSandbox:        {},
+	featureGaggleCheckoutSparse: {},
 }
 
 type featureSet map[FeatureID]struct{}

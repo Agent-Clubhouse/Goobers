@@ -1185,3 +1185,125 @@ func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 		})
 	}
 }
+
+// TestGaggleSchemaSandboxAndCheckout covers the two v2 cloud-ladder additions
+// to the Gaggle schema: the per-gaggle sandbox posture override (#1305) and
+// the accepted-but-inert repo checkout declaration (#649).
+func TestGaggleSchemaSandboxAndCheckout(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "example"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"CHECKOUT},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-example"}SANDBOX
+		}
+	}`
+	for _, tc := range []struct {
+		name     string
+		checkout string
+		sandbox  string
+		wantErr  bool
+	}{
+		{name: "neither declared"},
+		{
+			name:     "sparse checkout and enforced sandbox",
+			checkout: `, "checkout": {"sparse": ["services/web", "docs"]}`,
+			sandbox:  `, "sandbox": {"agentic": "enforced"}`,
+		},
+		{name: "sandbox disabled", sandbox: `, "sandbox": {"agentic": "disabled"}`},
+		{name: "sandbox empty object", sandbox: `, "sandbox": {}`},
+		{
+			name:    "unknown sandbox posture rejected",
+			sandbox: `, "sandbox": {"agentic": "paranoid"}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown sandbox key rejected",
+			sandbox: `, "sandbox": {"deterministic": "enforced"}`,
+			wantErr: true,
+		},
+		{
+			name:     "empty sparse path rejected",
+			checkout: `, "checkout": {"sparse": [""]}`,
+			wantErr:  true,
+		},
+		{
+			name:     "unknown checkout key rejected",
+			checkout: `, "checkout": {"partial": true}`,
+			wantErr:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := strings.Replace(gaggle, "CHECKOUT", tc.checkout, 1)
+			doc = strings.Replace(doc, "SANDBOX", tc.sandbox, 1)
+			err := v.ValidateJSON("gaggle.schema.json", []byte(doc))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+// TestGaggleCheckoutSparseIsInertWarning pins the accepted-but-inert contract
+// for checkout.sparse (#649): declaring it must validate without errors and
+// surface a VER003 compatibility notice — exactly the task.run.image shape —
+// on both the project repo and any additionalRepos entry.
+func TestGaggleCheckoutSparseIsInertWarning(t *testing.T) {
+	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    checkout:
+      sparse: [services/web]
+  additionalRepos:
+    - provider: github
+      owner: acme
+      name: assets
+      checkout:
+        sparse: [images]
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-example
+`
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := newV(t).ValidateDir(dir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	var got []string
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningCompatibility && strings.Contains(warning.Explanation, "not honored by the local runner") {
+			got = append(got, warning.Scope+": "+warning.Explanation)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("checkout VER003 warnings = %v, want project + additionalRepos entries", got)
+	}
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{"spec.project.checkout.sparse", "spec.additionalRepos[0].checkout.sparse"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings missing %q:\n%s", want, joined)
+		}
+	}
+	for _, issue := range report.Issues {
+		if issue.Severity == Error && strings.Contains(issue.Message, "checkout") {
+			t.Errorf("checkout declaration must not be an error: %v", issue)
+		}
+	}
+}

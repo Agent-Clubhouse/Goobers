@@ -88,6 +88,11 @@ type Config struct {
 	// uses only env/file refs behaves byte-identically to before this field
 	// existed.
 	SecretStores []SecretStoreConfig `json:"secretStores,omitempty" yaml:"secretStores,omitempty"`
+	// Sandbox declares the instance-wide isolation posture (#1305). Absent or
+	// zero-valued it is "disabled" — sandboxing is strictly opt-in, so an
+	// unconfigured instance runs exactly as before. A gaggle may override it
+	// through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
+	Sandbox *SandboxConfig `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -776,6 +781,11 @@ func (c *Config) Validate() error {
 			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
 			c.WorkflowSource.Token.Env,
 		)
+	}
+	if c.Sandbox != nil {
+		if err := c.Sandbox.Validate(); err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
 	}
 	return nil
 }

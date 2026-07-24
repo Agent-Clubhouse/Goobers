@@ -39,6 +39,7 @@
         "error",
         "redaction",
         "repaired",
+        "runner.isolation.posture",
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
@@ -54,7 +55,7 @@
         "daemon.clean_shutdown",
         "daemon.dirty_restart"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, and daemon.* are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",

@@ -99,3 +99,10 @@ runConditions:
 # Example store-backed ref, anywhere a token ref is accepted:
 #     token:
 #       store: prod-kv/github-token
+# Optional isolation posture for agentic stages (#1305). Strictly opt-in:
+# omitted (or `disabled`) runs agentic stages directly on the host, exactly
+# as before. `enforced` requires the runner to isolate agentic stages and
+# fails runs it cannot isolate. A gaggle can override this instance-wide
+# posture through its own spec.sandbox block.
+# sandbox:
+#   agentic: enforced

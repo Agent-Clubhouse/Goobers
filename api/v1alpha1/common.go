@@ -51,6 +51,21 @@ type RepoRef struct {
 	// this repo. It resolves to a Connection declared in the Manifest.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
+	// Checkout narrows how much of the repository run workspaces materialize
+	// (B2, #649). Accepted but not honored by the local runner yet: declaring
+	// it is inert and surfaces a VER003 compatibility warning at validate
+	// time, mirroring task.run.image.
+	// +optional
+	Checkout *CheckoutSpec `json:"checkout,omitempty" yaml:"checkout,omitempty"`
+}
+
+// CheckoutSpec declares partial-checkout behavior for a repository reference.
+type CheckoutSpec struct {
+	// Sparse lists repo-relative path cones a sparse checkout materializes;
+	// paths outside every cone are absent from run workspaces. Empty means a
+	// full checkout.
+	// +optional
+	Sparse []string `json:"sparse,omitempty" yaml:"sparse,omitempty"`
 }
 
 // BacklogRef points at the singleton backlog a gaggle draws work from.

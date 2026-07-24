@@ -61,6 +61,9 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
+		// Runner-scoped isolation posture record (#1305): payload entirely
+		// under runner.*, proving the schema keeps pace with the type.
+		{Type: EventRunnerIsolationPosture, Stage: "impl", Attempt: 1, Runner: map[string]any{"posture": "disabled"}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
 	} {
 		if err := run.Append(ev); err != nil {
