@@ -1773,7 +1773,7 @@ func collectStageAttempts(
 	stage string,
 ) map[string][]StageAttempt {
 	byStage := make(map[string][]StageAttempt)
-	visits := make(map[string]int)
+	visits := make(map[string]stageVisitState)
 	if stage != "" {
 		byStage[stage] = []StageAttempt{}
 	}
@@ -1810,6 +1810,10 @@ func collectStageAttempts(
 		}
 		attempts := byStage[event.Stage]
 		switch event.Type {
+		case journal.EventStageRerunRequested:
+			visit := visits[event.Stage]
+			visit.humanRequested = true
+			visits[event.Stage] = visit
 		case journal.EventStageStarted:
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventArtifactRecorded:
@@ -1858,20 +1862,41 @@ func collectStageAttempts(
 	return byStage
 }
 
+type stageVisitState struct {
+	ordinal        int
+	humanVisit     bool
+	humanRequested bool
+}
+
 func newStageAttempt(
 	runID string,
 	event journal.Event,
-	visits map[string]int,
+	visits map[string]stageVisitState,
 	started bool,
 ) StageAttempt {
 	visit := visits[event.Stage]
-	if event.AttemptClass == "" || event.AttemptClass == journal.AttemptHuman || visit == 0 {
-		visit++
-		visits[event.Stage] = visit
+	switch event.AttemptClass {
+	case "":
+		visit.ordinal++
+		visit.humanVisit = false
+		visit.humanRequested = false
+	case journal.AttemptHuman:
+		// Legacy journals can lack stage.rerun.requested. Treat their first
+		// consecutive human attempt as the visit boundary.
+		if visit.humanRequested || !visit.humanVisit || visit.ordinal == 0 {
+			visit.ordinal++
+		}
+		visit.humanVisit = true
+		visit.humanRequested = false
+	default:
+		if visit.ordinal == 0 {
+			visit.ordinal = 1
+		}
 	}
+	visits[event.Stage] = visit
 	attempt := StageAttempt{
 		ID:        stageAttemptID(runID, event.Branch, event.Stage, event.Seq),
-		Visit:     visit,
+		Visit:     visit.ordinal,
 		Number:    event.Attempt,
 		Class:     attemptClass(event.AttemptClass),
 		Artifacts: []ArtifactMetadata{},

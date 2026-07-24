@@ -177,6 +177,111 @@ func TestStageAttemptsDistinguishRepassesFromRetries(t *testing.T) {
 	}
 }
 
+func TestStageAttemptsKeepInterruptedHumanRerunInOneVisit(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-interrupted-human-rerun", machine.Def.Name, "goobers",
+		time.Date(2026, 7, 24, 13, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultSuccess),
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptHuman,
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptHuman,
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
+		Error:  &journal.ErrorDetail{Code: "interrupted"},
+		Runner: map[string]any{"interruptedAttempt": true},
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 3,
+		AttemptClass: journal.AttemptHuman,
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 3,
+		AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultSuccess),
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 4,
+		AttemptClass: journal.AttemptHuman,
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 4,
+		AttemptClass: journal.AttemptHuman,
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 4,
+		AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultSuccess),
+	})
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	got, err := service.StageAttempts(context.Background(), "run-interrupted-human-rerun", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Attempts) != 4 {
+		t.Fatalf("attempts = %+v", got.Attempts)
+	}
+	wantVisits := []int{1, 2, 2, 3}
+	for i, attempt := range got.Attempts {
+		if attempt.Visit != wantVisits[i] || attempt.Number != i+1 {
+			t.Fatalf("attempt %d = %+v", i, attempt)
+		}
+	}
+}
+
+func TestStageAttemptsGroupLegacyHumanRetries(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-legacy-human-rerun", machine.Def.Name, "goobers",
+		time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	for _, attempt := range []int{2, 3} {
+		clock.advance(time.Second)
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageStarted, Stage: "implement", Attempt: attempt,
+			AttemptClass: journal.AttemptHuman,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		clock.advance(time.Second)
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: attempt,
+			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultSuccess),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	got, err := service.StageAttempts(context.Background(), "run-legacy-human-rerun", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Attempts) != 2 || got.Attempts[0].Visit != 1 || got.Attempts[1].Visit != 1 {
+		t.Fatalf("legacy human attempts = %+v", got.Attempts)
+	}
+}
+
 func TestStageAttemptsIdentifyLegacyFinishWithoutStart(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(
