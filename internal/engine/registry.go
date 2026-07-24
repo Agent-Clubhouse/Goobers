@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -42,7 +43,14 @@ func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
 
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
+// Version assignment, validation, and the append run under one critical
+// section, so concurrent registrations serialize and version numbers stay
+// unique and monotonic (#626).
 func (r *Registry) RegisterDefinition(def wf.Definition) (int, error) {
+	if problems := shapeProblems(def.Spec); len(problems) > 0 {
+		return 0, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -52,6 +60,38 @@ func (r *Registry) RegisterDefinition(def wf.Definition) (int, error) {
 	}
 	r.defs[def.Name] = append(r.defs[def.Name], def)
 	return def.Version, nil
+}
+
+// shapeProblems re-asserts the schema-owned task shape invariants at the
+// registry boundary (#626): agentic requires a goober and forbids a run
+// block; deterministic requires a run with a command and forbids a goober —
+// the same allOf rules api/schemas/workflow.schema.json enforces, which the
+// compiler deliberately does not own. Defense in depth: the schema remains
+// the owner, the registry mirrors it, so a definition the schema would
+// refuse can never enter the registry unchallenged.
+func shapeProblems(spec apiv1.WorkflowSpec) []string {
+	var problems []string
+	for _, t := range spec.Tasks {
+		switch t.Type {
+		case apiv1.TaskAgentic:
+			if t.Goober == "" {
+				problems = append(problems, fmt.Sprintf("task %q is agentic but names no goober (schema: agentic requires goober)", t.Name))
+			}
+			if t.Run != nil {
+				problems = append(problems, fmt.Sprintf("task %q is agentic but declares a run block (schema: agentic forbids run)", t.Name))
+			}
+		case apiv1.TaskDeterministic:
+			if t.Run == nil {
+				problems = append(problems, fmt.Sprintf("task %q is deterministic but declares no run (schema: deterministic requires run)", t.Name))
+			} else if len(t.Run.Command) == 0 {
+				problems = append(problems, fmt.Sprintf("task %q run declares no command (schema: run.command requires at least one element)", t.Name))
+			}
+			if t.Goober != "" {
+				problems = append(problems, fmt.Sprintf("task %q is deterministic but names goober %q (schema: deterministic forbids goober)", t.Name, t.Goober))
+			}
+		}
+	}
+	return problems
 }
 
 // Compile validates def with the same preview policy used for registration.

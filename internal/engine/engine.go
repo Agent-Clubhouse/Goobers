@@ -288,10 +288,17 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			return res, err
 		})
 	}
-	run := apiv1.DeterministicRun{}
-	if t.Run != nil {
-		run = *t.Run
+	// Fail closed on an absent or zero-value run (#626/#156): a
+	// DeterministicRun{} previously masked nil and dispatched an empty
+	// command. The registry rejects these shapes at registration; this guard
+	// covers a RunInput constructed without it.
+	if t.Run == nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
 	}
+	if len(t.Run.Command) == 0 {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command; refusing to dispatch an empty command", t.Name)
+	}
+	run := *t.Run
 	return dispatchWithRetry(ctx, t, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 		var res apiv1.ResultEnvelope
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)

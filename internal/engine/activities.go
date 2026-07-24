@@ -140,6 +140,11 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if a.Det == nil {
 		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
+	// Dispatch distinguishes absent from zero-value (#626): no stage may run
+	// with an empty effective command, whatever the workflow handed us.
+	if len(run.Command) == 0 {
+		return apiv1.ResultEnvelope{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command; refusing to execute (fail closed)", env.TaskID))
+	}
 	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, classifySeamError(err)
