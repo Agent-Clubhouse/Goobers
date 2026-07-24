@@ -3,6 +3,7 @@ import type { WorkflowGraph } from "./api/types";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
+  clampGraphZoom,
   fitGraphZoom,
   layoutWorkflowGraph,
 } from "./workflowGraph";
@@ -126,10 +127,20 @@ describe("canonical workflow graph layout", () => {
     expect(Math.abs(branches[0].labelY - branches[1].labelY)).toBeGreaterThanOrEqual(28);
   });
 
-  it("keeps fit and manual zoom within readable boundaries", () => {
+  it("fits large graphs below 75% and keeps manual zoom within readable boundaries", () => {
     expect(fitGraphZoom(400, 200, 800, 400)).toBe(1);
-    expect(fitGraphZoom(4_000, 2_000, 800, 400)).toBe(MIN_GRAPH_ZOOM);
-    expect(MIN_GRAPH_ZOOM).toBeGreaterThanOrEqual(0.75);
+    const largeGraphZoom = fitGraphZoom(2_400, 900, 800, 400);
+    expect(largeGraphZoom).toBe(0.323);
+    expect(2_400 * largeGraphZoom).toBeLessThanOrEqual(800 - 24);
+    expect(900 * largeGraphZoom).toBeLessThanOrEqual(400 - 24);
+    const extremeGraphZoom = fitGraphZoom(4_000, 2_000, 800, 400);
+    expect(extremeGraphZoom).toBeLessThan(MIN_GRAPH_ZOOM);
+    expect(4_000 * extremeGraphZoom).toBeLessThanOrEqual(800 - 24);
+    expect(2_000 * extremeGraphZoom).toBeLessThanOrEqual(400 - 24);
+    expect(MIN_GRAPH_ZOOM).toBe(0.25);
+    expect(clampGraphZoom(0.1)).toBe(MIN_GRAPH_ZOOM);
+    expect(clampGraphZoom(2)).toBe(MAX_GRAPH_ZOOM);
     expect(MAX_GRAPH_ZOOM).toBeLessThanOrEqual(1.5);
+    expect(fitGraphZoom(400, 200, 20, 20)).toBeGreaterThan(0);
   });
 });
