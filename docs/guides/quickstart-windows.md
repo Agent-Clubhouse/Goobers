@@ -27,7 +27,8 @@ the Windows-specific *getting-the-binary* path (zip + `Get-FileHash` verificatio
 Grab the Windows archive and the checksum manifest from the release you want
 (see [Releases & packaging](releases.md) for the artifact naming scheme):
 
-- `goobers_<version>_windows_amd64.zip` — contains `goobers.exe`
+- `goobers_<version>_windows_amd64.zip` — contains `goobers.exe`, `README.md`,
+  and the release-pinned `docs/` tree
 - `SHA256SUMS` — the checksum manifest covering every artifact in the release
 
 Only `windows/amd64` is published. `windows/arm64` is **not** shipped — see
@@ -85,7 +86,8 @@ goobers --version
 reports the same `version (commit …, built …, go… windows/amd64)` string the
 release was stamped with (the packaging engine injects build metadata via the
 same `internal/version` `-ldflags` path a local `make build` uses). From here
-the [platform-neutral quickstart](quickstart.md) applies unchanged — configure
+open `docs/RELEASE.md` to confirm the installed documentation identity, then use
+the bundled `docs/guides/quickstart.md`. It applies unchanged — configure
 credentials, then drive a first run.
 
 To run the daemon under the Service Control Manager instead of a foreground

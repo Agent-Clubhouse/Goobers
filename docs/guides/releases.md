@@ -8,7 +8,8 @@ shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 
 Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 `.github/workflows/release.yml`. The workflow builds the packaging engine's
-complete matrix, verifies its shared checksum manifest and Linux binary, and
+complete matrix, verifies its shared checksum manifest, Linux binary, and
+release-pinned documentation, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
 `install.sh`, `feature-registry.json`, `dsl-support-matrix.json`, and
 `RELEASE_NOTES.md`. The release body and attached notes are the same document:
@@ -68,7 +69,9 @@ Windows adopters should use the checksum-verified
 ## The packaging engine
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
-packages each target into a platform-conventional archive, and writes a shared
+regenerates the CLI reference, man pages, and completion scripts from that
+release's command registry, packages each target with the tagged checkout's
+documentation into a platform-conventional archive, and writes a shared
 `SHA256SUMS` manifest, the tagged install helper, generated release notes, and
 the shipped DSL feature and version-support snapshots into `dist/` (override
 with `-output`). It is a standalone Go tool — matching `test/ci` and
@@ -91,6 +94,26 @@ released binary's `goobers --version` is byte-for-byte consistent with a local
 `make build`. Version defaults to `git describe --tags --always --dirty`; the
 build date defaults to the commit's committer date, so re-running the engine on
 the same commit is reproducible (`-trimpath` is always on).
+
+### Release-pinned onboarding documentation
+
+Every platform archive carries `README.md` and the tagged checkout's complete
+`docs/` tree beside the binary. Before packaging, the release engine invokes the
+release-stamped binary's hidden documentation generator, which uses the same
+registry-backed writer as `make docs` to replace `docs/cli/`, `docs/man/`, and
+`docs/completion/`. `docs/RELEASE.md` records the release version and commit.
+The tagged workflow then regenerates those three directories with the extracted
+binary and diffs them against the archive, so a release cannot publish CLI docs
+from another version.
+
+The starter configuration and scaffold templates remain compiled into that same
+binary and are emitted by `goobers init`/`goobers scaffold`; release packaging
+does not introduce a second template source. Keeping the extracted archive
+together therefore gives an installation one release identity across the
+binary, onboarding docs, shell completions, man pages, and generated templates.
+Start with the bundled `README.md`, use `docs/VISION.md` and
+`docs/ARCHITECTURE.md` for the product concepts, then follow
+`docs/guides/quickstart.md`.
 
 ### Release notes and DSL support snapshots
 
@@ -133,13 +156,12 @@ and semantic changes require the deprecation window or an `apiVersion` bump.
 
 | Target | Archive | Contents |
 |---|---|---|
-| `windows/amd64` | `goobers_<version>_windows_amd64.zip` | `goobers.exe` |
-| `darwin/amd64`, `darwin/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers` |
-| `linux/amd64`, `linux/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers` |
+| `windows/amd64` | `goobers_<version>_windows_amd64.zip` | `goobers.exe`, `README.md`, `docs/` |
+| `darwin/amd64`, `darwin/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/` |
+| `linux/amd64`, `linux/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/` |
 
 Windows uses `.zip` (the platform convention Windows users and scoop/winget
-expect); unix targets use `.tar.gz`. Every archive is a single-file archive of
-the binary under its natural name.
+expect); unix targets use `.tar.gz`.
 
 ### Checksums
 

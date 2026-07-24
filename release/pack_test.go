@@ -85,9 +85,17 @@ func TestPackageArchiveTarGz(t *testing.T) {
 	if err := os.WriteFile(bin, payload, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	releaseRoot := filepath.Join(dir, "release-root")
+	releaseDoc := []byte("# Goobers v1.2.3 documentation\n")
+	if err := os.MkdirAll(filepath.Join(releaseRoot, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(releaseRoot, "docs", "RELEASE.md"), releaseDoc, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	target := Target{"linux", "amd64"}
 
-	archivePath, err := packageArchive(target, "v1.2.3", bin, dir)
+	archivePath, err := packageArchive(target, "v1.2.3", bin, dir, releaseRoot)
 	if err != nil {
 		t.Fatalf("packageArchive: %v", err)
 	}
@@ -113,8 +121,19 @@ func TestPackageArchiveTarGz(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Errorf("tarred bytes = %q, want %q", got, payload)
 	}
+	hdr, err = tr.Next()
+	if err != nil {
+		t.Fatalf("tar docs entry: %v", err)
+	}
+	if hdr.Name != "docs/RELEASE.md" {
+		t.Errorf("tar docs entry name = %q, want docs/RELEASE.md", hdr.Name)
+	}
+	got, _ = io.ReadAll(tr)
+	if !bytes.Equal(got, releaseDoc) {
+		t.Errorf("tarred release doc = %q, want %q", got, releaseDoc)
+	}
 	if _, err := tr.Next(); err != io.EOF {
-		t.Errorf("tar has more than one entry, want exactly 1")
+		t.Errorf("tar has unexpected entries after binary and release docs")
 	}
 }
 

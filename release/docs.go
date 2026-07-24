@@ -1,0 +1,121 @@
+package main
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+)
+
+const releaseDocsVersionFile = "docs/RELEASE.md"
+
+func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
+	repoRoot := gitOutput("rev-parse", "--show-toplevel")
+	if repoRoot == "" {
+		return "", nil, fmt.Errorf("resolve repository root for release documentation")
+	}
+
+	workDir, err := os.MkdirTemp("", "goobers-release-docs-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create release docs workspace: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(workDir) }
+	payloadDir := filepath.Join(workDir, "payload")
+	docsDir := filepath.Join(payloadDir, "docs")
+
+	if err := copyReleaseTree(filepath.Join(repoRoot, "docs"), docsDir); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := copyReleaseFile(filepath.Join(repoRoot, "README.md"), filepath.Join(payloadDir, "README.md")); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+
+	generator := filepath.Join(workDir, "goobers-docs")
+	if runtime.GOOS == "windows" {
+		generator += ".exe"
+	}
+	build := exec.Command(
+		"go", "build", "-trimpath", "-ldflags", ldflags,
+		"-o", generator, "./cmd/goobers",
+	)
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(),
+		"GOOS="+runtime.GOOS,
+		"GOARCH="+runtime.GOARCH,
+		"CGO_ENABLED=0",
+	)
+	if output, err := build.CombinedOutput(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("build release docs generator: %w\n%s", err, output)
+	}
+
+	generate := exec.Command(generator, "__generate-docs", docsDir)
+	if output, err := generate.CombinedOutput(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("generate release CLI docs: %w\n%s", err, output)
+	}
+
+	marker := fmt.Sprintf(
+		"# Goobers %s documentation\n\n"+
+			"This documentation tree and the sibling `goobers` binary were packaged from commit `%s`.\n"+
+			"The CLI reference, man pages, and completion scripts were regenerated from that binary's command registry.\n",
+		version,
+		commit,
+	)
+	if err := os.WriteFile(filepath.Join(payloadDir, filepath.FromSlash(releaseDocsVersionFile)), []byte(marker), 0o644); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("write release docs identity: %w", err)
+	}
+	return payloadDir, cleanup, nil
+}
+
+func copyReleaseTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if entry.IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("create release docs directory %s: %w", target, err)
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("release docs must not contain symlink %s", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect release doc %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("release docs contain unsupported file %s", path)
+		}
+		if err := copyReleaseFile(path, target); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func copyReleaseFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read release doc %s: %w", source, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create release doc parent %s: %w", destination, err)
+	}
+	if err := os.WriteFile(destination, data, 0o644); err != nil {
+		return fmt.Errorf("write release doc %s: %w", destination, err)
+	}
+	return nil
+}

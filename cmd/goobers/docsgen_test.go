@@ -52,7 +52,7 @@ func TestCLIDocsUpToDate(t *testing.T) {
 
 	// No stale generated file is committed that the generator no longer produces
 	// (a page for a since-removed command).
-	for _, sub := range []string{"man", "cli"} {
+	for _, sub := range []string{"man", "cli", "completion"} {
 		entries, err := os.ReadDir(filepath.Join(dir, sub))
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -128,6 +128,19 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "cli", "README.md")); err != nil {
 		t.Fatalf("expected cli/README.md to be written: %v", err)
 	}
+	for rel, want := range map[string]string{
+		"completion/goobers.bash": bashCompletion(),
+		"completion/goobers.fish": fishCompletion(),
+		"completion/_goobers":     zshCompletion(),
+	} {
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("expected %s to be written: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s differs from registry-rendered completion", rel)
+		}
+	}
 
 	// A stale generated man page (a since-removed command) is pruned on the next
 	// write; a hand-authored, non-generated doc alongside it is preserved.
@@ -151,6 +164,30 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "man", "goobers-init.1")); err != nil {
 		t.Errorf("real page missing after rewrite: %v", err)
+	}
+}
+
+func TestGenerateDocsCommand(t *testing.T) {
+	dir := t.TempDir()
+	code, _, stderr := runArgs(t, "__generate-docs", dir)
+	if code != 0 {
+		t.Fatalf("__generate-docs exit = %d, stderr = %s", code, stderr)
+	}
+	for _, rel := range []string{
+		"cli/README.md",
+		"completion/goobers.bash",
+		"completion/goobers.fish",
+		"completion/_goobers",
+		"man/goobers.1",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("__generate-docs did not write %s: %v", rel, err)
+		}
+	}
+
+	code, _, stderr = runArgs(t, "__generate-docs")
+	if code != 2 || !strings.Contains(stderr, "usage:") {
+		t.Fatalf("__generate-docs without directory = %d, stderr = %q", code, stderr)
 	}
 }
 

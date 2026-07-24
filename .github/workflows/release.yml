@@ -109,6 +109,12 @@ jobs:
           mkdir smoke
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
           smoke/goobers --version | grep --fixed-strings "$TAG"
+          grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
+          mkdir generated-docs
+          smoke/goobers __generate-docs generated-docs
+          diff --recursive smoke/docs/cli generated-docs/cli
+          diff --recursive smoke/docs/man generated-docs/man
+          diff --recursive smoke/docs/completion generated-docs/completion
 
       - name: Publish GitHub Release
         env:

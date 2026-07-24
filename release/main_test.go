@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,20 +94,45 @@ func TestRunEndToEnd(t *testing.T) {
 	if _, err := os.Stat(archive); err != nil {
 		t.Fatalf("expected archive %s: %v", archive, err)
 	}
-	// Zip contains goobers.exe (the built binary renamed to the target's name).
+	// Zip contains the target binary and release-pinned onboarding docs.
 	zr, err := zip.OpenReader(archive)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = zr.Close() }()
-	if len(zr.File) != 1 || zr.File[0].Name != "goobers.exe" {
-		t.Fatalf("zip contents = %v, want [goobers.exe]", zr.File)
+	archiveEntries := make(map[string]*zip.File, len(zr.File))
+	for _, entry := range zr.File {
+		archiveEntries[entry.Name] = entry
+	}
+	for _, name := range []string{
+		"goobers.exe",
+		"README.md",
+		releaseDocsVersionFile,
+		"docs/cli/README.md",
+		"docs/completion/goobers.bash",
+		"docs/completion/goobers.fish",
+		"docs/completion/_goobers",
+		"docs/man/goobers.1",
+	} {
+		if archiveEntries[name] == nil {
+			t.Errorf("release archive missing %s", name)
+		}
+	}
+	marker, err := readZipEntry(archiveEntries[releaseDocsVersionFile])
+	if err != nil {
+		t.Fatalf("read %s: %v", releaseDocsVersionFile, err)
+	}
+	for _, want := range []string{"Goobers v1.2.3 documentation", "commit `deadbee`", "command registry"} {
+		if !strings.Contains(string(marker), want) {
+			t.Errorf("%s missing %q:\n%s", releaseDocsVersionFile, want, marker)
+		}
 	}
 	// SHA256SUMS written and references the archive.
 	sums, err := os.ReadFile(filepath.Join(out, "SHA256SUMS"))
 	if err != nil {
 		t.Fatalf("SHA256SUMS: %v", err)
 	}
+
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
@@ -149,6 +175,18 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("missing release metadata %s: %v", name, err)
 		}
 	}
+}
+
+func readZipEntry(entry *zip.File) ([]byte, error) {
+	if entry == nil {
+		return nil, os.ErrNotExist
+	}
+	reader, err := entry.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	return io.ReadAll(reader)
 }
 
 // TestRunSkipUnbuildable proves the skip path: an impossible target is skipped

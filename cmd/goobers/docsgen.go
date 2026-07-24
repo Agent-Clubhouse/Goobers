@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,8 +33,11 @@ func renderCLIDocs() map[string]string {
 	clidocs.Sort(cmds)
 
 	files := map[string]string{
-		"cli/README.md": clidocs.Reference(root, cmds),
-		"man/goobers.1": clidocs.ManIndex(root, cmds),
+		"cli/README.md":           clidocs.Reference(root, cmds),
+		"completion/goobers.bash": bashCompletion(),
+		"completion/goobers.fish": fishCompletion(),
+		"completion/_goobers":     zshCompletion(),
+		"man/goobers.1":           clidocs.ManIndex(root, cmds),
 	}
 	for _, c := range cmds {
 		files["man/"+c.ManFile()] = clidocs.ManPage(c)
@@ -81,8 +85,9 @@ func docDisplayName(c cliCommand) string {
 }
 
 // writeCLIDocs regenerates the committed docs under docsDir, first removing any
-// stale generated file (a man page or the reference) so a removed command's
-// page cannot linger. Used by `make docs` via the drift test's update mode.
+// stale generated man page, reference, or completion script. Used by `make
+// docs` via the drift test's update mode and by the release packager through the
+// hidden generator command.
 func writeCLIDocs(docsDir string) error {
 	files := renderCLIDocs()
 	wanted := make(map[string]bool, len(files))
@@ -91,7 +96,7 @@ func writeCLIDocs(docsDir string) error {
 	}
 
 	// Prune stale generated files.
-	for _, sub := range []string{"man", "cli"} {
+	for _, sub := range []string{"man", "cli", "completion"} {
 		dir := filepath.Join(docsDir, sub)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -126,8 +131,7 @@ func writeCLIDocs(docsDir string) error {
 }
 
 // isGeneratedDocFile reports whether a docs-relative path is one this generator
-// owns — a section-1 man page under man/, or the reference README under cli/ —
-// so pruning never touches a hand-authored doc.
+// owns, so pruning never touches a hand-authored doc.
 func isGeneratedDocFile(rel string) bool {
 	rel = filepath.ToSlash(rel)
 	switch {
@@ -135,9 +139,25 @@ func isGeneratedDocFile(rel string) bool {
 		return true
 	case rel == "cli/README.md":
 		return true
+	case rel == "completion/goobers.bash" ||
+		rel == "completion/goobers.fish" ||
+		rel == "completion/_goobers":
+		return true
 	default:
 		return false
 	}
+}
+
+func runGenerateDocs(args []string, _ io.Writer, stderr io.Writer) int {
+	if len(args) != 1 {
+		pln(stderr, "usage: goobers __generate-docs <docs-directory>")
+		return 2
+	}
+	if err := writeCLIDocs(args[0]); err != nil {
+		pf(stderr, "generate docs: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // docSlugsUnique reports the first duplicate man-page slug across cmds, if any.
