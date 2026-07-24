@@ -34,14 +34,16 @@ spec:
       containers:
         - name: worker
           image: goobers # rewritten by the kustomization images: transformer
-          # CHANGE-ME: `goobers worker` is the v2-cloud-scale A1.6 worker
-          # entrypoint (#632); until it lands this Deployment is a shape stub
-          # per #663. One task queue per Deployment.
-          args: ["worker", "--task-queue", "CHANGE-ME-task-queue"]
+          # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
+          # (#632): it serves the named task queue(s) until SIGTERM, then
+          # drains. One task queue per Deployment — set the queue to the one
+          # this gaggle/workflow dispatches to (default "goobers-engine").
+          args: ["worker", "--task-queue", "goobers-engine"]
           env:
             # Temporal frontend (§2); reachable from workers and operator only
-            # (§5 — see ../temporal/networkpolicy-temporal.yaml).
-            - name: TEMPORAL_ADDRESS
+            # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
+            # reads GOOBERS_TEMPORAL_HOSTPORT (falls back to 127.0.0.1:7233).
+            - name: GOOBERS_TEMPORAL_HOSTPORT
               value: temporal-frontend.goobers-temporal:7233
           volumeMounts:
             # Journal & artifacts: same on-disk layout as tiers 1-2 (§4);
