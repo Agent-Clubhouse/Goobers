@@ -88,7 +88,10 @@ runConditions:
 # one source per ref). Auth to the store itself always uses an ambient
 # identity (workload-identity, managed-identity, or azure-cli) — never a
 # token ref, which would be circular. Instances that declare no stores and
-# use only env/file refs behave exactly as before.
+# use only env/file refs behave exactly as before. Resolved values are
+# TTL-cached per secret (default 300s; cacheTTLSeconds to tune), so a value
+# rotated in the vault is picked up within the TTL without a restart; see
+# docs/guides/secret-stores.md.
 # secretStores:
 #   - name: prod-kv
 #     kind: azure-key-vault
