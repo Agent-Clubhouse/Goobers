@@ -181,8 +181,13 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				source: readmeSourceInstall,
 				installed: fmt.Sprintf(
 					"This copy is bundled with release `%s` and assumes `goobers` is installed on `PATH`.\n\n"+
-						"```sh\ngoobers --version\n"+
-						"goobers init --guided ./my-instance\n\n",
+						"```sh\ngoobers --version\n```\n\n"+
+						"The release installer already ran guided setup for `./my-instance`. If you used\n"+
+						"the installer, do not initialize that instance again; skip the direct-archive\n"+
+						"step below and continue with the existing instance.\n\n"+
+						"If you opened this README directly from an extracted archive instead, create the\n"+
+						"guided instance now:\n\n"+
+						"```sh\ngoobers init --guided ./my-instance\n\n",
 					version,
 				),
 			}},

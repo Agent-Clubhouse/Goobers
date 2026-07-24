@@ -138,7 +138,9 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers --version",
-		"goobers init --guided ./my-instance",
+		"The release installer already ran guided setup for `./my-instance`",
+		"do not initialize that instance again",
+		"directly from an extracted archive instead",
 		"goobers init --template=quickstart ./tutorial-instance",
 		"goobers run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 	} {
@@ -151,11 +153,17 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
 	}
+	if got := strings.Count(string(readme), "goobers init --guided ./my-instance"); got != 1 {
+		t.Errorf("README.md guided init count = %d, want one direct-archive command:\n%s", got, readme)
+	}
 	assertSubstringsInOrder(
 		t,
 		"bundled README onboarding",
 		string(readme),
 		"goobers --version",
+		"The release installer already ran guided setup for `./my-instance`",
+		"do not initialize that instance again",
+		"directly from an extracted archive instead",
 		"goobers init --guided ./my-instance",
 		"goobers run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)

@@ -37,7 +37,10 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 	}
 	releaseRoot := filepath.Join(root, "release")
 	releaseDocs := map[string][]byte{
-		"README.md":                 []byte("# Goobers v1.2.3\n"),
+		"README.md": []byte("# Goobers v1.2.3\n\n" +
+			"The release installer already ran guided setup for `./my-instance`; do not initialize it again.\n\n" +
+			"If you opened this README directly from an extracted archive instead:\n\n" +
+			"```sh\ngoobers init --guided ./my-instance\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
 		"docs/guides/quickstart.md": []byte("# Quickstart v1.2.3\n"),
 	}
@@ -142,6 +145,19 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 			t.Errorf("installed documentation %s = %q, want %q", name, got, want)
 		}
 	}
+	installedReadme, err := os.ReadFile(filepath.Join(installedDocsDir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSubstringsInOrder(
+		t,
+		"installed README onboarding",
+		string(installedReadme),
+		"The release installer already ran guided setup",
+		"do not initialize it again",
+		"directly from an extracted archive instead",
+		"goobers init --guided ./my-instance",
+	)
 	calls, err := os.ReadFile(goobersCalls)
 	if err != nil {
 		t.Fatal(err)
