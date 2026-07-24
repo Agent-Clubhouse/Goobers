@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -87,6 +88,13 @@ type Local struct {
 	ready       func() bool
 	now         func() time.Time
 	definitions atomic.Pointer[definitionSnapshot]
+
+	// reconcileMu serializes index reconciliation and, together with
+	// lastReconcile, throttles it: a burst of concurrent/rapid ListRuns
+	// (the Overview fans out one per phase) collapses to a single directory
+	// scan instead of one per request. See reconcileIndex.
+	reconcileMu   sync.Mutex
+	lastReconcile time.Time
 }
 
 type definitionSnapshot struct {
