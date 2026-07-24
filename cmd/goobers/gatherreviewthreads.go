@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
 )
 
 const gatherReviewThreadsHelp = "Usage: goobers gather-review-threads [path]\n\n" +
@@ -120,59 +118,4 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "gathered %d native review(s) and %d inline comment(s) for PR #%s\n", len(reviews), len(comments), brief.SelectedNumber)
 	return 0
-}
-
-func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, error) {
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.RemediationBrief{}, err
-	}
-	rd, err := journal.OpenRead(runDir)
-	if err != nil {
-		return apiv1.RemediationBrief{}, err
-	}
-	events, err := rd.Events()
-	if err != nil {
-		return apiv1.RemediationBrief{}, err
-	}
-
-	var latest apiv1.RemediationBrief
-	found := false
-	prefix := runID + ":gather-"
-	for _, event := range events {
-		if event.Type != journal.EventArtifactRecorded || event.Ref == nil ||
-			!strings.HasPrefix(event.Name, prefix) || !strings.HasSuffix(event.Name, "/result") {
-			continue
-		}
-		data, readErr := rd.ArtifactBytes(*event.Ref)
-		if readErr != nil {
-			return apiv1.RemediationBrief{}, fmt.Errorf("read %s: %w", event.Name, readErr)
-		}
-		var header struct {
-			Schema string `json:"schema"`
-		}
-		if json.Unmarshal(data, &header) != nil || header.Schema == "" {
-			continue
-		}
-		if !strings.HasPrefix(header.Schema, "goobers.dev/remediation-brief/") {
-			continue
-		}
-		if header.Schema != apiv1.RemediationBriefVersion {
-			return apiv1.RemediationBrief{}, fmt.Errorf(
-				"%s schema is %q, want %q",
-				event.Name, header.Schema, apiv1.RemediationBriefVersion,
-			)
-		}
-		if err := json.Unmarshal(data, &latest); err != nil {
-			return apiv1.RemediationBrief{}, fmt.Errorf("unmarshal %s: %w", event.Name, err)
-		}
-		found = true
-	}
-	if !found {
-		return apiv1.RemediationBrief{}, fmt.Errorf("no remediation-brief artifact found")
-	}
-	if latest.SelectedNumber == "" {
-		return apiv1.RemediationBrief{}, fmt.Errorf("latest remediation brief has no selectedNumber")
-	}
-	return latest, nil
 }

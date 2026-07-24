@@ -18,8 +18,10 @@ spec:
   # subprocess authenticates the model AND mutates issues at once.
   capabilities:
     - github:issues:write
+    - github:milestones:write
     - agent:model
   policyActions:
+    - assign-milestone
     - close-issue
     - comment-on-issue
     - create-issue

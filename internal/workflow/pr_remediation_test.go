@@ -140,8 +140,33 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if len(threads.Capabilities) != 1 || threads.Capabilities[0] != "github:pr:write" {
 		t.Errorf("gather-review-threads capabilities = %v, want [github:pr:write]", threads.Capabilities)
 	}
-	if threads.Next != "implement" {
-		t.Errorf("gather-review-threads next = %q, want implement", threads.Next)
+	if threads.Next != "gather-issue-context" {
+		t.Errorf("gather-review-threads next = %q, want gather-issue-context", threads.Next)
+	}
+
+	issues, ok := m.Task("gather-issue-context")
+	if !ok {
+		t.Fatal("gather-issue-context stage not found")
+	}
+	if issues.Run == nil ||
+		len(issues.Run.Command) != 2 ||
+		issues.Run.Command[0] != "goobers" ||
+		issues.Run.Command[1] != "gather-issue-context" {
+		t.Errorf("gather-issue-context command = %v, want [goobers gather-issue-context]", issues.Run)
+	}
+	if issues.Run != nil && issues.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-issue-context workspace = %q, want scratch", issues.Run.Workspace)
+	}
+	if issues.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-issue-context resultFile = %q, want remediation-brief.json", issues.Inputs["resultFile"])
+	}
+	if len(issues.Capabilities) != 2 ||
+		issues.Capabilities[0] != "github:pr:write" ||
+		issues.Capabilities[1] != "github:issues:write" {
+		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:write]", issues.Capabilities)
+	}
+	if issues.Next != "implement" {
+		t.Errorf("gather-issue-context next = %q, want implement", issues.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -338,6 +363,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	}
 	if !strings.Contains(implement.Goal, "resolved/outdated state") {
 		t.Fatalf("implement goal does not direct the agent to review-thread liveness: %q", implement.Goal)
+	}
+	if !strings.Contains(implement.Goal, "originating issue body") {
+		t.Fatalf("implement goal does not direct the agent to originating issue context: %q", implement.Goal)
 	}
 }
 

@@ -31,6 +31,7 @@
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
+| [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
 | [`goobers gather-review-threads`](#goobers-gather-review-threads) | add native reviews and anchored inline threads to a remediation brief (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
@@ -569,6 +570,29 @@ error.
 
 ~~~console
 $ goobers gather-implement-context
+~~~
+
+## `goobers gather-issue-context`
+
+add originating issue bodies to a remediation brief (a workflow stage)
+
+~~~text
+Usage: goobers gather-issue-context [path]
+
+Read this run's latest remediation brief, resolve the selected PR's
+Fixes/Closes/Resolves issue references, and replace only the brief's
+gatherIssueContext section with the originating issue bodies. Missing
+PRs, absent references, and referenced issues that no longer resolve
+produce an empty issues list rather than failing the remediation cycle.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = issue context
+gathered (possibly empty), 1 = business/provider/journal error, 2 =
+usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-issue-context
 ~~~
 
 ## `goobers gather-pr-context`

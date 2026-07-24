@@ -16,6 +16,7 @@ type policyActionContract struct {
 
 var policyActionContracts = map[string]policyActionContract{
 	"approve-issue":                 {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
+	"assign-milestone":              {requiredCapabilities: []capability.Capability{capability.GitHubMilestonesWrite}},
 	"claim-backlog-items":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"clear-healed-demotions":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"clear-healed-escalations":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
@@ -69,6 +70,7 @@ var commandPolicyActions = map[string][]string{
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
+	"set-milestone":          {"assign-milestone"},
 	"update-behind-pr":       {"update-pr-branch", "clear-remediation"},
 }
 

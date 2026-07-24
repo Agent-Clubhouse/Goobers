@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -132,6 +133,12 @@ type CopilotAdapter struct {
 	// toolchain env var a `dotnet`/`cargo` agentic stage needs is visible to the
 	// harness too. Empty by default: the built-in allowlist, unchanged.
 	ExtraEnvAllowlist []string
+	// InstanceRoot is exposed to the agentic subprocess so a goobers CLI command
+	// it invokes can resolve instance configuration outside the stage worktree.
+	InstanceRoot string
+	// SelfBin is the running daemon's executable path. It is exposed to the
+	// agentic subprocess so tools can invoke that exact goobers binary.
+	SelfBin string
 }
 
 // Name returns the adapter's registry name.
@@ -455,7 +462,8 @@ func baseEnv(extra []string) []string {
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
 // TMPDIR — never a secret store, never the full os.Environ()), the stage
-// telemetry directory, and exactly the capability tokens this adapter is
+// telemetry directory, routed repository and instance context, the running
+// goobers executable path, and exactly the capability tokens this adapter is
 // configured to inject and that were actually declared for this invocation.
 // A configured capability that fails to resolve is a hard stop — the harness
 // never runs half-credentialed.
@@ -467,6 +475,19 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 	}
 	if telemetryDir != "" {
 		env = append(env, telemetry.StageTelemetryEnv+"="+telemetryDir)
+	}
+	if c.InstanceRoot != "" {
+		env = append(env, executor.InstanceRootEnvVar+"="+c.InstanceRoot)
+	}
+	if c.SelfBin != "" {
+		env = append(env, executor.GoobersBinEnvVar+"="+c.SelfBin)
+	}
+	if repo := req.Envelope.RepoRef; repo.Provider != "" {
+		env = append(env,
+			executor.RepoProviderEnvVar+"="+string(repo.Provider),
+			executor.RepoOwnerEnvVar+"="+repo.Owner,
+			executor.RepoNameEnvVar+"="+repo.Name,
+		)
 	}
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := c.EnvCapabilities[capability]

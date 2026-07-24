@@ -57,8 +57,9 @@ that was not surfaced.
 The candidate's `claimed` flags are a hard mutation boundary, not a similarity
 signal. You may inspect an unclaimed issue for comparison, but **never comment
 on, label, edit, or close an unclaimed candidate member**. Only mutate items in
-this run's claimed batch. `closeEligibleId`, when present, names the only member
-of that candidate pair you may close; when it is absent, the newer issue is
+this run's claimed batch, except for the guarded tracking-parent maintenance in
+§5. `closeEligibleId`, when present, names the only member of that candidate
+pair you may close; when it is absent, the newer issue is
 unclaimed and must remain open. In that claimed-older case, curate the older
 survivor normally and leave the comparison issue untouched for a future run.
 
@@ -133,10 +134,56 @@ Do not split an item that is already a reasonably-scoped single change, even if
 it's a little large — splitting has a cost (context loss, duplicate triage);
 only split when an item is genuinely bundling unrelated work.
 
-### 5. Mark the outcome — bias toward `ready`
+### 5. Maintain milestones and tracking parents
+
+Organize approved work into the existing roadmap as curation housekeeping.
+Inspect the claimed item's current milestone, its direct parent or epic, its
+explicit dependencies, and related claimed items before acting.
+
+- Align a child with its parent or epic's existing milestone. Group related
+  claimed items into the same existing milestone only when the issue
+  relationships or delivery scope make that grouping unambiguous. Remap an
+  item whose current milestone plainly conflicts with that evidence.
+- Use `"$GOOBERS_BIN" set-milestone --item <number> --milestone <number>` only
+  when the target milestone is unambiguous and differs from the current
+  milestone. `GOOBERS_BIN` is the harness-provided path to the running daemon's
+  executable; do not invoke a bare `goobers` command.
+  If the item already has the target milestone, leave it completely untouched:
+  do not invoke the command and do not post a housekeeping comment.
+- Every milestone change must have an explanatory comment on the changed issue
+  naming the old and new milestone and the concrete parent, dependency, or
+  grouping evidence for the change.
+- Milestone housekeeping is your decision. Choosing between plausible
+  milestones because of product sequencing, priority, or whether work belongs
+  on the roadmap at all is a genuine roadmap priority call: do not guess. Mark
+  the claimed item `goobers:needs-human` and ask the exact sequencing question.
+
+Keep epic and tracking checklists synchronized during every pass. For a claimed
+tracking parent, and for the directly linked tracking parent of a claimed child
+that passes the guard below, inspect every explicit checklist or native child:
+
+1. Add a newly filed child that is missing from the checklist.
+2. Check a child only when authoritative issue or linked-PR metadata shows it
+   closed or landed; uncheck it if it was reopened.
+3. Preserve the parent's summary, non-checklist content, and child ordering.
+   If the checklist already reflects every child's current state, leave the
+   parent untouched and do not comment.
+
+The directly linked tracking parent is the only unclaimed issue this maintenance
+may mutate, and only for milestone alignment or checklist synchronization.
+Before each mutation, re-read its live metadata. If it has `goobers:claimed`, an
+open implementation or review PR, any other in-flight marker, or you cannot
+establish that it is idle, treat it as read-only and skip the mutation.
+Never mutate an unclaimed child; use its metadata only to determine the safe
+parent's checklist state. Never change an unclaimed parent's labels, state, or scope.
+Explain a checklist edit in a comment on the parent. A tracking parent keeps
+both outcome labels absent so future curation passes can continue this
+maintenance.
+
+### 6. Mark the outcome — bias toward `ready`
 
 Every item you finish curating gets **exactly one** of these two labels (a
-tracking parent produced by a split gets neither — mark its children instead).
+tracking parent gets neither — mark its children instead).
 
 Mark **`goobers:ready`** when the item is deduped, tagged, and scoped to a
 single change `make ci` can plausibly validate. Crucially, **the following are
@@ -202,7 +249,9 @@ If an item already carries `goobers:ready` or `goobers:needs-human`, the
 slipped through, skip it without modification rather than re-curating. A human
 who wants an item re-evaluated removes the `goobers:needs-human` label (per the
 hand-back instructions above); that returns it to the uncurated pool for your
-next pass. Re-running curation over an already-curated backlog must be a no-op.
+next pass. A claimed tracking parent is the exception: perform only the §5
+roadmap and checklist maintenance, then leave its outcome labels absent.
+Re-running curation over an already-curated backlog must otherwise be a no-op.
 
 ## Explain every action
 

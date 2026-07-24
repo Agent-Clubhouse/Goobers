@@ -78,6 +78,7 @@ Usage:
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -89,10 +90,10 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392/#939/#942): invoked by the runner as a deterministic
+#359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
@@ -182,6 +183,7 @@ Usage:
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -193,10 +195,10 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392/#939/#942): invoked by the runner as a deterministic
+#359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
@@ -456,6 +458,18 @@ through the runner's ordinary contextPointers path. maxHotFiles defaults
 to 100 and is capped at 500. Exit codes: 0 = context gathered (an empty
 hot-file map is valid), 1 = business/provider/journal error, 2 = usage/IO
 error.
+
+### gather-issue-context
+Usage: goobers gather-issue-context [path]
+
+Read this run's latest remediation brief, resolve the selected PR's
+Fixes/Closes/Resolves issue references, and replace only the brief's
+gatherIssueContext section with the originating issue bodies. Missing
+PRs, absent references, and referenced issues that no longer resolve
+produce an empty issues list rather than failing the remediation cycle.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = issue context
+gathered (possibly empty), 1 = business/provider/journal error, 2 =
+usage/IO error.
 
 ### gather-pr-context
 Usage: goobers gather-pr-context [path]

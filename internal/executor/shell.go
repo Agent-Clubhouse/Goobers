@@ -220,6 +220,7 @@ var providerStageResultFiles = map[string]string{
 	"backlog-dedupe":         "dedupe-candidates.json",
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
+	"gather-issue-context":   "remediation-brief.json",
 	"gather-pr-context":      "remediation-brief.json",
 	"gather-review-threads":  "remediation-brief.json",
 	"gather-sibling-context": "sibling-context.json",
