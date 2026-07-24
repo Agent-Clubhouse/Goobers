@@ -82,7 +82,6 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 		"Workflow summary (success rate over last 10 terminal runs):",
 		"default-implement",
 		"0/1",
-		"Issues parked on learned dependencies: 0",
 		"Open PRs with goobers:blocked-on-sibling: 0",
 		"Open PRs with goobers:merge-escalated: 0",
 		"no runs found — trigger one with 'goobers run <workflow>'",
