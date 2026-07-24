@@ -6,6 +6,7 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
@@ -61,6 +62,15 @@ type Config struct {
 	AppID string
 	// InstallationID is the numeric installation the tokens are minted for.
 	InstallationID string
+	// Repositories down-scopes every minted token to these repository names
+	// (no owner prefix). Empty mints against the installation's full
+	// repository set. Source always pins this to the one configured repo,
+	// so when several repos share an App installation a token leaked from
+	// one gaggle's stage cannot reach a sibling gaggle's repo (MGV-5,
+	// #1012). Permission down-scoping per mint is a possible further
+	// tightening; the repository list is the isolation boundary that
+	// matters across gaggles.
+	Repositories []string
 	// Key returns the App's PEM-encoded RSA private key. It is re-resolved
 	// on every mint, so a rotated key file takes effect without restarting
 	// the process (the env/file resolver's contract).
@@ -133,6 +143,10 @@ func Source(repo instance.RepoRef, registrar SecretRegistrar) (*TokenSource, err
 	return New(Config{
 		AppID:          string(repo.Auth.AppID),
 		InstallationID: string(repo.Auth.InstallationID),
+		// Down-scope every mint to this one repo: a shared App
+		// installation must not hand one gaggle's stages a token that
+		// reaches another gaggle's repo (per-repo scoping, MGV-5 #1012).
+		Repositories: []string{repo.Name},
 		Key: func(ctx context.Context) (string, error) {
 			return keyResolver.Resolve(ctx, refName)
 		},
@@ -191,12 +205,25 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	mintCtx, cancel := context.WithTimeout(ctx, mintTimeout)
 	defer cancel()
 	endpoint := strings.TrimRight(s.cfg.BaseURL, "/") + "/app/installations/" + url.PathEscape(s.cfg.InstallationID) + "/access_tokens"
-	req, err := http.NewRequestWithContext(mintCtx, http.MethodPost, endpoint, nil)
+	var reqBody io.Reader
+	if len(s.cfg.Repositories) > 0 {
+		payload, err := json.Marshal(struct {
+			Repositories []string `json:"repositories"`
+		}{s.cfg.Repositories})
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("githubapp: encode token request: %w", err)
+		}
+		reqBody = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(mintCtx, http.MethodPost, endpoint, reqBody)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: build token request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+appJWT)
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := s.cfg.HTTPClient.Do(req)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,6 +93,9 @@ type fakeAppAPI struct {
 	requests       atomic.Int64
 	sleep          time.Duration
 	nextToken      func(n int64) string
+	// wantRepositories, when non-nil, asserts every mint request body
+	// down-scopes the token to exactly these repository names.
+	wantRepositories []string
 }
 
 func (f *fakeAppAPI) handler() http.Handler {
@@ -129,6 +133,16 @@ func (f *fakeAppAPI) handler() http.Handler {
 			// GitHub rejects JWTs whose validity window exceeds 10 minutes;
 			// measured iat→exp so the assertion also holds under fake clocks.
 			f.t.Errorf("App JWT exp-iat = %s, want <= 10m (GitHub's cap)", lifetime)
+		}
+		if f.wantRepositories != nil {
+			var mintReq struct {
+				Repositories []string `json:"repositories"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&mintReq); err != nil {
+				f.t.Errorf("decode mint request body: %v", err)
+			} else if !slices.Equal(mintReq.Repositories, f.wantRepositories) {
+				f.t.Errorf("mint body repositories = %v, want %v", mintReq.Repositories, f.wantRepositories)
+			}
 		}
 		token := fmt.Sprintf("ghs_minted_%d", n)
 		if f.nextToken != nil {
@@ -178,6 +192,27 @@ func TestTokenMintsVerifiableAppJWT(t *testing.T) {
 	}
 	if !reg.saw(pkcs1PEM(key)) {
 		t.Fatal("App private key was not registered with the scrubber")
+	}
+}
+
+// TestTokenDownScopesToConfiguredRepositories pins the mint body: with
+// Repositories configured, every exchange asks GitHub to scope the token to
+// exactly those repos, so a shared App installation never yields a token
+// reaching a sibling gaggle's repo.
+func TestTokenDownScopesToConfiguredRepositories(t *testing.T) {
+	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
+		expiresAt:        func() time.Time { return time.Now().Add(time.Hour) },
+		wantRepositories: []string{"web"}}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	source := newTokenSource(t, api, srv, func(c *Config) {
+		c.Repositories = []string{"web"}
+	})
+	if _, err := source.Token(context.Background()); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if got := api.requests.Load(); got != 1 {
+		t.Fatalf("exchanges = %d, want 1", got)
 	}
 }
 
@@ -403,7 +438,9 @@ func TestSourceBuildsFromInstanceRepo(t *testing.T) {
 		t.Fatalf("write key file: %v", err)
 	}
 	api := &fakeAppAPI{t: t, key: key, appID: "123456", installationID: "42",
-		expiresAt: func() time.Time { return time.Now().Add(time.Hour) }}
+		expiresAt: func() time.Time { return time.Now().Add(time.Hour) },
+		// Source must down-scope mints to the one configured repo.
+		wantRepositories: []string{"web"}}
 	srv := httptest.NewServer(api.handler())
 	defer srv.Close()
 
