@@ -4,6 +4,11 @@ Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
 at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
 layout these commands operate on.
 
+If declarative systems are new to you, read
+[How Goobers works: desired state, not scripts](../concepts/README.md) first.
+It explains the config/runtime split and why agents propose definition changes
+through pull requests.
+
 ## Prerequisites
 
 - `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
