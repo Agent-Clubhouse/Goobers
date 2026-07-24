@@ -216,6 +216,9 @@ func parseOptionalTime(value, name string) (time.Time, error) {
 }
 
 func writeTelemetryReadError(w http.ResponseWriter, errorLog *log.Logger, projection string, err error) {
+	if clientCancelled(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, readservice.ErrInvalidTelemetryRequest):
 		writeError(w, http.StatusBadRequest, "invalid_query", "telemetry query is invalid")
