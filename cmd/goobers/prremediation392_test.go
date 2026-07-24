@@ -477,6 +477,7 @@ func TestPushRemediatedReportsMergeQueueRejectionAsRetryable(t *testing.T) {
 		t.Skip("test uses a POSIX pre-receive hook to reproduce GitHub's push rejection")
 	}
 	instanceRoot, st, wtPath, remoteTip := pushRemediatedFixture(t, true)
+	t.Setenv("GOOBERS_REPO_PROVIDER", "github")
 	t.Setenv("GOOBERS_REPO_OWNER", "your-org")
 	t.Setenv("GOOBERS_REPO_NAME", "your-repo")
 	origin := strings.TrimSpace(runGitOutputT(t, wtPath, "remote", "get-url", "origin"))
