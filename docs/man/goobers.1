@@ -12,7 +12,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942/#945): invoked by the runner as a deterministic
@@ -92,6 +92,9 @@ show escalation cause + per-stage artifact timeline
 .TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
+.TP
+\fBgoobers gather-ci-failures\fR
+add failing CI diagnostics to a remediation brief (a workflow stage)
 .TP
 \fBgoobers gather-implement-context\fR
 load first-pass implementation review and hot-file context (a workflow stage)
@@ -277,6 +280,7 @@ show a workflow as a text DAG
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-features\fR(1),
+\fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
 \fBgoobers-gather-issue-context\fR(1),
 \fBgoobers-gather-pr-context\fR(1),

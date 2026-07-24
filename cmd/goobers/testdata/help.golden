@@ -79,6 +79,7 @@ Usage:
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -90,7 +91,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942/#945): invoked by the runner as a deterministic
@@ -184,6 +185,7 @@ Usage:
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -195,7 +197,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#942/#945): invoked by the runner as a deterministic
@@ -446,6 +448,17 @@ With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
+
+### gather-ci-failures
+Usage: goobers gather-ci-failures [path]
+
+Enrich this run's remediation brief with failing check names,
+conclusions, summaries, and annotations. Passing CI leaves the brief
+unchanged and performs no provider API calls. Raw job logs are never
+fetched: their explicit per-check volume bound is 0 bytes. [path] is
+the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+0 = evidence gathered (or passing-CI no-op), 1 = business error,
+2 = usage/IO error.
 
 ### gather-implement-context
 Usage: goobers gather-implement-context [path]

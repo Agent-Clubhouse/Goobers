@@ -107,6 +107,30 @@ spec:
         # fail any test, it would silently hand implement/review/local-ci a
         # pristine branch cut from main and remediate the wrong tree.
         - workspaceBranch
+      next: gather-ci-failures
+
+    # PRR-2: enrich only a failing-CI brief with the provider's high-signal,
+    # bounded diagnostics. Passing CI is a journal-only no-op with no provider
+    # calls. Raw job logs have an explicit 0-byte bound; check summaries and
+    # annotations carry the failure reason without swamping agent context.
+    - name: gather-ci-failures
+      type: deterministic
+      goal: Add failing check names, conclusions, summaries, and annotations to the remediation brief.
+      run:
+        command: ["goobers", "gather-ci-failures"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-brief.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - base
+        - isBehindBase
+        - hasSubstantiveFindings
+        - hasFailingCI
+        - workspaceBranch
       next: rebase-pr
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
@@ -267,12 +291,14 @@ spec:
       goal: >-
         Remediate this pull request. The worktree is already checked out on
         the PR's own branch, rebased onto its base where that was possible.
-        Read the gather-issue-context artifact (the issue-enriched
-        remediation-brief.json) from the attached context for the full
-        merge-review verdict, PR thread comments, and originating issue body
-        and acceptance criteria. Also read the sibling PR file/overlap context
-        (sibling-context.json), plus any rebase conflict left to
-        resolve, and address EVERY
+        Read the enriched remediation-brief.json from the attached context —
+        the gather-issue-context artifact, which supersedes the earlier
+        gather-pr-context and gather-ci-failures remediation-brief.json copies
+        (ignore those). It contains the full merge-review verdict, PR thread
+        comments, failing check summaries/annotations, and the originating
+        issue body and acceptance criteria. Also read the sibling PR
+        file/overlap context (sibling-context.json), plus any rebase conflict
+        left to resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. In every successful

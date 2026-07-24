@@ -401,6 +401,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
 			withExamples("goobers gather-issue-context"),
+		command("gather-ci-failures", apicontract.ActionWorkflowExecution, runGatherCIFailures).
+			withSynopsis(synopsisByID["gather-ci-failures"]).
+			withHelp("add failing CI diagnostics to a remediation brief (a workflow stage)", gatherCIFailuresHelp).
+			withExamples("goobers gather-ci-failures"),
 		command("rebase-pr", apicontract.ActionWorkflowExecution, runRebasePR).
 			withSynopsis(synopsisByID["rebase-pr"]).
 			withHelp("rebase-first, finding-driven remediation routing (a workflow stage)", rebasePRHelp).

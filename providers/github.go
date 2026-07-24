@@ -1527,18 +1527,80 @@ func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, 
 	return state, err
 }
 
+type resolvedCheckDetail struct {
+	CheckDetail
+	checkRunID int64
+}
+
+// CIFailures returns failing legacy statuses and check runs for ref. It fetches
+// annotations only for failing check runs and never fetches raw workflow logs.
+func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref string) ([]CIFailureDetail, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	checks, err := p.checkDetails(ctx, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	failures := make([]CIFailureDetail, 0)
+	for _, check := range checks {
+		if check.State != CheckStateFailing {
+			continue
+		}
+		annotations := []CheckAnnotation{}
+		if check.checkRunID != 0 {
+			annotations, err = p.checkRunAnnotations(ctx, repo, check.checkRunID)
+			if err != nil {
+				return nil, fmt.Errorf("list annotations for check %q: %w", check.Name, err)
+			}
+		}
+		failures = append(failures, CIFailureDetail{
+			CheckDetail: check.CheckDetail,
+			Annotations: annotations,
+		})
+	}
+	return failures, nil
+}
+
 // combinedCheckState normalizes GitHub's legacy combined status plus check-runs
 // into a single CheckState + per-check detail refs (BL-031).
 func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
 	if ref == "" {
 		return CheckStatePending, nil, nil
 	}
-	var details []CheckDetail
-	failing, pending := false, false
-
-	statusEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
+	resolved, err := p.checkDetails(ctx, repo, ref)
 	if err != nil {
 		return "", nil, err
+	}
+	details := make([]CheckDetail, 0, len(resolved))
+	failing, pending := false, false
+	for _, check := range resolved {
+		details = append(details, check.CheckDetail)
+		switch check.State {
+		case CheckStateFailing:
+			failing = true
+		case CheckStatePending:
+			pending = true
+		}
+	}
+	switch {
+	case failing:
+		return CheckStateFailing, details, nil
+	case pending || len(details) == 0:
+		return CheckStatePending, details, nil
+	default:
+		return CheckStatePassing, details, nil
+	}
+}
+
+func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, ref string) ([]resolvedCheckDetail, error) {
+	var details []resolvedCheckDetail
+	statusEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
+	if err != nil {
+		return nil, err
 	}
 	var statuses []githubStatus
 	if err := p.getAllPages(ctx, statusEndpoint, func(page []byte) error {
@@ -1549,22 +1611,19 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 		statuses = append(statuses, pageOut.Statuses...)
 		return nil
 	}); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	for _, status := range statuses {
 		state := normalizeCombinedStatusState(status.State)
-		details = append(details, CheckDetail{Name: status.Context, State: state, URL: status.TargetURL, Summary: status.Description})
-		switch state {
-		case CheckStateFailing:
-			failing = true
-		case CheckStatePending:
-			pending = true
-		}
+		details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
+			Name: status.Context, State: state, Conclusion: status.State,
+			URL: status.TargetURL, Summary: status.Description,
+		}})
 	}
 
 	runsEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "check-runs")
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	var checkRuns []githubCheckRun
 	// The single biggest silent failure in the cluster: a failing check-run on
@@ -1577,27 +1636,40 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 		checkRuns = append(checkRuns, pageOut.CheckRuns...)
 		return nil
 	}); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	for _, run := range checkRuns {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
-		details = append(details, CheckDetail{Name: run.Name, State: state, URL: run.HTMLURL, Summary: run.Output.Summary})
-		switch state {
-		case CheckStateFailing:
-			failing = true
-		case CheckStatePending:
-			pending = true
-		}
+		details = append(details, resolvedCheckDetail{
+			CheckDetail: CheckDetail{
+				Name: run.Name, State: state, Conclusion: run.Conclusion,
+				URL: run.HTMLURL, Summary: run.Output.Summary,
+			},
+			checkRunID: run.ID,
+		})
 	}
+	return details, nil
+}
 
-	switch {
-	case failing:
-		return CheckStateFailing, details, nil
-	case pending || len(details) == 0:
-		return CheckStatePending, details, nil
-	default:
-		return CheckStatePassing, details, nil
+func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "check-runs", strconv.FormatInt(checkRunID, 10), "annotations")
+	if err != nil {
+		return nil, err
 	}
+	annotations := []CheckAnnotation{}
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut []githubCheckAnnotation
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode check annotations page: %w", err)
+		}
+		for _, annotation := range pageOut {
+			annotations = append(annotations, CheckAnnotation(annotation))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return annotations, nil
 }
 
 func (p *GitHubProvider) pullRequestComments(ctx context.Context, repo RepositoryRef, pullID string, since *time.Time) ([]PullRequestComment, error) {
@@ -2506,6 +2578,7 @@ type githubCheckRunsResponse struct {
 }
 
 type githubCheckRun struct {
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -2513,6 +2586,15 @@ type githubCheckRun struct {
 	Output     struct {
 		Summary string `json:"summary"`
 	} `json:"output"`
+}
+
+type githubCheckAnnotation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Level     string `json:"annotation_level"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
 }
 
 type githubIssueComment struct {

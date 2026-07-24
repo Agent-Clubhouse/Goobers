@@ -259,7 +259,7 @@ re-litigated. Each was settled by the maintainer.
 
 | Question | Decision |
 |---|---|
-| §6 Q1 — CI log volume | **Annotations + check summary, no raw log tails.** Highest signal per token, bounded by construction, no truncation heuristics to maintain. Accepted cost: an unannotated panic or build error gives less. Revisit only if that gap shows up in practice. |
+| §6 Q1 — CI log volume | **Annotations + check summary, no raw log tails (an explicit 0-byte raw-log bound per failing check).** Highest signal per token, bounded by construction, no truncation heuristics to maintain. Accepted cost: an unannotated panic or build error gives less. Revisit only if that gap shows up in practice. |
 | §6 Q3 — response ordering | **After `push-remediated`.** The response must describe work that actually landed. `respond-to-findings` is independently retryable and reconciles one run-scoped comment to keep the post-push visibility window bounded without duplicating replies. |
 | Default remediation scope | **Maximally liberal** — conflicts, substantive findings, failing CI, stale base, sibling overlap, all on by default. Safe because the stuck-loop detector still bounds effort per cause. Scope down per-workflow if a category proves noisy. |
 | Sibling overlap behavior | **Wait** — park `blocked-on-sibling` and let the existing self-heal unpark it. Do not rewrite a diff that would have been fine once the sibling landed. |
