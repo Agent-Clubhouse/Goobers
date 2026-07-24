@@ -17,6 +17,13 @@ type WorkspaceRequest struct {
 	Stage string
 	// Gaggle is the gaggle the run belongs to.
 	Gaggle string
+	// Workflow is the workflow definition name — a repo-mode provisioner
+	// derives the run branch from it (providers.BranchNameIn), exactly as the
+	// local runner's createStageWorkspace does.
+	Workflow string
+	// BranchNamespace is the run's pinned branch-namespace root; empty means
+	// the default namespace.
+	BranchNamespace string
 	// RepoRef is the repository a repo-mode workspace is provisioned from.
 	RepoRef apiv1.RepoRef
 	// Mode selects the workspace kind. Empty or apiv1.WorkspaceRepo provisions

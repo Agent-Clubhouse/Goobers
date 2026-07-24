@@ -83,6 +83,7 @@
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
+| [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 
@@ -1757,6 +1758,52 @@ Exit codes: 0 = OK, 2 = usage error.
 ~~~console
 $ goobers versions
 $ goobers versions --json
+~~~
+
+## `goobers worker`
+
+host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+
+~~~text
+Usage: goobers worker [--task-queue <queue>]... [flags]
+
+Host a Temporal worker for the tier-3 engine (experimental): connect to the
+configured Temporal frontend, register the engine workflow and activities,
+and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop
+polling and let in-flight activities finish within --drain-timeout.
+
+The tier-3 engine is not on the local (V0) execution path; this command is
+the deployable worker shape for the cloud ladder. Automated gate checks and
+workspace provisioning (git worktrees + scratch dirs under --work-root) are
+wired; agentic and deterministic executor seams arrive with the runtime
+wiring slice, and stages needing them fail closed with a clear error.
+
+Flags:
+  --task-queue <queue>       task queue to serve; repeatable for multiple
+                             queues (default $GOOBERS_TASK_QUEUE, else
+                             "goobers-engine")
+  --temporal-hostport <h:p>  Temporal frontend (default
+                             $GOOBERS_TEMPORAL_HOSTPORT, else 127.0.0.1:7233)
+  --temporal-namespace <ns>  Temporal namespace (default
+                             $GOOBERS_TEMPORAL_NAMESPACE, else "default")
+  --drain-timeout <dur>      graceful-drain bound after a shutdown signal
+                             (default 30s)
+  --work-root <dir>          root for stage workspaces (default: a
+                             goobers-worker dir under the OS temp dir)
+
+The worker identity reported to Temporal is versioned
+(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
+build serves a queue.
+
+Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
+3 = drain timeout expired with in-flight work abandoned.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers worker
+$ goobers worker --task-queue goobers-engine --drain-timeout 60s
 ~~~
 
 ## `goobers workflow`

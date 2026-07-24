@@ -14,11 +14,15 @@ const DefaultTaskQueue = "goobers-engine"
 
 // EngineDeps are the execution seams a goober runtime provides to the engine
 // worker. Goober is required (agentic tasks/reviews); Det and Auto are optional
-// (deterministic tasks / automated gates) and may be nil.
+// (deterministic tasks / automated gates) and may be nil. Workspaces provisions
+// each stage attempt's disposable working copy — without it every
+// workspace-needing stage fails closed (#621), so any host that dispatches
+// real stages must wire one.
 type EngineDeps struct {
-	Goober invoke.Goober
-	Det    invoke.Deterministic
-	Auto   invoke.Automated
+	Goober     invoke.Goober
+	Det        invoke.Deterministic
+	Auto       invoke.Automated
+	Workspaces engine.WorkspaceProvisioner
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -26,9 +30,10 @@ type EngineDeps struct {
 // and the e2e harness both call this so the worker is identical.
 func RegisterEngine(w worker.Worker, deps EngineDeps) {
 	engine.RegisterWith(w, &engine.Activities{
-		Goober: deps.Goober,
-		Det:    deps.Det,
-		Auto:   deps.Auto,
+		Goober:     deps.Goober,
+		Det:        deps.Det,
+		Auto:       deps.Auto,
+		Workspaces: deps.Workspaces,
 	})
 }
 

@@ -69,11 +69,13 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
-		RunID:   env.RunID,
-		Stage:   strings.TrimPrefix(env.TaskID, env.RunID+":"),
-		Gaggle:  env.Gaggle,
-		RepoRef: env.RepoRef,
-		Mode:    mode,
+		RunID:           env.RunID,
+		Stage:           strings.TrimPrefix(env.TaskID, env.RunID+":"),
+		Gaggle:          env.Gaggle,
+		Workflow:        env.WorkflowID,
+		BranchNamespace: env.BranchNamespace,
+		RepoRef:         env.RepoRef,
+		Mode:            mode,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)

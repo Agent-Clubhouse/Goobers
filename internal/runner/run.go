@@ -3058,6 +3058,14 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 	return out
 }
 
+// DefaultRepoCloneURL derives the git remote URL worktree.Manager clones from
+// a RepoRef — the same default Config.RepoCloneURL falls back to. Exported so
+// the tier-3 worker host's workspace provisioner (#632) shares the derivation
+// instead of copying it.
+func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
+	return defaultRepoCloneURL(ref)
+}
+
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from
 // a RepoRef.
 func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {

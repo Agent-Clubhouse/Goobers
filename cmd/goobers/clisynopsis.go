@@ -20,6 +20,7 @@ var synopsisByID = map[string]string{
 	"config":                 "  goobers config show|diff [flags] [path]\n                                inspect instance config or compare workflows with canonical definitions\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
+	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
 	"run abort":              "  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted\n",
