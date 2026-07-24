@@ -18,10 +18,11 @@ var ErrTokenRefNotFound = errors.New("credentials: token ref not found")
 // treated as misconfiguration, not a valid (empty) secret.
 var ErrTokenRefEmpty = errors.New("credentials: token ref resolved to an empty value")
 
-// TokenRef names one local-tier secret source: exactly one of Env or File
-// must be set. It is the tiers 1-2 shape of instance.yaml's token refs
-// (docs/ARCHITECTURE.md §6); a Key Vault ref is the tier-3 counterpart behind
-// the same seam.
+// TokenRef names one secret source: exactly one of Env, File, or Store must
+// be set. Env/File are the tiers 1-2 shape of instance.yaml's token refs
+// (docs/ARCHITECTURE.md §6); Store is the tier-3 counterpart behind the same
+// seam — a "<storeName>/<secretName>" ref into a declared external secret
+// store (#683, SEC-010).
 type TokenRef struct {
 	// Name is the logical name other config (capability grants) refers to
 	// this ref by, e.g. "github-issues".
@@ -31,25 +32,35 @@ type TokenRef struct {
 	// File is the path to a file whose (trimmed) contents are the secret
 	// value.
 	File string
+	// Store is a "<storeName>/<secretName>" ref resolved through a
+	// StoreResolver. Refs with Store set can only be built into a resolver
+	// via NewResolverWithStores — NewResolver fails closed on them.
+	Store string
 }
 
 func (r TokenRef) validate() error {
 	if r.Name == "" {
 		return errors.New("credentials: token ref has no name")
 	}
-	if (r.Env == "") == (r.File == "") {
-		return fmt.Errorf("credentials: token ref %q must set exactly one of Env or File", r.Name)
+	sources := 0
+	for _, s := range []string{r.Env, r.File, r.Store} {
+		if s != "" {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return fmt.Errorf("credentials: token ref %q must set exactly one of Env, File, or Store", r.Name)
 	}
 	return nil
 }
 
-// resolve reads the secret value for this ref from the process environment
-// or filesystem.
-func (r TokenRef) resolve() (string, error) {
+// resolve reads the secret value for this ref from the process environment,
+// filesystem, or the configured secret-store resolver.
+func (r TokenRef) resolve(ctx context.Context, stores StoreResolver) (string, error) {
 	var raw string
-	var ok bool
 	switch {
 	case r.Env != "":
+		var ok bool
 		raw, ok = os.LookupEnv(r.Env)
 		if !ok {
 			return "", fmt.Errorf("credentials: token ref %q: env var %q is not set", r.Name, r.Env)
@@ -67,6 +78,17 @@ func (r TokenRef) resolve() (string, error) {
 			return "", fmt.Errorf("credentials: token ref %q: read %q: %w", r.Name, r.File, err)
 		}
 		raw = string(b)
+	case r.Store != "":
+		// Construction fails closed on a store ref without a StoreResolver,
+		// so stores is never nil here; the guard is belt-and-suspenders.
+		if stores == nil {
+			return "", fmt.Errorf("credentials: token ref %q: no secret store resolver configured", r.Name)
+		}
+		value, err := stores.FetchSecret(ctx, r.Store)
+		if err != nil {
+			return "", fmt.Errorf("credentials: token ref %q: %w", r.Name, err)
+		}
+		raw = value
 	}
 	val := strings.TrimSpace(raw)
 	if val == "" {
@@ -83,36 +105,57 @@ type Resolver interface {
 	Resolve(ctx context.Context, name string) (string, error)
 }
 
-// envFileResolver holds no secret material itself. Every TokenRef is re-read
-// at resolve time so a rotated env var or file takes effect without restarting
-// the process.
-type envFileResolver struct {
-	refs map[string]TokenRef
+// StoreResolver resolves a store-backed token ref — the full
+// "<storeName>/<secretName>" string from instance.yaml — against the
+// instance's declared secret stores (#683). internal/secretstore's Registry
+// is the production implementation; the interface keeps this package free of
+// any vendor dependency.
+type StoreResolver interface {
+	FetchSecret(ctx context.Context, ref string) (string, error)
 }
 
-var _ Resolver = (*envFileResolver)(nil)
+// tokenRefResolver holds no secret material itself. Every TokenRef is re-read
+// at resolve time so a rotated env var, file, or store secret takes effect
+// without restarting the process (store reads are TTL-cached by the
+// StoreResolver, not here).
+type tokenRefResolver struct {
+	refs   map[string]TokenRef
+	stores StoreResolver
+}
+
+var _ Resolver = (*tokenRefResolver)(nil)
 
 // NewResolver builds the local env/file Resolver from a set of token refs.
-// Names must be unique and each ref must be well-formed (exactly one of
-// Env/File set).
+// Names must be unique and each ref must be well-formed. A store-backed ref
+// fails closed here: local-only construction sites must reject it with a
+// diagnostic rather than silently read it as unconfigured — callers that
+// support store refs use NewResolverWithStores.
 func NewResolver(refs []TokenRef) (Resolver, error) {
+	return NewResolverWithStores(refs, nil)
+}
+
+// NewResolverWithStores builds a Resolver whose store-backed refs resolve
+// through stores. stores may be nil only when no ref is store-backed;
+// otherwise construction fails closed.
+func NewResolverWithStores(refs []TokenRef, stores StoreResolver) (Resolver, error) {
 	byName := make(map[string]TokenRef, len(refs))
 	for _, r := range refs {
 		if err := r.validate(); err != nil {
 			return nil, err
+		}
+		if r.Store != "" && stores == nil {
+			return nil, fmt.Errorf("credentials: token ref %q is store-backed (%q) but no secret store resolver is configured", r.Name, r.Store)
 		}
 		if _, dup := byName[r.Name]; dup {
 			return nil, fmt.Errorf("credentials: duplicate token ref name %q", r.Name)
 		}
 		byName[r.Name] = r
 	}
-	return &envFileResolver{refs: byName}, nil
+	return &tokenRefResolver{refs: byName, stores: stores}, nil
 }
 
-// Resolve returns the secret value for the named token ref. ctx is accepted
-// for future resolvers that need it (e.g. a Key Vault client at V2); the
-// local env/file resolver is synchronous and ignores it beyond cancellation.
-func (r *envFileResolver) Resolve(ctx context.Context, name string) (string, error) {
+// Resolve returns the secret value for the named token ref.
+func (r *tokenRefResolver) Resolve(ctx context.Context, name string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -120,5 +163,5 @@ func (r *envFileResolver) Resolve(ctx context.Context, name string) (string, err
 	if !ok {
 		return "", fmt.Errorf("%w: %q", ErrTokenRefNotFound, name)
 	}
-	return ref.resolve()
+	return ref.resolve(ctx, r.stores)
 }

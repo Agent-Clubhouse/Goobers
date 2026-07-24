@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -76,8 +77,10 @@ func TestNewResolverRejectsMalformedRefs(t *testing.T) {
 		refs []TokenRef
 	}{
 		{"no name", []TokenRef{{Env: "X"}}},
-		{"neither env nor file", []TokenRef{{Name: "gh"}}},
+		{"no source", []TokenRef{{Name: "gh"}}},
 		{"both env and file", []TokenRef{{Name: "gh", Env: "X", File: "y"}}},
+		{"both env and store", []TokenRef{{Name: "gh", Env: "X", Store: "kv/gh"}}},
+		{"both file and store", []TokenRef{{Name: "gh", File: "y", Store: "kv/gh"}}},
 		{"duplicate name", []TokenRef{{Name: "gh", Env: "X"}, {Name: "gh", Env: "Y"}}},
 	}
 	for _, tc := range cases {
@@ -86,6 +89,95 @@ func TestNewResolverRejectsMalformedRefs(t *testing.T) {
 				t.Fatal("NewResolver: want error, got nil")
 			}
 		})
+	}
+}
+
+// fakeStoreResolver is a StoreResolver test double recording the refs it was
+// asked for.
+type fakeStoreResolver struct {
+	secrets map[string]string
+	err     error
+	asked   []string
+}
+
+func (f *fakeStoreResolver) FetchSecret(_ context.Context, ref string) (string, error) {
+	f.asked = append(f.asked, ref)
+	if f.err != nil {
+		return "", f.err
+	}
+	value, ok := f.secrets[ref]
+	if !ok {
+		return "", errors.New("secretstore: not declared")
+	}
+	return value, nil
+}
+
+func TestResolverResolvesStoreRef(t *testing.T) {
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/github-token": "  kv-s3cr3t\n"}}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	got, err := r.Resolve(context.Background(), "gh")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != "kv-s3cr3t" {
+		t.Fatalf("Resolve = %q, want trimmed %q", got, "kv-s3cr3t")
+	}
+	if len(stores.asked) != 1 || stores.asked[0] != "prod-kv/github-token" {
+		t.Fatalf("store asked for %v, want the full ref exactly once", stores.asked)
+	}
+}
+
+func TestNewResolverFailsClosedOnStoreRefWithoutStores(t *testing.T) {
+	_, err := NewResolver([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}})
+	if err == nil {
+		t.Fatal("NewResolver: want error for store ref without a store resolver, got nil")
+	}
+	if !strings.Contains(err.Error(), "no secret store resolver is configured") {
+		t.Fatalf("NewResolver error = %v, want it to name the missing store resolver", err)
+	}
+}
+
+func TestResolverStoreErrorFailsClosed(t *testing.T) {
+	stores := &fakeStoreResolver{err: errors.New("boom")}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	if _, err := r.Resolve(context.Background(), "gh"); err == nil {
+		t.Fatal("Resolve: want store fetch error, got nil")
+	}
+}
+
+func TestResolverStoreEmptyValueFailsClosed(t *testing.T) {
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/blank": "   "}}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/blank"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	_, err = r.Resolve(context.Background(), "gh")
+	if !errors.Is(err, ErrTokenRefEmpty) {
+		t.Fatalf("Resolve error = %v, want ErrTokenRefEmpty", err)
+	}
+}
+
+func TestResolverWithStoresStillResolvesEnvRefs(t *testing.T) {
+	t.Setenv("GH_TOKEN_MIXED_TEST", "env-value")
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/github-token": "kv-value"}}
+	r, err := NewResolverWithStores([]TokenRef{
+		{Name: "gh-env", Env: "GH_TOKEN_MIXED_TEST"},
+		{Name: "gh-store", Store: "prod-kv/github-token"},
+	}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	if got, err := r.Resolve(context.Background(), "gh-env"); err != nil || got != "env-value" {
+		t.Fatalf("Resolve(gh-env) = %q, %v; want env-value", got, err)
+	}
+	if got, err := r.Resolve(context.Background(), "gh-store"); err != nil || got != "kv-value" {
+		t.Fatalf("Resolve(gh-store) = %q, %v; want kv-value", got, err)
 	}
 }
 
