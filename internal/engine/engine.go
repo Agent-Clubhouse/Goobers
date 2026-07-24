@@ -9,6 +9,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -17,12 +19,20 @@ const (
 	StatusCompleted = "completed"
 	StatusBlocked   = "blocked"
 	StatusEscalated = "escalated"
+	// StatusFailed is a run ended by an unresolved stage failure — the
+	// engine's analogue of the local runner's PhaseFailed (#110/#710). The
+	// workflow completes cleanly with this status (the failure is a business
+	// outcome, recorded with its cause) rather than failing the workflow,
+	// which is reserved for dispatch/walk errors.
+	StatusFailed = "failed"
 )
 
 const (
 	// maxSteps bounds the number of state transitions in a single run, a
-	// last-resort guard against a definition that loops (WF-015 within a run).
-	maxSteps = 1000
+	// last-resort guard against a definition that loops (WF-015 within a
+	// run). Shared with the local runner so the ceilings cannot drift again
+	// (#624: they had diverged 1000 vs 10000).
+	maxSteps = runner.DefaultMaxSteps
 	// activityTimeout is the start-to-close timeout applied to every activity.
 	// A constant (not wall-clock) keeps the workflow deterministic.
 	activityTimeout = time.Hour
@@ -57,6 +67,10 @@ type RunInput struct {
 	// Config.GateGooberCapabilities (#294). Automated/human gates stay
 	// uncredentialed.
 	GateGooberCapabilities map[string][]string `json:"gateGooberCapabilities,omitempty"`
+	// MaxRepasses overrides the shared repass budget (gate.DefaultMaxRepasses)
+	// when > 0, mirroring the local runner's Config.MaxRepasses — pinned at
+	// start like the rest of the run's policy (#624).
+	MaxRepasses int `json:"maxRepasses,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -74,6 +88,11 @@ type RunResult struct {
 	FinalState string                          `json:"finalState,omitempty"`
 	Outputs    map[string]apiv1.ResultEnvelope `json:"outputs,omitempty"`
 	Steps      int                             `json:"steps"`
+	// FailureCode/FailureMessage carry a StatusFailed run's stage-reported
+	// cause — the local runner's Result.FailureCode/FailureMessage parity
+	// (#710). Empty for every other status.
+	FailureCode    string `json:"failureCode,omitempty"`
+	FailureMessage string `json:"failureMessage,omitempty"`
 }
 
 // HumanGateSignal is the Temporal signal name a human gate waits on for its
@@ -101,6 +120,10 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	// ContextPointers — the only channel through which a stage consumes prior
 	// work (§2.4) — exactly as the local runner's walk does.
 	var pointers []apiv1.ContextPointer
+	// gateAttempts holds each gate's consecutive non-pass count — the same
+	// per-run repass state gate.Evaluator.Attempts tracks locally.
+	gateAttempts := map[string]int{}
+	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	state := in.Spec.Start
 	steps := 0
@@ -125,11 +148,21 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 			if terr != nil {
 				return RunResult{}, terr
 			}
+			if res.Status == apiv1.ResultFailure && t.ContinueOnError {
+				// Outputs from a tolerated failure are discarded so downstream
+				// stages cannot consume partial results (Task.ContinueOnError,
+				// same discard the local runner applies).
+				res.Outputs = nil
+			}
 			upstream[t.Name] = res
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
-			lastResult = res
+			lastStage, lastResult = t.Name, res
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
-			state = t.Next
+			next, out, terminal := taskOutcome(m, t, res, upstream, steps)
+			if terminal {
+				return out, nil
+			}
+			state = next
 			continue
 		}
 
@@ -138,23 +171,90 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
-			target, ok := wf.BranchTarget(g, outcome)
-			if !ok {
-				return RunResult{}, fmt.Errorf("gate %q produced outcome %q with no defined branch (never a silent pass)", g.Name, outcome)
+			gr, rerr := resolveGateOutcome(g, outcome, gateAttempts, maxRepassesFor(in))
+			if rerr != nil {
+				return RunResult{}, rerr
 			}
-			logger.Info("gate evaluated", "gate", g.Name, "outcome", outcome, "next", target)
-			switch target {
-			case wf.TargetAbort:
-				return RunResult{Status: StatusBlocked, FinalState: g.Name, Outputs: upstream, Steps: steps}, nil
-			case wf.TargetEscalate:
-				return RunResult{Status: StatusEscalated, FinalState: g.Name, Outputs: upstream, Steps: steps}, nil
+			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
+			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
+			if terminal {
+				return out, nil
 			}
-			state = target
+			state = next
 			continue
 		}
 
 		return RunResult{}, fmt.Errorf("unknown state %q", state)
 	}
+}
+
+// taskOutcome applies the local runner's #110 stage-status ruling to a
+// finished task's result, mirroring internal/runner.(*Runner).taskOutcome:
+// success advances to Next; failure advances when ContinueOnError is set or
+// Next is a gate (which branches on the honest failed status), otherwise the
+// run fails; blocked halts the walk at the escalated terminal (#544 — a
+// schema-valid producer value, never punished as a failure); no-work
+// short-circuits straight to completed regardless of Next (#233 — a stage
+// that correctly found nothing must not hand a downstream agentic stage an
+// empty subject). A successful task's Next may itself be a reserved terminal
+// target (@abort/@escalate, #123).
+func taskOutcome(m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int) (next string, out RunResult, terminal bool) {
+	switch result.Status {
+	case apiv1.ResultBlocked:
+		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+	case apiv1.ResultFailure:
+		if t.ContinueOnError {
+			break
+		}
+		if _, isGate := m.Gate(t.Next); t.Next != "" && isGate {
+			return t.Next, RunResult{}, false
+		}
+		code, message := failureCause(result.Error)
+		return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
+	case apiv1.ResultNoWork:
+		return "", RunResult{Status: StatusCompleted, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+	}
+	switch t.Next {
+	case wf.TerminalComplete:
+		return "", RunResult{Status: StatusCompleted, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+	case wf.TargetAbort:
+		return "", RunResult{Status: StatusBlocked, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+	case wf.TargetEscalate:
+		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+	}
+	return t.Next, RunResult{}, false
+}
+
+// gateTransition maps a resolved gate branch to the walk's next move,
+// mirroring internal/runner.(*Runner).gateTransition: @abort ends blocked,
+// @escalate ends escalated, and a terminal-complete branch applies the #849
+// ruling — a non-pass gate must not hide an unresolved stage failure, while
+// a passing gate has affirmatively cleared that same result.
+func gateTransition(m *wf.Machine, gr gateResult, lastStage string, lastResult apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int) (next string, out RunResult, terminal bool) {
+	switch gr.Target {
+	case wf.TargetAbort:
+		return "", RunResult{Status: StatusBlocked, FinalState: gr.Gate, Outputs: upstream, Steps: steps}, true
+	case wf.TargetEscalate:
+		return "", RunResult{Status: StatusEscalated, FinalState: gr.Gate, Outputs: upstream, Steps: steps}, true
+	case wf.TerminalComplete:
+		subject, _ := m.Task(lastStage)
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
+			code, message := failureCause(lastResult.Error)
+			return "", RunResult{Status: StatusFailed, FinalState: lastStage, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
+		}
+		return "", RunResult{Status: StatusCompleted, FinalState: gr.Gate, Outputs: upstream, Steps: steps}, true
+	}
+	return gr.Target, RunResult{}, false
+}
+
+// failureCause mirrors the local runner's failureCauseFrom (#710): a failed
+// stage's own code/message, with a stable fallback when the stage reported
+// no detail.
+func failureCause(e *apiv1.ErrorInfo) (code, message string) {
+	if e == nil || e.Message == "" {
+		return "", "stage reported failure with no error detail"
+	}
+	return e.Code, e.Message
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
@@ -212,11 +312,22 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		// An automated gate gets no workspace, capabilities, or context
 		// pointers — its checks are pure functions over env.Inputs alone,
-		// matching the local runner (#112).
+		// matching the local runner (#112). Per the runner-contract
+		// convention (internal/gate/automated.go): a gate never receives the
+		// subject stage's ResultEnvelope over the wire envelope (§2.4), so
+		// the subject's status and small outputs are flattened into the
+		// gate's own Inputs before dispatch.
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
+		env.Inputs = make(map[string]interface{}, 1+len(subject.Outputs))
+		env.Inputs[gate.InputKeyStatus] = string(subject.Status)
+		for k, v := range subject.Outputs {
+			env.Inputs[k] = v
+		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		var outcome string
-		if err := workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome); err != nil {
+		if err := evaluateWithInfraRetry(ctx, g, func(ctx workflow.Context) error {
+			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
+		}); err != nil {
 			return "", err
 		}
 		return outcome, nil
@@ -233,7 +344,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
 		ctx := stageActivityContext(ctx, env.Limits)
 		var verdict apiv1.Verdict
-		if err := workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict); err != nil {
+		if err := evaluateWithInfraRetry(ctx, g, func(ctx workflow.Context) error {
+			return workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict)
+		}); err != nil {
 			return "", err
 		}
 		return string(verdict.Decision), nil

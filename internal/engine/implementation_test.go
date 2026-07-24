@@ -16,16 +16,14 @@ import (
 // This file is a fixture-driven dry run of the shipped implementation
 // workflow (issue #27, config-examples/gaggles/acme-web/workflows/
 // implementation.yaml): it loads the real definition and walks it through
-// the compiled machine with fakes standing in for the not-yet-built
-// backlog-query/open-pr/ci-poll stage kinds (#18), the Copilot CLI harness
-// (#19), and the local runner (#17) — including the runner-contract
-// convention (documented in internal/gate) of flattening a subject stage's
-// status/outputs into an automated gate's Inputs, which this superseded
-// Temporal adapter predates and does not itself implement. These fakes
-// therefore track fixture state directly (closures) rather than routing it
-// through env.Inputs, to prove the DSL's loop *shape* is walkable; the real
-// Inputs-flattening + bounded-repass-budget + journaling (internal/gate,
-// #20) wires into #17's local runner, not this adapter.
+// the compiled machine with fakes standing in for the built-in
+// backlog-query/open-pr/ci-poll stage kinds and the Copilot CLI harness.
+// The engine now applies the runner-contract convention (documented in
+// internal/gate) of flattening a subject stage's status/outputs into an
+// automated gate's Inputs, plus the bounded repass budget (#624); these
+// fakes still track fixture state directly (closures) because they predate
+// that parity and exercising the loop *shape* is their point — the
+// cross-runner outcome parity itself is asserted in crossrunner_test.go.
 
 const implementationConfigRoot = "../../config-examples/gaggles/acme-web"
 
@@ -55,9 +53,9 @@ func implementationRunInput(spec apiv1.WorkflowSpec) RunInput {
 }
 
 // fixtureAuto dispatches automated-gate checks by AutomatedGate.Check against
-// externally-owned fixture state (see file doc comment for why: the
-// superseded adapter doesn't flatten a subject stage's result into the
-// gate's Inputs, so a real internal/gate-style checker has nothing to read).
+// externally-owned fixture state (see file doc comment; a real
+// internal/gate-style checker over the now-flattened env.Inputs is exercised
+// in crossrunner_test.go).
 type fixtureAuto struct {
 	mu        sync.Mutex
 	localOK   bool
