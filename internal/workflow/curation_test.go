@@ -155,6 +155,8 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 			"genuine roadmap priority call",
 			"Keep epic and tracking checklists synchronized",
 			"directly linked tracking parent",
+			"Before each mutation, re-read its live metadata",
+			"Never mutate an unclaimed child",
 		} {
 			if !strings.Contains(instructions, required) {
 				t.Errorf("%s does not define %q", path, required)

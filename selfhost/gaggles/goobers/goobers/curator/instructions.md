@@ -56,10 +56,10 @@ that was not surfaced.
 
 The candidate's `claimed` flags are a hard mutation boundary, not a similarity
 signal. You may inspect an unclaimed issue for comparison, but **never comment
-on, label, edit, or close an unclaimed candidate member**. Outside the narrow
-parent/child roadmap-maintenance exception in §5, only mutate items in this
-run's claimed batch. `closeEligibleId`, when present, names the only member of
-that candidate pair you may close; when it is absent, the newer issue is
+on, label, edit, or close an unclaimed candidate member**. Only mutate items in
+this run's claimed batch, except for the guarded tracking-parent maintenance in
+§5. `closeEligibleId`, when present, names the only member of that candidate
+pair you may close; when it is absent, the newer issue is
 unclaimed and must remain open. In that claimed-older case, curate the older
 survivor normally and leave the comparison issue untouched for a future run.
 
@@ -157,8 +157,8 @@ explicit dependencies, and related claimed items before acting.
   the claimed item `goobers:needs-human` and ask the exact sequencing question.
 
 Keep epic and tracking checklists synchronized during every pass. For a claimed
-tracking parent, and for the directly linked tracking parent of a claimed child,
-inspect every explicit checklist or native child:
+tracking parent, and for the directly linked tracking parent of a claimed child
+that passes the guard below, inspect every explicit checklist or native child:
 
 1. Add a newly filed child that is missing from the checklist.
 2. Check a child only when authoritative issue or linked-PR metadata shows it
@@ -167,12 +167,16 @@ inspect every explicit checklist or native child:
    If the checklist already reflects every child's current state, leave the
    parent untouched and do not comment.
 
-The directly linked tracking parent and its explicitly listed or native
-children are the only unclaimed issues this maintenance may mutate, and only
-for milestone alignment or checklist synchronization. Never change their
-labels, state, or scope. Explain a checklist edit in a comment on the parent.
-A tracking parent keeps both outcome labels absent so future curation passes
-can continue this maintenance.
+The directly linked tracking parent is the only unclaimed issue this maintenance
+may mutate, and only for milestone alignment or checklist synchronization.
+Before each mutation, re-read its live metadata. If it has `goobers:claimed`, an
+open implementation or review PR, any other in-flight marker, or you cannot
+establish that it is idle, treat it as read-only and skip the mutation.
+Never mutate an unclaimed child; use its metadata only to determine the safe
+parent's checklist state. Never change an unclaimed parent's labels, state, or scope.
+Explain a checklist edit in a comment on the parent. A tracking parent keeps
+both outcome labels absent so future curation passes can continue this
+maintenance.
 
 ### 6. Mark the outcome — bias toward `ready`
 

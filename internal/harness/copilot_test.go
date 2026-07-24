@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -149,6 +150,52 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 	for _, arg := range runner.lastReq.Command {
 		if strings.Contains(arg, "copilot-pat") || strings.Contains(arg, "org-repo-token") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
+		}
+	}
+}
+
+func TestCopilotAdapterInjectsMilestoneCommandEnvironment(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:      []string{"copilot"},
+		Runner:       runner,
+		InstanceRoot: "/instances/acme",
+		EnvCapabilities: map[string]string{
+			"github:issues:write":     "GH_TOKEN",
+			"github:milestones:write": executor.CredentialEnvVar("github:milestones:write"),
+		},
+	}
+	creds := twoTokenCredentials(t,
+		"github:issues:write", "issues-token",
+		"github:milestones:write", "milestones-token",
+	)
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace, "github:issues:write", "github:milestones:write"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := []string{
+		"GH_TOKEN=issues-token",
+		"GOOBERS_CRED_GITHUB_MILESTONES_WRITE=milestones-token",
+		executor.InstanceRootEnvVar + "=/instances/acme",
+		executor.RepoProviderEnvVar + "=github",
+		executor.RepoOwnerEnvVar + "=acme",
+		executor.RepoNameEnvVar + "=web",
+	}
+	for _, entry := range want {
+		if !slices.Contains(runner.lastReq.Env, entry) {
+			t.Errorf("subprocess env missing %q: %v", entry, runner.lastReq.Env)
 		}
 	}
 }

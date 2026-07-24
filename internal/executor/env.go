@@ -34,6 +34,9 @@ func InputEnvVar(key string) string {
 }
 
 const (
+	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
+	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
+
 	// BranchNamespaceEnvVar is the env var a goobers-CLI stage reads to learn its
 	// gaggle's configured run-branch namespace root (GaggleSpec.BranchNamespace,
 	// providers.DefaultBranchNamespace when unset). PR-selector defaults
@@ -136,7 +139,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			env = append(env, BranchNamespaceEnvVar+"="+branchNamespace)
 		}
 		if instanceRoot != "" {
-			env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
+			env = append(env, InstanceRootEnvVar+"="+instanceRoot)
 		}
 		if snapshotID := providersnapshot.ID(ctx); snapshotID != "" {
 			env = append(env, providersnapshot.EnvVar+"="+snapshotID)

@@ -239,16 +239,16 @@ var credentialedCapabilities = []capability.Capability{
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
 // environment variable that consumes its token. General org-repo capabilities
-// use GH_TOKEN (the github tool's var), github:issues:approve uses its dedicated
-// GOOBERS_CRED_* variable so the nominator can detect and exercise that opt-in
-// separately, and agent:model uses COPILOT_GITHUB_TOKEN (the model backend's
-// var, #288, §3.3).
+// use GH_TOKEN (the github tool's var), command-scoped capabilities use their
+// dedicated GOOBERS_CRED_* variables, and agent:model uses
+// COPILOT_GITHUB_TOKEN (the model backend's var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
 	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
 	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
+	envCaps[string(capability.GitHubMilestonesWrite)] = executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
 }
@@ -256,7 +256,7 @@ func buildEnvCapabilities() map[string]string {
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	adapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
@@ -266,6 +266,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*
 			string(capability.AgentModel): true,
 		},
 		ExtraEnvAllowlist: envPassthrough,
+		InstanceRoot:      instanceRoot,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -1177,7 +1178,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, instanceRoot)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1424,7 +1425,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	adapterRegistry, err := buildHarnessRegistry(nil, nil)
+	adapterRegistry, err := buildHarnessRegistry(nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
