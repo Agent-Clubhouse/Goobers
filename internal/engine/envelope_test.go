@@ -11,8 +11,8 @@ import (
 
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/goobers/goobers/api/validate"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
