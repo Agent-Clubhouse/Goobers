@@ -447,9 +447,21 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	_, m := loadPRRemediation(t)
 
+	rebase, ok := m.Task("rebase-pr")
+	if !ok {
+		t.Fatal("rebase-pr not found")
+	}
 	checkpoint, ok := m.Task("remediation-checkpoint")
 	if !ok {
 		t.Fatal("remediation-checkpoint not found")
+	}
+	for _, output := range []string{"conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
+		if !containsString(rebase.ExpectedOutputs, output) {
+			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
+		}
+		if checkpoint.InputsFrom[output] != output {
+			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)
+		}
 	}
 	declared := map[string]bool{}
 	for _, out := range checkpoint.ExpectedOutputs {
