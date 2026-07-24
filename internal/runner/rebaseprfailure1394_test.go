@@ -38,6 +38,21 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			"hasSubstantiveFindings": "true",
 			"hasFailingCI":           "false",
 		}},
+		runID + ":gather-ci-failures": {
+			status: apiv1.ResultSuccess,
+			outputs: map[string]interface{}{
+				WorkspaceBranchOutput:    rebindBranch,
+				"selectedNumber":         "77",
+				"head":                   rebindBranch,
+				"base":                   "main",
+				"isBehindBase":           "true",
+				"hasSubstantiveFindings": "true",
+				"hasFailingCI":           "false",
+			},
+			artifactName:      "remediation-brief.json",
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
+			artifactMediaType: "application/json",
+		},
 		runID + ":rebase-pr": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{
 			Code: "provider_error", Message: "rebase failed",
 		}, outputs: map[string]interface{}{
@@ -78,7 +93,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
-	want := []string{"update-behind-pr", "gather-pr-context", "rebase-pr", "remediation-checkpoint"}
+	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "rebase-pr", "remediation-checkpoint"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Fatalf("stage order = %v, want %v", visited, want)
 	}
