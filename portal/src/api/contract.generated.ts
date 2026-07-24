@@ -3,6 +3,7 @@
 export const apiRoutes = {
   "health": { method: "GET", path: "/api/v1/health", actionClass: "read-only-navigation" },
   "instance": { method: "GET", path: "/api/v1/instance", actionClass: "read-only-navigation" },
+  "portalConfig": { method: "GET", path: "/api/v1/portal/config", actionClass: "read-only-navigation" },
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },

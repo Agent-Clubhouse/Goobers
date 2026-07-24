@@ -611,6 +611,41 @@ export interface TelemetryError {
   occurredAt: string;
 }
 
+export interface PortalBrand {
+  name: string;
+  tagline: string;
+  scopeMark: string;
+  logoUrl: string | null;
+  faviconUrl: string | null;
+}
+
+export interface PortalTheme {
+  accentLight: string | null;
+  accentDark: string | null;
+  accentSoftLight: string | null;
+  accentSoftDark: string | null;
+  accentInkLight: string | null;
+  accentInkDark: string | null;
+}
+
+export interface PortalSupportLink {
+  label: string;
+  url: string;
+}
+
+export interface PortalSupport {
+  docsUrl: string | null;
+  issuesUrl: string | null;
+  chatUrl: string | null;
+  links: PortalSupportLink[];
+}
+
+export interface PortalConfig {
+  brand: PortalBrand;
+  theme: PortalTheme;
+  support: PortalSupport;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -618,6 +653,7 @@ export interface DaemonClient {
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
   getInstance(options?: RequestOptions): Promise<Instance>;
+  getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;
   listGoobers(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<GooberPage>;
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;

@@ -150,7 +150,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: load dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
 	}
-	handler, err := newDashboardHandler(assets, api.handler, api.mode)
+	handler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
 	if err != nil {
 		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
@@ -416,7 +416,7 @@ func dashboardAssetFS(devAssets string) (fs.FS, error) {
 	return os.DirFS(devAssets), nil
 }
 
-func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (http.Handler, error) {
+func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, instanceRoot string) (http.Handler, error) {
 	if assets == nil {
 		return nil, errors.New("dashboard asset filesystem is required")
 	}
@@ -433,6 +433,7 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 	}
 	files := http.FileServer(http.FS(assets))
 	mux := http.NewServeMux()
+	mux.Handle("/assets/", serveInstanceAssets(instanceRoot))
 	mux.Handle("/api/", api)
 	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
 		name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
@@ -448,6 +449,31 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 		http.NotFound(response, request)
 	})
 	return mux, nil
+}
+
+func serveInstanceAssets(instanceRoot string) http.Handler {
+	assetsDir := filepath.Join(instanceRoot, "assets")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		name = filepath.FromSlash(path.Clean("/" + name))
+		name = strings.TrimPrefix(name, string(filepath.Separator))
+		if name == "" || strings.HasPrefix(name, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		full := filepath.Join(assetsDir, name)
+		rel, err := filepath.Rel(assetsDir, full)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := os.Stat(full)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, full)
+	})
 }
 
 func dashboardIndex(index []byte, mode dashboardMode) ([]byte, error) {

@@ -31,6 +31,7 @@ const (
 // journals, definitions, or SQLite from their handlers.
 type Reader interface {
 	Health(context.Context) (Health, error)
+	PortalConfig(context.Context) (PortalConfig, error)
 	TelemetryReader
 	ListRuns(context.Context, RunListOptions) (RunList, error)
 	GetRun(context.Context, string) (RunDetail, error)

@@ -324,6 +324,10 @@ func (r *telemetryParityReader) Health(context.Context) (readservice.Health, err
 	return readservice.Health{Ready: true}, nil
 }
 
+func (r *telemetryParityReader) PortalConfig(context.Context) (readservice.PortalConfig, error) {
+	return readservice.PortalConfig{}, nil
+}
+
 func (r *telemetryParityReader) ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error) {
 	return readservice.RunList{}, readservice.ErrNotFound
 }
