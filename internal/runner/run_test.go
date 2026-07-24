@@ -1250,6 +1250,72 @@ func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 	}
 }
 
+// TestRunnerKeepsCheckoutOffTheStageWire: declaring the accepted-but-inert
+// project.checkout.sparse (B2, #649) must not change the stage wire contract
+// — both the task envelope (buildEnvelope) and the automated-gate envelope
+// carry repoRef identity fields only, so they still satisfy the closed
+// invocation.schema.json repoRef.
+func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-checkout:build": {status: apiv1.ResultSuccess},
+	}}
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, auto)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-checkout",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"services/web"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskEnv, ok := det.received["run-checkout:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	if taskEnv.RepoRef.Checkout != nil {
+		t.Fatalf("task envelope RepoRef.Checkout = %+v, want stripped", taskEnv.RepoRef.Checkout)
+	}
+	if taskEnv.RepoRef.Owner != "acme" || taskEnv.RepoRef.Name != "web" || taskEnv.RepoRef.Branch != "main" {
+		t.Fatalf("task envelope RepoRef = %+v, want identity fields intact", taskEnv.RepoRef)
+	}
+	if auto.env.RepoRef.Checkout != nil {
+		t.Fatalf("gate envelope RepoRef.Checkout = %+v, want stripped", auto.env.RepoRef.Checkout)
+	}
+}
+
 func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",

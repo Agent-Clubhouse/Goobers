@@ -68,6 +68,17 @@ type CheckoutSpec struct {
 	Sparse []string `json:"sparse,omitempty" yaml:"sparse,omitempty"`
 }
 
+// EnvelopeRef is the projection of this reference that rides a stage
+// invocation envelope: repository identity and connection fields only.
+// Checkout is workspace-materialization config the runner consumes before a
+// stage ever runs; it stays off the wire so declaring it never changes the
+// closed stage contract (invocation.schema.json's repoRef,
+// docs/stage-contract.md).
+func (r RepoRef) EnvelopeRef() RepoRef {
+	r.Checkout = nil
+	return r
+}
+
 // BacklogRef points at the singleton backlog a gaggle draws work from.
 type BacklogRef struct {
 	// +kubebuilder:validation:Enum=github;ado

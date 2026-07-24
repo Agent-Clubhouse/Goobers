@@ -99,7 +99,10 @@ The runner hands the stage an `InvocationEnvelope`:
   journaled with the intervention and never written to the workflow definition.
 - `inputs` — the stage's own static config from its definition.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
-  execution bounds.
+  execution bounds. `repoRef` carries repository identity and connection
+  fields only: config-side declarations such as `project.checkout` (B2, #649)
+  are consumed by the runner before a stage runs and never ride the envelope
+  (`RepoRef.EnvelopeRef`).
 
 ## Where a stage writes its output
 

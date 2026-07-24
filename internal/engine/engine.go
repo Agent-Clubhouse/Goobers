@@ -212,7 +212,7 @@ func buildInvocation(in RunInput, stateName, goal string, inputs map[string]stri
 		RunID:      in.RunID,
 		Gaggle:     in.Gaggle,
 		Goal:       goal,
-		RepoRef:    in.RepoRef,
+		RepoRef:    in.RepoRef.EnvelopeRef(),
 		Item:       in.Item,
 		Limits:     limits,
 	}

@@ -336,6 +336,24 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	}
 }
 
+// TestBuildInvocationKeepsCheckoutOffTheWire: the engine's envelopes obey the
+// same closed stage contract as the local runner's — a run input whose RepoRef
+// declares the accepted-but-inert project.checkout (B2, #649) hands stages a
+// repoRef with identity fields only.
+func TestBuildInvocationKeepsCheckoutOffTheWire(t *testing.T) {
+	in := runInput("checkout", linearSpec())
+	in.RepoRef.Checkout = &apiv1.CheckoutSpec{Sparse: []string{"services/web"}}
+
+	env := buildInvocation(in, "implement", "implement the fix", nil, apiv1.Limits{})
+
+	if env.RepoRef.Checkout != nil {
+		t.Fatalf("envelope RepoRef.Checkout = %+v, want stripped", env.RepoRef.Checkout)
+	}
+	if env.RepoRef.Owner != "acme" || env.RepoRef.Name != "web" {
+		t.Fatalf("envelope RepoRef = %+v, want identity fields intact", env.RepoRef)
+	}
+}
+
 // TestAgenticTaskNotConfiguredErrors: an agentic task with no GooberInvoker wired
 // surfaces a clear error rather than panicking.
 func TestAgenticTaskNotConfiguredErrors(t *testing.T) {

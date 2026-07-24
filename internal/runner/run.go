@@ -2642,7 +2642,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			Gaggle:          in.Gaggle,
 			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
 			Goal:            "gate: " + g.Name,
-			RepoRef:         in.RepoRef,
+			RepoRef:         in.RepoRef.EnvelopeRef(),
 			Item:            in.Item,
 			Limits:          gateLimits,
 		}
@@ -2907,7 +2907,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BranchNamespace: r.branchNamespaceFor(in.Gaggle),
 		Goal:            goal,
 		Workspace:       workspace.path,
-		RepoRef:         in.RepoRef,
+		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
 		ContextPointers: upstream,
 		Capabilities:    capabilities,
