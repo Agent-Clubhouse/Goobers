@@ -4,6 +4,21 @@
 "V2 — cloud scale" remain **future investments**: backlog-only, not `goobers:approved`, not
 eligible for automated implementation until the PO promotes them.
 
+> **Foundations delivered (2026-07-24, branch `v2/cloud-ladder-foundations`).** A single
+> integration branch lands an opt-in first cut of several workstreams so workflow definitions
+> can lift across the isolation ladder without redefinition: the contract surface
+> (`secretStores:` + `store:` token refs, per-gaggle sandbox posture, inert `checkout.sparse`);
+> D2 Azure Key Vault resolver (#683) and D4 GitHub App installation-token minting (#686) behind
+> the vendor-neutral `Resolve` seam; B6 authenticated GitHub clone/fetch (#667) and B0/B1
+> large-repo benchmark + blobless partial clones (#641/#646); F1 daemon TLS/bind hardening (#640)
+> and generic OIDC/Entra authenticator (#644); the S3 sandbox-enforcement wiring (#166/#1305,
+> opt-in default-off); the A1 engine drift fixes + history→journal projection + `goobers worker`
+> + A2 dual-runner conformance harness (#621–#637); and K2/K3 k8s reference manifests + container
+> image + `goobers doctor --k8s` (#663/#668). Everything is opt-in and unconfigured behavior is
+> byte-identical to before. The remaining items in this doc (A3 pod execution, B2–B5 cache
+> layers, the C test-sandbox track, E multi-writer CD, per-gaggle workload identity) stay
+> future work.
+
 **Audience:** V2 planning. This doc turns the placeholder V2 issues (#39, #40, #41, #155, #156)
 plus the PO's 2026-07-16 cloud/large-team brief into a concrete design with an issue map.
 docs/ARCHITECTURE.md remains the architecture of record; this doc details it, it does not
