@@ -224,6 +224,22 @@ spec:
         - flag-scope-drift
       expectedOutputs:
         - selectedNumber
+      next: gather-review-threads
+
+    # PRR-3 / design doc D1: replace only the review-thread section of the
+    # versioned brief with native review bodies and anchored inline comments.
+    # Resolved and outdated state stay explicit so stale feedback does not burn
+    # another remediation cycle.
+    - name: gather-review-threads
+      type: deterministic
+      goal: Add native review bodies and anchored inline review threads to the remediation brief.
+      run:
+        command: ["goobers", "gather-review-threads"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-brief.json"
+      capabilities:
+        - github:pr:write
       next: implement
 
     # Agentic rework in a worktree provisioned on the PR's own branch (see
@@ -238,8 +254,10 @@ spec:
       goal: >-
         Remediate this pull request. The worktree is already checked out on
         the PR's own branch, rebased onto its base where that was possible.
-        Read remediation-brief.json from the attached context for the full
-        merge-review verdict and PR thread comments, the sibling PR file/overlap
+        Read the gather-review-threads artifact (remediation-brief.json) from
+        the attached context for the full merge-review verdict, issue-level PR
+        comments, native review bodies, and anchored inline review threads with
+        their resolved/outdated state. Also read the sibling PR file/overlap
         context (sibling-context.json), plus any rebase conflict left to
         resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies

@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/remediation-brief-v2.schema.json",
+  "title": "RemediationBriefV2",
+  "description": "Version 2 of the PR-remediation evidence artifact. It adds explicit inline review thread liveness and complete diff anchoring to immutable v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "selectedNumber",
+    "head",
+    "base",
+    "workspaceBranch",
+    "isBehindBase",
+    "hasSubstantiveFindings",
+    "hasFailingCI",
+    "gatherPrContext"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/remediation-brief/v2"
+    },
+    "selectedNumber": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "head": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceBranch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "isBehindBase": {
+      "type": "boolean"
+    },
+    "hasSubstantiveFindings": {
+      "type": "string",
+      "enum": ["true", "false"]
+    },
+    "hasFailingCI": {
+      "type": "string",
+      "enum": ["true", "false"]
+    },
+    "gatherPrContext": {
+      "$ref": "#/$defs/gatherPrContext"
+    },
+    "gatherCIFailures": {
+      "$ref": "#/$defs/gatherCIFailures"
+    },
+    "gatherReviewThreads": {
+      "$ref": "#/$defs/gatherReviewThreads"
+    },
+    "gatherSiblingContext": {
+      "$ref": "#/$defs/gatherSiblingContext"
+    },
+    "gatherIssueContext": {
+      "$ref": "#/$defs/gatherIssueContext"
+    }
+  },
+  "$defs": {
+    "gatherPrContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headSha", "baseSha", "verdict", "comments"],
+      "properties": {
+        "headSha": { "type": "string", "minLength": 1 },
+        "baseSha": { "type": "string", "minLength": 1 },
+        "verdict": {
+          "oneOf": [
+            { "$ref": "verdict.schema.json" },
+            { "type": "null" }
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/threadComment" }
+        }
+      }
+    },
+    "threadComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body"],
+      "properties": {
+        "author": { "type": "string" },
+        "body": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "gatherCIFailures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ciFailure" }
+        }
+      }
+    },
+    "ciFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "conclusion", "annotations"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "conclusion": { "type": "string", "minLength": 1 },
+        "url": { "type": "string" },
+        "summary": { "type": "string" },
+        "annotations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ciAnnotation" }
+        }
+      }
+    },
+    "ciAnnotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "path": { "type": "string" },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "level": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "gatherReviewThreads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviews", "inlineComments"],
+      "properties": {
+        "reviews": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nativeReview" }
+        },
+        "inlineComments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inlineComment" }
+        }
+      }
+    },
+    "nativeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "author": { "type": "string" },
+        "state": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" },
+        "commitSha": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "inlineComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body", "path", "isResolved", "isOutdated"],
+      "properties": {
+        "author": { "type": "string" },
+        "body": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "originalLine": { "type": "integer", "minimum": 1 },
+        "side": { "type": "string" },
+        "diffHunk": { "type": "string" },
+        "inReplyTo": { "type": "integer", "minimum": 1 },
+        "isResolved": { "type": "boolean" },
+        "isOutdated": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" }
+      }
+    },
+    "gatherSiblingContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pullRequests"],
+      "properties": {
+        "pullRequests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sibling" }
+        }
+      }
+    },
+    "sibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "blocking", "overlappingFiles"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "head": { "type": "string" },
+        "headSha": { "type": "string" },
+        "blocking": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "overlappingFiles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "gatherIssueContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issues"],
+      "properties": {
+        "issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "body"],
+      "properties": {
+        "number": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    }
+  }
+}

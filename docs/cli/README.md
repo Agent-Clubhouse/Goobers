@@ -32,6 +32,7 @@
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
+| [`goobers gather-review-threads`](#goobers-gather-review-threads) | add native reviews and anchored inline threads to a remediation brief (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
@@ -595,6 +596,28 @@ on. Exit codes: 0 = context gathered (or no-work if no PR is eligible),
 
 ~~~console
 $ goobers gather-pr-context
+~~~
+
+## `goobers gather-review-threads`
+
+add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+
+~~~text
+Usage: goobers gather-review-threads [path]
+
+Read this run's latest remediation brief and replace only its
+gatherReviewThreads section with native review bodies and inline review
+comments. File, line, side, diff-hunk, resolved, and outdated metadata
+are preserved so the remediator can distinguish live feedback from stale
+threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty), 1 = business/provider/journal error,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-review-threads
 ~~~
 
 ## `goobers gather-sibling-context`

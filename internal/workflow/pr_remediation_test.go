@@ -114,11 +114,34 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
-	if got := siblings.Next; got != "implement" {
-		t.Errorf("gather-sibling-context next = %q, want implement", got)
+	if got := siblings.Next; got != "gather-review-threads" {
+		t.Errorf("gather-sibling-context next = %q, want gather-review-threads", got)
 	}
 	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
 		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
+
+	threads, ok := m.Task("gather-review-threads")
+	if !ok {
+		t.Fatal("gather-review-threads stage not found")
+	}
+	if threads.Run == nil ||
+		len(threads.Run.Command) != 2 ||
+		threads.Run.Command[0] != "goobers" ||
+		threads.Run.Command[1] != "gather-review-threads" {
+		t.Errorf("gather-review-threads command = %v, want [goobers gather-review-threads]", threads.Run)
+	}
+	if threads.Run != nil && threads.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-review-threads workspace = %q, want scratch", threads.Run.Workspace)
+	}
+	if threads.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-review-threads resultFile = %q, want remediation-brief.json", threads.Inputs["resultFile"])
+	}
+	if len(threads.Capabilities) != 1 || threads.Capabilities[0] != "github:pr:write" {
+		t.Errorf("gather-review-threads capabilities = %v, want [github:pr:write]", threads.Capabilities)
+	}
+	if threads.Next != "implement" {
+		t.Errorf("gather-review-threads next = %q, want implement", threads.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -312,6 +335,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	}
 	if !strings.Contains(implement.Goal, "remediation-brief.json") {
 		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
+	}
+	if !strings.Contains(implement.Goal, "resolved/outdated state") {
+		t.Fatalf("implement goal does not direct the agent to review-thread liveness: %q", implement.Goal)
 	}
 }
 

@@ -268,6 +268,41 @@ type PullRequestReviewResult struct {
 	Decision  ReviewDecision `json:"decision"`
 }
 
+// PullRequestNativeReview is one provider-native review submitted on a pull request.
+type PullRequestNativeReview struct {
+	ID          int64      `json:"id"`
+	Author      string     `json:"author,omitempty"`
+	State       string     `json:"state"`
+	Body        string     `json:"body,omitempty"`
+	CommitSHA   string     `json:"commitSha,omitempty"`
+	SubmittedAt *time.Time `json:"submittedAt,omitempty"`
+	URL         string     `json:"url,omitempty"`
+}
+
+// PullRequestInlineComment is one inline review comment with its thread state
+// and file/diff anchor preserved.
+type PullRequestInlineComment struct {
+	ID           int64      `json:"id"`
+	Author       string     `json:"author,omitempty"`
+	Body         string     `json:"body"`
+	Path         string     `json:"path"`
+	Line         int        `json:"line,omitempty"`
+	OriginalLine int        `json:"originalLine,omitempty"`
+	Side         string     `json:"side,omitempty"`
+	DiffHunk     string     `json:"diffHunk,omitempty"`
+	InReplyTo    int64      `json:"inReplyTo,omitempty"`
+	IsResolved   bool       `json:"isResolved"`
+	IsOutdated   bool       `json:"isOutdated"`
+	CreatedAt    *time.Time `json:"createdAt,omitempty"`
+	URL          string     `json:"url,omitempty"`
+}
+
+// PullRequestReviewThreads is the review evidence attached to a pull request.
+type PullRequestReviewThreads struct {
+	Reviews        []PullRequestNativeReview  `json:"reviews"`
+	InlineComments []PullRequestInlineComment `json:"inlineComments"`
+}
+
 // CheckState normalizes combined CI/check status across providers (BL-031).
 type CheckState string
 

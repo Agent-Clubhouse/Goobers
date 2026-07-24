@@ -221,6 +221,7 @@ var providerStageResultFiles = map[string]string{
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
 	"gather-pr-context":      "remediation-brief.json",
+	"gather-review-threads":  "remediation-brief.json",
 	"gather-sibling-context": "sibling-context.json",
 	"issue-close-out":        "issue-close-out-result.json",
 	"merge-pr":               "merge-result.json",

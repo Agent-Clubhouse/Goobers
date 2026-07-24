@@ -79,6 +79,7 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 		Reviews: []apiv1.RemediationNativeReview{{State: "changes_requested", Body: "Fix the race."}},
 		InlineComments: []apiv1.RemediationInlineComment{{
 			Body: "This write is unsynchronized.", Path: "worker.go", Line: 42,
+			OriginalLine: 40, DiffHunk: "@@ -40,1 +42,1 @@", IsResolved: false, IsOutdated: false,
 		}},
 	}
 	brief.GatherSiblingContext = &apiv1.RemediationSiblingContext{
@@ -102,13 +103,20 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 func TestRemediationBriefSchemaIsClosedAndVersioned(t *testing.T) {
 	v := newV(t)
 	for name, doc := range map[string]string{
-		"wrong version": `{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]}}`,
-		"unknown field": `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"futureSection":{}}`,
+		"wrong version": `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]}}`,
+		"unknown field": `{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"futureSection":{}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := v.ValidateJSON(schemas.RemediationBrief, []byte(doc)); err == nil {
 				t.Fatal("expected remediation brief schema validation to fail")
 			}
 		})
+	}
+}
+
+func TestRemediationBriefV1RemainsImmutableAndValid(t *testing.T) {
+	doc := `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[{"body":"old shape","path":"worker.go"}]}}`
+	if err := newV(t).ValidateJSON(schemas.RemediationBriefV1, []byte(doc)); err != nil {
+		t.Fatalf("immutable v1 brief should remain valid: %v", err)
 	}
 }
