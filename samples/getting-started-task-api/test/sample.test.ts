@@ -10,6 +10,10 @@ interface SampleManifest {
   localCI: {
     command: string[];
   };
+  quickstartProof: {
+    command: string[];
+    seedIssue: string;
+  };
   state: string;
 }
 
@@ -50,6 +54,8 @@ describe("tutorial fixture", () => {
     assert.equal(manifest.version, packageManifest.version);
     assert.equal(manifest.version, seeds.sample.version);
     assert.deepEqual(manifest.localCI.command, ["npm", "run", "ci"]);
+    assert.deepEqual(manifest.quickstartProof.command, ["npm", "run", "proof"]);
+    assert.equal(manifest.quickstartProof.seedIssue, seeds.issues[0]?.id);
     assert.equal(manifest.state, "memory-only");
   });
 

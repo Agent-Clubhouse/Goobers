@@ -44,6 +44,21 @@ throwaway repository. An offline flow can read and display the same catalog
 without contacting GitHub. The issue order is stable; the first entry is the
 shortest happy-path implementation.
 
+## Reproduce the first pull request
+
+```text
+npm run proof
+```
+
+This deterministic quickstart proof materializes the pinned fixture in a
+temporary Git repository, claims the first seed issue, runs a scripted agent
+harness through implementation and independent review, executes the focused
+service tests, pushes the run branch, and records the pull request through an
+offline provider double. The harness replaces only the external model and
+hosting boundaries, following the same fixture convention as Goobers'
+conformance tests. The proof removes its checkout and bare remote before
+returning.
+
 ## Disposal
 
 The app binds only to loopback, keeps all task state in process memory, and

@@ -14,5 +14,13 @@
       "ci"
     ]
   },
+  "quickstartProof": {
+    "command": [
+      "npm",
+      "run",
+      "proof"
+    ],
+    "seedIssue": "reject-empty-task-titles"
+  },
   "state": "memory-only"
 }
