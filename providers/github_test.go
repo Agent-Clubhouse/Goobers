@@ -1352,7 +1352,7 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, []map[string]interface{}{
 			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3},
-			{"filename": "cmd/goobers/new.go", "status": "added", "additions": 40, "deletions": 0},
+			{"filename": "cmd/goobers/new.go", "previous_filename": "cmd/goobers/old.go", "status": "renamed", "additions": 40, "deletions": 0},
 		})
 	})
 	server := httptest.NewServer(mux)
@@ -1368,6 +1368,9 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	}
 	if files[0].Path != "internal/runner/run.go" || files[0].Status != "modified" || files[0].Additions != 12 || files[0].Deletions != 3 {
 		t.Fatalf("unexpected file[0]: %+v", files[0])
+	}
+	if files[1].Path != "cmd/goobers/new.go" || files[1].PreviousPath != "cmd/goobers/old.go" || files[1].Status != "renamed" {
+		t.Fatalf("unexpected renamed file[1]: %+v", files[1])
 	}
 }
 

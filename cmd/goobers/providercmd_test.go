@@ -69,10 +69,11 @@ type fakeReview struct {
 // fakePRFile is one file a fakePR touches, for the /pulls/{id}/files endpoint
 // ListPullRequestFiles reads (issue #359's sibling-set context gathering).
 type fakePRFile struct {
-	path      string
-	status    string
-	additions int
-	deletions int
+	path         string
+	previousPath string
+	status       string
+	additions    int
+	deletions    int
 	// patch is the unified-diff hunk text; empty is valid for binary files
 	// and tests that only care about file metadata.
 	patch string
@@ -617,7 +618,8 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		out := make([]map[string]interface{}, 0, len(pr.files))
 		for _, f := range pr.files {
 			out = append(out, map[string]interface{}{
-				"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch,
+				"filename": f.path, "previous_filename": f.previousPath, "status": f.status,
+				"additions": f.additions, "deletions": f.deletions, "patch": f.patch,
 			})
 		}
 		writeFakeJSON(w, out)
@@ -686,7 +688,8 @@ func (s *fakeGitHubServer) handleCompare(w http.ResponseWriter, r *http.Request)
 	files := make([]map[string]interface{}, 0, len(cmp.files))
 	for _, f := range cmp.files {
 		files = append(files, map[string]interface{}{
-			"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch,
+			"filename": f.path, "previous_filename": f.previousPath, "status": f.status,
+			"additions": f.additions, "deletions": f.deletions, "patch": f.patch,
 		})
 	}
 	writeFakeJSON(w, map[string]interface{}{

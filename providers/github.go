@@ -1321,7 +1321,14 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	}
 	out := make([]ChangedFile, 0, len(files))
 	for _, f := range files {
-		out = append(out, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+		out = append(out, ChangedFile{
+			Path:         f.Filename,
+			PreviousPath: f.PreviousFilename,
+			Status:       f.Status,
+			Additions:    f.Additions,
+			Deletions:    f.Deletions,
+			Patch:        f.Patch,
+		})
 	}
 	return out, nil
 }
@@ -1393,7 +1400,14 @@ func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef,
 	}
 	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
 	for _, f := range files {
-		out.Files = append(out.Files, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+		out.Files = append(out.Files, ChangedFile{
+			Path:         f.Filename,
+			PreviousPath: f.PreviousFilename,
+			Status:       f.Status,
+			Additions:    f.Additions,
+			Deletions:    f.Deletions,
+			Patch:        f.Patch,
+		})
 	}
 	return out, nil
 }
@@ -2400,11 +2414,12 @@ type githubBranchRule struct {
 }
 
 type githubPullRequestFile struct {
-	Filename  string `json:"filename"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Patch     string `json:"patch"`
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Patch            string `json:"patch"`
 }
 
 // githubCompareResponse is the shape of GET .../compare/{base}...{head}.

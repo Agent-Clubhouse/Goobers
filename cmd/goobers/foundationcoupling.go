@@ -74,8 +74,39 @@ func loadFoundationCouplings(
 		return nil, nil, nil
 	}
 
-	contentCache := make(map[string][]byte)
 	var warnings []string
+	foundationBlocked := make(map[int]bool, len(blocked))
+	for number, isBlocked := range blocked {
+		if isBlocked {
+			foundationBlocked[number] = true
+		}
+	}
+	for _, pr := range openPRs {
+		if pr.Draft || foundationBlocked[pr.Number] {
+			continue
+		}
+		escalated, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve merge-escalation state for foundation PR #%d: %w", pr.Number, err)
+		}
+		if escalated {
+			foundationBlocked[pr.Number] = true
+			continue
+		}
+		demoted, err := demotionStillHolds(ctx, provider, repo, pr)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf(
+				"could not resolve merge-demotion state for foundation PR #%d (%v); treating it as not demoted",
+				pr.Number, err,
+			))
+			continue
+		}
+		if demoted {
+			foundationBlocked[pr.Number] = true
+		}
+	}
+
+	contentCache := make(map[string][]byte)
 	for i := range profiles {
 		for _, file := range profiles[i].files {
 			if !dependentPaths[file.Path] ||
@@ -97,7 +128,7 @@ func loadFoundationCouplings(
 	for i := range dependentProfiles {
 		dependentProfiles[i] = profiles[profileIndexes[dependentProfiles[i].pr.Number]]
 	}
-	return detectFoundationCouplings(dependentProfiles, profiles, blocked), warnings, nil
+	return detectFoundationCouplings(dependentProfiles, profiles, foundationBlocked), warnings, nil
 }
 
 func newPullRequestDiffProfile(pr providers.PullRequestSummary, files []providers.ChangedFile) pullRequestDiffProfile {
@@ -109,6 +140,9 @@ func newPullRequestDiffProfile(pr providers.PullRequestSummary, files []provider
 	}
 	for _, file := range files {
 		profile.byPath[file.Path] = file
+		if removal, ok := renamedFileRemoval(file); ok {
+			profile.byPath[removal.Path] = removal
+		}
 		profile.magnitude += changedFileMagnitude(file)
 	}
 	return profile
@@ -161,8 +195,7 @@ func detectFoundationCouplings(dependents, foundations []pullRequestDiffProfile,
 		for _, foundation := range foundations {
 			if foundation.pr.Number == dependent.pr.Number ||
 				foundation.pr.Draft ||
-				blocked[foundation.pr.Number] ||
-				hasAnyLabel(foundation.pr.Labels, []string{mergeDemotedLabel, remediationEscalatedLabel}) {
+				blocked[foundation.pr.Number] {
 				continue
 			}
 			shared := foundationRewriteFiles(dependent, foundation)
@@ -198,26 +231,32 @@ func detectFoundationCouplings(dependents, foundations []pullRequestDiffProfile,
 func foundationRewriteFiles(dependent, foundation pullRequestDiffProfile) []string {
 	var shared []string
 	for _, foundationFile := range foundation.files {
-		dependentFile, ok := dependent.byPath[foundationFile.Path]
+		rewriteFile := foundationFile
+		sharedPath := foundationFile.Path
+		if removal, ok := renamedFileRemoval(foundationFile); ok {
+			rewriteFile = removal
+			sharedPath = removal.Path
+		}
+		dependentFile, ok := dependent.byPath[sharedPath]
 		if !ok {
 			continue
 		}
 		foundationRewrite, foundationKnown := substantiallyRewrites(
-			foundationFile, foundation.lineCounts[foundationFile.Path],
-			lineCountsKnown(foundationFile, foundation.lineCounts, foundationFile.Path),
+			rewriteFile, foundation.lineCounts[foundationFile.Path],
+			lineCountsKnown(rewriteFile, foundation.lineCounts, foundationFile.Path),
 		)
 		dependentRewrite, dependentKnown := substantiallyRewrites(
-			dependentFile, dependent.lineCounts[dependentFile.Path],
-			lineCountsKnown(dependentFile, dependent.lineCounts, dependentFile.Path),
+			dependentFile, dependent.lineCounts[sharedPath],
+			lineCountsKnown(dependentFile, dependent.lineCounts, sharedPath),
 		)
 		if !foundationKnown ||
 			!dependentKnown ||
 			!foundationRewrite ||
 			dependentRewrite ||
-			changedFileMagnitude(foundationFile) < foundationDominanceFactor*changedFileMagnitude(dependentFile) {
+			changedFileMagnitude(rewriteFile) < foundationDominanceFactor*changedFileMagnitude(dependentFile) {
 			continue
 		}
-		shared = append(shared, foundationFile.Path)
+		shared = append(shared, sharedPath)
 	}
 	sort.Strings(shared)
 	return shared
@@ -231,7 +270,21 @@ func lineCountsKnown(file providers.ChangedFile, counts map[string]fileLineCount
 	return ok
 }
 
+func renamedFileRemoval(file providers.ChangedFile) (providers.ChangedFile, bool) {
+	if !strings.EqualFold(file.Status, "renamed") ||
+		file.PreviousPath == "" ||
+		file.PreviousPath == file.Path {
+		return providers.ChangedFile{}, false
+	}
+	file.Path = file.PreviousPath
+	file.Status = "removed"
+	return file, true
+}
+
 func changedFileMagnitude(file providers.ChangedFile) int {
+	if removal, ok := renamedFileRemoval(file); ok {
+		file = removal
+	}
 	magnitude := file.Additions + file.Deletions
 	if strings.EqualFold(file.Status, "removed") && magnitude < foundationRewriteMinLines {
 		return foundationRewriteMinLines

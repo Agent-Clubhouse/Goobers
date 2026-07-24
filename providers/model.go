@@ -631,10 +631,11 @@ type PullRequestSummary struct {
 // context: what does the OTHER open PR touch, for cross-PR conflict/drift
 // detection).
 type ChangedFile struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"` // added|modified|removed|renamed
-	Additions int    `json:"additions,omitempty"`
-	Deletions int    `json:"deletions,omitempty"`
+	Path         string `json:"path"`
+	PreviousPath string `json:"previousPath,omitempty"`
+	Status       string `json:"status"` // added|modified|removed|renamed
+	Additions    int    `json:"additions,omitempty"`
+	Deletions    int    `json:"deletions,omitempty"`
 	// Patch is the file's unified-diff hunk text as the provider reports it
 	// (GitHub omits this for binary files and diffs over its size cutoff —
 	// empty in that case, not an error). Issue #718: the rebase-invariant
