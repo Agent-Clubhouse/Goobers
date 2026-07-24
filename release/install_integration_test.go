@@ -35,7 +35,28 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 	if err := os.WriteFile(fakeBinary, fakeBinaryData, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	archive, err := packageArchive(Target{OS: "linux", Arch: "amd64"}, "v1.2.3", fakeBinary, fixtures)
+	releaseRoot := filepath.Join(root, "release")
+	releaseDocs := map[string][]byte{
+		"README.md":                 []byte("# Goobers v1.2.3\n"),
+		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
+		"docs/guides/quickstart.md": []byte("# Quickstart v1.2.3\n"),
+	}
+	for name, data := range releaseDocs {
+		path := filepath.Join(releaseRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive, err := packageArchive(
+		Target{OS: "linux", Arch: "amd64"},
+		"v1.2.3",
+		fakeBinary,
+		fixtures,
+		releaseRoot,
+	)
 	if err != nil {
 		t.Fatalf("packageArchive: %v", err)
 	}
@@ -78,6 +99,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 
 	installDir := filepath.Join(root, "bin")
+	dataDir := filepath.Join(root, "data")
 	instancePath := filepath.Join(root, "instance with space")
 	curlCalls := filepath.Join(root, "curl-calls")
 	goobersCalls := filepath.Join(root, "goobers-calls")
@@ -96,6 +118,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"CURL_CALLS="+curlCalls,
 		"GOOBERS_CALLS="+goobersCalls,
 		"GOOBERS_INSTALL_DIR="+installDir,
+		"XDG_DATA_HOME="+dataDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("installer: %v\n%s", err, output)
@@ -107,6 +130,17 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 	if !bytes.Equal(installed, fakeBinaryData) {
 		t.Fatal("installed binary differs from the checksummed archive")
+	}
+	installedDocsDir := filepath.Join(dataDir, "goobers", "v1.2.3")
+	for name, want := range releaseDocs {
+		got, err := os.ReadFile(filepath.Join(installedDocsDir, filepath.FromSlash(name)))
+		if err != nil {
+			t.Errorf("installed documentation %s: %v", name, err)
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("installed documentation %s = %q, want %q", name, got, want)
+		}
 	}
 	calls, err := os.ReadFile(goobersCalls)
 	if err != nil {
@@ -134,6 +168,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		t.Fatal(err)
 	}
 	failedInstallDir := filepath.Join(root, "failed-bin")
+	failedDataDir := filepath.Join(root, "failed-data")
 	cmd = exec.Command("sh", scriptPath, "v1.2.3", instancePath)
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -141,6 +176,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"CURL_CALLS="+curlCalls,
 		"GOOBERS_CALLS="+goobersCalls,
 		"GOOBERS_INSTALL_DIR="+failedInstallDir,
+		"XDG_DATA_HOME="+failedDataDir,
 	)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "checksum mismatch") {
@@ -148,6 +184,9 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 	if _, err := os.Stat(filepath.Join(failedInstallDir, "goobers")); !os.IsNotExist(err) {
 		t.Fatalf("checksum failure installed a binary: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(failedDataDir, "goobers", "v1.2.3")); !os.IsNotExist(err) {
+		t.Fatalf("checksum failure installed documentation: %v", err)
 	}
 }
 

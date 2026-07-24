@@ -52,11 +52,15 @@ VERSION=v1.2.3
 The command downloads only assets attached to that tag. The helper detects the
 host OS and architecture, downloads the matching archive plus `SHA256SUMS`,
 verifies the archive before extraction, and installs `goobers` to
-`$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It then runs the
-release binary's `goobers init --guided` flow, which prompts for the repository,
-work tracking, credential references, and canonical workflows and finishes by
-validating the generated instance. Use an empty instance path; guided setup
-refuses to overwrite existing configuration.
+`$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It installs the
+archive's `README.md` and `docs/` tree to the versioned
+`${XDG_DATA_HOME:-$HOME/.local/share}/goobers/<version>` directory (override the
+root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
+earlier documentation. It then runs the release binary's
+`goobers init --guided` flow, which prompts for the repository, work tracking,
+credential references, and canonical workflows and finishes by validating the
+generated instance. Use an empty instance path; guided setup refuses to
+overwrite existing configuration.
 
 The helper intentionally delegates all config generation and validation to the
 installed binary. The canonical workflow templates are embedded in that tagged

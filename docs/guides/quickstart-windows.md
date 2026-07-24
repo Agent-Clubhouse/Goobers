@@ -8,19 +8,10 @@ the Windows-specific *getting-the-binary* path (zip + `Get-FileHash` verificatio
 + `PATH`) and, once a supervised daemon is wanted, points at the
 [Windows Service](supervision.md#windows-windows-service) setup.
 
-> **Status: distribution is staged, Windows binaries are not published yet.**
-> The release-packaging engine that produces the Windows artifact is in place
-> (`go run ./release`, see [Releases & packaging](releases.md)), but a *published*
-> `windows/amd64` build is gated on the Windows CI leg
-> ([#633](https://github.com/Agent-Clubhouse/Goobers/issues/633)) going green —
-> today `GOOS=windows go build ./cmd/goobers` still fails to compile pending the
-> Windows process-control implementation (`internal/platform/proc`, the
-> [#620–#627](https://github.com/Agent-Clubhouse/Goobers/issues/623) abstraction
-> chain). Until then, the steps below describe the supported install path for the
-> first release that ships, and the [build-from-source](#build-from-source)
-> fallback is the way to run on Windows in the interim. This mirrors the
-> runtime-pending posture of the [Windows Service](supervision.md#windows-windows-service)
-> wiring.
+Tagged releases publish a `windows/amd64` archive alongside the macOS and Linux
+artifacts. The archive includes the release-stamped CLI and its matching
+onboarding documentation; the steps below are the supported Windows install
+path.
 
 ## 1. Download
 
@@ -113,17 +104,16 @@ documented where they live:
 
 ## Build from source
 
-Until published Windows binaries land (gated on
-[#633](https://github.com/Agent-Clubhouse/Goobers/issues/633)), build locally on
-a Windows host with the Go toolchain pinned in [`go.mod`](../../go.mod):
+To build from source instead of installing a tagged archive, use a Windows host
+with the Go toolchain pinned in [`go.mod`](../../go.mod):
 
 ```powershell
 go build -o goobers.exe ./cmd/goobers
 ```
 
 (The committed `cmd/goobers/portal-dist` assets are embedded automatically, so no
-Node/npm step is needed for the CLI build.) This is also how you cross-compile a
-Windows binary from another platform once the Windows compile is green:
+Node/npm step is needed for the CLI build.) To cross-compile the release package
+from another platform:
 
 ```sh
 GOOS=windows GOARCH=amd64 go run ./release -targets windows/amd64 -first-feature-snapshot
