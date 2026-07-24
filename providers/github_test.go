@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1039,8 +1040,8 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 		t.Fatalf("len(Checks) = %d, want 3 (1 status + 2 check-runs)", len(result.Checks))
 	}
 	wantChecks := []CheckDetail{
-		{Name: "legacy-ci", State: CheckStateFailing, URL: "https://ci/legacy", Summary: "boom"},
-		{Name: "unit-tests", State: CheckStatePassing, URL: "https://ci/unit"},
+		{Name: "legacy-ci", State: CheckStateFailing, Conclusion: "failure", URL: "https://ci/legacy", Summary: "boom"},
+		{Name: "unit-tests", State: CheckStatePassing, Conclusion: "success", URL: "https://ci/unit"},
 		{Name: "e2e", State: CheckStatePending, URL: "https://ci/e2e", Summary: "waiting for a runner"},
 	}
 	for i := range wantChecks {
@@ -1056,6 +1057,82 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
 		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
+	}
+}
+
+func TestGitHubProviderCIFailuresIncludesAnnotationsWithoutFetchingLogs(t *testing.T) {
+	var requested []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		writeJSON(t, w, map[string]interface{}{
+			"statuses": []map[string]interface{}{
+				{"context": "legacy-ci", "state": "error", "target_url": "https://ci/legacy", "description": "compiler exited 2"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		writeJSON(t, w, map[string]interface{}{
+			"check_runs": []map[string]interface{}{
+				{"id": 101, "name": "unit", "status": "completed", "conclusion": "failure", "html_url": "https://ci/unit", "output": map[string]interface{}{"summary": "two tests failed"}},
+				{"id": 102, "name": "lint", "status": "completed", "conclusion": "success", "html_url": "https://ci/lint"},
+			},
+		})
+	})
+	var server *httptest.Server
+	mux.HandleFunc("/repos/acme/app/check-runs/101/annotations", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		if r.URL.Query().Get("page") == "2" {
+			writeJSON(t, w, []map[string]interface{}{{
+				"path": "worker_test.go", "start_line": 44, "end_line": 44,
+				"annotation_level": "failure", "message": "want 2, got 3",
+			}})
+			return
+		}
+		w.Header().Set("Link", "<"+server.URL+"/repos/acme/app/check-runs/101/annotations?page=2>; rel=\"next\"")
+		writeJSON(t, w, []map[string]interface{}{{
+			"path": "worker.go", "start_line": 17, "end_line": 19,
+			"annotation_level": "failure", "title": "race detected", "message": "unsynchronized write",
+		}})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	failures, err := provider.CIFailures(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+	if err != nil {
+		t.Fatalf("CIFailures: %v", err)
+	}
+	if len(failures) != 2 {
+		t.Fatalf("len(failures) = %d, want 2: %+v", len(failures), failures)
+	}
+	if got := failures[0]; got.Name != "legacy-ci" || got.Conclusion != "error" ||
+		got.Summary != "compiler exited 2" || len(got.Annotations) != 0 {
+		t.Fatalf("legacy failure = %+v, want summary-only legacy status", got)
+	}
+	check := failures[1]
+	if check.Name != "unit" || check.Conclusion != "failure" || check.Summary != "two tests failed" {
+		t.Fatalf("check failure = %+v", check)
+	}
+	if len(check.Annotations) != 2 ||
+		check.Annotations[0].Path != "worker.go" ||
+		check.Annotations[0].StartLine != 17 ||
+		check.Annotations[0].EndLine != 19 ||
+		check.Annotations[0].Level != "failure" ||
+		check.Annotations[0].Title != "race detected" ||
+		check.Annotations[0].Message != "unsynchronized write" ||
+		check.Annotations[1].Message != "want 2, got 3" {
+		t.Fatalf("annotations = %+v, want both paginated diagnostics", check.Annotations)
+	}
+	wantRequests := []string{
+		"/repos/acme/app/commits/deadbeef/status",
+		"/repos/acme/app/commits/deadbeef/check-runs",
+		"/repos/acme/app/check-runs/101/annotations",
+		"/repos/acme/app/check-runs/101/annotations",
+	}
+	if !reflect.DeepEqual(requested, wantRequests) {
+		t.Fatalf("requested paths = %v, want %v (no raw workflow-log endpoint)", requested, wantRequests)
 	}
 }
 

@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/goobers/goobers/internal/instance"
+)
 
 // completionModel is the shell-agnostic description of the goobers CLI surface
 // that every shell completion script is rendered from. Its command and
@@ -65,6 +69,8 @@ var completionPositionalArgKinds = map[string]string{
 var completionFlagSpecs = map[string][]completionFlagSpec{
 	"init": {
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
+		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
+		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 	},
 	"scaffold goober": {
 		{name: "force", desc: "Replace generated files that already exist"},

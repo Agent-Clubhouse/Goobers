@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -1029,21 +1030,48 @@ type backlogCounter struct {
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
+	quota        *localscheduler.ProviderQuotaState
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
+	var accounting *providerQuotaAccounting
+	if b.quota != nil {
+		accounting = &providerQuotaAccounting{state: b.quota}
+		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+			accounting.prepaid = &reservation
+		}
+		defer accounting.RefundUnused()
+	}
+
 	token, err := b.resolver.Resolve(ctx, b.ref)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	b.reg.Register([]byte(token))
-	items, err := newGitHubProvider(token, apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx))).ListWorkItems(ctx, providers.ListWorkItemsRequest{
+	opts := []func(*providers.GitHubProvider){
+		apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx)),
+	}
+	if accounting != nil {
+		opts = append(opts,
+			providers.WithQuotaObserver(accounting),
+			providers.WithQuotaRequestGate(accounting),
+		)
+	}
+	// Fail fast on rate limits so polling waits for the scheduler's next
+	// reset-aware admission. Transport and 5xx retries remain enabled and each
+	// attempt is reserved through the quota gate above.
+	opts = append(opts, providers.WithMaxRateLimitRetries(0))
+	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
 	})
 	if err != nil {
 		return 0, err
 	}
 	return len(items), nil
+}
+
+func (b *backlogCounter) ProviderQuotaGuarded() bool {
+	return b.quota != nil
 }
 
 // buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
@@ -1059,7 +1087,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) localscheduler.BacklogCounter {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -1080,7 +1108,7 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 		labels = append(labels, k)
 	}
 	sort.Strings(labels)
-	return &backlogCounter{
+	counter := &backlogCounter{
 		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
 		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
 		labels:       labels,
@@ -1088,6 +1116,70 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 		reg:          reg,
 		schedulerDir: schedulerDir,
 	}
+	if quota != nil {
+		counter.quota = quota
+	}
+	return counter
+}
+
+type providerQuotaAccounting struct {
+	mu          sync.Mutex
+	state       *localscheduler.ProviderQuotaState
+	prepaid     *localscheduler.ProviderPollReservation
+	outstanding []localscheduler.ProviderPollReservation
+}
+
+func (a *providerQuotaAccounting) AcquireQuotaRequest(_ context.Context, provider providers.ProviderKind) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepaid != nil {
+		a.outstanding = append(a.outstanding, *a.prepaid)
+		a.prepaid = nil
+		return nil
+	}
+	decision := a.state.ReserveCurrentPolls(apiv1.Provider(provider), 1)
+	if decision.Allowed == 0 {
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
+	reservation, _ := decision.Reservation()
+	a.outstanding = append(a.outstanding, reservation)
+	return nil
+}
+
+func (a *providerQuotaAccounting) ObserveQuota(_ context.Context, observation providers.QuotaObservation) {
+	a.mu.Lock()
+	var reservation localscheduler.ProviderPollReservation
+	if len(a.outstanding) > 0 {
+		reservation = a.outstanding[0]
+		a.outstanding = a.outstanding[1:]
+	}
+	a.mu.Unlock()
+
+	provider := apiv1.Provider(observation.Provider)
+	if observation.Cached {
+		a.state.RefundReservation(reservation)
+		return
+	}
+	if observation.Known {
+		a.state.Record(provider, observation.Remaining, observation.Reset)
+	}
+}
+
+func (a *providerQuotaAccounting) RefundUnused() {
+	a.mu.Lock()
+	if a.prepaid == nil {
+		a.mu.Unlock()
+		return
+	}
+	reservation := *a.prepaid
+	a.prepaid = nil
+	a.mu.Unlock()
+	a.state.RefundReservation(reservation)
 }
 
 // instructionsPath resolves a goober's Instructions field to an absolute

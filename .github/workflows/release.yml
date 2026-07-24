@@ -103,6 +103,9 @@ jobs:
           grep --fixed-strings "## DSL feature-support delta" dist/RELEASE_NOTES.md
           grep --fixed-strings "## DSL support-matrix delta" dist/RELEASE_NOTES.md
           grep --fixed-strings "## Support policy for external consumers" dist/RELEASE_NOTES.md
+          test -x dist/install.sh
+          sh -n dist/install.sh
+          grep --fixed-strings "  install.sh" dist/SHA256SUMS
           mkdir smoke
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
           smoke/goobers --version | grep --fixed-strings "$TAG"

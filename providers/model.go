@@ -325,10 +325,28 @@ const MergeableStateUnstable = "unstable"
 
 // CheckDetail references a single check/status run for repass-gate drill-down.
 type CheckDetail struct {
-	Name    string     `json:"name"`
-	State   CheckState `json:"state"`
-	URL     string     `json:"url"`
-	Summary string     `json:"summary"`
+	Name       string     `json:"name"`
+	State      CheckState `json:"state"`
+	Conclusion string     `json:"conclusion,omitempty"`
+	URL        string     `json:"url"`
+	Summary    string     `json:"summary"`
+}
+
+// CheckAnnotation is one provider-native diagnostic attached to a check run.
+type CheckAnnotation struct {
+	Path      string `json:"path,omitempty"`
+	StartLine int    `json:"startLine,omitempty"`
+	EndLine   int    `json:"endLine,omitempty"`
+	Level     string `json:"level,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Message   string `json:"message"`
+}
+
+// CIFailureDetail carries the bounded evidence available for one failing
+// status or check run. Legacy commit statuses do not support annotations.
+type CIFailureDetail struct {
+	CheckDetail
+	Annotations []CheckAnnotation `json:"annotations"`
 }
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.

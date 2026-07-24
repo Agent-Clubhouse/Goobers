@@ -110,6 +110,9 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
+	if !strings.Contains(string(sums), installScriptFile) {
+		t.Errorf("SHA256SUMS missing the install helper:\n%s", sums)
+	}
 	notes, err := os.ReadFile(filepath.Join(out, releaseNotesFile))
 	if err != nil {
 		t.Fatalf("%s: %v", releaseNotesFile, err)
@@ -134,14 +137,14 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 	// The intermediate binary was cleaned up, leaving only release assets.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 5 {
+	if len(entries) != 6 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want archive, checksums, release notes, feature snapshot, and support snapshot", names)
+		t.Errorf("dist has %v, want archive, installer, checksums, release notes, feature snapshot, and support snapshot", names)
 	}
-	for _, name := range []string{releaseNotesFile, featureSnapshotFile, supportSnapshotFile} {
+	for _, name := range []string{installScriptFile, releaseNotesFile, featureSnapshotFile, supportSnapshotFile} {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("missing release metadata %s: %v", name, err)
 		}

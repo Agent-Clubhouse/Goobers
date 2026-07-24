@@ -4,7 +4,8 @@ goobers — tier 1-2 local instance CLI
 Usage:
   goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
-  goobers init [--guided | --demo] [path]  scaffold an instance root
+  goobers init [--guided | --demo | --template=quickstart] [path]
+                                scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
@@ -79,6 +80,7 @@ Usage:
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -90,7 +92,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
@@ -109,7 +111,8 @@ goobers — tier 1-2 local instance CLI
 Usage:
   goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
-  goobers init [--guided | --demo] [path]  scaffold an instance root
+  goobers init [--guided | --demo | --template=quickstart] [path]
+                                scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
@@ -184,6 +187,7 @@ Usage:
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
@@ -195,7 +199,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-review-threads/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
@@ -447,6 +451,17 @@ actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
 
+### gather-ci-failures
+Usage: goobers gather-ci-failures [path]
+
+Enrich this run's remediation brief with failing check names,
+conclusions, summaries, and annotations. Passing CI leaves the brief
+unchanged and performs no provider API calls. Raw job logs are never
+fetched: their explicit per-check volume bound is 0 bytes. [path] is
+the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+0 = evidence gathered (or passing-CI no-op), 1 = business error,
+2 = usage/IO error.
+
 ### gather-implement-context
 Usage: goobers gather-implement-context [path]
 
@@ -517,7 +532,7 @@ review. Exit codes: 0 = context gathered (possibly empty — no siblings
 is not an error), 1 = business error, 2 = usage/IO error.
 
 ### init
-Usage: goobers init [--guided | --demo] [path]
+Usage: goobers init [--guided | --demo | --template=quickstart] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -525,7 +540,8 @@ telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It prompts for
 a GitHub repository, work tracking, token references, and canonical workflows,
-then validates the result. --demo seeds a hermetic mock-provider full-loop tour
+then validates the result. --template=quickstart seeds the versioned onboarding
+workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced.
 

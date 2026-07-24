@@ -112,6 +112,35 @@ func TestInitDemoFresh(t *testing.T) {
 	}
 }
 
+func TestInitQuickstartFresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	res, err := InitQuickstart(root)
+	if err != nil {
+		t.Fatalf("InitQuickstart: %v", err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("fresh quickstart init skipped entries: %v", res.Skipped)
+	}
+
+	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Gaggles) != 1 || len(set.Goobers) != 2 || len(set.Workflows) != 1 {
+		t.Fatalf("unexpected quickstart config shape: %+v", set)
+	}
+	workflow := set.Workflows[0]
+	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
+		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
+	}
+	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
+	for i, task := range workflow.Spec.Tasks {
+		if task.Name != wantTasks[i] {
+			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
+		}
+	}
+}
+
 func TestInitIdempotent(t *testing.T) {
 	root := t.TempDir()
 

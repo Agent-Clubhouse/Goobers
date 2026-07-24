@@ -66,7 +66,7 @@ func TestProviderHTTPClientBoundsStalledEndpointRetries(t *testing.T) {
 			p.Client = client
 			p.sleep = func(context.Context, time.Duration) error { return nil }
 		},
-		WithMaxRateLimitRetries(retries),
+		WithMaxTransientRetries(retries),
 	)
 
 	start := time.Now()

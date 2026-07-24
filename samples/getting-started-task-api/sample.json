@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "getting-started-task-api",
+  "version": "1.0.0",
+  "compatibleTemplates": [
+    "quickstart@v1"
+  ],
+  "seedIssues": "seed-issues.json",
+  "runtime": {
+    "name": "node",
+    "minimumVersion": "20"
+  },
+  "localCI": {
+    "command": [
+      "npm",
+      "run",
+      "ci"
+    ]
+  },
+  "state": "memory-only"
+}

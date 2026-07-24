@@ -23,6 +23,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 		{command: "backlog-dedupe", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "backlog-query", errorReason: "instance.yaml"},
 		{command: "elect-lander", errorReason: "selectedNumber is required"},
+		{command: "gather-ci-failures", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "gather-implement-context", errorReason: "instance.yaml"},
 		{command: "gather-pr-context", errorReason: "instance.yaml"},
 		{command: "gather-sibling-context", errorReason: "instance.yaml"},
@@ -85,6 +86,7 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 		errorReason string
 	}{
 		{command: "issue-close-out", resultFile: "issue-close-out-result.json", errorReason: "instance.yaml"},
+		{command: "gather-ci-failures", resultFile: "remediation-brief.json", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "gather-implement-context", resultFile: "implementation-context.json", errorReason: "instance.yaml"},
 		{command: "post-merge", resultFile: "post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "reconcile-post-merge", resultFile: "reconcile-post-merge-result.json", errorReason: "instance.yaml"},

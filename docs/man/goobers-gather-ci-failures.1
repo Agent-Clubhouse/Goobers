@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATHER CI FAILURES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gather-ci-failures \- add failing CI diagnostics to a remediation brief (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gather-ci-failures\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gather-ci-failures [path]
+
+Enrich this run's remediation brief with failing check names,
+conclusions, summaries, and annotations. Passing CI leaves the brief
+unchanged and performs no provider API calls. Raw job logs are never
+fetched: their explicit per-check volume bound is 0 bytes. [path] is
+the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+0 = evidence gathered (or passing-CI no-op), 1 = business error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gather-ci-failures
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
