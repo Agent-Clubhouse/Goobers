@@ -83,6 +83,7 @@ func (e apiReadCacheEntry) fresh(now time.Time) bool {
 // plus the Link header pagination follows.
 func (e apiReadCacheEntry) response(req *http.Request) *http.Response {
 	h := http.Header{}
+	h.Set(providers.QuotaCacheHitHeader, "true")
 	if e.Link != "" {
 		h.Set("Link", e.Link)
 	}
@@ -109,6 +110,7 @@ type apiReadCache struct {
 	inner        providers.HTTPClient
 	schedulerDir string
 	snapshotID   string
+	quotaGate    providers.QuotaRequestGate
 
 	mu     sync.Mutex
 	mem    map[string]apiReadCacheEntry // loaded from disk once, then process-local
@@ -122,6 +124,10 @@ type apiReadCache struct {
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
 	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID}
+}
+
+func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
+	c.quotaGate = gate
 }
 
 // apiReadCacheOption returns a provider option that routes GETs through the
@@ -146,7 +152,7 @@ func newCachedGitHubProvider(root, token string, opts ...func(*providers.GitHubP
 // other method and any error path is a straight pass-through.
 func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 	if c == nil || c.schedulerDir == "" || req == nil || req.Method != http.MethodGet {
-		return c.inner.Do(req)
+		return c.do(req)
 	}
 
 	key := apiReadCacheKey(req)
@@ -203,7 +209,7 @@ func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, sn
 			req.Header.Set("If-Modified-Since", entry.LastModified)
 		}
 	}
-	resp, err := c.inner.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return resp, err
 	}
@@ -252,6 +258,15 @@ func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, sn
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return resp, nil
+}
+
+func (c *apiReadCache) do(req *http.Request) (*http.Response, error) {
+	if c.quotaGate != nil {
+		if err := c.quotaGate.AcquireQuotaRequest(req.Context(), providers.ProviderGitHub); err != nil {
+			return nil, err
+		}
+	}
+	return c.inner.Do(req)
 }
 
 func isProviderListRequest(req *http.Request) bool {

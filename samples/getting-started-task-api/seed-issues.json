@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "sample": {
+    "id": "getting-started-task-api",
+    "version": "1.0.0"
+  },
+  "labels": [
+    {
+      "name": "goobers:approved",
+      "color": "0E8A16",
+      "description": "Maintainer-approved; eligible for agentic work"
+    },
+    {
+      "name": "goobers:ready",
+      "color": "1D76DB",
+      "description": "Curated and scoped; eligible for implementation"
+    },
+    {
+      "name": "type:bug",
+      "color": "D73A4A",
+      "description": "Defect in existing behavior"
+    },
+    {
+      "name": "type:feature",
+      "color": "A2EEEF",
+      "description": "New capability"
+    },
+    {
+      "name": "area:api",
+      "color": "0052CC",
+      "description": "Task API behavior"
+    }
+  ],
+  "issues": [
+    {
+      "id": "reject-empty-task-titles",
+      "title": "Reject tasks with empty titles",
+      "body": "## Problem\n\n`POST /tasks` currently accepts a missing, non-string, or whitespace-only `title`, creating a task that cannot be identified in the list.\n\n## Acceptance criteria\n\n- Return HTTP 400 with `{ \"error\": \"title is required\" }` when `title` is missing, is not a string, or contains only whitespace.\n- Trim surrounding whitespace before storing a valid title.\n- Keep the existing successful response shape and status for valid tasks.\n- Add focused tests for invalid and trimmed titles.\n\n## Verification\n\nRun `npm test`.\n\n## Scope\n\nChange only task-creation validation and its tests.",
+      "labels": [
+        "goobers:approved",
+        "goobers:ready",
+        "type:bug",
+        "area:api"
+      ]
+    },
+    {
+      "id": "make-completion-idempotent",
+      "title": "Completing a task twice should not reopen it",
+      "body": "## Problem\n\n`PATCH /tasks/:id/complete` toggles the completion flag, so retrying the same request reopens an already completed task. Completion requests should be safe to retry.\n\n## Acceptance criteria\n\n- Completing an open task returns HTTP 200 with `completed: true`.\n- Completing the same task again also returns HTTP 200 and leaves `completed: true`.\n- Preserve the existing HTTP 404 response for an unknown task.\n- Add a focused regression test for the repeated request.\n\n## Verification\n\nRun `npm test`.\n\n## Scope\n\nChange only completion behavior and its tests.",
+      "labels": [
+        "goobers:approved",
+        "goobers:ready",
+        "type:bug",
+        "area:api"
+      ]
+    },
+    {
+      "id": "filter-tasks-by-status",
+      "title": "Filter the task list by completion status",
+      "body": "## Problem\n\n`GET /tasks` always returns every task. Add the small filtering feature used by clients that show separate pending and completed views.\n\n## Acceptance criteria\n\n- `GET /tasks?status=pending` returns only tasks with `completed: false`.\n- `GET /tasks?status=completed` returns only tasks with `completed: true`.\n- `GET /tasks` continues to return every task.\n- An unsupported `status` returns HTTP 400 with `{ \"error\": \"invalid status\" }`.\n- Add focused tests for all four cases.\n\n## Verification\n\nRun `npm test`.\n\n## Scope\n\nChange only task-list filtering and its tests.",
+      "labels": [
+        "goobers:approved",
+        "goobers:ready",
+        "type:feature",
+        "area:api"
+      ]
+    }
+  ]
+}

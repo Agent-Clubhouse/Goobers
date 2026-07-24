@@ -35,6 +35,11 @@ type Trigger struct {
 	// (WF-040, SCH-010).
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// Priority orders provider-backed polling when a quota window cannot cover
+	// every due poll. Higher values are preserved first; equal values use the
+	// scheduler's deterministic workflow ordering.
+	// +optional
+	Priority int32 `json:"priority,omitempty" yaml:"priority,omitempty"`
 	// Schedule is a cron expression or interval (e.g. "@every 1h") for
 	// type=schedule.
 	// +optional

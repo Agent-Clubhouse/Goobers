@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 // suiteRunWaitTimeout is the generous ceiling every wait-mode `goobers run`/
@@ -48,12 +49,20 @@ const hermeticEphemeralListen = "127.0.0.1:0"
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
 func TestMain(m *testing.M) {
+	if baseURL := os.Getenv("GOOBERS_TEST_GITHUB_API_URL"); baseURL != "" {
+		newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+			return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
+				provider.BaseURL = baseURL
+			})...)
+		}
+	}
+
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
 	// dispatcher instead of handing stage arguments to testing's flag parser.
 	if os.Getenv("GOOBERS_RUN_ID") != "" && len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "validate", demoProviderCommand:
+		case "validate", "backlog-query", "push-branch", "open-pr", demoProviderCommand:
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		}
 	}

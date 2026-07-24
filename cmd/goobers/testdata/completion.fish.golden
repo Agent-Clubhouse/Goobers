@@ -34,6 +34,8 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt for repository, credentials, and workflows'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from goober' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from workflow' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Verify referenced agent harnesses are installed and signed in'

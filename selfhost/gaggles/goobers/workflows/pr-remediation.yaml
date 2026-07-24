@@ -18,8 +18,9 @@ spec:
   # implementation's query-backlog head. rebase-pr (issue #363, design doc §5
   # D3) rebases and routes on the combination of rebase outcome + verdict
   # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs on
-  # the "needs agent" branch to detect a stuck PR (same diff pushed twice, or
-  # the liberal repass budget exhausted) and escalate.
+  # the "needs agent" branch to detect a stuck PR (same diff pushed twice, the
+  # liberal repass budget exhausted, or a rebase conflict inside a function a
+  # merged sibling substantially restructured) and escalate.
   #
   # The agentic implement/review/local-ci chain is WIRED (issue #392, design
   # doc §10's "share the goober, copy the stage wiring"): implement, the
@@ -161,6 +162,10 @@ spec:
         - selectedNumber
         - head
         - needsAgent
+        - conflict
+        - conflictLocations
+        - attemptedHeadSha
+        - rebaseBaseSha
       next: rebase-gate
 
     # D4/D5 loop-control (issue #364, design doc §6): runs only when
@@ -170,8 +175,11 @@ spec:
     # other stage here), computes its current diff against base, and
     # escalates (goobers:merge-escalated, clearing needs-remediation) if
     # that diff is byte-identical to the immediately prior recorded cycle's
-    # (stuck, no progress) or the liberal repass budget is exhausted;
-    # otherwise records the advanced cycle state as a new sticky comment.
+    # (stuck, no progress), the liberal repass budget is exhausted, or a
+    # rebase conflict from this exact PR head lands inside a function a merged
+    # sibling substantially restructured. That structural case escalates on
+    # cycle one and includes both PRs' relevant hunks; otherwise this records
+    # the advanced cycle state as a new sticky comment.
     - name: remediation-checkpoint
       type: deterministic
       goal: Detect a stuck PR (no-progress repeat or budget exhaustion) and escalate, or record the advanced cycle state.
@@ -179,6 +187,10 @@ spec:
         command: ["goobers", "remediation-checkpoint"]
       inputsFrom:
         selectedNumber: selectedNumber
+        conflict: conflict
+        conflictLocations: conflictLocations
+        attemptedHeadSha: attemptedHeadSha
+        rebaseBaseSha: rebaseBaseSha
       inputs:
         resultFile: "checkpoint-result.json"
       capabilities:

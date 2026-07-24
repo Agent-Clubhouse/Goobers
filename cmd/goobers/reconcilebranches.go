@@ -155,6 +155,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		token,
 		providers.WithMutationRecorder(sidecarMutationRecorder{kind: "branch"}),
 		providers.WithMaxRateLimitRetries(0),
+		providers.WithMaxTransientRetries(0),
 	)
 	ctx, cancel := providerCommandContext()
 	defer cancel()

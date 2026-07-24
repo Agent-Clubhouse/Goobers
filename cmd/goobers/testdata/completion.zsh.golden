@@ -76,7 +76,7 @@ _goobers_completion()
     flags=(-h --help)
     case "${command}" in
         init)
-            flags+=(--demo)
+            flags+=(--demo --guided --template)
             ;;
         scaffold)
             case "${words[3]:-}" in

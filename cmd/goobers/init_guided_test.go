@@ -149,10 +149,24 @@ func TestPromptGuidedOptionsUsesReadOnlyPullRequestScopeForCuration(t *testing.T
 	}
 }
 
-func TestGuidedInitFlagsAreMutuallyExclusive(t *testing.T) {
+func TestInitModesAreMutuallyExclusive(t *testing.T) {
+	for _, args := range [][]string{
+		{"--guided", "--demo"},
+		{"--guided", "--template=quickstart"},
+		{"--demo", "--template=quickstart"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := runInitWithInput(args, strings.NewReader(""), &stdout, &stderr)
+		if code != 2 || !strings.Contains(stderr.String(), "--demo, --guided, and --template cannot be combined") {
+			t.Errorf("args = %v, code = %d, stdout = %q, stderr = %q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestInitRejectsUnknownTemplate(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := runInitWithInput([]string{"--guided", "--demo"}, strings.NewReader(""), &stdout, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "--demo and --guided cannot be used together") {
+	code := runInitWithInput([]string{"--template=production"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), `unknown init template "production"`) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }

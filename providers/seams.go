@@ -37,6 +37,31 @@ type RateLimitObserver interface {
 	ObserveRateLimit(ctx context.Context, ev RateLimitEvent)
 }
 
+// QuotaCacheHitHeader marks a response synthesized from the shared provider
+// snapshot cache. It is internal to Goobers' HTTP client/provider seam.
+const QuotaCacheHitHeader = "X-Goobers-Quota-Cache-Hit"
+
+// QuotaObserver receives successful and rate-limited response quota headers so
+// a scheduler can budget future provider work before issuing requests.
+type QuotaObserver interface {
+	ObserveQuota(ctx context.Context, observation QuotaObservation)
+}
+
+// QuotaRequestGate reserves budget before a provider request is attempted.
+type QuotaRequestGate interface {
+	AcquireQuotaRequest(ctx context.Context, provider ProviderKind) error
+}
+
+// QuotaObservation describes one provider response. Known indicates an
+// absolute remaining/reset window; Cached indicates no provider quota was used.
+type QuotaObservation struct {
+	Provider  ProviderKind
+	Remaining int
+	Reset     time.Time
+	Known     bool
+	Cached    bool
+}
+
 // RateLimitOutcome identifies the action taken after a rate-limit response.
 type RateLimitOutcome string
 

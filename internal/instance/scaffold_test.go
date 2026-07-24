@@ -112,6 +112,50 @@ func TestInitDemoFresh(t *testing.T) {
 	}
 }
 
+func TestInitQuickstartFresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	res, err := InitQuickstart(root)
+	if err != nil {
+		t.Fatalf("InitQuickstart: %v", err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("fresh quickstart init skipped entries: %v", res.Skipped)
+	}
+
+	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Gaggles) != 1 || len(set.Goobers) != 2 || len(set.Workflows) != 1 {
+		t.Fatalf("unexpected quickstart config shape: %+v", set)
+	}
+	workflow := set.Workflows[0]
+	if workflow.Name != QuickstartTemplate ||
+		workflow.DSLVersion != "1.4" ||
+		workflow.Annotations["goobers.dev/template"] != QuickstartTemplate ||
+		workflow.Annotations["goobers.dev/template-version"] != "1" ||
+		len(workflow.Spec.Tasks) != 6 ||
+		len(workflow.Spec.Gates) != 0 {
+		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
+	}
+	wantTasks := []string{"query-backlog", "implement", "push-branch", "review", "open-pr", "release-claim"}
+	for i, task := range workflow.Spec.Tasks {
+		if task.Name != wantTasks[i] {
+			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
+		}
+		if i+1 < len(wantTasks) && task.Next != wantTasks[i+1] {
+			t.Errorf("quickstart task %q next = %q, want %q", task.Name, task.Next, wantTasks[i+1])
+		}
+	}
+	query := workflow.Spec.Tasks[0]
+	if query.Inputs["trustLabel"] != "goobers:approved" || query.Inputs["requireLabels"] != "goobers:ready" {
+		t.Fatalf("quickstart selector does not match the tutorial target: %+v", query.Inputs)
+	}
+	if !workflow.Spec.Tasks[3].ContinueOnError {
+		t.Fatal("quickstart advisory review is blocking")
+	}
+}
+
 func TestInitIdempotent(t *testing.T) {
 	root := t.TempDir()
 
