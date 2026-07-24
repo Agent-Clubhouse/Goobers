@@ -172,9 +172,34 @@ func TestRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Linux quickstart: %v", err)
 	}
-	for _, want := range []string{"## 2. Confirm the installed binary", "bundled with release `v1.2.3`", "goobers init ./my-instance"} {
+	for _, want := range []string{
+		"Use the `goobers` daemon bundled with release `v1.2.3`",
+		"## 1. Install runtime prerequisites",
+		"source-only Linux validation harness is not included in release archives",
+		"## 2. Confirm the installed binary",
+		"goobers init ./my-instance",
+		"every tool used by your configured workflows",
+		"bundled [Daemon supervision]",
+	} {
 		if !strings.Contains(string(linuxQuickstart), want) {
 			t.Errorf("Linux quickstart missing %q:\n%s", want, linuxQuickstart)
+		}
+	}
+	for _, stale := range []string{
+		"go build -o bin/goobers",
+		"go run ./test/linuxvalidate",
+		"./cmd/goobers",
+		"./test/linuxvalidate",
+		"## 2. Build the binary",
+		"../../go.mod",
+		"../../CONTRIBUTING.md",
+		"../../packaging/systemd/goobers.service",
+		".github/workflows/ci.yml",
+		"`make ci`",
+		"`golangci-lint`",
+	} {
+		if strings.Contains(string(linuxQuickstart), stale) {
+			t.Errorf("Linux quickstart retains source-checkout content %q:\n%s", stale, linuxQuickstart)
 		}
 	}
 	// SHA256SUMS written and references the archive.
