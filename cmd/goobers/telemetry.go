@@ -18,7 +18,7 @@ import (
 )
 
 const telemetryHelp = "Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]\n\n" +
-	"stats:  success rate / durations per workflow + stage\n" +
+	"stats:  run/stage outcomes, curation actions, and ready-pool health\n" +
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
 	"prune:  remove terminal runs outside the configured retention bounds\n"
@@ -202,7 +202,8 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 }
 
 const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
-	"Success rate and duration aggregates per workflow and per stage,\n" +
+	"Success rate and duration aggregates per workflow and stage, plus curation\n" +
+	"actions and ready-pool health for unfiltered workflow views,\n" +
 	"across every run (default path \".\"). Agent filters retain matching agentic\n" +
 	"stage attempts; a run that used multiple grouped cohorts appears in each.\n" +
 	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
@@ -331,6 +332,30 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 			s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
 			formatTelemetryRate(s.SuccessRate), formatTelemetryFloat(s.AvgDurationMs),
 			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs))
+	}
+	if result.Curation.Runs > 0 {
+		pln(stdout, "\nCURATION ACTIONS")
+		pf(stdout, "runs %d (%d reported), ready %d, needs-human %d, closed %d, deduped %d, split %d, stale %d, reconciled %d, milestoned %d, bounced %d\n",
+			result.Curation.Runs, result.Curation.ReportedRuns, result.Curation.Ready,
+			result.Curation.NeedsHuman, result.Curation.Closed, result.Curation.Deduped,
+			result.Curation.Split, result.Curation.Stale, result.Curation.Reconciled,
+			result.Curation.Milestoned, result.Curation.Bounced)
+	}
+	if result.ReadyPool.Depth != nil {
+		pln(stdout, "\nREADY POOL")
+		pf(stdout, "depth %d, average age %s, oldest age %s, throughput %d, demand %d",
+			*result.ReadyPool.Depth,
+			formatStatsDuration(*result.ReadyPool.AverageAgeSeconds*1000),
+			formatStatsDuration(*result.ReadyPool.OldestAgeSeconds*1000),
+			result.ReadyPool.ForwardCurationThroughput,
+			result.ReadyPool.ImplementationDemand)
+		if result.ReadyPool.BounceRate != nil {
+			pf(stdout, ", bounce %.1f%%", *result.ReadyPool.BounceRate*100)
+		}
+		if result.ReadyPool.AverageClaimAgeSeconds != nil {
+			pf(stdout, ", claimed after %s average", formatStatsDuration(*result.ReadyPool.AverageClaimAgeSeconds*1000))
+		}
+		pln(stdout, "")
 	}
 	return 0
 }

@@ -484,6 +484,35 @@ export interface TelemetryStatsResult {
   stages: TelemetryStageStats[];
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
+  curation: TelemetryCurationStats;
+  readyPool: TelemetryReadyPool;
+}
+
+export interface TelemetryCurationStats {
+  runs: number;
+  reportedRuns: number;
+  ready: number;
+  needsHuman: number;
+  closed: number;
+  deduped: number;
+  split: number;
+  stale: number;
+  reconciled: number;
+  milestoned: number;
+  bounced: number;
+}
+
+export interface TelemetryReadyPool {
+  observedAt?: string;
+  depth?: number;
+  averageAgeSeconds?: number;
+  oldestAgeSeconds?: number;
+  starved?: boolean;
+  claimAgeSamples: number;
+  averageClaimAgeSeconds?: number;
+  bounceRate?: number;
+  forwardCurationThroughput: number;
+  implementationDemand: number;
 }
 
 export interface TelemetryGaggleStats {

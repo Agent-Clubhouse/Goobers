@@ -38,6 +38,14 @@ type fakeIssue struct {
 	createdAt      time.Time
 }
 
+type fakeIssueEvent struct {
+	id        int64
+	number    int
+	event     string
+	label     string
+	createdAt time.Time
+}
+
 type fakePR struct {
 	number     int
 	title      string
@@ -103,6 +111,8 @@ type fakeGitHubServer struct {
 	branchTips    map[string]string
 	nextPR        int
 	nextCommentID int64
+	nextEventID   int64
+	issueEvents   []fakeIssueEvent
 	server        *httptest.Server
 	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
 	// /commits/{sha}/{status,check-runs} hits so cache tests can distinguish
@@ -150,6 +160,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
 	mux.HandleFunc("/user", s.handleAuthenticatedUser)
+	mux.HandleFunc(prefix+"/issues/events", s.handleIssueEvents)
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
@@ -210,9 +221,39 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	createdAt := time.Now().UTC()
 	s.issues[number] = &fakeIssue{
 		number: number, title: title, labels: append([]string{}, labels...), state: "open",
-		createdAt: time.Now().UTC(),
+		createdAt: createdAt,
+	}
+	for _, label := range labels {
+		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+func (s *fakeGitHubServer) appendLabelEventLocked(number int, label string, added bool, at time.Time) {
+	s.nextEventID++
+	event := "unlabeled"
+	if added {
+		event = "labeled"
+	}
+	s.issueEvents = append(s.issueEvents, fakeIssueEvent{
+		id: s.nextEventID, number: number, event: event, label: label, createdAt: at,
+	})
+}
+
+func (s *fakeGitHubServer) setLabelEventTime(number int, label string, added bool, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event := "unlabeled"
+	if added {
+		event = "labeled"
+	}
+	for i := len(s.issueEvents) - 1; i >= 0; i-- {
+		if s.issueEvents[i].number == number && s.issueEvents[i].label == label && s.issueEvents[i].event == event {
+			s.issueEvents[i].createdAt = at
+			return
+		}
 	}
 }
 
@@ -353,6 +394,55 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	writeFakeJSON(w, matched[start:end])
 }
 
+func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	perPage := 30
+	if pp, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && pp > 0 {
+		if pp > 100 {
+			pp = 100
+		}
+		perPage = pp
+	}
+	page := 1
+	if pg, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && pg > 0 {
+		page = pg
+	}
+	start := (page - 1) * perPage
+	if start > len(s.issueEvents) {
+		start = len(s.issueEvents)
+	}
+	end := start + perPage
+	if end > len(s.issueEvents) {
+		end = len(s.issueEvents)
+	}
+	if end < len(s.issueEvents) {
+		next := *r.URL
+		query := next.Query()
+		query.Set("page", strconv.Itoa(page+1))
+		query.Set("per_page", strconv.Itoa(perPage))
+		next.RawQuery = query.Encode()
+		w.Header().Set("Link", fmt.Sprintf("<%s%s>; rel=%q", s.server.URL, next.String(), "next"))
+	}
+	out := make([]map[string]any, 0, end-start)
+	for _, event := range s.issueEvents[start:end] {
+		issue, ok := s.issues[event.number]
+		if !ok {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id": event.id, "event": event.event, "created_at": event.createdAt,
+			"label": map[string]string{"name": event.label},
+			"issue": issueJSON(issue),
+		})
+	}
+	writeFakeJSON(w, out)
+}
+
 func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/issues/")
 	parts := strings.Split(rest, "/")
@@ -385,7 +475,18 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		decodeFakeJSON(r, &body)
 		if body.Labels != nil {
+			before := append([]string(nil), issue.labels...)
 			issue.labels = *body.Labels
+			for _, label := range before {
+				if !hasAllLabels(issue.labels, []string{label}) {
+					s.appendLabelEventLocked(num, label, false, time.Now().UTC())
+				}
+			}
+			for _, label := range issue.labels {
+				if !hasAllLabels(before, []string{label}) {
+					s.appendLabelEventLocked(num, label, true, time.Now().UTC())
+				}
+			}
 		}
 		if body.State != "" {
 			issue.state = body.State
@@ -424,6 +525,18 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			out = append(out, comment)
 		}
 		writeFakeJSON(w, out)
+	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		out := make([]map[string]any, 0)
+		for _, event := range s.issueEvents {
+			if event.number != num {
+				continue
+			}
+			out = append(out, map[string]any{
+				"id": event.id, "event": event.event, "created_at": event.createdAt,
+				"label": map[string]string{"name": event.label},
+			})
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodPost:
 		var body struct {
 			Body string `json:"body"`
@@ -441,17 +554,29 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			Labels []string `json:"labels"`
 		}
 		decodeFakeJSON(r, &body)
-		issue.labels = append(issue.labels, body.Labels...)
+		for _, label := range body.Labels {
+			if hasAllLabels(issue.labels, []string{label}) {
+				continue
+			}
+			issue.labels = append(issue.labels, label)
+			s.appendLabelEventLocked(num, label, true, time.Now().UTC())
+		}
 		writeFakeJSON(w, []map[string]string{})
 	case len(parts) >= 3 && parts[1] == "labels" && r.Method == http.MethodDelete:
 		label := strings.Join(parts[2:], "/")
 		kept := issue.labels[:0]
+		removed := false
 		for _, l := range issue.labels {
 			if l != label {
 				kept = append(kept, l)
+			} else {
+				removed = true
 			}
 		}
 		issue.labels = kept
+		if removed {
+			s.appendLabelEventLocked(num, label, false, time.Now().UTC())
+		}
 		w.WriteHeader(http.StatusOK)
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)

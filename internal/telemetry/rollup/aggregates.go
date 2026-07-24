@@ -175,11 +175,13 @@ type ModelStats struct {
 // StatsResult bundles the run-level and stage-level views a single Stats call
 // returns.
 type StatsResult struct {
-	Gaggles []GaggleStats `json:"gaggles"`
-	Runs    []RunStats    `json:"runs"`
-	Stages  []StageStats  `json:"stages"`
-	Usage   []UsageStats  `json:"usage"`
-	Models  []ModelStats  `json:"models"`
+	Gaggles   []GaggleStats   `json:"gaggles"`
+	Runs      []RunStats      `json:"runs"`
+	Stages    []StageStats    `json:"stages"`
+	Usage     []UsageStats    `json:"usage"`
+	Models    []ModelStats    `json:"models"`
+	Curation  CurationStats   `json:"curation"`
+	ReadyPool ReadyPoolHealth `json:"readyPool"`
 }
 
 // InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
@@ -351,7 +353,25 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	if err != nil {
 		return StatsResult{}, err
 	}
-	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages, Usage: usage, Models: models}, nil
+	var readyTransitions []storedReadyLabelTransition
+	if !agentStatsActive(req) && (req.Workflow == "" || req.Workflow == "backlog-curation") {
+		readyTransitions, err = db.readyLabelTransitions(req)
+		if err != nil {
+			return StatsResult{}, err
+		}
+	}
+	curation, err := db.curationStats(req, readyTransitions)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	readyPool, err := db.readyPoolHealth(req, curation, readyTransitions)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	return StatsResult{
+		Gaggles: gaggles, Runs: runs, Stages: stages, Usage: usage, Models: models,
+		Curation: curation, ReadyPool: readyPool,
+	}, nil
 }
 
 func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {
