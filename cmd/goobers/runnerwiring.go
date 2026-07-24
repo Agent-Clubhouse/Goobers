@@ -1236,6 +1236,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			managerOptions = append(managerOptions, worktree.WithGitEnvironment(func(ctx context.Context, repoURL string) ([]string, error) {
 				return providers.ADOGitAuthEnvironment(ctx, source, sharedReg, repoURL)
 			}))
+		} else if githubRepo, ok := githubRepoForGaggle(cfg, gaggleProject); ok {
+			resolve, resolveErr := githubWorktreeGitEnvironment(l.WorkcopiesDir(), githubRepo, sharedReg)
+			if resolveErr != nil {
+				return runner.Config{}, nil, fmt.Errorf("configure GitHub worktree authentication: %w", resolveErr)
+			}
+			if resolve != nil {
+				managerOptions = append(managerOptions, worktree.WithGitEnvironment(resolve))
+			}
 		}
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
@@ -1480,6 +1488,82 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 		}
 	}
 	return instance.RepoRef{}, false
+}
+
+// githubRepoForGaggle is adoRepoForGaggle's GitHub counterpart: the instance
+// repo backing this gaggle's project, resolved so its configured token can
+// authenticate mirror clone/fetch (#667).
+func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+		return cfg.Repos[0], true
+	}
+	if project.Provider != apiv1.ProviderGitHub {
+		return instance.RepoRef{}, false
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == "github" && repo.Owner == project.Owner && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	return instance.RepoRef{}, false
+}
+
+// githubWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
+// that authenticates mirror clone/fetch of a GitHub repo with its configured
+// token (#667), via the secret-free askpass helper — the token only ever
+// exists in the git child process's environment, never on disk or argv.
+//
+// A repo with no token ref returns a nil resolver and writes nothing: a
+// public-repo instance keeps today's unauthenticated child environment, byte
+// for byte. With a token ref configured the resolver re-resolves it on every
+// clone/fetch (rotation without restart, matching the env/file resolver's
+// contract) and fails closed — an unresolvable ref aborts provisioning rather
+// than falling back to an anonymous fetch, and GIT_TERMINAL_PROMPT=0 turns a
+// rejected credential into an immediate error instead of an interactive hang.
+// The token is scoped to the configured repo: any other remote URL the
+// manager is ever pointed at gets the ambient (unauthenticated) environment.
+func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar) (func(context.Context, string) ([]string, error), error) {
+	if repo.Token.Env == "" && repo.Token.File == "" {
+		return nil, nil
+	}
+	refName := repo.Owner + "/" + repo.Name
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: refName, Env: repo.Token.Env, File: repo.Token.File}})
+	if err != nil {
+		return nil, err
+	}
+	askpass, err := credentials.WriteAskpassScript(filepath.Join(workcopiesDir, "auth"))
+	if err != nil {
+		return nil, err
+	}
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if !sameGitRemote(repoURL, cloneURL) {
+			return nil, nil
+		}
+		token, err := resolver.Resolve(ctx, refName)
+		if err != nil {
+			return nil, err
+		}
+		if registrar != nil {
+			registrar.Register([]byte(token))
+		}
+		return credentials.GitAuthEnvironment(askpass, token), nil
+	}, nil
+}
+
+// sameGitRemote reports whether two https remote URLs name the same repo,
+// tolerating the cosmetic variance git remotes carry: an optional .git
+// suffix, a trailing slash, and case (GitHub owner/name are case-insensitive).
+func sameGitRemote(a, b string) bool {
+	normalize := func(u string) string {
+		u = strings.TrimRight(strings.TrimSpace(u), "/")
+		u = strings.TrimSuffix(u, ".git")
+		return strings.ToLower(u)
+	}
+	return normalize(a) == normalize(b)
 }
 
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers
