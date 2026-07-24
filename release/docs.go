@@ -13,7 +13,12 @@ import (
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
-	readmeSourceBuild     = "```sh\ngo build -o bin/goobers ./cmd/goobers    # or: make build\n\n"
+	readmeSourceInstall = "Install an exact tagged release on Linux or macOS and let its guided flow create\n" +
+		"and validate a release-pinned instance:\n\n" +
+		"```sh\n" +
+		"VERSION=v1.2.3 # replace with the exact release to install\n" +
+		"/bin/sh -c \"$(curl -fsSL \"https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh\")\" \\\n" +
+		"  -- \"$VERSION\" ./my-instance\n\n"
 	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
 	linuxQuickstartSourceBuild = "## 2. Build the binary\n\n```sh\n" +
@@ -89,36 +94,40 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 
 func adaptInstalledOnboarding(payloadDir, version string) error {
 	rewrites := []struct {
-		path             string
-		sourceBuild      string
-		installedBuild   string
-		replaceBinPrefix bool
+		path                 string
+		sourceSection        string
+		installedSection     string
+		sourceCommandPrefix  string
+		installedCommandName string
 	}{
 		{
-			path:        "README.md",
-			sourceBuild: readmeSourceBuild,
-			installedBuild: fmt.Sprintf(
+			path:          "README.md",
+			sourceSection: readmeSourceInstall,
+			installedSection: fmt.Sprintf(
 				"This copy is bundled with release `%s` and assumes `goobers` is installed on `PATH`.\n\n"+
-					"```sh\ngoobers --version\n\n",
+					"```sh\ngoobers --version\n"+
+					"goobers init --guided ./my-instance\n\n",
 				version,
 			),
-			replaceBinPrefix: true,
+			sourceCommandPrefix:  "$HOME/.local/bin/goobers",
+			installedCommandName: "goobers",
 		},
 		{
-			path:        "docs/guides/quickstart.md",
-			sourceBuild: quickstartSourceBuild,
-			installedBuild: fmt.Sprintf(
+			path:          "docs/guides/quickstart.md",
+			sourceSection: quickstartSourceBuild,
+			installedSection: fmt.Sprintf(
 				"## 1. Confirm the installed binary\n\n"+
 					"This copy is bundled with release `%s` and uses the `goobers` executable from `PATH`.\n\n"+
 					"```sh\ngoobers --version\n```\n\n",
 				version,
 			),
-			replaceBinPrefix: true,
+			sourceCommandPrefix:  "bin/goobers",
+			installedCommandName: "goobers",
 		},
 		{
-			path:        "docs/guides/quickstart-linux.md",
-			sourceBuild: linuxQuickstartSourceBuild,
-			installedBuild: fmt.Sprintf(
+			path:          "docs/guides/quickstart-linux.md",
+			sourceSection: linuxQuickstartSourceBuild,
+			installedSection: fmt.Sprintf(
 				"## 2. Confirm the installed binary\n\n"+
 					"This copy is bundled with release `%s`; install the archive's `goobers` executable on `PATH`, then confirm it:\n\n"+
 					"```sh\ngoobers --version\n```\n\n",
@@ -134,12 +143,12 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 			return fmt.Errorf("read release onboarding doc %s: %w", rewrite.path, err)
 		}
 		content := string(data)
-		if strings.Count(content, rewrite.sourceBuild) != 1 {
-			return fmt.Errorf("release onboarding source-build section drifted in %s", rewrite.path)
+		if strings.Count(content, rewrite.sourceSection) != 1 {
+			return fmt.Errorf("release onboarding source section drifted in %s", rewrite.path)
 		}
-		content = strings.Replace(content, rewrite.sourceBuild, rewrite.installedBuild, 1)
-		if rewrite.replaceBinPrefix {
-			content = strings.ReplaceAll(content, "bin/goobers", "goobers")
+		content = strings.Replace(content, rewrite.sourceSection, rewrite.installedSection, 1)
+		if rewrite.sourceCommandPrefix != "" {
+			content = strings.ReplaceAll(content, rewrite.sourceCommandPrefix, rewrite.installedCommandName)
 		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write release onboarding doc %s: %w", rewrite.path, err)

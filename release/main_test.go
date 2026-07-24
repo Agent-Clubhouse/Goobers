@@ -129,20 +129,43 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("%s missing %q:\n%s", releaseDocsVersionFile, want, marker)
 		}
 	}
-	for _, name := range []string{"README.md", "docs/guides/quickstart.md"} {
-		doc, err := readZipEntry(archiveEntries[name])
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+	readme, err := readZipEntry(archiveEntries["README.md"])
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	for _, want := range []string{
+		"bundled with release `v1.2.3`",
+		"goobers --version",
+		"goobers init --guided ./my-instance",
+		"goobers init --template=quickstart ./tutorial-instance",
+	} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("README.md missing installed onboarding command %q:\n%s", want, readme)
 		}
-		for _, want := range []string{"bundled with release `v1.2.3`", "goobers --version", "goobers init ./my-instance"} {
-			if !strings.Contains(string(doc), want) {
-				t.Errorf("%s missing installed onboarding command %q:\n%s", name, want, doc)
-			}
+	}
+	for _, stale := range []string{"curl -fsSL", "install.sh", "$HOME/.local/bin/goobers", "bin/goobers init"} {
+		if strings.Contains(string(readme), stale) {
+			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
-		for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init"} {
-			if strings.Contains(string(doc), stale) {
-				t.Errorf("%s retains source-checkout command %q:\n%s", name, stale, doc)
-			}
+	}
+
+	quickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart.md"])
+	if err != nil {
+		t.Fatalf("read docs/guides/quickstart.md: %v", err)
+	}
+	for _, want := range []string{
+		"bundled with release `v1.2.3`",
+		"goobers --version",
+		"goobers init ./my-instance",
+		"goobers init --template=quickstart ./tutorial-instance",
+	} {
+		if !strings.Contains(string(quickstart), want) {
+			t.Errorf("docs/guides/quickstart.md missing installed onboarding command %q:\n%s", want, quickstart)
+		}
+	}
+	for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init"} {
+		if strings.Contains(string(quickstart), stale) {
+			t.Errorf("docs/guides/quickstart.md retains source-checkout command %q:\n%s", stale, quickstart)
 		}
 	}
 	linuxQuickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart-linux.md"])

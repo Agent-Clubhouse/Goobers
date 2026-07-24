@@ -102,9 +102,9 @@ Every platform archive carries `README.md` and the tagged checkout's complete
 release-stamped binary's hidden documentation generator, which uses the same
 registry-backed writer as `make docs` to replace `docs/cli/`, `docs/man/`, and
 `docs/completion/`. `docs/RELEASE.md` records the release version and commit.
-The same staging pass adapts the bundled README and quickstarts from their
-source-checkout form to the installed release: the build step becomes a tagged
-binary check and walkthrough commands invoke `goobers` from `PATH`.
+The same staging pass adapts the bundled README and quickstarts to the installed
+archive: the README's installer step and the quickstarts' build steps become a
+tagged binary check, and walkthrough commands invoke `goobers` from `PATH`.
 The tagged workflow then regenerates those three directories with the extracted
 binary and diffs them against the archive, so a release cannot publish CLI docs
 from another version. It also runs the packaged quickstart's initial `init` and
