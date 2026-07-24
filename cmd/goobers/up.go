@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -102,7 +103,13 @@ func (r *sweepErrorReporter) report(err error) {
 		r.consecutive = 0
 		return
 	}
-	message := err.Error()
+	// Bound the persisted message regardless of how many entries a sweep
+	// aggregated: this is the single write-boundary choke point guarding every
+	// sweep reporter (stalled/trigger/claim/cancel/telemetry-retention) so a
+	// giant record can never reach the scheduler journal and bloat the store
+	// (#1414). Source-level bounding (boundedagg.Join in the stalled-run sweep)
+	// is belt-and-suspenders on top of this.
+	message := boundedagg.Bound(err.Error(), boundedagg.DefaultMaxBytes)
 	if message != r.lastMessage {
 		r.lastMessage = message
 		r.consecutive = 1
