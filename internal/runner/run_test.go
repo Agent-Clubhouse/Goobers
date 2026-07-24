@@ -244,12 +244,12 @@ func (c backoffObservedContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
-// blockingDeterministic signals started once dispatch actually reaches it,
-// then blocks until released and signals finished — for proving a
+// blockingDeterministic reports progress once dispatch actually reaches it,
+// then signals started, blocks until released, and signals finished — for proving a
 // SIGTERM-style cancellation lets an in-flight attempt finish rather than
 // aborting it. started lets the test synchronize "cancel only once the
-// attempt is truly in flight" instead of racing the walk loop's own
-// between-stages cancellation check.
+// attempt is truly in flight and progress is observable" instead of racing
+// the walk loop's own between-stages cancellation check.
 type blockingDeterministic struct {
 	started  chan struct{}
 	release  chan struct{}
@@ -258,8 +258,8 @@ type blockingDeterministic struct {
 }
 
 func (b *blockingDeterministic) Run(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	close(b.started)
 	invoke.ReportProgress(ctx)
+	close(b.started)
 	<-b.release
 	close(b.finished)
 	if b.result.Status == "" {
