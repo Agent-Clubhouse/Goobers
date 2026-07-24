@@ -1242,6 +1242,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
+		if cfg.PartialCloneEnabled() {
+			managerOptions = append(managerOptions, worktree.WithPartialClone())
+		}
 		if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
 			source, sourceErr := adoauth.Source(adoRepo, nil)
 			if sourceErr != nil {

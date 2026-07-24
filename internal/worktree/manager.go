@@ -57,6 +57,12 @@ type Manager struct {
 	usageObserver UsageObserver
 	diskUsage     func(string) (int64, error)
 	gitEnv        func(context.Context, string) ([]string, error)
+
+	// partialClone provisions NEW mirrors as blobless partial clones and
+	// narrows their refresh refspec — see WithPartialClone. Never set for an
+	// unconfigured Manager, so the default path issues byte-identical git
+	// invocations to previous releases.
+	partialClone bool
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -106,10 +112,38 @@ func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 // environment; a nil environment (with nil error) runs the command with the
 // process's own environment — the unauthenticated default, for remotes the
 // callback holds no credential for. Local worktree operations never receive
-// this environment.
+// this environment, with one deliberate exception: on a partial-clone mirror
+// (WithPartialClone), any operation that materializes blobs spawns a fetch
+// from the promisor remote — `git worktree add`'s checkout, Create's SyncBase
+// merge of an advanced base, and Worktree.Diff against a base no checkout
+// materialized — so those are remote operations and carry this environment
+// too.
 func WithGitEnvironment(resolve func(context.Context, string) ([]string, error)) ManagerOption {
 	return func(m *Manager) {
 		m.gitEnv = resolve
+	}
+}
+
+// WithPartialClone opts newly created mirrors into blobless partial clones
+// (#646, design §3 B1): WorkingCopy clones with --filter=blob:none, storing
+// every commit and tree but fetching blobs on demand from the promisor remote
+// when a worktree checkout first materializes them. The refresh fetch for such
+// a mirror narrows its refspec from every ref to heads + tags (run-branch
+// namespaces stay excluded from the prune exactly as before, #133/#965) —
+// branch, tag, and reachable-sha pinned bases all still resolve.
+//
+// Two consequences callers own:
+//   - Blob-materializing worktree operations become network-dependent (and,
+//     for private repos, credential-dependent — WithGitEnvironment covers the
+//     checkout's blob fetch, the SyncBase merge, and Worktree.Diff): a
+//     blob-fetch failure fails the operation closed, classified by
+//     IsTransientProvisionError for the runner's bounded infrastructure retry.
+//   - Only NEW mirrors are affected. An existing full mirror keeps full-mirror
+//     fetches; a blobless mirror keeps its promisor config even if the option
+//     is later dropped. There is no in-place migration in either direction.
+func WithPartialClone() ManagerOption {
+	return func(m *Manager) {
+		m.partialClone = true
 	}
 }
 
@@ -214,6 +248,13 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 // the fetch deliberately excludes from its prune so a run's local-only branch
 // survives across the run's stages (#133).
 //
+// Under WithPartialClone a NEW mirror is a blobless promisor clone and its
+// refresh fetch narrows to heads + tags (#646). Commits and trees stay
+// complete, so the pinned-base guarantee holds for branches, tags, and any
+// sha reachable from them; blobs materialize on demand at worktree checkout.
+// A mirror that predates the option keeps full-mirror fetches — the option
+// never migrates existing mirrors.
+//
 // Concurrent calls for the same repo URL serialize on the clone/fetch step;
 // calls for different repos proceed independently.
 func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, error) {
@@ -228,7 +269,12 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", fmt.Errorf("worktree: create workcopy parent for %s: %w", repoURL, err)
 		}
-		if err := m.runRemoteGit(ctx, repoURL, "", "clone", "--mirror", repoURL, dir); err != nil {
+		cloneArgs := []string{"clone", "--mirror"}
+		if m.partialClone {
+			cloneArgs = append(cloneArgs, "--filter=blob:none")
+		}
+		cloneArgs = append(cloneArgs, repoURL, dir)
+		if err := m.runRemoteGit(ctx, repoURL, "", cloneArgs...); err != nil {
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
 			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
 		}
@@ -249,7 +295,20 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	// silently revert its stages to a pristine base (#133/#965). The explicit
 	// refspec restates the mirror's default and appends one negative refspec
 	// per configured namespace.
-	fetchArgs := []string{"fetch", "--prune", "origin", "+refs/*:refs/*"}
+	//
+	// A partial-clone mirror narrows the refspec to heads + tags (#646):
+	// every base-ref kind Create accepts still resolves (tags cover pinned
+	// tag bases; a pinned sha must be reachable from a fetched ref, which
+	// full mirrors already required in practice for a base anyone could name)
+	// while the long tail of provider-synthesized refs (refs/pull/* and
+	// friends) stops being re-fetched. The probe is mirror-scoped, not
+	// flag-scoped, so a full mirror that predates the option keeps its
+	// full-mirror fetch untouched.
+	refspecs := []string{"+refs/*:refs/*"}
+	if m.partialClone && mirrorIsPartial(ctx, dir) {
+		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+	}
+	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
 	for _, ns := range m.runBranchNamespaces {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
@@ -276,6 +335,23 @@ func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ..
 		return fmt.Errorf("resolve git environment: %w", err)
 	}
 	return runGitWithEnv(ctx, dir, env, args...)
+}
+
+// remoteGitOutput is runRemoteGit's output-capturing counterpart for
+// operations that both return bytes and may reach the remote (Worktree.Diff on
+// a partial-clone mirror): the credential environment is applied the same way,
+// stdout comes back raw, and a failure is a typed *gitCommandError so a
+// promisor fetch spawned mid-command classifies through
+// IsTransientProvisionError.
+func (m *Manager) remoteGitOutput(ctx context.Context, repoURL, dir string, args ...string) ([]byte, error) {
+	if m.gitEnv == nil {
+		return rawGitOutput(ctx, dir, nil, args...)
+	}
+	env, err := m.gitEnv(ctx, repoURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve git environment: %w", err)
+	}
+	return rawGitOutput(ctx, dir, env, args...)
 }
 
 // managedGitConfig is the explicit per-mirror git config the worktree layer sets
@@ -478,6 +554,33 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return strings.TrimSpace(string(out)), nil
 }
 
+// rawGitOutput runs git in dir (with env as the child environment when
+// non-nil) and returns its raw, untrimmed stdout — for callers whose bytes are
+// digested verbatim (Worktree.Diff). Failure is a typed *gitCommandError
+// carrying the exit code and captured stderr, so IsTransientProvisionError can
+// classify it — unlike gitOutput's plain wrap.
+func rawGitOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		exitCode := -1
+		var stderr []byte
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+			stderr = exitErr.Stderr
+		}
+		return nil, &gitCommandError{args: args, cause: err, output: stderr, exitCode: exitCode}
+	}
+	return out, nil
+}
+
 // gitCommandError is runGit's typed failure: the raw exit code and combined
 // output alongside the underlying exec error, so a caller (IsTransientProvisionError)
 // can classify the failure without re-parsing runGit's formatted message string.
@@ -512,6 +615,17 @@ var remote5xxPattern = regexp.MustCompile(`\b(?:http(?:/[0-9.]+)?[\s:=-]+|error:
 // text instead. Authentication/authorization failures, bad refs, and other
 // deterministic git errors deliberately do NOT match — retrying those can
 // only reproduce the identical failure.
+//
+// Checkout-time blob backfill from a partial-clone mirror (#646) is its own
+// failure class: `git worktree add` on a blobless mirror spawns a promisor
+// fetch whose failure surfaces as "could not fetch <oid> from promisor
+// remote" / "failed to fetch some objects", wrapping whatever transport error
+// caused it. Those wrappers match here even though the wrapped cause is not
+// always network text: unlike clone/fetch, the promisor path only runs after
+// this same remote was successfully cloned or fetched moments earlier with
+// the same credentials, so a mid-provision blip is the overwhelmingly common
+// cause and the rare deterministic one is contained by the runner's bounded
+// infrastructure-retry budget.
 func IsTransientProvisionError(err error) bool {
 	var gitErr *gitCommandError
 	if !errors.As(err, &gitErr) || gitErr.exitCode != 128 {
@@ -535,6 +649,10 @@ func IsTransientProvisionError(err error) bool {
 		"the remote end hung up unexpectedly",
 		"unexpected disconnect",
 		"early eof",
+		// Promisor blob-backfill failures at worktree checkout (#646) — see
+		// the function doc for why these wrappers classify as transient.
+		"from promisor remote",
+		"failed to fetch some objects",
 	} {
 		if strings.Contains(message, fragment) {
 			return true
@@ -569,6 +687,20 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 		return &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
 	}
 	return nil
+}
+
+// mirrorIsPartial reports whether the mirror at dir was created as a
+// partial-clone promisor mirror (clone --filter sets remote.origin.promisor).
+// Like branchExists this is a boolean probe: an unset key exits non-zero,
+// which is an ordinary false. Consulted only when the Manager has
+// WithPartialClone, so the default path's git invocations stay untouched, and
+// per mirror rather than per Manager so a pre-existing full mirror is left
+// as-is (#646: new mirrors only, no in-place migration).
+func mirrorIsPartial(ctx context.Context, dir string) bool {
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"config", "--get", "remote.origin.promisor"})...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // branchExists reports whether a local branch of the given name exists in the

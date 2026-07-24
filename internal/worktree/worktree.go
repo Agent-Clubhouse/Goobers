@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -107,6 +106,13 @@ type Worktree struct {
 	manager  *Manager
 	key      string
 	startRef string
+	repoURL  string
+	// partialMirror records that the backing mirror is a blobless promisor
+	// clone (#646): any later operation in this worktree that materializes
+	// blobs (Diff against a base whose blobs were never checked out) is a
+	// remote operation needing the credential environment and transient-
+	// failure classification, exactly like Create's own checkout.
+	partialMirror bool
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -211,7 +217,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
 	}
-	if err := runGit(ctx, repoDir, args...); err != nil {
+	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
+	if partialMirror {
+		// Materializing a tree from a blobless mirror fetches missing blobs
+		// from the promisor remote mid-checkout (#646), so this one nominally
+		// local operation is a remote one: it needs the same credential
+		// environment as clone/fetch, and its failure classifies through
+		// IsTransientProvisionError's promisor fragments.
+		if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, args...); err != nil {
+			return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
+		}
+	} else if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
 	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
@@ -231,7 +247,20 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if opts.SyncBase && existingBranch {
-		if mergeErr := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); mergeErr != nil {
+		mergeArgs := []string{"merge", "--ff", "--no-edit", opts.BaseRef}
+		var mergeErr error
+		if partialMirror {
+			// Merging a base that advanced since the branch was cut
+			// materializes base-side blobs the narrowed refresh fetch withheld
+			// (it brings commits and trees only), so on a blobless mirror the
+			// merge is a remote operation too: it must carry the same
+			// credential environment as the checkout above or a private
+			// repo's promisor fetch fails on auth.
+			mergeErr = m.runRemoteGit(ctx, opts.RepoURL, path, mergeArgs...)
+		} else {
+			mergeErr = runGit(ctx, path, mergeArgs...)
+		}
+		if mergeErr != nil {
 			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
 			cleanupErr := m.forceClear(ctx, key, path)
 			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, cleanupErr)
@@ -274,6 +303,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	wt := &Worktree{
 		RunID: opts.RunID, Path: path, Branch: opts.Branch, Warnings: warnings,
 		manager: m, key: key, startRef: startRef,
+		repoURL: opts.RepoURL, partialMirror: partialMirror,
 	}
 	lock.Unlock()
 	lockHeld = false
@@ -436,9 +466,19 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if baseRef == "" {
 		return nil, fmt.Errorf("worktree: Diff requires a baseRef")
 	}
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"diff", baseRef + "...HEAD"})...)
-	cmd.Dir = wt.Path
-	out, err := cmd.Output()
+	args := []string{"diff", baseRef + "...HEAD"}
+	var out []byte
+	var err error
+	if wt.partialMirror {
+		// On a blobless mirror the merge-base side of the diff can name blobs
+		// no checkout ever materialized (a rebound PR branch's checkout brings
+		// only its own tip), so the diff spawns a promisor blob fetch: it
+		// needs the credential environment, and its failure must classify
+		// through IsTransientProvisionError like every other promisor fetch.
+		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
+	} else {
+		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
 	}
