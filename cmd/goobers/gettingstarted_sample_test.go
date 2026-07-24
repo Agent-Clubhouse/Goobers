@@ -18,101 +18,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-const sampleQuickstartWorkflow = `apiVersion: goobers.dev/v1alpha1
-kind: Workflow
-metadata:
-  name: quickstart
-spec:
-  gaggle: example
-  displayName: Quickstart sample acceptance
-  triggers:
-    - type: manual
-  start: query-backlog
-  tasks:
-    - name: query-backlog
-      type: deterministic
-      goal: Claim the first approved tutorial issue.
-      run:
-        command: ["goobers", "backlog-query", "--claim"]
-      inputs:
-        trustLabel: "goobers:approved"
-        requireLabels: "goobers:ready"
-        maxItems: "1"
-        resultFile: "claimed-item.json"
-      capabilities:
-        - github:issues:write
-        - github:pr:write
-      policyActions:
-        - claim-backlog-items
-      expectedOutputs:
-        - claimed-item
-      next: implement
-    - name: implement
-      type: agentic
-      goober: implementer
-      goal: Implement the claimed tutorial issue and commit the change.
-      capabilities:
-        - repo:push
-      policyActions:
-        - modify-repository
-      next: review
-    - name: push-branch
-      type: deterministic
-      goal: Push the reviewed tutorial change.
-      run:
-        command: ["goobers", "push-branch"]
-      capabilities:
-        - repo:push
-      policyActions:
-        - push-repository-branch
-      next: open-pr
-    - name: open-pr
-      type: deterministic
-      goal: Open the tutorial pull request.
-      run:
-        command: ["goobers", "open-pr"]
-      inputs:
-        resultFile: "pr-result.json"
-      capabilities:
-        - github:pr:write
-      policyActions:
-        - open-or-update-pr
-      expectedOutputs:
-        - pull-request-url
-        - prNumber
-        - opened
-  gates:
-    - name: review
-      evaluator: agentic
-      agentic:
-        goober: reviewer
-      branches:
-        pass: push-branch
-        needs-changes: implement
-        fail: "@abort"
-`
-
-const sampleQuickstartGoober = `apiVersion: goobers.dev/v1alpha1
-kind: Goober
-metadata:
-  name: %s
-spec:
-  gaggle: example
-  role: %s
-  displayName: %s
-  instructions: instructions.md
-  harness: copilot
-  capabilities: %s
-  policyActions: %s
-  skills:
-    - %s
-  tools:
-    - shell
-  scaleFactor: 1
-  workflows:
-    - quickstart
-`
-
 type sampleSeedCatalog struct {
 	Sample struct {
 		Version string `json:"version"`
@@ -148,20 +53,13 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stages []string
-	var reviewPassed bool
 	for _, event := range events {
 		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
 			stages = append(stages, event.Stage)
 		}
-		if event.Type == journal.EventGateEvaluated && event.Gate == "review" && event.Verdict == string(apiv1.VerdictPass) {
-			reviewPassed = true
-		}
 	}
-	if got, want := strings.Join(stages, ","), "query-backlog,implement,push-branch,open-pr"; got != want {
+	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,push-branch,open-pr"; got != want {
 		t.Fatalf("successful stages = %q, want %q", got, want)
-	}
-	if !reviewPassed {
-		t.Fatal("real runner did not record a passing review gate")
 	}
 
 	server.mu.Lock()
@@ -198,7 +96,13 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 
 func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot string, seed sampleSeedIssue, server *fakeGitHubServer) {
 	t.Helper()
-	root = initDemo(t)
+	root = filepath.Join(t.TempDir(), "quickstart-instance")
+	if code, stdout, stderr := runArgs(t, "init", "--template=quickstart", root); code != 0 {
+		t.Fatalf("init quickstart template: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runArgs(t, "validate", root); code != 0 {
+		t.Fatalf("validate quickstart template: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	catalogData, err := os.ReadFile(filepath.Join("..", "..", "samples", "getting-started-task-api", "seed-issues.json"))
 	if err != nil {
@@ -221,21 +125,6 @@ func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot st
 	if err := instance.WriteConfig(filepath.Join(root, instance.ConfigFileName), cfg); err != nil {
 		t.Fatal(err)
 	}
-
-	gaggleDir := filepath.Join(root, "config", "gaggles", "example")
-	if err := os.RemoveAll(filepath.Join(gaggleDir, "workflows")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(filepath.Join(gaggleDir, "goobers")); err != nil {
-		t.Fatal(err)
-	}
-	writeFixture(t, filepath.Join(gaggleDir, "workflows", "quickstart.yaml"), sampleQuickstartWorkflow)
-	writeFixture(t, filepath.Join(gaggleDir, "goobers", "implementer", "goober.yaml"),
-		fmt.Sprintf(sampleQuickstartGoober, "implementer", "implementer", "Implementer", "\n    - repo:push", "\n    - modify-repository", "implement"))
-	writeFixture(t, filepath.Join(gaggleDir, "goobers", "implementer", "instructions.md"), "Implement the claimed tutorial issue and commit the result.\n")
-	writeFixture(t, filepath.Join(gaggleDir, "goobers", "reviewer", "goober.yaml"),
-		fmt.Sprintf(sampleQuickstartGoober, "reviewer", "reviewer", "Reviewer", "[]", "[]", "review"))
-	writeFixture(t, filepath.Join(gaggleDir, "goobers", "reviewer", "instructions.md"), "Review the committed tutorial change.\n")
 
 	disposableRoot = t.TempDir()
 	remote = materializeGettingStartedSample(t, disposableRoot)
@@ -270,10 +159,9 @@ func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot st
 						Summary: "implemented the first seeded tutorial issue",
 					})
 				case "reviewer":
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
-						Decision:  apiv1.VerdictPass,
-						Summary:   "seeded issue implementation is focused and complete",
-						Rationale: "the committed diff adds title validation and focused regression tests",
+					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+						Status:  apiv1.ResultSuccess,
+						Summary: "seeded issue implementation is focused and complete",
 					})
 				default:
 					return fmt.Errorf("unexpected goober %q", gooberName)

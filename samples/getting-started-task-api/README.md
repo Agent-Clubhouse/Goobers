@@ -8,10 +8,11 @@ built-in HTTP server, in-memory data, and two development dependencies.
 
 [`sample.json`](sample.json) is the machine-readable contract. Its `version`
 identifies the app and its matching [`seed-issues.json`](seed-issues.json) as
-one immutable tutorial fixture. Onboarding consumers must select an exact
-sample version from an exact Goobers release tag or commit rather than copying
-the current default branch. The stable hosted-repository mapping can change
-without changing this fixture contract.
+one immutable tutorial fixture, and `compatibleTemplates` pins the shipped
+onboarding workflow contract it exercises. Onboarding consumers must select an
+exact sample version from an exact Goobers release tag or commit rather than
+copying the current default branch. The stable hosted-repository mapping can
+change without changing this fixture contract.
 
 When materialized, the contents of this directory become the root of a new
 throwaway repository, including `.github/workflows/ci.yml`. Do not run the
@@ -50,13 +51,14 @@ shortest happy-path implementation.
 go test ./cmd/goobers -run '^TestGettingStartedSampleQuickstartThroughRealRunner$'
 ```
 
-Run this acceptance check from the Goobers source repository. It materializes
-the pinned fixture in a temporary Git repository and drives the real Goobers
-local runner through backlog claim, implementation, review, branch push, and
-the production `open-pr` command. Only the external coding-model adapter and
-GitHub HTTP endpoint are replaced with deterministic test doubles. The check
-asserts that the pushed branch resolves the first seeded issue and that the
-provider receives the resulting pull request.
+Run this acceptance check from the Goobers source repository. It initializes
+the actual embedded `quickstart@v1` template, materializes the pinned fixture in
+a temporary Git repository, and drives the real Goobers local runner through
+backlog claim, implementation, review, branch push, and the production
+`open-pr` command. Only the external coding-model adapter and GitHub HTTP
+endpoint are replaced with deterministic test doubles. The check asserts that
+the pushed branch resolves the first seeded issue and that the provider
+receives the resulting pull request.
 
 ## Disposal
 

@@ -6,6 +6,7 @@ interface SampleManifest {
   schemaVersion: number;
   id: string;
   version: string;
+  compatibleTemplates: string[];
   seedIssues: string;
   localCI: {
     command: string[];
@@ -49,6 +50,7 @@ describe("tutorial fixture", () => {
     assert.equal(manifest.id, seeds.sample.id);
     assert.equal(manifest.version, packageManifest.version);
     assert.equal(manifest.version, seeds.sample.version);
+    assert.deepEqual(manifest.compatibleTemplates, ["quickstart@v1"]);
     assert.deepEqual(manifest.localCI.command, ["npm", "run", "ci"]);
     assert.equal(manifest.state, "memory-only");
   });
