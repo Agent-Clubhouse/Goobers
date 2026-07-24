@@ -482,7 +482,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
 func adapterFor(h apiv1.Harness) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, nil, "")
+	registry, err := buildHarnessRegistry(nil, nil, "", "")
 	if err != nil {
 		return nil, err
 	}

@@ -272,7 +272,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme")
+	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme", "/opt/goobers/bin/goobers")
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -298,6 +298,9 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 	if copilot.InstanceRoot != "/instances/acme" {
 		t.Fatalf("adapter instance root = %q, want /instances/acme", copilot.InstanceRoot)
+	}
+	if copilot.SelfBin != "/opt/goobers/bin/goobers" {
+		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", copilot.SelfBin)
 	}
 }
 

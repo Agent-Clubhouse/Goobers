@@ -144,9 +144,11 @@ explicit dependencies, and related claimed items before acting.
   claimed items into the same existing milestone only when the issue
   relationships or delivery scope make that grouping unambiguous. Remap an
   item whose current milestone plainly conflicts with that evidence.
-- Use `goobers set-milestone --item <number> --milestone <number>` only when the
-  target milestone is unambiguous and differs from the current milestone. If
-  the item already has the target milestone, leave it completely untouched:
+- Use `"$GOOBERS_BIN" set-milestone --item <number> --milestone <number>` only
+  when the target milestone is unambiguous and differs from the current
+  milestone. `GOOBERS_BIN` is the harness-provided path to the running daemon's
+  executable; do not invoke a bare `goobers` command.
+  If the item already has the target milestone, leave it completely untouched:
   do not invoke the command and do not post a housekeeping comment.
 - Every milestone change must have an explanatory comment on the changed issue
   naming the old and new milestone and the concrete parent, dependency, or

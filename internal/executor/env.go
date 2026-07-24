@@ -37,6 +37,10 @@ const (
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
 
+	// GoobersBinEnvVar carries the running daemon's executable path to agentic
+	// harnesses that need to invoke a goobers CLI subcommand.
+	GoobersBinEnvVar = "GOOBERS_BIN"
+
 	// BranchNamespaceEnvVar is the env var a goobers-CLI stage reads to learn its
 	// gaggle's configured run-branch namespace root (GaggleSpec.BranchNamespace,
 	// providers.DefaultBranchNamespace when unset). PR-selector defaults

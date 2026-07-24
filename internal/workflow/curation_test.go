@@ -154,7 +154,7 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 		}
 		instructions := string(raw)
 		for _, required := range []string{
-			"goobers set-milestone --item",
+			`"$GOOBERS_BIN" set-milestone --item`,
 			"already has the target milestone, leave it completely untouched",
 			"genuine roadmap priority call",
 			"Keep epic and tracking checklists synchronized",
