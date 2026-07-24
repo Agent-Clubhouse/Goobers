@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
@@ -213,6 +214,21 @@ func TestStageActivityOptionsAlwaysCarryExplicitRetryPolicy(t *testing.T) {
 		if opts.RetryPolicy.MaximumAttempts != 1 {
 			t.Fatalf("limits %+v: MaximumAttempts = %d, want 1 (retry orchestration lives in dispatchWithRetry)", limits, opts.RetryPolicy.MaximumAttempts)
 		}
+	}
+}
+
+// TestStageActivityTimeoutRunsGraceBehindDeclaredLimit: a declared duration
+// limit becomes StartToCloseTimeout only after stageTimeoutGrace padding, so
+// the worker's own policy-classed enforcement of the limit (invoke.Timeout →
+// FailureTypeStage, the local runner's class) always beats Temporal's
+// infra-classed timeout; an undeclared limit keeps the constant default.
+func TestStageActivityTimeoutRunsGraceBehindDeclaredLimit(t *testing.T) {
+	if got := stageActivityOptions(apiv1.Limits{}).StartToCloseTimeout; got != activityTimeout {
+		t.Fatalf("undeclared limit StartToCloseTimeout = %v, want %v", got, activityTimeout)
+	}
+	want := 90*time.Second + stageTimeoutGrace
+	if got := stageActivityOptions(apiv1.Limits{MaxDurationSeconds: 90}).StartToCloseTimeout; got != want {
+		t.Fatalf("declared limit StartToCloseTimeout = %v, want %v (limit + grace, so the worker-side policy timeout wins the race)", got, want)
 	}
 }
 

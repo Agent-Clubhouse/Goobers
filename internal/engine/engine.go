@@ -34,9 +34,20 @@ const (
 	// run). Shared with the local runner so the ceilings cannot drift again
 	// (#624: they had diverged 1000 vs 10000).
 	maxSteps = runner.DefaultMaxSteps
-	// activityTimeout is the start-to-close timeout applied to every activity.
-	// A constant (not wall-clock) keeps the workflow deterministic.
+	// activityTimeout is the start-to-close timeout applied to activities whose
+	// stage declares no duration limit. A constant (not wall-clock) keeps the
+	// workflow deterministic.
 	activityTimeout = time.Hour
+	// stageTimeoutGrace pads a declared limits.MaxDurationSeconds before it
+	// becomes the Temporal StartToCloseTimeout. The worker-side runtime
+	// self-enforces the declared limit and surfaces the overrun as
+	// invoke.Timeout — a policy-classed stage failure, exactly like the local
+	// runner's dispatch (#724/#622) — so the grace guarantees that
+	// self-enforcement wins the race against Temporal's own timeout. A
+	// temporal.TimeoutError is thereby reserved for genuine worker loss
+	// (attemptFailureClass's infra arm), never a stage merely overrunning its
+	// declared budget.
+	stageTimeoutGrace = 5 * time.Minute
 )
 
 // RunInput is the pinned input to a workflow run. Spec is a snapshot of the
@@ -500,11 +511,13 @@ func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Co
 // under. The RetryPolicy is always explicit with a single attempt, so
 // Temporal's unlimited-attempts default is structurally unreachable for any
 // task shape (#622/#156); retry orchestration lives in dispatchWithRetry,
-// which enforces the local runner's split policy/infrastructure budgets.
+// which enforces the local runner's split policy/infrastructure budgets. A
+// declared duration limit is padded with stageTimeoutGrace so the worker's
+// own policy-classed enforcement of that limit always fires first.
 func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
 	timeout := activityTimeout
 	if limits.MaxDurationSeconds > 0 {
-		timeout = time.Duration(limits.MaxDurationSeconds) * time.Second
+		timeout = time.Duration(limits.MaxDurationSeconds)*time.Second + stageTimeoutGrace
 	}
 	return workflow.ActivityOptions{
 		StartToCloseTimeout: timeout,

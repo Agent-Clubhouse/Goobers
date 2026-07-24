@@ -259,6 +259,29 @@ func conformanceFixtures() []conformanceFixture {
 			},
 		},
 		{
+			// #622/#724 timeout classification: a stage overrunning its
+			// declared duration limit surfaces at the invoke seam as
+			// invoke.Timeout, a POLICY-classed failure on both runners — the
+			// worker self-enforces the limit, and the engine's
+			// StartToCloseTimeout runs stageTimeoutGrace behind it so
+			// Temporal's infra-classed timeout never fires first. Same
+			// definition, same retry budget, same terminal journal.
+			name: "worker-enforced stage timeout retries as policy",
+			spec: fixtureSpec("implement",
+				[]apiv1.Task{func() apiv1.Task {
+					t := detTask("implement", "")
+					t.TimeoutSeconds = 45
+					t.Retry = &apiv1.RetryPolicy{MaxAttempts: 2}
+					return t
+				}()}, nil),
+			script: map[string][]scriptedCall{
+				"implement": {
+					{err: invoke.Timeout(errors.New("stage exceeded its declared duration limit"))},
+					succeed(nil),
+				},
+			},
+		},
+		{
 			// #544: blocked is a schema-valid producer value, mapped to the
 			// escalated terminal with its cause journaled — it short-circuits
 			// before any Next state, so the fixture needs no gate.

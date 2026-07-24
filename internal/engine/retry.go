@@ -126,10 +126,15 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 //
 //   - an application error typed FailureTypeInfrastructure is infrastructure;
 //   - any other application error is policy (the local runner's
-//     dispatchRetryFailureClass rule: everything unmarked is policy-driven);
-//   - a Temporal timeout — start-to-close expiry, worker loss before the
-//     stage produced a verdict — is infrastructure: the platform failed, not
-//     the stage's policy (#622);
+//     dispatchRetryFailureClass rule: everything unmarked is policy-driven).
+//     A stage overrunning its declared duration limit lands here: the worker
+//     self-enforces the limit and surfaces it as invoke.Timeout →
+//     FailureTypeStage, the same policy class the local runner assigns (#724);
+//   - a Temporal timeout is infrastructure: StartToCloseTimeout runs
+//     stageTimeoutGrace behind the worker's own limit enforcement
+//     (stageActivityOptions), so it only fires when the worker was lost
+//     before the stage produced a verdict — the platform failed, not the
+//     stage's policy (#622);
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func attemptFailureClass(err error) (journal.AttemptClass, error) {
