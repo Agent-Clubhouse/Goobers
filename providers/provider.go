@@ -87,6 +87,12 @@ type PullRequestReviewSubmitter interface {
 	SubmitPullRequestReview(context.Context, PullRequestReviewRequest) (PullRequestReviewResult, error)
 }
 
+// PullRequestReviewThreadProvider reads provider-native reviews and inline
+// review threads without widening every RepoProvider backend.
+type PullRequestReviewThreadProvider interface {
+	ListPullRequestReviewThreads(context.Context, RepositoryRef, string) (PullRequestReviewThreads, error)
+}
+
 // PullRequestBranchUpdater incorporates a pull request's base branch through
 // the provider API. It is separate from RepoProvider because Azure DevOps does
 // not yet expose the V0 GitHub update-branch primitive.

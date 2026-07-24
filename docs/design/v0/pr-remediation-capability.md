@@ -98,14 +98,16 @@ non-scalar values, so structured evidence **cannot** travel that way. It travels
 artifact pointer, which is how the agentic stage already receives context. Gatherers
 therefore write files; only scalars used for *gate routing* go through `inputsFrom`.
 
-#### D1.1 — `remediation-brief.json` v1 contract
+#### D1.1 — `remediation-brief.json` versioned contract
 
 The closed schema is
-`api/schemas/remediation-brief-v1.schema.json`; its wire identifier is
-`goobers.dev/remediation-brief/v1`. Unknown fields are rejected. Any shape
-change, including an additive field, publishes a new schema version rather than
-silently widening v1. Writers emit one version and readers select support by the
-wire identifier.
+`api/schemas/remediation-brief-v2.schema.json`; its wire identifier is
+`goobers.dev/remediation-brief/v2`. V2 adds inline review diff hunks, original
+lines, and explicit resolved/outdated state. The original v1 schema remains
+embedded and unchanged. Unknown fields are rejected. Any shape change,
+including an additive field, publishes a new schema version rather than
+silently widening an existing version. Writers emit one version and readers
+select support by the wire identifier.
 
 `gather-pr-context` owns the required top-level routing fields and the required
 `gatherPrContext` section (SHA pins, full verdict or `null`, and the full
@@ -125,7 +127,7 @@ section, and every section it does not own, replaces only its own section, and
 emits the next complete brief artifact. The agentic stage consumes the artifact
 from the last configured gatherer; when none are configured, it consumes
 `gather-pr-context`'s brief directly. An absent gatherer means its property is
-omitted — that is a valid v1 brief and never a stage failure. A gatherer that ran
+omitted — that is a valid brief and never a stage failure. A gatherer that ran
 and found no evidence emits its section with empty arrays, distinguishing
 "checked and empty" from "not gathered."
 
