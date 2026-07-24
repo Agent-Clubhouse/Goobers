@@ -30,6 +30,7 @@ type ADOProvider struct {
 	Client       HTTPClient
 	Runner       CommandRunner
 
+	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar
 	rateObserver     RateLimitObserver
 	maxRetries       int
@@ -56,6 +57,9 @@ func NewADOProvider(organization, project, token string, opts ...func(*ADOProvid
 	for _, opt := range opts {
 		opt(p)
 	}
+	if p.credentialSource == nil && p.Token != "" {
+		p.credentialSource = NewADOPATCredentialSource(p.Username, p.Token)
+	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
 	if p.now == nil {
@@ -72,6 +76,12 @@ func NewADOProvider(organization, project, token string, opts ...func(*ADOProvid
 		p.secretRegistrar.Register([]byte(strings.TrimPrefix(basicAuth(p.Username, p.Token), "Basic ")))
 	}
 	return p
+}
+
+// WithADOCredentialSource configures PAT or Entra authentication independently
+// of the legacy fixed-token constructor argument. An explicit source wins.
+func WithADOCredentialSource(source ADOCredentialSource) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.credentialSource = source }
 }
 
 // SecretRegistrar receives provider credential forms that must be scrubbed.
@@ -108,19 +118,70 @@ func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (Cl
 	if req.Destination == "" {
 		return CloneResult{}, fmt.Errorf("destination is required")
 	}
-	cloneURL := req.Repository.URL
-	if cloneURL == "" {
-		cloneURL = fmt.Sprintf("%s/%s/%s/_git/%s", strings.TrimRight(p.BaseURL, "/"), url.PathEscape(p.Organization), url.PathEscape(p.project(req.Repository)), url.PathEscape(req.Repository.Name))
-	}
+	cloneURL := p.repositoryURL(req.Repository)
 	args := []string{"clone"}
 	if req.Branch != "" {
 		args = append(args, "--branch", req.Branch)
 	}
 	args = append(args, cloneURL, req.Destination)
-	if out, err := p.Runner.Run(ctx, "git", args...); err != nil {
+	var (
+		out []byte
+		err error
+	)
+	if p.credentialSource == nil {
+		out, err = p.Runner.Run(ctx, "git", args...)
+	} else {
+		runner, ok := p.Runner.(environmentCommandRunner)
+		if !ok {
+			return CloneResult{}, fmt.Errorf("authenticated ADO clone requires an environment-capable command runner")
+		}
+		header, authErr := p.authorizationHeader(ctx)
+		if authErr != nil {
+			return CloneResult{}, fmt.Errorf("resolve ADO clone credential: %w", authErr)
+		}
+		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL), "git", args...)
+	}
+	if err != nil {
 		return CloneResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return CloneResult{Path: req.Destination, URL: cloneURL}, nil
+}
+
+// RepositoryReachable verifies authenticated Git access without cloning.
+func (p *ADOProvider) RepositoryReachable(ctx context.Context, repo RepositoryRef) error {
+	if err := requireRepo(repo); err != nil {
+		return err
+	}
+	args := []string{
+		"-c", "credential.helper=",
+		"-c", "credential.interactive=never",
+		"ls-remote", "--heads", p.repositoryURL(repo),
+	}
+	if p.credentialSource == nil {
+		if _, err := p.Runner.Run(ctx, "git", args...); err != nil {
+			return fmt.Errorf("git ls-remote: %w", err)
+		}
+		return nil
+	}
+	runner, ok := p.Runner.(environmentCommandRunner)
+	if !ok {
+		return fmt.Errorf("authenticated ADO repository preflight requires an environment-capable command runner")
+	}
+	header, err := p.authorizationHeader(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve ADO repository credential: %w", err)
+	}
+	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo)), "git", args...); err != nil {
+		return fmt.Errorf("git ls-remote: %w", err)
+	}
+	return nil
+}
+
+func (p *ADOProvider) repositoryURL(repo RepositoryRef) string {
+	if repo.URL != "" {
+		return repo.URL
+	}
+	return fmt.Sprintf("%s/%s/%s/_git/%s", strings.TrimRight(p.BaseURL, "/"), url.PathEscape(p.Organization), url.PathEscape(p.project(repo)), url.PathEscape(repo.Name))
 }
 
 // CreateBranch creates an Azure DevOps branch ref.
@@ -701,7 +762,9 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		maxWait = defaultRateLimitMaxWait
 	}
 	var waited time.Duration
-	for attempt := 0; ; attempt++ {
+	rateAttempt := 0
+	authRetried := false
+	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
 			return nil, err
@@ -709,19 +772,28 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
 		}
-		if p.Token != "" {
-			req.Header.Set("Authorization", basicAuth(p.Username, p.Token))
+		header, err := p.authorizationHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if header != "" {
+			req.Header.Set("Authorization", header)
 		}
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
+			_ = resp.Body.Close()
+			authRetried = true
+			continue
+		}
 		if resp.StatusCode != http.StatusTooManyRequests {
 			return resp, nil
 		}
 
-		wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
-		if attempt >= p.maxRetries || wait > maxWait-waited {
+		wait, ev := p.rateLimitPlan(resp, endpoint, rateAttempt)
+		if rateAttempt >= p.maxRetries || wait > maxWait-waited {
 			ev.Outcome = RateLimitOutcomeExhausted
 			p.observeRateLimit(ctx, ev)
 			return resp, nil
@@ -735,7 +807,36 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		ev.Outcome = RateLimitOutcomeRetry
 		p.observeRateLimit(ctx, ev)
 		waited += wait
+		rateAttempt++
 	}
+}
+
+func (p *ADOProvider) authorizationHeader(ctx context.Context) (string, error) {
+	if p.credentialSource == nil {
+		return "", nil
+	}
+	credential, err := p.credentialSource.Credential(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve ADO credential: %w", err)
+	}
+	header, err := credential.authorizationHeader()
+	if err != nil {
+		return "", err
+	}
+	if p.secretRegistrar != nil {
+		p.secretRegistrar.Register([]byte(credential.Secret))
+		p.secretRegistrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
+	}
+	return header, nil
+}
+
+func (p *ADOProvider) invalidateCredential() bool {
+	source, ok := p.credentialSource.(refreshableADOCredentialSource)
+	if !ok {
+		return false
+	}
+	source.Invalidate()
+	return true
 }
 
 func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attempt int) (time.Duration, RateLimitEvent) {
