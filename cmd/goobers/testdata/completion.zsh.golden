@@ -35,7 +35,7 @@ _goobers_completion()
             'trace:show a run'\''s journal events, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
             'completion:generate a shell completion script'
-            'telemetry:query, export, or prune run telemetry'
+            'telemetry:query, export, prune, or compact run telemetry'
             'journal:the one sanctioned edit to the append-only journal'
             'backlog-dedupe:surface ranked duplicate candidates for curator judgment (a workflow stage)'
             'backlog-health:snapshot ready-pool depth and age (a workflow stage)'
@@ -274,7 +274,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(stats errors export prune)
+                candidates=(stats errors export prune compact)
                 _describe -V 'command' candidates
                 return
             fi

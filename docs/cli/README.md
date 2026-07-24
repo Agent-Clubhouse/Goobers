@@ -73,7 +73,8 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers telemetry`](#goobers-telemetry) | query, export, or prune run telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
+| [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
@@ -1526,15 +1527,16 @@ $ goobers status --watch
 
 ## `goobers telemetry`
 
-query, export, or prune run telemetry
+query, export, prune, or compact run telemetry
 
 ~~~text
-Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]
 
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
-prune:  remove terminal runs outside the configured retention bounds
+prune:   remove terminal runs outside the configured retention bounds
+compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 ~~~
 
 **Examples**
@@ -1544,6 +1546,30 @@ $ goobers telemetry stats
 $ goobers telemetry errors
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry prune --dry-run
+~~~
+
+## `goobers telemetry compact`
+
+drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+
+~~~text
+Usage: goobers telemetry compact [--dry-run] [path]
+
+Reclaim disk from a bloated instance: drop scheduler journal records
+(scheduler/events.jsonl) and rollup scheduler rows older than
+telemetry.retention.window, then VACUUM the rollup database and truncate its
+write-ahead log so freed pages return to the filesystem. The daemon must be
+stopped first — compaction rewrites files a running daemon holds open.
+--dry-run reports what would be reclaimed without changing anything. The
+default 90d window applies when none is configured. Exit codes: 0 = OK,
+1 = compaction error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry compact --dry-run
+$ goobers telemetry compact
 ~~~
 
 ## `goobers telemetry errors`
