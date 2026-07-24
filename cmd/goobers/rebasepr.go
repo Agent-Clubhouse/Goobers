@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -67,79 +69,98 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	}
 	root := providerStageRoot(pathArg)
 
+	resultFile := providerInput("resultFile", "rebase-result.json")
 	selectedNumber := providerInput("selectedNumber", "")
 	head := providerInput("head", "")
 	base := providerInput("base", "main")
 	if selectedNumber == "" || head == "" {
-		pf(stderr, "error: selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)\n")
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
 	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
 	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
 
 	repo, err := providerRepo(root)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 
 	preRebaseSHA, err := checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
-		pf(stderr, "error: checkout PR #%s's branch %q: %v\n", selectedNumber, head, err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
 	conflict, conflictLocations, rebaseBaseSHA, err := attemptRebase(".", base, pushToken)
 	if err != nil {
-		pf(stderr, "error: rebase PR #%s onto %q: %v\n", selectedNumber, base, err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
 
 	needsAgent := conflict || hasSubstantiveFindings || hasFailingCI
-	resultFile := providerInput("resultFile", "rebase-result.json")
 
 	if !conflict && !hasSubstantiveFindings {
 		if err := forcePushWithLease(".", head, preRebaseSHA, pushToken); err != nil {
-			pf(stderr, "error: force-push rebased PR #%s branch %q: %v\n", selectedNumber, head, err)
-			return 1
+			return failRebasePR(stderr, resultFile, selectedNumber, head,
+				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
 
 	if !needsAgent {
 		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 		}
 		provider := newGitHubProvider(issuesToken)
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%s", needsRemediationLabel, selectedNumber), err, "rebase-result.json")
+			return failRebasePR(stderr, resultFile, selectedNumber, head,
+				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
 		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, preRebaseSHA, rebaseBaseSHA); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
 	}
 
 	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, preRebaseSHA, rebaseBaseSHA); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
+}
+
+func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head string, err error) int {
+	pf(stderr, "error: %v\n", err)
+	code, retryable, extra := classifyProviderError(err)
+	payload := map[string]interface{}{
+		"selectedNumber":              selectedNumber,
+		"head":                        head,
+		"needsAgent":                  "true",
+		"conflict":                    "false",
+		"conflictLocations":           "[]",
+		"attemptedHeadSha":            "",
+		"rebaseBaseSha":               "",
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   err.Error(),
+		executor.OutputErrorRetryable: retryable,
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	if writeErr := writeProviderStageResult(resultFile, payload); writeErr != nil {
+		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, writeErr)
+	}
+	return 1
 }
 
 // writeRebaseResult echoes selectedNumber/head forward alongside this
