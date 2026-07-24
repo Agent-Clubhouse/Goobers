@@ -31,9 +31,9 @@ bin/goobers init --guided ./my-instance
 
 The guided flow defaults to the named `quickstart` template, version 1, authored
 against DSL `1.4`. It configures a manual workflow that claims one issue carrying
-the maintainer-applied `goobers` trust label, implements it, performs one
-non-blocking advisory review of the published commit, opens a pull request, and
-clears the claim marker.
+the maintainer-applied `goobers:approved` trust label and the `goobers:ready`
+label, implements it, performs one non-blocking advisory review of the published
+commit, opens a pull request, and clears the claim marker.
 The daemon creates each gaggle's `runs/` and `workcopies/` beneath
 `gaggles/<gaggle>/`.
 

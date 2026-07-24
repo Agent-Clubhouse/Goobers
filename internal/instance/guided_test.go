@@ -309,7 +309,14 @@ func TestInitGuidedQuickstartTemplateIsLinearAndVersioned(t *testing.T) {
 			t.Errorf("quickstart task %q next = %q, want %q", task.Name, task.Next, wantTasks[i+1])
 		}
 	}
-	if !slices.Contains(quickstart.Spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite)) {
+	query := quickstart.Spec.Tasks[0]
+	if got := query.Inputs["trustLabel"]; got != "goobers:approved" {
+		t.Errorf("quickstart query trustLabel = %q, want goobers:approved", got)
+	}
+	if got := query.Inputs["requireLabels"]; got != "goobers:ready" {
+		t.Errorf("quickstart query requireLabels = %q, want goobers:ready", got)
+	}
+	if !slices.Contains(query.Capabilities, string(capability.GitHubPRWrite)) {
 		t.Fatal("quickstart query lacks the open-PR eligibility backstop")
 	}
 	if !quickstart.Spec.Tasks[3].ContinueOnError {
