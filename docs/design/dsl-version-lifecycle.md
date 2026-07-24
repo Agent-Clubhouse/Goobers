@@ -189,7 +189,10 @@ The lifecycle is only worth something if the durations are promised, not vibes. 
 - The window is a *promise about the interpreter's continued existence*, which §3.4 is what actually
   makes cheap.
 - `SupportMatrix` entries retain their ordered, release-stamped lifecycle history. CI validates the
-  compiled-in matrix against both floors so an invalid transition or shortened window cannot ship.
+  compiled-in matrix against both floors and the matrix executed from the latest reachable canonical
+  SemVer tag. Released entries and history are append-only, and a version can become `unsupported`
+  only when that tagged matrix already marks it `deprecated`; adding both transitions in one change
+  does not satisfy the released-minor window. Before the first tag, no version may become unsupported.
 
 ### 3.4 Multi-version runtime coexistence — N interpreters in one binary
 

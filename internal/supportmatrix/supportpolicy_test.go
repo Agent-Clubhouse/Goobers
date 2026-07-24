@@ -151,3 +151,114 @@ func TestSupportPolicyAcceptsWindowAtFloor(t *testing.T) {
 		})
 	}
 }
+
+func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
+	transition := func(level Level, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	released := SupportMatrix{
+		"1.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				transition(LevelSupported, "v1.0.0"),
+			},
+		},
+		"1.1": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				transition(LevelSupported, "v1.1.0"),
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		current SupportMatrix
+		want    string
+	}{
+		{
+			name: "same change deprecates and makes unsupported",
+			current: SupportMatrix{
+				"1.0": {
+					Level: LevelUnsupported,
+					History: []SupportTransition{
+						transition(LevelSupported, "v1.0.0"),
+						transition(LevelDeprecated, "v1.3.0"),
+						transition(LevelUnsupported, "v1.4.0"),
+					},
+				},
+				"1.1": released["1.1"],
+			},
+			want: "must be deprecated in the latest released support matrix",
+		},
+		{
+			name: "released history rewritten",
+			current: SupportMatrix{
+				"1.0": {
+					Level: LevelSupported,
+					History: []SupportTransition{
+						transition(LevelSupported, "v1.0.1"),
+					},
+				},
+				"1.1": released["1.1"],
+			},
+			want: "lifecycle history must not change",
+		},
+		{
+			name: "released version omitted",
+			current: SupportMatrix{
+				"1.1": released["1.1"],
+			},
+			want: "must remain in the support matrix",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateSupportPolicy(test.current); err != nil {
+				t.Fatalf("synthetic current matrix must satisfy its self-reported policy: %v", err)
+			}
+			err := validateSupportMatrixEvolution(released, test.current)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateSupportMatrixEvolution() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSupportPolicyAllowsUnsupportedAfterReleasedDeprecation(t *testing.T) {
+	released := SupportMatrix{
+		"1.0": {
+			Level:            LevelDeprecated,
+			UnsupportedAfter: "v1.4.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: "v1.0.0"},
+				{Level: LevelDeprecated, SinceVersion: "v1.3.0"},
+			},
+		},
+		"1.1": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: "v1.1.0"},
+			},
+		},
+	}
+	current := SupportMatrix{
+		"1.0": {
+			Level: LevelUnsupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: "v1.0.0"},
+				{Level: LevelDeprecated, SinceVersion: "v1.3.0"},
+				{Level: LevelUnsupported, SinceVersion: "v1.4.0"},
+			},
+		},
+		"1.1": released["1.1"],
+	}
+
+	if err := ValidateSupportPolicy(current); err != nil {
+		t.Fatalf("current matrix violates support policy: %v", err)
+	}
+	if err := validateSupportMatrixEvolution(released, current); err != nil {
+		t.Fatalf("unsupported transition after released deprecation was rejected: %v", err)
+	}
+}

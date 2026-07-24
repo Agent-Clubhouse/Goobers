@@ -213,7 +213,13 @@ releases: a version superseded in `v1.1.0` cannot become `unsupported` before
 version deprecated in `v1.3.x` cannot become unsupported before `v1.4.0`;
 direct `supported -> unsupported` transitions are forbidden. Keep each
 `VersionSupport.History` complete and release-ordered. The support-matrix
-policy guard rejects invalid histories and windows.
+policy guard rejects invalid histories and windows. It also compares the
+current matrix with the matrix executed from the latest reachable canonical
+SemVer tag: released versions and history cannot be removed or rewritten, and
+a version may become `unsupported` only when that tagged matrix already marks
+it `deprecated`. Adding deprecated and unsupported history in one change does
+not satisfy the released-minor window; before the first tag, no version may
+become unsupported.
 
 ## Commit messages
 

@@ -2,6 +2,7 @@ package supportmatrix
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -69,6 +70,33 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 				MinimumSupportWindowMinorReleases,
 				superseding.version,
 				superseding.supportedAt.String(),
+			)
+		}
+	}
+	return nil
+}
+
+func validateSupportMatrixEvolution(released, current SupportMatrix) error {
+	for _, previous := range released.Versions() {
+		candidate, ok := current.Lookup(previous.Version)
+		if !ok {
+			return fmt.Errorf("released DSL version %q must remain in the support matrix", previous.Version)
+		}
+		if len(candidate.History) < len(previous.History) ||
+			!slices.Equal(candidate.History[:len(previous.History)], previous.History) {
+			return fmt.Errorf("released DSL version %q lifecycle history must not change", previous.Version)
+		}
+	}
+
+	for _, candidate := range current.Versions() {
+		if candidate.Level != LevelUnsupported {
+			continue
+		}
+		previous, ok := released.Lookup(candidate.Version)
+		if !ok || (previous.Level != LevelDeprecated && previous.Level != LevelUnsupported) {
+			return fmt.Errorf(
+				"DSL version %q must be deprecated in the latest released support matrix before becoming unsupported",
+				candidate.Version,
 			)
 		}
 	}
