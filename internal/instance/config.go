@@ -253,11 +253,20 @@ type RepoRef struct {
 	Name string `json:"name" yaml:"name"`
 	// Token is a reference to this repo's credential. Never an inline value
 	// (CFG-009, SEC-010). GitHub and ADO PAT auth require exactly one of Env
-	// or File. Entra-backed ADO auth does not use this field.
+	// or File. Entra-backed ADO auth and GitHub App auth do not use this
+	// field — exactly one identity mechanism per repo.
 	Token TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
-	// Auth selects Azure DevOps authentication. Nil preserves legacy PAT
-	// behavior when Token is configured.
-	Auth *ADOAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// Auth selects a non-default credential source for this repo: an Azure
+	// DevOps identity kind, or GitHub App installation-token minting (#686).
+	// Nil preserves PAT behavior with Token configured.
+	Auth *RepoAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// GitHubAppAuth reports whether this repo authenticates through GitHub App
+// installation-token minting (auth kind github-app, #686) rather than a
+// static token ref.
+func (r RepoRef) GitHubAppAuth() bool {
+	return r.Provider == "github" && r.Auth != nil && r.Auth.Kind == GitHubAuthApp
 }
 
 const (
@@ -271,14 +280,67 @@ const (
 	ADOAuthManagedIdentity = "managed-identity"
 )
 
-// ADOAuthConfig selects an Azure DevOps credential source without embedding
-// credential material in configuration.
-type ADOAuthConfig struct {
+const (
+	// GitHubAuthPAT selects the env/file/store-backed static token — the
+	// default when auth is absent, byte-identical to before GitHub repos
+	// accepted an auth block at all.
+	GitHubAuthPAT = "pat"
+	// GitHubAuthApp selects GitHub App installation-token minting (#686):
+	// short-lived, installation-scoped tokens exchanged for a signed App JWT
+	// per resolve, replacing a static PAT with no rotation machinery.
+	GitHubAuthApp = "github-app"
+)
+
+// RepoAuthConfig selects a repository credential source without embedding
+// credential material in configuration. Kind values are provider-specific:
+// ADO accepts pat/azure-cli/workload-identity/managed-identity, GitHub
+// accepts pat/github-app; fields beyond Kind belong to one provider's kinds
+// and are rejected elsewhere at load.
+type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
-	// Tenant optionally pins Azure CLI authentication to one tenant.
+	// Tenant optionally pins Azure CLI authentication to one tenant (ADO).
 	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
-	// ClientID optionally selects a user-assigned managed identity.
+	// ClientID optionally selects a user-assigned managed identity (ADO).
 	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
+	// AppID identifies the GitHub App for kind github-app: the numeric App
+	// ID or the app's client ID string — GitHub accepts either as the App
+	// JWT issuer.
+	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
+	// InstallationID is the numeric ID of the App's installation on the
+	// target repo's owner (kind github-app).
+	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// PrivateKey references the App's PEM-encoded private key for kind
+	// github-app — env, file, or store, exactly like a token ref; never an
+	// inline value (CFG-009). The key only ever signs short-lived App JWTs
+	// in-process; stages receive minted installation tokens, never the key.
+	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+}
+
+// hasGitHubAppFields reports whether any github-app-only field is set, for
+// fail-closed rejection on kinds that must not carry them.
+func (a *RepoAuthConfig) hasGitHubAppFields() bool {
+	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil
+}
+
+// GitHubID is a GitHub identifier config field YAML authors may write as a
+// number (`appId: 123456`) or a string (`appId: "Iv1.…"`); both parse,
+// normalized to the string form the GitHub API consumes.
+type GitHubID string
+
+// UnmarshalJSON accepts a JSON string or number. sigs.k8s.io/yaml routes
+// YAML values through JSON, so this is the single decode path.
+func (id *GitHubID) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*id = GitHubID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("must be a string or a number, got %s", data)
+	}
+	*id = GitHubID(n.String())
+	return nil
 }
 
 const (
@@ -769,16 +831,65 @@ func (c *Config) Validate() error {
 			if r.Project != "" {
 				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
 			}
+			kind := GitHubAuthPAT
 			if r.Auth != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): auth is only valid for provider \"ado\"", i, r.Owner, r.Name)
+				kind = r.Auth.Kind
 			}
-			if !r.Token.Configured() {
-				return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
-					"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+			switch kind {
+			case GitHubAuthPAT:
+				if r.Auth != nil && r.Auth.hasGitHubAppFields() {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if !r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
+						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+				}
+			case GitHubAuthApp:
+				// Exactly one identity mechanism per repo: the minted
+				// installation token replaces the static token entirely — a
+				// token configured alongside it could only ever act as a
+				// silent fallback, which the minting design forbids (#686,
+				// no implicit PAT fallback).
+				if r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.tenant and auth.clientId are only valid for ADO auth kinds", i, r.Owner, r.Name)
+				}
+				if r.Auth.AppID == "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.appId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if r.Auth.InstallationID == "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if _, err := strconv.ParseUint(string(r.Auth.InstallationID), 10, 64); err != nil {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId %q must be the numeric installation ID", i, r.Owner, r.Name, r.Auth.InstallationID)
+				}
+				if r.Auth.PrivateKey == nil || r.Auth.PrivateKey.sourceCount() != 1 {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, or store — "+
+						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+				}
+				if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): auth.privateKey", i, r.Owner, r.Name), *r.Auth.PrivateKey, stores); err != nil {
+					return err
+				}
+				// The App key can mint tokens for every repo the installation
+				// covers — never allow the stage environment to carry it, the
+				// same fail-closed posture workflowSource.token.env gets below.
+				if r.Auth.PrivateKey.Env != "" && stageEnvironmentAllows(r.Auth.PrivateKey.Env, c.Runner.EnvPassthrough) {
+					return fmt.Errorf(
+						"repos[%d] (%s/%s): auth.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+						i, r.Owner, r.Name, r.Auth.PrivateKey.Env,
+					)
+				}
+			default:
+				return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
 			}
 		case "ado":
 			if r.Project == "" {
 				return fmt.Errorf("repos[%d] (%s/%s): project is required for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if r.Auth != nil && r.Auth.hasGitHubAppFields() {
+				return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for provider \"github\"", i, r.Owner, r.Name)
 			}
 			kind := ADOAuthPAT
 			if r.Auth != nil {

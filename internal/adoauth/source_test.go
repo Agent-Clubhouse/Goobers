@@ -55,7 +55,7 @@ func TestSourceAzureCLI(t *testing.T) {
 		Owner:    "org",
 		Project:  "project",
 		Name:     "repo",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI, Tenant: "tenant"},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI, Tenant: "tenant"},
 	}, runner)
 	if err != nil {
 		t.Fatal(err)

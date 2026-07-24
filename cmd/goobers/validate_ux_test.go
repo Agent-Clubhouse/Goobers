@@ -175,7 +175,7 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 	}}, &stdout)
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
