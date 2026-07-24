@@ -17,7 +17,6 @@ github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema 
 github.com/goobers/goobers/internal/telemetry/query.HasCapability # Query capability helper retained for external query integrations.
 github.com/goobers/goobers/internal/telemetry/query.MaterializeArtifact # Query artifact helper retained for external query integrations.
 github.com/goobers/goobers/internal/telemetry/query.NotConfiguredSource.Query # Explicit unconfigured project-query implementation retained for optional integrations.
-github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Rollup repair entrypoint retained for maintenance tooling.
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper retained for provider webhook integrations.
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
@@ -95,7 +94,6 @@ github.com/goobers/goobers/internal/httpapi.withHeartbeatInterval # Event-stream
 github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/journal.WithClock # Journal clock option retained for deterministic persistence tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 github.com/goobers/goobers/internal/sandbox.newNative # Native sandbox constructor retained for platform policy tests.
