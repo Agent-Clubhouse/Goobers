@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -61,29 +62,65 @@ func readEvents(runDir string) ([]journalEvent, error) {
 	return events, nil
 }
 
-// readInstanceEvents decodes the instance journal at
+// readInstanceEventsFrom decodes the instance journal at
 // <instance-root>/scheduler/events.jsonl — the same envelope and file name
-// (fileEvents) as a run's own events.jsonl, just under the scheduler
-// directory instead of a run directory, and thus tolerant of a torn tail the
-// same way. Before issue #128, this file was never read by the rollup at
-// all — Rebuild only ever scanned run directories — so scheduler decisions
-// (trigger.fired/tick.skipped/claim.*) were unqueryable regardless of how
-// long the daemon had been running. A missing scheduler directory (no
-// `goobers up` has run yet) is not an error, just zero scheduler events.
-func readInstanceEvents(schedulerDir string) ([]journalEvent, error) {
+// (fileEvents) as a run's own events.jsonl, just under the scheduler directory
+// instead of a run directory, and thus tolerant of a torn tail the same way
+// (issue #128 first made the rollup read this file so scheduler decisions —
+// trigger.fired/tick.skipped/claim.* — became queryable).
+//
+// It decodes only the records at or after byteOffset so a steady-state
+// IngestSchedulerLog reads just the newly appended tail instead of the whole
+// (potentially multi-GB) journal every tick (#1411).
+//
+// It returns the decoded events, the offset just past the last COMPLETE record
+// (where the next ingest resumes — a torn final line is re-read next time, the
+// same tolerance decodeJSONLTolerant applies), and reset=true when the journal
+// is now shorter than byteOffset (rotation/compaction/truncation), in which
+// case it re-reads from the head. A missing scheduler directory (no `goobers
+// up` yet) is not an error, just zero events at offset 0.
+func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []journalEvent, newOffset int64, reset bool, err error) {
 	path := filepath.Join(schedulerDir, fileEvents)
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, 0, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("rollup: read %s: %w", path, err)
+		return nil, 0, false, fmt.Errorf("rollup: stat %s: %w", path, err)
 	}
-	events, err := decodeJSONLTolerant[journalEvent](data)
+	start := byteOffset
+	if start < 0 || info.Size() < start {
+		// The journal shrank below where we last resumed — it was rotated,
+		// compacted, or truncated. Re-read from the head; the caller's seq
+		// watermark and ON CONFLICT keep already-ingested rows untouched.
+		start = 0
+		reset = true
+	}
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: decode %s: %w", path, err)
+		return nil, 0, false, fmt.Errorf("rollup: open %s: %w", path, err)
 	}
-	return events, nil
+	defer func() { _ = file.Close() }()
+	if start > 0 {
+		if _, err = file.Seek(start, io.SeekStart); err != nil {
+			return nil, 0, false, fmt.Errorf("rollup: seek %s: %w", path, err)
+		}
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("rollup: read %s: %w", path, err)
+	}
+	events, err = decodeJSONLTolerant[journalEvent](data)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("rollup: decode %s: %w", path, err)
+	}
+	// Advance only past the last complete (newline-terminated) record. -1 (no
+	// newline in this window) leaves the offset unchanged so the whole tail is
+	// re-read once it completes.
+	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
+		start += int64(nl) + 1
+	}
+	return events, start, reset, nil
 }
 
 // readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
