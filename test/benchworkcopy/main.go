@@ -126,14 +126,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "benchworkcopy: unexpected positional arguments")
+		_, _ = fmt.Fprintln(stderr, "benchworkcopy: unexpected positional arguments")
 		fs.Usage()
 		return 2
 	}
 
 	spec, ok := presets[*preset]
 	if !ok {
-		fmt.Fprintf(stderr, "benchworkcopy: unknown preset %q (small, medium, large)\n", *preset)
+		_, _ = fmt.Fprintf(stderr, "benchworkcopy: unknown preset %q (small, medium, large)\n", *preset)
 		return 2
 	}
 	spec.Seed = *seed
@@ -159,7 +159,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		spec.TouchPerCommit = *touch
 	}
 	if *cycles < 1 {
-		fmt.Fprintln(stderr, "benchworkcopy: -cycles must be at least 1")
+		_, _ = fmt.Fprintln(stderr, "benchworkcopy: -cycles must be at least 1")
 		return 2
 	}
 
@@ -174,23 +174,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cycles:       *cycles,
 	}, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
 		return 1
 	}
 
 	encoded, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
-		fmt.Fprintf(stderr, "benchworkcopy: encode report: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "benchworkcopy: encode report: %v\n", err)
 		return 1
 	}
 	encoded = append(encoded, '\n')
 	if *out != "" {
 		if err := os.WriteFile(*out, encoded, 0o644); err != nil {
-			fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
 			return 1
 		}
 	} else if _, err := stdout.Write(encoded); err != nil {
-		fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
 		return 1
 	}
 	return 0
@@ -226,7 +226,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 			}
 			dir = filepath.Join(tmp, "fixture.git")
 			if !opts.keepFixture {
-				defer os.RemoveAll(tmp)
+				defer func() { _ = os.RemoveAll(tmp) }()
 			}
 		}
 		fx := &fixtureReport{
@@ -254,10 +254,10 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(progress, "benchworkcopy: fixture %s (%d files, depth %d) ready in %dms (%s)\n",
+		_, _ = fmt.Fprintf(progress, "benchworkcopy: fixture %s (%d files, depth %d) ready in %dms (%s)\n",
 			opts.preset, opts.spec.Files, opts.spec.HistoryDepth, fx.GenerateMs, humanBytes(fx.RepoBytes))
 		if opts.keepFixture {
-			fmt.Fprintf(progress, "benchworkcopy: fixture kept at %s\n", dir)
+			_, _ = fmt.Fprintf(progress, "benchworkcopy: fixture kept at %s\n", dir)
 		}
 	}
 	rep.RepoURL = repoURL
@@ -266,7 +266,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(workRoot)
+	defer func() { _ = os.RemoveAll(workRoot) }()
 
 	var managerOpts []worktree.ManagerOption
 	if opts.partialClone {
@@ -292,7 +292,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 		return nil, fmt.Errorf("warm fetch: %w", err)
 	}
 	rep.WarmFetchMs = time.Since(start).Milliseconds()
-	fmt.Fprintf(progress, "benchworkcopy: cold clone %dms (mirror %s); warm fetch %dms\n",
+	_, _ = fmt.Fprintf(progress, "benchworkcopy: cold clone %dms (mirror %s); warm fetch %dms\n",
 		rep.ColdCloneMs, humanBytes(rep.MirrorBytes), rep.WarmFetchMs)
 
 	for i := 0; i < opts.cycles; i++ {
@@ -320,7 +320,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 	}
 	rep.WorktreeAddMsMedian = median(rep.Cycles, func(c cycleResult) int64 { return c.WorktreeAddMs })
 	rep.TeardownMsMedian = median(rep.Cycles, func(c cycleResult) int64 { return c.TeardownMs })
-	fmt.Fprintf(progress, "benchworkcopy: worktree add median %dms; teardown median %dms (%d cycles)\n",
+	_, _ = fmt.Fprintf(progress, "benchworkcopy: worktree add median %dms; teardown median %dms (%d cycles)\n",
 		rep.WorktreeAddMsMedian, rep.TeardownMsMedian, opts.cycles)
 	return rep, nil
 }

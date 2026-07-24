@@ -104,7 +104,7 @@ func generateFixture(ctx context.Context, spec fixtureSpec, dir string) error {
 	closeErr := stdin.Close()
 	waitErr := cmd.Wait()
 	if waitErr != nil {
-		return fmt.Errorf("git fast-import: %v: %s", waitErr, stderr.Bytes())
+		return fmt.Errorf("git fast-import: %w: %s", waitErr, stderr.Bytes())
 	}
 	if streamErr != nil {
 		return fmt.Errorf("generate fast-import stream: %w", streamErr)
@@ -121,7 +121,7 @@ func runFixtureGit(ctx context.Context, dir string, args ...string) error {
 		cmd.Dir = dir
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git %v: %v: %s", args, err, out)
+		return fmt.Errorf("git %v: %w: %s", args, err, out)
 	}
 	return nil
 }
@@ -256,20 +256,7 @@ func textBlob(rng *rand.Rand) []byte {
 	var b strings.Builder
 	b.Grow(size + 64)
 	for b.Len() < size {
-		fmt.Fprintf(&b, "line %08x %08x %08x %08x\n", rng.Uint32(), rng.Uint32(), rng.Uint32(), rng.Uint32())
+		_, _ = fmt.Fprintf(&b, "line %08x %08x %08x %08x\n", rng.Uint32(), rng.Uint32(), rng.Uint32(), rng.Uint32())
 	}
 	return []byte(b.String())
-}
-
-// fixtureRefs returns `git for-each-ref` output for the repo at dir — the
-// content-hash surface the determinism test compares (every ref name and the
-// object id it points at).
-func fixtureRefs(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname) %(objectname)")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git for-each-ref: %w", err)
-	}
-	return string(out), nil
 }

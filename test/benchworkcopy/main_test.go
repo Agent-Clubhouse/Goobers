@@ -4,10 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
+
+// fixtureRefs returns `git for-each-ref` output for the repo at dir — the
+// content-hash surface the determinism test compares (every ref name and the
+// object id it points at).
+func fixtureRefs(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname) %(objectname)")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git for-each-ref: %w", err)
+	}
+	return string(out), nil
+}
 
 // tinySpec keeps generator tests fast: the point is shape and determinism,
 // not scale.
