@@ -93,6 +93,33 @@ func TestPRSelectEquivalentEffectivePriorityUsesFIFO(t *testing.T) {
 	}
 }
 
+func TestPRSelectCrownedLanderTierOutranksAgedOrdinaryCandidate(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	lander := providers.PullRequestSummary{Number: 100}
+	ordinary := providers.PullRequestSummary{Number: 1}
+	since := map[int]time.Time{
+		lander.Number:   now,
+		ordinary.Number: now.Add(-2 * prSelectAgingInterval),
+	}
+
+	ranked, priorities, _ := rankEligiblePullRequests(
+		[]providers.PullRequestSummary{ordinary, lander},
+		map[int]int{lander.Number: 1},
+		since,
+		now,
+	)
+
+	if priorities[ordinary.Number].EffectivePriority <= priorities[lander.Number].EffectivePriority {
+		t.Fatalf("effective priorities = %#v, want the ordinary candidate to win without the crown tier", priorities)
+	}
+	if !priorities[lander.Number].CrownedLander || priorities[ordinary.Number].CrownedLander {
+		t.Fatalf("crowned-lander classification = %#v, want only PR #%d crowned", priorities, lander.Number)
+	}
+	if ranked[0].Number != lander.Number {
+		t.Fatalf("selected PR #%d, want crowned lander PR #%d ahead of aged ordinary PR #%d", ranked[0].Number, lander.Number, ordinary.Number)
+	}
+}
+
 func TestPRSelectStarvationGuardOverridesBlockerPriorityAtOneHour(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	aged := providers.PullRequestSummary{Number: 900}

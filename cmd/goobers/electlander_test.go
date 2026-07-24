@@ -211,6 +211,83 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	}
 }
 
+func TestParkedClusterMemberQueuesCrownedLanderPriorityDispatch(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	const (
+		landerNumber   = 10
+		selectedNumber = 11
+		runID          = "priority-lander"
+	)
+	overlap := []fakePRFile{{path: "cmd/goobers/electlander.go", status: "modified", additions: 1}}
+	server.addIssue(landerNumber, "crowned lander")
+	server.addIssue(selectedNumber, "later cluster member")
+	server.addOpenPR(landerNumber, "goobers/implementation/10", "main", "head-10", "base", false, nil, overlap)
+	server.addOpenPR(selectedNumber, "goobers/implementation/11", "main", "head-11", "base", false, nil, overlap)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "11")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "head-11")
+	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", "base")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Rationale: "PR #10 must land first",
+		HeadSHA:   "head-11",
+		BaseSHA:   "base",
+		Findings: []apiv1.Finding{{
+			Class:       apiv1.FindingCrossPRBlocked,
+			Severity:    apiv1.SeverityInfo,
+			Message:     "waiting for the elected predecessor",
+			BlockingPRs: []int{landerNumber},
+		}},
+	})
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "queued an immediate merge-review re-tick") {
+		t.Fatalf("stdout = %q, want priority re-tick confirmation", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, "verdict-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["priorityDispatchRequested"] != "true" {
+		t.Fatalf("priorityDispatchRequested = %q, want true", result["priorityDispatchRequested"])
+	}
+
+	requests, err := filepath.Glob(filepath.Join(layoutFor(root).SchedulerDir(), pendingTriggersDir, "*"+requestSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("priority trigger requests = %v, want one", requests)
+	}
+	requestData, err := os.ReadFile(requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request triggerRequest
+	if err := json.Unmarshal(requestData, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !request.Priority || request.Gaggle != "goobers" || request.Workflow != "merge-review" || request.SourceRun != runID {
+		t.Fatalf("priority trigger request = %+v", request)
+	}
+}
+
 // TestElectedNewest is #834's second built-in policy: highest PR number wins.
 func TestElectedNewest(t *testing.T) {
 	tests := []struct {

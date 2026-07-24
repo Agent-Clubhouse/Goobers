@@ -26,14 +26,16 @@ type fakeDelegateStarter struct {
 	result localscheduler.StartResult
 	err    error
 
-	mu    sync.Mutex
-	calls int
+	mu       sync.Mutex
+	calls    int
+	requests []localscheduler.StartRequest
 }
 
-func (f *fakeDelegateStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+func (f *fakeDelegateStarter) Start(_ context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.requests = append(f.requests, req)
 	return f.result, f.err
 }
 
@@ -41,6 +43,12 @@ func (f *fakeDelegateStarter) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeDelegateStarter) lastRequest() localscheduler.StartRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests[len(f.requests)-1]
 }
 
 func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry) (*localscheduler.Scheduler, string) {
@@ -100,6 +108,53 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	}
 	if runID == "" {
 		t.Fatal("expected a non-empty run id")
+	}
+}
+
+func TestPriorityTriggerDispatchesExactWorkflowWithoutResponse(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	other := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{
+		{
+			Workflow:  "merge-review",
+			Gaggle:    "goobers",
+			Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+			Starter:   starter,
+		},
+		{
+			Workflow:  "merge-review",
+			Gaggle:    "other",
+			Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+			Starter:   other,
+		},
+	})
+
+	requestID, err := writePriorityTriggerRequest(schedulerDir, "goobers", "merge-review", "source-run")
+	if err != nil {
+		t.Fatalf("writePriorityTriggerRequest: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, func() time.Time {
+		return time.Now().Add(triggerDelegationTimeout + time.Second)
+	}); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for starter.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if starter.count() != 1 {
+		t.Fatalf("start calls = %d, want 1", starter.count())
+	}
+	if other.count() != 0 {
+		t.Fatalf("other gaggle start calls = %d, want 0", other.count())
+	}
+	req := starter.lastRequest()
+	if req.Trigger.Kind != journal.TriggerSignal || req.Trigger.Ref != "priority-re-tick:source-run" {
+		t.Fatalf("trigger = %+v, want priority signal for source-run", req.Trigger)
+	}
+	responsePath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
+	if _, err := os.Stat(responsePath); !os.IsNotExist(err) {
+		t.Fatalf("priority response file stat error = %v, want no response file", err)
 	}
 }
 
