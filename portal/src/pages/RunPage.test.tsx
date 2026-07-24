@@ -1,10 +1,13 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { FixtureDaemonClient } from "../api/fixtureClient";
+import { FixtureDaemonClient, fixtureKey } from "../api/fixtureClient";
 import type { DaemonEventStream, DaemonUpdateEvent } from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
+
+const portalStyles = readFileSync("src/styles.css", "utf8");
 
 const canonicalRuns = [
   ["01JZ441DAEMONAPI", "Running"],
@@ -52,6 +55,127 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Pending at sequence 4" }),
     ).toBeInTheDocument();
+  });
+
+  it("reveals and focuses the inspector for direct graph and journal selections", async () => {
+    const user = userEvent.setup();
+    const previousScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      renderRun("01JZ441DAEMONAPI");
+      await user.click(
+        await screen.findByRole("button", {
+          name: "query, deterministic, Completed at sequence 6",
+        }),
+      );
+
+      let inspector = screen.getByRole("complementary", { name: "query attempt inspector" });
+      expect(inspector).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "start",
+        inline: "nearest",
+      });
+
+      await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
+      inspector = screen.getByRole("complementary", { name: "implement attempt inspector" });
+      expect(inspector).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          previousScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("keeps a tall inspector and long journal in page flow", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    const lastEvent = eventList?.events.at(-1);
+    if (!eventList || !detail || !lastEvent) {
+      throw new Error("Expected active run fixtures.");
+    }
+    eventList.events.push(
+      ...Array.from({ length: 34 }, (_, index) => ({
+        ...lastEvent,
+        seq: index + 7,
+        time: `2026-07-18T06:00:${String(index + 7).padStart(2, "0")}Z`,
+      })),
+    );
+    detail.lastSeq = 40;
+    const artifacts = Array.from({ length: 30 }, (_, index) => ({
+      name: `artifact-${index + 1}.txt`,
+      digest: `sha256:${String(index + 1).padStart(64, "0")}`,
+      size: 1024 + index,
+      mediaType: "text/plain",
+      recordedSeq: 40,
+    }));
+    fixtures.stageAttempts = {
+      [fixtureKey(runId, "review")]: {
+        runId,
+        stage: "review",
+        attempts: [
+          {
+            number: 1,
+            class: "initial",
+            status: "running",
+            startedSeq: 6,
+            durationMillis: 34_000,
+            outputs: { digest: "a".repeat(180) },
+            artifacts,
+          },
+        ],
+      },
+    };
+    const previewText = "expanded preview\n".repeat(80);
+    fixtures.artifacts = {
+      [fixtureKey(runId, artifacts[0].digest)]: {
+        digest: artifacts[0].digest,
+        mediaType: "text/plain",
+        size: previewText.length,
+        etag: null,
+        bytes: new TextEncoder().encode(previewText).buffer,
+      },
+    };
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByText("artifact-30.txt")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
+    const workspace = document.querySelector(".run-detail-workspace");
+    const inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    const ledger = screen.getByRole("region", { name: "Event ledger" });
+    expect(workspace).toHaveAttribute("data-scroll-owner", "page");
+    expect(
+      inspector.compareDocumentPosition(ledger) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "View content" })[0]);
+    expect(await screen.findByText(/expanded preview/)).toBeInTheDocument();
+
+    expect(portalStyles).not.toMatch(
+      /\.run-inspector\s*\{[^}]*position:\s*sticky/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.artifact-content\s*\{[^}]*overflow:\s*visible/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.output-line code\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
   });
 
   it("follows appended live events without overwriting a historical selection", async () => {

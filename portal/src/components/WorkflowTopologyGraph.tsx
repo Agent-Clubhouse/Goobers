@@ -33,7 +33,7 @@ export function WorkflowTopologyGraph({
   causalNodeId,
 }: {
   graph: WorkflowGraph;
-  onSelectStage: (stageId: string) => void;
+  onSelectStage: (stageId: string, revealInspector?: boolean) => void;
   selectedStageId?: string;
   // When present, the graph is a live run overlay: each node paints its
   // as-of-sequence run state and the executed path is emphasized (DASH-19).
@@ -317,7 +317,7 @@ export function WorkflowTopologyGraph({
                   data-run-state={runState}
                   data-causal={causalNodeId === node.id ? "true" : undefined}
                   key={node.id}
-                  onClick={() => onSelectStage(node.id)}
+                  onClick={() => onSelectStage(node.id, true)}
                   onKeyDown={(event) => {
                     let targetIndex: number | undefined;
                     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
