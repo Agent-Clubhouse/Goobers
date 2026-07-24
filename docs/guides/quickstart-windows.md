@@ -87,8 +87,10 @@ reports the same `version (commit …, built …, go… windows/amd64)` string t
 release was stamped with (the packaging engine injects build metadata via the
 same `internal/version` `-ldflags` path a local `make build` uses). From here
 open `docs/RELEASE.md` to confirm the installed documentation identity, then use
-the bundled `docs/guides/quickstart.md`. It applies unchanged — configure
-credentials, then drive a first run.
+the bundled `docs/guides/quickstart.md`. Release packaging adapts that walkthrough
+to confirm the tagged binary and invoke `goobers` from `PATH`, so no source
+checkout or build step is required before configuring credentials and driving a
+first run.
 
 To run the daemon under the Service Control Manager instead of a foreground
 `goobers up`, follow [Daemon supervision → Windows](supervision.md#windows-windows-service).

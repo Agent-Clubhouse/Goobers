@@ -7,9 +7,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const releaseDocsVersionFile = "docs/RELEASE.md"
+
+const (
+	readmeSourceBuild     = "```sh\ngo build -o bin/goobers ./cmd/goobers    # or: make build\n\n"
+	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
+		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
+	linuxQuickstartSourceBuild = "## 2. Build the binary\n\n```sh\n" +
+		"go build -o bin/goobers ./cmd/goobers    # or: make build\n" +
+		"sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on PATH\n```\n\n"
+)
 
 func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	repoRoot := gitOutput("rev-parse", "--show-toplevel")
@@ -30,6 +40,10 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		return "", nil, err
 	}
 	if err := copyReleaseFile(filepath.Join(repoRoot, "README.md"), filepath.Join(payloadDir, "README.md")); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := adaptInstalledOnboarding(payloadDir, version); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -71,6 +85,67 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		return "", nil, fmt.Errorf("write release docs identity: %w", err)
 	}
 	return payloadDir, cleanup, nil
+}
+
+func adaptInstalledOnboarding(payloadDir, version string) error {
+	rewrites := []struct {
+		path             string
+		sourceBuild      string
+		installedBuild   string
+		replaceBinPrefix bool
+	}{
+		{
+			path:        "README.md",
+			sourceBuild: readmeSourceBuild,
+			installedBuild: fmt.Sprintf(
+				"This copy is bundled with release `%s` and assumes `goobers` is installed on `PATH`.\n\n"+
+					"```sh\ngoobers --version\n\n",
+				version,
+			),
+			replaceBinPrefix: true,
+		},
+		{
+			path:        "docs/guides/quickstart.md",
+			sourceBuild: quickstartSourceBuild,
+			installedBuild: fmt.Sprintf(
+				"## 1. Confirm the installed binary\n\n"+
+					"This copy is bundled with release `%s` and uses the `goobers` executable from `PATH`.\n\n"+
+					"```sh\ngoobers --version\n```\n\n",
+				version,
+			),
+			replaceBinPrefix: true,
+		},
+		{
+			path:        "docs/guides/quickstart-linux.md",
+			sourceBuild: linuxQuickstartSourceBuild,
+			installedBuild: fmt.Sprintf(
+				"## 2. Confirm the installed binary\n\n"+
+					"This copy is bundled with release `%s`; install the archive's `goobers` executable on `PATH`, then confirm it:\n\n"+
+					"```sh\ngoobers --version\n```\n\n",
+				version,
+			),
+		},
+	}
+
+	for _, rewrite := range rewrites {
+		path := filepath.Join(payloadDir, filepath.FromSlash(rewrite.path))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read release onboarding doc %s: %w", rewrite.path, err)
+		}
+		content := string(data)
+		if strings.Count(content, rewrite.sourceBuild) != 1 {
+			return fmt.Errorf("release onboarding source-build section drifted in %s", rewrite.path)
+		}
+		content = strings.Replace(content, rewrite.sourceBuild, rewrite.installedBuild, 1)
+		if rewrite.replaceBinPrefix {
+			content = strings.ReplaceAll(content, "bin/goobers", "goobers")
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write release onboarding doc %s: %w", rewrite.path, err)
+		}
+	}
+	return nil
 }
 
 func copyReleaseTree(source, destination string) error {

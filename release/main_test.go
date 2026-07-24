@@ -112,6 +112,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"docs/completion/goobers.bash",
 		"docs/completion/goobers.fish",
 		"docs/completion/_goobers",
+		"docs/guides/quickstart.md",
+		"docs/guides/quickstart-linux.md",
 		"docs/man/goobers.1",
 	} {
 		if archiveEntries[name] == nil {
@@ -125,6 +127,31 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{"Goobers v1.2.3 documentation", "commit `deadbee`", "command registry"} {
 		if !strings.Contains(string(marker), want) {
 			t.Errorf("%s missing %q:\n%s", releaseDocsVersionFile, want, marker)
+		}
+	}
+	for _, name := range []string{"README.md", "docs/guides/quickstart.md"} {
+		doc, err := readZipEntry(archiveEntries[name])
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, want := range []string{"bundled with release `v1.2.3`", "goobers --version", "goobers init ./my-instance"} {
+			if !strings.Contains(string(doc), want) {
+				t.Errorf("%s missing installed onboarding command %q:\n%s", name, want, doc)
+			}
+		}
+		for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init"} {
+			if strings.Contains(string(doc), stale) {
+				t.Errorf("%s retains source-checkout command %q:\n%s", name, stale, doc)
+			}
+		}
+	}
+	linuxQuickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart-linux.md"])
+	if err != nil {
+		t.Fatalf("read Linux quickstart: %v", err)
+	}
+	for _, want := range []string{"## 2. Confirm the installed binary", "bundled with release `v1.2.3`", "goobers init ./my-instance"} {
+		if !strings.Contains(string(linuxQuickstart), want) {
+			t.Errorf("Linux quickstart missing %q:\n%s", want, linuxQuickstart)
 		}
 	}
 	// SHA256SUMS written and references the archive.

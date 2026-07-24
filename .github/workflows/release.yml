@@ -108,10 +108,17 @@ jobs:
           grep --fixed-strings "  install.sh" dist/SHA256SUMS
           mkdir smoke
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
-          smoke/goobers --version | grep --fixed-strings "$TAG"
+          export PATH="$PWD/smoke:$PATH"
+          goobers --version | grep --fixed-strings "$TAG"
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
+          grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers init ./my-instance" smoke/docs/guides/quickstart.md
+          ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
+          ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
+          goobers init smoke/quickstart-instance
+          goobers validate smoke/quickstart-instance
           mkdir generated-docs
-          smoke/goobers __generate-docs generated-docs
+          goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli
           diff --recursive smoke/docs/man generated-docs/man
           diff --recursive smoke/docs/completion generated-docs/completion
