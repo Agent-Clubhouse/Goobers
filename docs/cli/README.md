@@ -1696,7 +1696,8 @@ bundles. Distinct from `goobers version`, which reports this build's own
 version/commit/date.
 
 Default output is human-readable. --json emits a structured object with keys:
-minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement),
+minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement,
+history[] (level, sinceVersion)),
 platforms[] (os, arch, tier), and host — machine-readable for scripts.
 
 Exit codes: 0 = OK, 2 = usage error.

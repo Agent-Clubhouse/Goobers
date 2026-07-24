@@ -18,7 +18,8 @@ const versionsHelp = "Usage: goobers versions [--json]\n\n" +
 	"bundles. Distinct from `goobers version`, which reports this build's own\n" +
 	"version/commit/date.\n\n" +
 	"Default output is human-readable. --json emits a structured object with keys:\n" +
-	"minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement),\n" +
+	"minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement,\n" +
+	"history[] (level, sinceVersion)),\n" +
 	"platforms[] (os, arch, tier), and host — machine-readable for scripts.\n\n" +
 	"Exit codes: 0 = OK, 2 = usage error.\n"
 

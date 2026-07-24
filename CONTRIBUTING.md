@@ -208,6 +208,22 @@ out-of-order, or too-early transitions. CI checks out complete tag history so
 the release baseline cannot silently disappear. When changing the current
 feature matrix, regenerate it with `make docs`.
 
+Whole DSL versions have a separate support window in
+`internal/supportmatrix`. After a supported DSL minor is superseded, it must
+remain loadable as `supported` or `deprecated` for at least three minor
+releases: a version superseded in `v1.1.0` cannot become `unsupported` before
+`v1.4.0`. It must also spend at least one released minor as `deprecated`, so a
+version deprecated in `v1.3.x` cannot become unsupported before `v1.4.0`;
+direct `supported -> unsupported` transitions are forbidden. Keep each
+`VersionSupport.History` complete and release-ordered. The support-matrix
+policy guard rejects invalid histories and windows. It also compares the
+current matrix with the matrix executed from the latest reachable canonical
+SemVer tag: released versions and history cannot be removed or rewritten, and
+a version may become `unsupported` only when that tagged matrix already marks
+it `deprecated`. Adding deprecated and unsupported history in one change does
+not satisfy the released-minor window; before the first tag, no version may
+become unsupported.
+
 ## Commit messages
 
 Use a short imperative subject (`area: do the thing`), a body explaining *why* when it's
