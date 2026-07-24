@@ -1663,14 +1663,7 @@ func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo Repositor
 			return fmt.Errorf("decode check annotations page: %w", err)
 		}
 		for _, annotation := range pageOut {
-			annotations = append(annotations, CheckAnnotation{
-				Path:      annotation.Path,
-				StartLine: annotation.StartLine,
-				EndLine:   annotation.EndLine,
-				Level:     annotation.Level,
-				Title:     annotation.Title,
-				Message:   annotation.Message,
-			})
+			annotations = append(annotations, CheckAnnotation(annotation))
 		}
 		return nil
 	}); err != nil {

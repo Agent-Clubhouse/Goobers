@@ -58,6 +58,7 @@ _goobers_completion()
             'elect-lander:elect the landing PR among a merge-review cohort (a workflow stage)'
             'update-behind-pr:API-update a clean behind-base PR, else route to remediation (a workflow stage)'
             'gather-pr-context:pr-remediation entrypoint\: select and load a PR'\''s context (a workflow stage)'
+            'gather-issue-context:add originating issue bodies to a remediation brief (a workflow stage)'
             'gather-ci-failures:add failing CI diagnostics to a remediation brief (a workflow stage)'
             'rebase-pr:rebase-first, finding-driven remediation routing (a workflow stage)'
             'remediation-checkpoint:durable per-PR repass budget + same-diff escalation (a workflow stage)'
@@ -76,7 +77,7 @@ _goobers_completion()
     flags=(-h --help)
     case "${command}" in
         init)
-            flags+=(--demo)
+            flags+=(--demo --guided --template)
             ;;
         scaffold)
             case "${words[3]:-}" in

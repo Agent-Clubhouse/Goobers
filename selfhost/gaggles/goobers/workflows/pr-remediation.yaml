@@ -293,12 +293,12 @@ spec:
         the PR's own branch, rebased onto its base where that was possible.
         Read the enriched remediation-brief.json from the attached context —
         the gather-issue-context artifact, which supersedes the earlier
-        gather-pr-context and gather-ci-failures copies (ignore those). It
-        contains the full merge-review verdict, PR thread comments, failing
-        check summaries/annotations, and the originating issue body and
-        acceptance criteria. Also read the sibling PR file/overlap context
-        (sibling-context.json), plus any rebase conflict left to
-        resolve, and address EVERY
+        gather-pr-context and gather-ci-failures remediation-brief.json copies
+        (ignore those). It contains the full merge-review verdict, PR thread
+        comments, failing check summaries/annotations, and the originating
+        issue body and acceptance criteria. Also read the sibling PR
+        file/overlap context (sibling-context.json), plus any rebase conflict
+        left to resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. In every successful
