@@ -68,6 +68,22 @@ func TestParsers(t *testing.T) {
 	}
 }
 
+func TestPythonProbeBin(t *testing.T) {
+	cases := []struct {
+		goos string
+		want string
+	}{
+		{goos: "windows", want: "python"},
+		{goos: "linux", want: "python3"},
+		{goos: "darwin", want: "python3"},
+	}
+	for _, c := range cases {
+		if got := pythonProbeBin(c.goos); got != c.want {
+			t.Errorf("pythonProbeBin(%q) = %q, want %q", c.goos, got, c.want)
+		}
+	}
+}
+
 // fakeExec returns canned output/errors keyed by binary name.
 func fakeExec(outputs map[string]string, errs map[string]error) ExecFunc {
 	return func(_ context.Context, name string, _ ...string) (string, error) {
@@ -83,6 +99,7 @@ func newTestVerifier(run ExecFunc, goos string) *Verifier {
 	v.probes = map[string]Prober{
 		"dotnet": commandProber{bin: "dotnet", args: []string{"--version"}, parse: parseFirstLine},
 		"node":   commandProber{bin: "node", args: []string{"--version"}, parse: parseNodeVersion},
+		"python": commandProber{bin: pythonProbeBin(v.goos), args: []string{"--version"}, parse: parseLastField},
 		"go":     commandProber{bin: "go", args: []string{"version"}, parse: parseGoVersion},
 		"os":     osProber{goos: func() string { return v.goos }},
 	}
@@ -98,11 +115,21 @@ func TestVerifyEmptyIsNoOp(t *testing.T) {
 
 func TestVerifySatisfied(t *testing.T) {
 	v := newTestVerifier(fakeExec(map[string]string{
-		"dotnet": "8.0.412\n",
-		"go":     "go version go1.26.0 linux/amd64\n",
+		"dotnet":  "8.0.412\n",
+		"python3": "Python 3.11.4\n",
+		"go":      "go version go1.26.0 linux/amd64\n",
 	}, nil), "linux")
-	if err := v.Verify(context.Background(), []string{"dotnet@8", "go@1.26", "os=linux"}); err != nil {
+	if err := v.Verify(context.Background(), []string{"dotnet@8", "python@3.11", "go@1.26", "os=linux"}); err != nil {
 		t.Errorf("all satisfied, got error: %v", err)
+	}
+}
+
+func TestVerifyUsesWindowsPythonBinary(t *testing.T) {
+	v := newTestVerifier(fakeExec(map[string]string{
+		"python": "Python 3.11.4\n",
+	}, nil), "windows")
+	if err := v.Verify(context.Background(), []string{"python@3.11"}); err != nil {
+		t.Fatalf("windows python probe should use python binary: %v", err)
 	}
 }
 

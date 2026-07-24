@@ -79,6 +79,7 @@ type WorkItem struct {
 	URL            string                 `json:"url,omitempty"`
 	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
 	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
+	ReadyAt        *time.Time             `json:"readyAt,omitempty"`
 	BlockedByCount int                    `json:"-"`
 	Raw            interface{}            `json:"raw,omitempty"`
 }
@@ -91,6 +92,15 @@ func (w WorkItem) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// WorkItemLabelTransition is one provider-issued label add/remove event.
+type WorkItemLabelTransition struct {
+	EventID    int64     `json:"eventId"`
+	ItemID     string    `json:"itemId"`
+	Label      string    `json:"label"`
+	Added      bool      `json:"added"`
+	OccurredAt time.Time `json:"occurredAt"`
 }
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).
@@ -266,6 +276,44 @@ type PullRequestReviewResult struct {
 	URL       string         `json:"url,omitempty"`
 	CommitSHA string         `json:"commitSha"`
 	Decision  ReviewDecision `json:"decision"`
+}
+
+// PullRequestNativeReview is one provider-native review submitted on a pull request.
+type PullRequestNativeReview struct {
+	ID          int64      `json:"id"`
+	Author      string     `json:"author,omitempty"`
+	State       string     `json:"state"`
+	Body        string     `json:"body,omitempty"`
+	CommitSHA   string     `json:"commitSha,omitempty"`
+	SubmittedAt *time.Time `json:"submittedAt,omitempty"`
+	URL         string     `json:"url,omitempty"`
+}
+
+// PullRequestInlineComment is one inline review comment with its thread state
+// and file/diff anchor preserved.
+type PullRequestInlineComment struct {
+	ID                int64      `json:"id"`
+	Author            string     `json:"author,omitempty"`
+	Body              string     `json:"body"`
+	Path              string     `json:"path"`
+	Line              int        `json:"line,omitempty"`
+	OriginalLine      int        `json:"originalLine,omitempty"`
+	Side              string     `json:"side,omitempty"`
+	StartLine         int        `json:"startLine,omitempty"`
+	OriginalStartLine int        `json:"originalStartLine,omitempty"`
+	StartSide         string     `json:"startSide,omitempty"`
+	DiffHunk          string     `json:"diffHunk,omitempty"`
+	InReplyTo         int64      `json:"inReplyTo,omitempty"`
+	IsResolved        bool       `json:"isResolved"`
+	IsOutdated        bool       `json:"isOutdated"`
+	CreatedAt         *time.Time `json:"createdAt,omitempty"`
+	URL               string     `json:"url,omitempty"`
+}
+
+// PullRequestReviewThreads is the review evidence attached to a pull request.
+type PullRequestReviewThreads struct {
+	Reviews        []PullRequestNativeReview  `json:"reviews"`
+	InlineComments []PullRequestInlineComment `json:"inlineComments"`
 }
 
 // CheckState normalizes combined CI/check status across providers (BL-031).

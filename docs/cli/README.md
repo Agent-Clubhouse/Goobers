@@ -10,6 +10,7 @@
 | --- | --- |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
+| [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
@@ -34,6 +35,7 @@
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
+| [`goobers gather-review-threads`](#goobers-gather-review-threads) | add native reviews and anchored inline threads to a remediation brief (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
@@ -139,12 +141,30 @@ error, 2 = usage error.
 $ goobers backlog-dedupe
 ~~~
 
+## `goobers backlog-health`
+
+snapshot ready-pool depth and age (a workflow stage)
+
+~~~text
+Usage: goobers backlog-health [path]
+
+Snapshot ready-pool depth and age from provider label-event timestamps, and
+persist the paginated ready-transition ledger for telemetry rollups. Exit
+codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers backlog-health
+~~~
+
 ## `goobers backlog-query`
 
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--claim | --release] [path]
+Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with both
 trustLabel (SEC-047: required on public repos, since backlog content is
@@ -162,7 +182,10 @@ since issue-close-out's release is reached only by implementation. Claims
 require github:issues:write so the label mirror stays symmetric with the
 ledger. Idempotent: releasing claims this run does not hold (already
 released, e.g. re-run after a crash) is a no-op success, not an error.
---claim and --release are mutually exclusive.
+With --reconcile, repairs drifted backlog labels against the claim ledger
+and live issue/child state, then writes the actual correction count to the
+declared result file. --claim, --reconcile, and --release are mutually
+exclusive.
 
 With --claim, contested-file dispatch awareness (#1085) deprioritizes
 claiming an issue whose referenced files are already contested by
@@ -642,6 +665,28 @@ on. Exit codes: 0 = context gathered (or no-work if no PR is eligible),
 
 ~~~console
 $ goobers gather-pr-context
+~~~
+
+## `goobers gather-review-threads`
+
+add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+
+~~~text
+Usage: goobers gather-review-threads [path]
+
+Read this run's latest remediation brief and replace only its
+gatherReviewThreads section with native review bodies and inline review
+comments. File, line, side, diff-hunk, resolved, and outdated metadata
+are preserved so the remediator can distinguish live feedback from stale
+threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty), 1 = business/provider/journal error,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-review-threads
 ~~~
 
 ## `goobers gather-sibling-context`
@@ -1486,7 +1531,7 @@ query, export, or prune run telemetry
 ~~~text
 Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
-stats:  success rate / durations per workflow + stage
+stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:  remove terminal runs outside the configured retention bounds
@@ -1568,7 +1613,8 @@ success rate and duration aggregates per workflow and stage
 ~~~text
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
-Success rate and duration aggregates per workflow and per stage,
+Success rate and duration aggregates per workflow and stage, plus curation
+actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
 stage attempts; a run that used multiple grouped cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.

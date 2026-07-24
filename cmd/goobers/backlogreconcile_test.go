@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -79,8 +81,12 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 		Name:     "your-repo",
 	}
 	provider := server.newGitHubProvider("token")
-	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now }); err != nil {
+	reconciled, err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now })
+	if err != nil {
 		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	if reconciled != 8 {
+		t.Fatalf("reconciliations = %d, want 8 actual corrections", reconciled)
 	}
 
 	assertFakeIssueLabels(t, server, 7, []string{"goobers:approved", providers.LabelReady}, []string{providers.LabelClaimed})
@@ -112,8 +118,10 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	}
 	server.mu.Unlock()
 
-	if err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now }); err != nil {
+	if reconciled, err := reconcileBacklogMetadata(context.Background(), layoutFor(root), provider, repo, "goobers:approved", defaultBacklogStalenessPolicy(), func() time.Time { return now }); err != nil {
 		t.Fatalf("second reconcileBacklogMetadata: %v", err)
+	} else if reconciled != 0 {
+		t.Fatalf("second reconciliation count = %d, want 0", reconciled)
 	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
@@ -150,6 +158,36 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 
+func TestBacklogReconcileWritesActualCorrectionCount(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Contradictory", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(8, "Clean", "goobers:approved", providers.LabelReady)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "reconcile-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "backlog-reconciliation.json")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--reconcile", root)
+	if code != 0 {
+		t.Fatalf("backlog-query --reconcile: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("backlog-reconciliation.json")
+	if err != nil {
+		t.Fatalf("read reconciliation result: %v", err)
+	}
+	var result map[string]int
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode reconciliation result: %v", err)
+	}
+	if result["reconciled"] != 1 {
+		t.Fatalf("reconciled = %d, want 1", result["reconciled"])
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady}, nil)
+}
+
 func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) {
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
@@ -171,7 +209,7 @@ func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) 
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	err := reconcileBacklogMetadata(
+	_, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),
@@ -240,7 +278,7 @@ func TestReconcileBacklogMetadataReservationBlocksConcurrentClaim(t *testing.T) 
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	if err := reconcileBacklogMetadata(
+	if _, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),
@@ -301,7 +339,7 @@ func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T)
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	if err := reconcileBacklogMetadata(
+	if _, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),
@@ -334,7 +372,7 @@ func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	if err := reconcileBacklogMetadata(
+	if _, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),
@@ -368,7 +406,7 @@ func TestReconcileBacklogMetadataUsesConfiguredStaleAfter(t *testing.T) {
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	if err := reconcileBacklogMetadata(
+	if _, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),
@@ -401,7 +439,7 @@ func TestReconcileBacklogMetadataMatchesStructuredStalenessSignal(t *testing.T) 
 		Owner:    "your-org",
 		Name:     "your-repo",
 	}
-	if err := reconcileBacklogMetadata(
+	if _, err := reconcileBacklogMetadata(
 		context.Background(),
 		layoutFor(root),
 		server.newGitHubProvider("token"),

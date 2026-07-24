@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -54,6 +55,9 @@ func (db *DB) ingestRun(runDir string) error {
 	if err := insertEvents(tx, runID, events); err != nil {
 		return err
 	}
+	if err := insertBacklogProjections(tx, runDir, identity, events); err != nil {
+		return err
+	}
 	if err := insertSpans(tx, runID, spans); err != nil {
 		return err
 	}
@@ -66,7 +70,7 @@ func (db *DB) ingestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -165,6 +169,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		current[stageAttemptKey{stage: stage, attempt: attempt}] = k
 		return k
 	}
+
 	for i, ev := range events {
 		if ev.Stage == "" {
 			continue
@@ -356,6 +361,219 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		}
 	}
 	return nil
+}
+
+var curationAgentOutputKeys = []string{
+	"ready",
+	"needsHuman",
+	"closed",
+	"deduped",
+	"split",
+	"stale",
+	"milestoned",
+}
+
+func insertBacklogProjections(tx *sql.Tx, runDir string, id runIdentity, events []journalEvent) error {
+	if id.Workflow == "backlog-curation" {
+		if err := insertCurationAction(tx, id.RunID, events); err != nil {
+			return err
+		}
+		if err := insertReadyPoolSample(tx, id.RunID, events); err != nil {
+			return err
+		}
+		if err := insertReadyLabelTransitions(tx, runDir, id.RunID, events); err != nil {
+			return err
+		}
+	}
+	if id.Workflow == "implementation" {
+		if err := insertReadyClaims(tx, id.RunID, events); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error {
+	counts := make([]int, 9)
+	reported := false
+	status := ""
+	occurredAt := time.Time{}
+	for _, ev := range events {
+		if ev.Type == eventRunFinished {
+			status = ev.Status
+			occurredAt = ev.Time
+		}
+		if ev.Type == eventStageFinished && ev.Stage == "reconcile-backlog" && ev.Status == stageStatusSuccess {
+			if count, ok := nonnegativeOutputInt(ev.Outputs, "reconciled"); ok {
+				counts[6] = count
+			}
+		}
+		if ev.Type != eventStageFinished || ev.Stage != "curate" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		valid := true
+		for i, key := range curationAgentOutputKeys {
+			count, ok := nonnegativeOutputInt(ev.Outputs, key)
+			if !ok {
+				valid = false
+				break
+			}
+			if i < 6 {
+				counts[i] = count
+			} else {
+				counts[7] = count
+			}
+		}
+		reported = valid
+		if !valid {
+			reconciled := counts[6]
+			counts = make([]int, 9)
+			counts[6] = reconciled
+		}
+		if occurredAt.IsZero() {
+			occurredAt = ev.Time
+		}
+	}
+	if occurredAt.IsZero() {
+		return nil
+	}
+	_, err := tx.Exec(`
+		INSERT INTO curation_actions (
+			run_id, status, reported, ready_count, needs_human_count, closed_count,
+			deduped_count, split_count, stale_count, reconciled_count,
+			milestoned_count, bounced_count, occurred_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, nullIfEmpty(status), reported,
+		counts[0], counts[1], counts[2], counts[3], counts[4],
+		counts[5], counts[6], counts[7], counts[8], formatTime(occurredAt))
+	if err != nil {
+		return fmt.Errorf("rollup: insert curation action for run %s: %w", runID, err)
+	}
+	return nil
+}
+
+type readyPoolArtifact struct {
+	ReadyTransitions []struct {
+		EventID    int64     `json:"eventId"`
+		ItemID     string    `json:"itemId"`
+		Label      string    `json:"label"`
+		Added      bool      `json:"added"`
+		OccurredAt time.Time `json:"occurredAt"`
+	} `json:"readyTransitions"`
+}
+
+func insertReadyLabelTransitions(tx *sql.Tx, runDir, runID string, events []journalEvent) error {
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "sample-ready-pool" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		for i := len(ev.Artifacts) - 1; i >= 0; i-- {
+			ref := ev.Artifacts[i]
+			if ref.MediaType != "application/json" {
+				continue
+			}
+			data, readErr := reader.ArtifactBytes(journal.Ref{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType,
+			})
+			if readErr != nil {
+				return fmt.Errorf("rollup: read ready-pool artifact for run %s: %w", runID, readErr)
+			}
+			var artifact readyPoolArtifact
+			if unmarshalErr := json.Unmarshal(data, &artifact); unmarshalErr != nil {
+				return fmt.Errorf("rollup: decode ready-pool artifact for run %s: %w", runID, unmarshalErr)
+			}
+			for _, transition := range artifact.ReadyTransitions {
+				if transition.EventID <= 0 || transition.ItemID == "" || transition.Label == "" || transition.OccurredAt.IsZero() {
+					return fmt.Errorf("rollup: invalid ready-label transition in run %s", runID)
+				}
+				kind := "not-ready"
+				if transition.Added {
+					kind = "ready"
+				}
+				if _, insertErr := tx.Exec(`
+					INSERT OR IGNORE INTO ready_label_transitions (
+						run_id, event_id, item_id, transition, occurred_at
+					) VALUES (?, ?, ?, ?, ?)`,
+					runID, transition.EventID, transition.ItemID, kind, formatTime(transition.OccurredAt)); insertErr != nil {
+					return fmt.Errorf("rollup: insert ready-label transition %d: %w", transition.EventID, insertErr)
+				}
+			}
+			break
+		}
+	}
+	return nil
+}
+
+func insertReadyPoolSample(tx *sql.Tx, runID string, events []journalEvent) error {
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "sample-ready-pool" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		depth, ok := nonnegativeOutputInt(ev.Outputs, "readyPoolDepth")
+		average, averageOK := nonnegativeOutputFloat(ev.Outputs, "averageReadyAgeSeconds")
+		oldest, oldestOK := nonnegativeOutputFloat(ev.Outputs, "oldestReadyAgeSeconds")
+		observedText, observedOK := ev.Outputs["readyPoolObservedAt"].(string)
+		observedAt, timeErr := time.Parse(time.RFC3339Nano, observedText)
+		if !ok || !averageOK || !oldestOK || !observedOK || timeErr != nil {
+			continue
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO ready_pool_samples (
+				run_id, depth, average_age_seconds, oldest_age_seconds, observed_at
+			) VALUES (?, ?, ?, ?, ?)`,
+			runID, depth, average, oldest, formatTime(observedAt)); err != nil {
+			return fmt.Errorf("rollup: insert ready-pool sample for run %s: %w", runID, err)
+		}
+	}
+	return nil
+}
+
+func insertReadyClaims(tx *sql.Tx, runID string, events []journalEvent) error {
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "query-backlog" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		readyText, ok := ev.Outputs["readyAt"].(string)
+		if !ok {
+			continue
+		}
+		readyAt, err := time.Parse(time.RFC3339Nano, readyText)
+		if err != nil || ev.Time.Before(readyAt) {
+			continue
+		}
+		itemID, _ := ev.Outputs["id"].(string)
+		if _, err := tx.Exec(`
+			INSERT INTO ready_claims (run_id, seq, item_id, ready_age_seconds, claimed_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			runID, ev.Seq, nullIfEmpty(itemID), ev.Time.Sub(readyAt).Seconds(), formatTime(ev.Time)); err != nil {
+			return fmt.Errorf("rollup: insert ready claim seq %d: %w", ev.Seq, err)
+		}
+	}
+	return nil
+}
+
+func nonnegativeOutputInt(outputs map[string]any, key string) (int, bool) {
+	value, ok := nonnegativeOutputFloat(outputs, key)
+	if !ok || math.Trunc(value) != value || value >= math.Exp2(float64(strconv.IntSize-1)) {
+		return 0, false
+	}
+	return int(value), true
+}
+
+func nonnegativeOutputFloat(outputs map[string]any, key string) (float64, bool) {
+	value, ok := outputs[key]
+	if !ok {
+		return 0, false
+	}
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+		return 0, false
+	}
+	return number, true
 }
 
 // gateRunnerJSON merges a gate.evaluated event's Runner annotations

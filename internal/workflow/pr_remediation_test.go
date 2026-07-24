@@ -114,11 +114,34 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
-	if got := siblings.Next; got != "gather-issue-context" {
-		t.Errorf("gather-sibling-context next = %q, want gather-issue-context", got)
+	if got := siblings.Next; got != "gather-review-threads" {
+		t.Errorf("gather-sibling-context next = %q, want gather-review-threads", got)
 	}
 	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
 		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
+
+	threads, ok := m.Task("gather-review-threads")
+	if !ok {
+		t.Fatal("gather-review-threads stage not found")
+	}
+	if threads.Run == nil ||
+		len(threads.Run.Command) != 2 ||
+		threads.Run.Command[0] != "goobers" ||
+		threads.Run.Command[1] != "gather-review-threads" {
+		t.Errorf("gather-review-threads command = %v, want [goobers gather-review-threads]", threads.Run)
+	}
+	if threads.Run != nil && threads.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-review-threads workspace = %q, want scratch", threads.Run.Workspace)
+	}
+	if threads.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-review-threads resultFile = %q, want remediation-brief.json", threads.Inputs["resultFile"])
+	}
+	if len(threads.Capabilities) != 1 || threads.Capabilities[0] != "github:pr:write" {
+		t.Errorf("gather-review-threads capabilities = %v, want [github:pr:write]", threads.Capabilities)
+	}
+	if threads.Next != "gather-issue-context" {
+		t.Errorf("gather-review-threads next = %q, want gather-issue-context", threads.Next)
 	}
 
 	issues, ok := m.Task("gather-issue-context")
@@ -372,6 +395,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	if !strings.Contains(implement.Goal, "gather-ci-failures remediation-brief.json") {
 		t.Fatalf("implement goal does not direct the agent to the enriched brief: %q", implement.Goal)
 	}
+	if !strings.Contains(implement.Goal, "resolved/outdated state") {
+		t.Fatalf("implement goal does not direct the agent to review-thread liveness: %q", implement.Goal)
+	}
 	if !strings.Contains(implement.Goal, "originating issue body") {
 		t.Fatalf("implement goal does not direct the agent to originating issue context: %q", implement.Goal)
 	}
@@ -457,6 +483,9 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if push.Inputs["resultFile"] != "push-remediated-result.json" ||
 		!containsString(push.ExpectedOutputs, "published") {
 		t.Errorf("push-remediated result contract = inputs %v outputs %v, want durable published status", push.Inputs, push.ExpectedOutputs)
+	}
+	if push.Retry == nil || push.Retry.MaxAttempts != 1 || push.Retry.BackoffSeconds != 120 {
+		t.Errorf("push-remediated retry = %+v, want fail-fast policy attempts with a 120s infrastructure backoff", push.Retry)
 	}
 
 	// pr-remediation is the ONLY workflow that pushes to existing PR

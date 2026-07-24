@@ -8,7 +8,7 @@ goobers telemetry \- query, export, or prune run telemetry
 .nf
 Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
-stats:  success rate / durations per workflow + stage
+stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:  remove terminal runs outside the configured retention bounds

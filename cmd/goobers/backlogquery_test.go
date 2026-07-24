@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/providers"
 )
 
 // providerCmdEnv sets the GOOBERS_* env vars the runner would inject for a
@@ -38,6 +40,8 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
 	server.addIssue(8, "Untrusted item", "goobers:ready") // missing trust label
+	readyAt := time.Now().UTC().Add(-6 * time.Hour)
+	server.setLabelEventTime(7, providers.LabelReady, true, readyAt)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
@@ -64,6 +68,9 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 	if claimed["id"] != "7" {
 		t.Fatalf("claimed item id = %v, want \"7\"", claimed["id"])
+	}
+	if claimed["readyAt"] != readyAt.Format(time.RFC3339Nano) {
+		t.Fatalf("claimed readyAt = %v, want %s", claimed["readyAt"], readyAt.Format(time.RFC3339Nano))
 	}
 
 	// The claim ledger — the actual source of truth (#131) — durably holds
@@ -529,6 +536,7 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	}
 	server.mu.Lock()
 	server.issues[7].labels = append(server.issues[7].labels, "goobers:ready")
+	server.appendLabelEventLocked(7, providers.LabelReady, true, time.Now().UTC())
 	claimedLabels := append([]string(nil), server.issues[7].labels...)
 	server.mu.Unlock()
 	if !hasAnyLabel(claimedLabels, []string{"goobers:claimed"}) {

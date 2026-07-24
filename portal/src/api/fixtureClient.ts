@@ -234,6 +234,8 @@ export class FixtureDaemonClient implements DaemonClient {
           (!request?.workflow || item.workflow === request.workflow),
       ),
       models: stats.models,
+      curation: stats.curation,
+      readyPool: stats.readyPool,
     });
   }
 

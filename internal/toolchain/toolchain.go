@@ -69,11 +69,18 @@ func DefaultVerifier() *Verifier {
 	v.probes = map[string]Prober{
 		"dotnet": commandProber{bin: "dotnet", args: []string{"--version"}, parse: parseFirstLine},
 		"node":   commandProber{bin: "node", args: []string{"--version"}, parse: parseNodeVersion},
-		"python": commandProber{bin: "python3", args: []string{"--version"}, parse: parseLastField},
+		"python": commandProber{bin: pythonProbeBin(v.goos), args: []string{"--version"}, parse: parseLastField},
 		"go":     commandProber{bin: "go", args: []string{"version"}, parse: parseGoVersion},
 		"os":     osProber{goos: func() string { return v.goos }},
 	}
 	return v
+}
+
+func pythonProbeBin(goos string) string {
+	if goos == "windows" {
+		return "python"
+	}
+	return "python3"
 }
 
 // Verify checks every declared capability that names a probeable toolchain and

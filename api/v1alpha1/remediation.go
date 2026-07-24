@@ -1,8 +1,8 @@
 package v1alpha1
 
-// RemediationBriefVersion is the immutable wire identifier for the first
-// remediation-brief artifact schema. Shape changes require a new version.
-const RemediationBriefVersion = "goobers.dev/remediation-brief/v1"
+// RemediationBriefVersion is the current remediation-brief wire identifier.
+// Shape changes require a new version.
+const RemediationBriefVersion = "goobers.dev/remediation-brief/v2"
 
 // RemediationBrief is the evidence bundle consumed by an agentic PR-remediation
 // stage. GatherPRContext is required; every other evidence section is optional
@@ -83,14 +83,21 @@ type RemediationNativeReview struct {
 
 // RemediationInlineComment is one line-level PR review comment.
 type RemediationInlineComment struct {
-	Author    string `json:"author,omitempty"`
-	Body      string `json:"body"`
-	Path      string `json:"path"`
-	Line      int    `json:"line,omitempty"`
-	Side      string `json:"side,omitempty"`
-	InReplyTo int64  `json:"inReplyTo,omitempty"`
-	CreatedAt string `json:"createdAt,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Author            string `json:"author,omitempty"`
+	Body              string `json:"body"`
+	Path              string `json:"path"`
+	Line              int    `json:"line,omitempty"`
+	OriginalLine      int    `json:"originalLine,omitempty"`
+	Side              string `json:"side,omitempty"`
+	StartLine         int    `json:"startLine,omitempty"`
+	OriginalStartLine int    `json:"originalStartLine,omitempty"`
+	StartSide         string `json:"startSide,omitempty"`
+	DiffHunk          string `json:"diffHunk,omitempty"`
+	InReplyTo         int64  `json:"inReplyTo,omitempty"`
+	IsResolved        bool   `json:"isResolved"`
+	IsOutdated        bool   `json:"isOutdated"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	URL               string `json:"url,omitempty"`
 }
 
 // RemediationSiblingContext is the optional section owned by

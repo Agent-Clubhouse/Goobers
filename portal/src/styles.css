@@ -1296,6 +1296,42 @@ summary:focus-visible {
   margin: -4px 0 10px;
 }
 
+.curation-health {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.curation-health > div {
+  background: var(--paper);
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.curation-health dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.curation-health dd {
+  font-size: 16px;
+  font-weight: 720;
+  margin: 0;
+}
+
+.curation-health-alert {
+  color: var(--danger);
+}
+
 .usage-analytics {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -3832,6 +3868,10 @@ a.telemetry-error-row:hover {
 
   .usage-header {
     display: none;
+  }
+
+  .curation-health {
+    grid-template-columns: 1fr;
   }
 
   .usage-row {
