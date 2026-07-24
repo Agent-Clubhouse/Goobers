@@ -47,7 +47,7 @@ Usage:
                                 list escalated runs newest first
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
-  goobers completion bash|zsh|fish  generate a shell completion script
+  goobers completion bash|zsh|fish|powershell  generate a shell completion script
   goobers telemetry stats|errors|export|prune [flags] [path]
                                 query, export, or prune run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
@@ -154,7 +154,7 @@ Usage:
                                 list escalated runs newest first
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
-  goobers completion bash|zsh|fish  generate a shell completion script
+  goobers completion bash|zsh|fish|powershell  generate a shell completion script
   goobers telemetry stats|errors|export|prune [flags] [path]
                                 query, export, or prune run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
@@ -342,22 +342,27 @@ than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.
 
 ### completion
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 
 ### completion bash
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 
 ### completion fish
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
+
+Generate a shell completion script. Source the output in the target shell.
+
+### completion powershell
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 
 ### completion zsh
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 

@@ -132,6 +132,7 @@ file to make it permanent):
 source <(goobers completion bash)  # bash
 source <(goobers completion zsh)   # zsh
 goobers completion fish | source  # fish
+goobers completion powershell | Out-String | Invoke-Expression  # PowerShell
 ```
 
 ## Developing

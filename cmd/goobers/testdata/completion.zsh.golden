@@ -266,7 +266,7 @@ _goobers_completion()
             ;;
         completion)
             if (( CURRENT == 3 )); then
-                candidates=(bash zsh fish)
+                candidates=(bash zsh fish powershell)
                 _describe -V 'command' candidates
                 return
             fi
