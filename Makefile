@@ -41,6 +41,7 @@ NPM           ?= npm
 COVERAGE_THRESHOLD ?= 70
 STRESS_OUTPUT_DIR   ?= stress-results
 STRESS_SEED         ?= 0
+BENCH_WORKCOPY_ARGS ?= -preset medium
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
@@ -267,6 +268,14 @@ verify-fast:
 .PHONY: ci
 ci: deadcode
 	$(GO) run ./test/ci
+
+## bench-workcopy: Benchmark working-copy provisioning on a synthetic fixture (dev tool, not part of ci).
+# Emits JSON timings (see test/benchworkcopy's doc comment for the schema and
+# how to crank the fixture to a true multi-GB repo). Override the fixture with
+# e.g. `make bench-workcopy BENCH_WORKCOPY_ARGS="-preset large"`.
+.PHONY: bench-workcopy
+bench-workcopy:
+	$(GO) run ./test/benchworkcopy $(BENCH_WORKCOPY_ARGS)
 
 ## stress: Repeat timing-sensitive packages under the race detector.
 .PHONY: stress
