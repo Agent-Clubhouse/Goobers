@@ -2989,6 +2989,15 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 	}, true
 }
 
+// MachineUsesRepo reports whether any stage of the compiled workflow touches a
+// repository workspace — the predicate behind lazy run-branch provenance.
+// Exported so the Temporal engine's journal projection (#629) applies the
+// identical rule instead of a copy that can drift (the #624 shared-constant
+// pattern).
+func MachineUsesRepo(machine *workflow.Machine) bool {
+	return machineUsesRepo(machine)
+}
+
 func machineUsesRepo(machine *workflow.Machine) bool {
 	for _, task := range machine.Def.Spec.Tasks {
 		if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {

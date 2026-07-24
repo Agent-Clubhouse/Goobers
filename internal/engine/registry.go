@@ -135,6 +135,9 @@ type StartSpec struct {
 	// TriggerRef identifies the event or item that caused the run (bounded
 	// scheduler metadata, threaded into every stage envelope).
 	TriggerRef string
+	// TriggerKind is how the run was started (journal.TriggerKind vocabulary),
+	// pinned for the run.yaml identity the journal projection writes (#629).
+	TriggerKind string
 	// BranchNamespace is the gaggle's run-branch namespace root; empty means
 	// the default namespace.
 	BranchNamespace string
@@ -172,6 +175,7 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		RepoRef:                s.RepoRef,
 		Item:                   s.Item,
 		TriggerRef:             s.TriggerRef,
+		TriggerKind:            s.TriggerKind,
 		BranchNamespace:        s.BranchNamespace,
 		GateGooberCapabilities: s.GateGooberCapabilities,
 	}, nil

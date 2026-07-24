@@ -90,7 +90,7 @@ func escalationTarget(g apiv1.Gate) string {
 // the run exactly as a gate with no retry block would. Each attempt's
 // dispatch runs under its own start-to-close window, so a retry gets a fresh
 // timeout.
-func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, call func(workflow.Context) error) error {
+func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal, call func(workflow.Context) error) error {
 	maxAttempts, backoff := evaluatorRetryBounds(gateEvaluatorRetry(g))
 	for attempt := 1; ; attempt++ {
 		err := call(ctx)
@@ -107,6 +107,10 @@ func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, call func(workfl
 		if class != journal.AttemptInfra {
 			return err
 		}
+		// Every transient evaluator failure is journaled (#765's
+		// recordEvaluatorRetry parity), including the one that exhausts the
+		// bound — the local evaluator records before it gives up too.
+		rec.evaluatorRetry(ctx, g.Name, attempt, err)
 		if attempt >= maxAttempts {
 			// Bound exhausted — fail the run, never a silent infinite retry.
 			return err

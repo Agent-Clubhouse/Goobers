@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -56,6 +57,11 @@ type RunInput struct {
 	// bounded scheduler metadata the local runner threads into every
 	// envelope's triggerRef field (#621 envelope parity).
 	TriggerRef string `json:"triggerRef,omitempty"`
+	// TriggerKind is how the run was started (journal.TriggerKind vocabulary:
+	// manual/schedule/signal/item). Pinned for the run.yaml identity the
+	// history→journal projection writes (#629) and for the local runner's
+	// deferred branch-provenance rule. Empty behaves like manual.
+	TriggerKind string `json:"triggerKind,omitempty"`
 	// BranchNamespace is the gaggle's configured run-branch namespace root
 	// (GaggleSpec.BranchNamespace), stamped into every envelope exactly as the
 	// local runner does. Empty means the default namespace.
@@ -105,8 +111,13 @@ func HumanGateSignal(gateName string) string {
 // as a state machine: tasks invoke activities to produce result envelopes; gates
 // evaluate and branch. It performs no wall-clock reads or randomness — all side
 // effects are in activities.
+//
+// Alongside the walk it accumulates the run's journal projection (#629) as
+// deterministic workflow state, exposed through JournalQuery: every stage
+// attempt, gate verdict, and terminal outcome is recorded exactly where the
+// local runner journals its own, so the projected runs/<id>/ record is
+// indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	logger := workflow.GetLogger(ctx)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
@@ -114,7 +125,39 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	rec, err := newRunJournal(ctx, in, m)
+	if err != nil {
+		return RunResult{}, err
+	}
+	rec.runStarted(ctx)
+	rec.recordRunBranchUpfront(ctx, in)
 
+	res, err := walk(ctx, in, m, rec)
+	if err != nil {
+		// A walk-level error is the engine's failTerminal (#305): record the
+		// cause and the failed terminal in the projection, then fail the
+		// workflow. A canceled run is the one exception — it has no terminal.
+		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
+			rec.runFailedCause(ctx, "", "", err.Error())
+			rec.runFinished(ctx, journal.PhaseFailed)
+		}
+		return RunResult{}, err
+	}
+	if res.Status == StatusFailed {
+		// Mirror finishStageFailure (#710): the stage-attributed run_failed
+		// cause precedes the terminal marker.
+		rec.runFailedCause(ctx, res.FinalState, res.FailureCode, res.FailureMessage)
+	}
+	phase, err := phaseForStatus(res.Status)
+	if err != nil {
+		return RunResult{}, err
+	}
+	rec.runFinished(ctx, phase)
+	return res, nil
+}
+
+func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (RunResult, error) {
+	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
 	// pointers accumulates every completed stage's artifacts as read-only
 	// ContextPointers — the only channel through which a stage consumes prior
@@ -144,7 +187,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -158,7 +201,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
 			lastStage, lastResult = t.Name, res
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
-			next, out, terminal := taskOutcome(m, t, res, upstream, steps)
+			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
 			if terminal {
 				return out, nil
 			}
@@ -167,13 +210,23 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		}
 
 		if g, ok := m.Gate(state); ok {
-			outcome, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers)
+			// A repo-using run reaching a gate before any attempt proved the
+			// branch exists still owes provenance (walk's gate arm parity).
+			rec.recordRunBranch(ctx)
+			// The machine remains at this gate until its evaluator records a
+			// verdict — the same durable wait marker the local runner persists
+			// before dispatch.
+			rec.gatePaused(ctx, g.Name)
+			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, gateAttempts, rec)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
 			gr, rerr := resolveGateOutcome(g, outcome, gateAttempts, maxRepassesFor(in))
 			if rerr != nil {
 				return RunResult{}, rerr
+			}
+			if jerr := rec.gateEvaluated(ctx, gr, verdict); jerr != nil {
+				return RunResult{}, jerr
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
@@ -198,12 +251,14 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 // that correctly found nothing must not hand a downstream agentic stage an
 // empty subject). A successful task's Next may itself be a reserved terminal
 // target (@abort/@escalate, #123).
-func taskOutcome(m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int) (next string, out RunResult, terminal bool) {
+func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
+		rec.blocked(ctx, t.Name, result)
 		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
 	case apiv1.ResultFailure:
 		if t.ContinueOnError {
+			rec.toleratedFailure(ctx, t.Name)
 			break
 		}
 		if _, isGate := m.Gate(t.Next); t.Next != "" && isGate {
@@ -257,7 +312,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
@@ -282,7 +337,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	}
 	ctx = stageActivityContext(ctx, env.Limits)
 	if t.Type == apiv1.TaskAgentic {
-		return dispatchWithRetry(ctx, t, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 			var res apiv1.ResultEnvelope
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res)
 			return res, err
@@ -299,17 +354,21 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command; refusing to dispatch an empty command", t.Name)
 	}
 	run := *t.Run
-	return dispatchWithRetry(ctx, t, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 		var res apiv1.ResultEnvelope
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)
 		return res, err
 	})
 }
 
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (string, error) {
+// evaluateGate dispatches one gate evaluation and returns the evaluator
+// outcome plus, for an agentic gate, the reviewer's full Verdict (journaled as
+// the verdict artifact alongside gate.evaluated, mirroring internal/gate's
+// recordVerdict).
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
-		return "", fmt.Errorf("project gate %q limits: %w", g.Name, err)
+		return "", nil, fmt.Errorf("project gate %q limits: %w", g.Name, err)
 	}
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
@@ -331,13 +390,14 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			env.Inputs[k] = v
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
+		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var outcome string
-		if err := evaluateWithInfraRetry(ctx, g, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
 		}); err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return outcome, nil
+		return outcome, nil, nil
 
 	case apiv1.EvaluatorAgentic:
 		// The reviewer runs a real goober subprocess, so — unlike an
@@ -350,21 +410,22 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
 		ctx := stageActivityContext(ctx, env.Limits)
+		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var verdict apiv1.Verdict
-		if err := evaluateWithInfraRetry(ctx, g, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict)
 		}); err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return string(verdict.Decision), nil
+		return string(verdict.Decision), &verdict, nil
 
 	case apiv1.EvaluatorHuman:
 		var decision string
 		workflow.GetSignalChannel(ctx, HumanGateSignal(g.Name)).Receive(ctx, &decision)
-		return decision, nil
+		return decision, nil, nil
 
 	default:
-		return "", fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
+		return "", nil, fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
 	}
 }
 
