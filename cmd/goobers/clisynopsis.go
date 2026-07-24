@@ -17,6 +17,7 @@ var synopsisByID = map[string]string{
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)\n",
+	"doctor":                 "  goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n                                preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md\n",
 	"config":                 "  goobers config show|diff [flags] [path]\n                                inspect instance config or compare workflows with canonical definitions\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
