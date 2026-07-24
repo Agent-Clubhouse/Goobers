@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"sigs.k8s.io/yaml"
 
@@ -55,6 +56,7 @@ type Config struct {
 	WorkflowSource *WorkflowSource `json:"workflowSource,omitempty" yaml:"workflowSource,omitempty"`
 	API            APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
 	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions  RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
 	Retention      RetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
@@ -144,6 +146,42 @@ type WebhookConfig struct {
 	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
 	// Secret references the instance-wide GitHub webhook secret.
 	Secret TokenRef `json:"secret,omitempty" yaml:"secret,omitempty"`
+}
+
+// PortalConfig holds operator-supplied dashboard co-branding (CBR).
+type PortalConfig struct {
+	Brand   PortalBrandConfig   `json:"brand,omitempty" yaml:"brand,omitempty"`
+	Theme   PortalThemeConfig   `json:"theme,omitempty" yaml:"theme,omitempty"`
+	Support PortalSupportConfig `json:"support,omitempty" yaml:"support,omitempty"`
+}
+
+type PortalBrandConfig struct {
+	Name       string `json:"name,omitempty" yaml:"name,omitempty"`
+	Tagline    string `json:"tagline,omitempty" yaml:"tagline,omitempty"`
+	ScopeMark  string `json:"scopeMark,omitempty" yaml:"scopeMark,omitempty"`
+	LogoURL    string `json:"logoUrl,omitempty" yaml:"logoUrl,omitempty"`
+	FaviconURL string `json:"faviconUrl,omitempty" yaml:"faviconUrl,omitempty"`
+}
+
+type PortalThemeConfig struct {
+	AccentLight     string `json:"accentLight,omitempty" yaml:"accentLight,omitempty"`
+	AccentDark      string `json:"accentDark,omitempty" yaml:"accentDark,omitempty"`
+	AccentSoftLight string `json:"accentSoftLight,omitempty" yaml:"accentSoftLight,omitempty"`
+	AccentSoftDark  string `json:"accentSoftDark,omitempty" yaml:"accentSoftDark,omitempty"`
+	AccentInkLight  string `json:"accentInkLight,omitempty" yaml:"accentInkLight,omitempty"`
+	AccentInkDark   string `json:"accentInkDark,omitempty" yaml:"accentInkDark,omitempty"`
+}
+
+type PortalSupportConfig struct {
+	DocsURL   string              `json:"docsUrl,omitempty" yaml:"docsUrl,omitempty"`
+	IssuesURL string              `json:"issuesUrl,omitempty" yaml:"issuesUrl,omitempty"`
+	ChatURL   string              `json:"chatUrl,omitempty" yaml:"chatUrl,omitempty"`
+	Links     []PortalSupportLink `json:"links,omitempty" yaml:"links,omitempty"`
+}
+
+type PortalSupportLink struct {
+	Label string `json:"label" yaml:"label"`
+	URL   string `json:"url" yaml:"url"`
 }
 
 // RepoRef is a target repository this instance connects to.
@@ -457,6 +495,33 @@ func (c *Config) WebhookSecretConfigured() bool {
 	return c.Webhook.Secret.Env != "" || c.Webhook.Secret.File != ""
 }
 
+// EffectivePortalConfig applies built-in dashboard branding defaults.
+func (c *Config) EffectivePortalConfig() PortalConfig {
+	if c == nil {
+		return PortalConfig{
+			Brand: PortalBrandConfig{
+				Name:      "goobers",
+				Tagline:   "local operations",
+				ScopeMark: "G",
+			},
+		}
+	}
+	effective := c.Portal
+	if effective.Brand.Name == "" {
+		effective.Brand.Name = "goobers"
+	}
+	if effective.Brand.Tagline == "" {
+		effective.Brand.Tagline = "local operations"
+	}
+	if effective.Brand.ScopeMark == "" {
+		for _, r := range effective.Brand.Name {
+			effective.Brand.ScopeMark = string(unicode.ToUpper(r))
+			break
+		}
+	}
+	return effective
+}
+
 // Location resolves Timezone to a *time.Location, defaulting to UTC when
 // unset. Validate already rejects an unresolvable Timezone at load time, so
 // this only errors if tzdata disappeared from underneath an already-loaded
@@ -521,6 +586,9 @@ func (c *Config) Validate() error {
 	}
 	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
 		return fmt.Errorf("webhook.listen: %w", err)
+	}
+	if err := c.Portal.Validate(); err != nil {
+		return fmt.Errorf("portal: %w", err)
 	}
 	if c.Webhook.Secret.Env != "" && c.Webhook.Secret.File != "" {
 		return fmt.Errorf("webhook.secret must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
@@ -669,6 +737,61 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Validate checks portal co-branding configuration shape and URL safety.
+func (p PortalConfig) Validate() error {
+	if len(p.Brand.Name) > 64 {
+		return fmt.Errorf("brand.name must be 64 characters or fewer")
+	}
+	if len(p.Brand.Tagline) > 128 {
+		return fmt.Errorf("brand.tagline must be 128 characters or fewer")
+	}
+	if p.Brand.LogoURL != "" && !strings.HasPrefix(p.Brand.LogoURL, "/assets/") {
+		return fmt.Errorf("brand.logoUrl must start with /assets/")
+	}
+	if p.Brand.FaviconURL != "" && !strings.HasPrefix(p.Brand.FaviconURL, "/assets/") {
+		return fmt.Errorf("brand.faviconUrl must start with /assets/")
+	}
+	for name, value := range map[string]string{
+		"theme.accentLight":     p.Theme.AccentLight,
+		"theme.accentDark":      p.Theme.AccentDark,
+		"theme.accentSoftLight": p.Theme.AccentSoftLight,
+		"theme.accentSoftDark":  p.Theme.AccentSoftDark,
+		"theme.accentInkLight":  p.Theme.AccentInkLight,
+		"theme.accentInkDark":   p.Theme.AccentInkDark,
+	} {
+		if value != "" && !validPortalCSSColor(value) {
+			return fmt.Errorf("%s must be a plausible CSS color", name)
+		}
+	}
+	if p.Support.DocsURL != "" && !strings.HasPrefix(p.Support.DocsURL, "https://") {
+		return fmt.Errorf("support.docsUrl must start with https://")
+	}
+	if p.Support.IssuesURL != "" && !strings.HasPrefix(p.Support.IssuesURL, "https://") {
+		return fmt.Errorf("support.issuesUrl must start with https://")
+	}
+	if p.Support.ChatURL != "" &&
+		!strings.HasPrefix(p.Support.ChatURL, "https://") &&
+		!strings.HasPrefix(p.Support.ChatURL, "slack://") &&
+		!strings.HasPrefix(p.Support.ChatURL, "msteams://") {
+		return fmt.Errorf("support.chatUrl must start with https://, slack://, or msteams://")
+	}
+	if len(p.Support.Links) > 6 {
+		return fmt.Errorf("support.links must contain 6 entries or fewer")
+	}
+	for i, link := range p.Support.Links {
+		if strings.TrimSpace(link.Label) == "" {
+			return fmt.Errorf("support.links[%d].label is required", i)
+		}
+		if len(link.Label) > 32 {
+			return fmt.Errorf("support.links[%d].label must be 32 characters or fewer", i)
+		}
+		if !strings.HasPrefix(link.URL, "https://") {
+			return fmt.Errorf("support.links[%d].url must start with https://", i)
+		}
+	}
+	return nil
+}
+
 // Validate checks workflow-source shape without resolving credentials or
 // accessing the source.
 func (s WorkflowSource) Validate() error {
@@ -738,6 +861,173 @@ func stageEnvironmentAllows(name string, extra []string) bool {
 		}
 	}
 	return false
+}
+
+func validPortalCSSColor(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed != value {
+		return false
+	}
+	if strings.ContainsAny(trimmed, ";{}") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(lower, "rgb") || strings.HasPrefix(lower, "hsl") {
+		return true
+	}
+	return knownPortalCSSNamedColors[lower]
+}
+
+var knownPortalCSSNamedColors = map[string]bool{
+	"aliceblue":            true,
+	"antiquewhite":         true,
+	"aqua":                 true,
+	"aquamarine":           true,
+	"azure":                true,
+	"beige":                true,
+	"bisque":               true,
+	"black":                true,
+	"blanchedalmond":       true,
+	"blue":                 true,
+	"blueviolet":           true,
+	"brown":                true,
+	"burlywood":            true,
+	"cadetblue":            true,
+	"chartreuse":           true,
+	"chocolate":            true,
+	"coral":                true,
+	"cornflowerblue":       true,
+	"cornsilk":             true,
+	"crimson":              true,
+	"cyan":                 true,
+	"darkblue":             true,
+	"darkcyan":             true,
+	"darkgoldenrod":        true,
+	"darkgray":             true,
+	"darkgreen":            true,
+	"darkgrey":             true,
+	"darkkhaki":            true,
+	"darkmagenta":          true,
+	"darkolivegreen":       true,
+	"darkorange":           true,
+	"darkorchid":           true,
+	"darkred":              true,
+	"darksalmon":           true,
+	"darkseagreen":         true,
+	"darkslateblue":        true,
+	"darkslategray":        true,
+	"darkslategrey":        true,
+	"darkturquoise":        true,
+	"darkviolet":           true,
+	"deeppink":             true,
+	"deepskyblue":          true,
+	"dimgray":              true,
+	"dimgrey":              true,
+	"dodgerblue":           true,
+	"firebrick":            true,
+	"floralwhite":          true,
+	"forestgreen":          true,
+	"fuchsia":              true,
+	"gainsboro":            true,
+	"ghostwhite":           true,
+	"gold":                 true,
+	"goldenrod":            true,
+	"gray":                 true,
+	"green":                true,
+	"greenyellow":          true,
+	"grey":                 true,
+	"honeydew":             true,
+	"hotpink":              true,
+	"indianred":            true,
+	"indigo":               true,
+	"ivory":                true,
+	"khaki":                true,
+	"lavender":             true,
+	"lavenderblush":        true,
+	"lawngreen":            true,
+	"lemonchiffon":         true,
+	"lightblue":            true,
+	"lightcoral":           true,
+	"lightcyan":            true,
+	"lightgoldenrodyellow": true,
+	"lightgray":            true,
+	"lightgreen":           true,
+	"lightgrey":            true,
+	"lightpink":            true,
+	"lightsalmon":          true,
+	"lightseagreen":        true,
+	"lightskyblue":         true,
+	"lightslategray":       true,
+	"lightslategrey":       true,
+	"lightsteelblue":       true,
+	"lightyellow":          true,
+	"lime":                 true,
+	"limegreen":            true,
+	"linen":                true,
+	"magenta":              true,
+	"maroon":               true,
+	"mediumaquamarine":     true,
+	"mediumblue":           true,
+	"mediumorchid":         true,
+	"mediumpurple":         true,
+	"mediumseagreen":       true,
+	"mediumslateblue":      true,
+	"mediumspringgreen":    true,
+	"mediumturquoise":      true,
+	"mediumvioletred":      true,
+	"midnightblue":         true,
+	"mintcream":            true,
+	"mistyrose":            true,
+	"moccasin":             true,
+	"navajowhite":          true,
+	"navy":                 true,
+	"oldlace":              true,
+	"olive":                true,
+	"olivedrab":            true,
+	"orange":               true,
+	"orangered":            true,
+	"orchid":               true,
+	"palegoldenrod":        true,
+	"palegreen":            true,
+	"paleturquoise":        true,
+	"palevioletred":        true,
+	"papayawhip":           true,
+	"peachpuff":            true,
+	"peru":                 true,
+	"pink":                 true,
+	"plum":                 true,
+	"powderblue":           true,
+	"purple":               true,
+	"rebeccapurple":        true,
+	"red":                  true,
+	"rosybrown":            true,
+	"royalblue":            true,
+	"saddlebrown":          true,
+	"salmon":               true,
+	"sandybrown":           true,
+	"seagreen":             true,
+	"seashell":             true,
+	"sienna":               true,
+	"silver":               true,
+	"skyblue":              true,
+	"slateblue":            true,
+	"slategray":            true,
+	"slategrey":            true,
+	"snow":                 true,
+	"springgreen":          true,
+	"steelblue":            true,
+	"tan":                  true,
+	"teal":                 true,
+	"thistle":              true,
+	"tomato":               true,
+	"transparent":          true,
+	"turquoise":            true,
+	"violet":               true,
+	"wheat":                true,
+	"white":                true,
+	"whitesmoke":           true,
+	"yellow":               true,
+	"yellowgreen":          true,
 }
 
 func validateOTLPEndpoint(endpoint string, insecure bool) error {

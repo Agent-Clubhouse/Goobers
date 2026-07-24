@@ -3,6 +3,7 @@
 import type {
   Health,
   Instance,
+  PortalConfig,
   GagglePage,
   GooberPage,
   WorkflowPage,
@@ -21,6 +22,7 @@ import type {
 export interface GoWireFixtures {
   health: Health;
   instance: Instance;
+  portalConfig: PortalConfig;
   gaggles: GagglePage;
   goobers: GooberPage;
   workflows: WorkflowPage;
@@ -79,6 +81,29 @@ export const goWireFixtures = {
         "explanation": "fixture warning"
       }
     ]
+  },
+  "portalConfig": {
+    "brand": {
+      "name": "goobers",
+      "tagline": "local operations",
+      "scopeMark": "G",
+      "logoUrl": null,
+      "faviconUrl": null
+    },
+    "theme": {
+      "accentLight": null,
+      "accentDark": null,
+      "accentSoftLight": null,
+      "accentSoftDark": null,
+      "accentInkLight": null,
+      "accentInkDark": null
+    },
+    "support": {
+      "docsUrl": null,
+      "issuesUrl": null,
+      "chatUrl": null,
+      "links": []
+    }
   },
   "gaggles": {
     "items": [

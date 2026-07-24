@@ -36,6 +36,7 @@ type fakeReader struct {
 	stage        string
 	digest       string
 	instance     readservice.Instance
+	portalConfig readservice.PortalConfig
 	gaggles      readservice.GagglePage
 	goobers      readservice.GooberPage
 	workflows    readservice.WorkflowPage
@@ -114,6 +115,11 @@ func (f *fakeReader) Instance(context.Context) (readservice.Instance, error) {
 	return f.instance, f.err
 }
 
+func (f *fakeReader) PortalConfig(context.Context) (readservice.PortalConfig, error) {
+	f.called++
+	return f.portalConfig, f.err
+}
+
 func (f *fakeReader) Gaggles(_ context.Context, page readservice.PageRequest) (readservice.GagglePage, error) {
 	f.called++
 	f.lastPage = page
@@ -167,6 +173,41 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	}
 	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
+	}
+}
+
+func TestPortalConfigHandlerUsesSharedReadService(t *testing.T) {
+	reader := &fakeReader{portalConfig: readservice.PortalConfig{
+		Brand: readservice.PortalBrandResponse{
+			Name:      "Acme Ops",
+			Tagline:   "AI workforce platform",
+			ScopeMark: "A",
+		},
+		Theme: readservice.PortalThemeResponse{},
+		Support: readservice.PortalSupportResponse{
+			Links: []readservice.PortalSupportLink{},
+		},
+	}}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, PortalConfigPath, nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", got)
+	}
+	var config readservice.PortalConfig
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	if reader.called != 1 || config.Brand.Name != "Acme Ops" {
+		t.Fatalf("reader called %d times, config = %+v", reader.called, config)
 	}
 }
 

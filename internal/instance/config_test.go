@@ -93,6 +93,109 @@ notifications: true
 	}
 }
 
+func TestEffectivePortalConfigAppliesDefaults(t *testing.T) {
+	cfg := &Config{}
+	got := cfg.EffectivePortalConfig()
+	if got.Brand.Name != "goobers" || got.Brand.Tagline != "local operations" || got.Brand.ScopeMark != "G" {
+		t.Fatalf("EffectivePortalConfig() = %+v", got.Brand)
+	}
+
+	custom := (&Config{Portal: PortalConfig{Brand: PortalBrandConfig{Name: "acme ops"}}}).EffectivePortalConfig()
+	if custom.Brand.ScopeMark != "A" {
+		t.Fatalf("scopeMark = %q, want A", custom.Brand.ScopeMark)
+	}
+}
+
+func TestPortalConfigValidate(t *testing.T) {
+	valid := PortalConfig{
+		Brand: PortalBrandConfig{
+			Name:       "Acme Ops",
+			Tagline:    "AI workforce platform",
+			LogoURL:    "/assets/logo.svg",
+			FaviconURL: "/assets/favicon.ico",
+		},
+		Theme: PortalThemeConfig{
+			AccentLight:    "#6847d9",
+			AccentDark:     "rgb(12 34 56)",
+			AccentInkLight: "rebeccapurple",
+		},
+		Support: PortalSupportConfig{
+			DocsURL:   "https://acme.example/docs",
+			IssuesURL: "https://acme.example/help",
+			ChatURL:   "slack://channel/C000EXAMPLE",
+			Links: []PortalSupportLink{{
+				Label: "Runbooks",
+				URL:   "https://acme.example/runbooks",
+			}},
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() valid config error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  PortalConfig
+		wantErr string
+	}{
+		{
+			name:    "name too long",
+			config:  PortalConfig{Brand: PortalBrandConfig{Name: strings.Repeat("a", 65)}},
+			wantErr: "brand.name",
+		},
+		{
+			name:    "logo must stay local",
+			config:  PortalConfig{Brand: PortalBrandConfig{LogoURL: "https://example.com/logo.svg"}},
+			wantErr: "brand.logoUrl",
+		},
+		{
+			name:    "theme blocks injection",
+			config:  PortalConfig{Theme: PortalThemeConfig{AccentLight: "red;display:none"}},
+			wantErr: "theme.accentLight",
+		},
+		{
+			name:    "docs must be https",
+			config:  PortalConfig{Support: PortalSupportConfig{DocsURL: "http://example.com/docs"}},
+			wantErr: "support.docsUrl",
+		},
+		{
+			name:    "chat scheme limited",
+			config:  PortalConfig{Support: PortalSupportConfig{ChatURL: "mailto:help@example.com"}},
+			wantErr: "support.chatUrl",
+		},
+		{
+			name: "links limited",
+			config: PortalConfig{Support: PortalSupportConfig{Links: []PortalSupportLink{
+				{Label: "1", URL: "https://example.com/1"},
+				{Label: "2", URL: "https://example.com/2"},
+				{Label: "3", URL: "https://example.com/3"},
+				{Label: "4", URL: "https://example.com/4"},
+				{Label: "5", URL: "https://example.com/5"},
+				{Label: "6", URL: "https://example.com/6"},
+				{Label: "7", URL: "https://example.com/7"},
+			}}},
+			wantErr: "support.links must contain 6 entries or fewer",
+		},
+		{
+			name: "link label required",
+			config: PortalConfig{Support: PortalSupportConfig{Links: []PortalSupportLink{{
+				Label: " ",
+				URL:   "https://example.com/runbooks",
+			}}}},
+			wantErr: "support.links[0].label",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfigWorkflowSource(t *testing.T) {
 	tests := []struct {
 		name       string

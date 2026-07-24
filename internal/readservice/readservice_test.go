@@ -162,6 +162,79 @@ func TestLocalHealthUsesReloadedDefinitionsSnapshot(t *testing.T) {
 	}
 }
 
+func TestLocalPortalConfigUsesEffectiveDefaults(t *testing.T) {
+	service, err := NewLocal(LocalSources{
+		Config:      &instance.Config{},
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.PortalConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Brand.Name != "goobers" || got.Brand.Tagline != "local operations" || got.Brand.ScopeMark != "G" {
+		t.Fatalf("brand = %+v", got.Brand)
+	}
+	if got.Brand.LogoURL != nil || got.Brand.FaviconURL != nil {
+		t.Fatalf("unexpected logo defaults: %+v", got.Brand)
+	}
+	if got.Support.Links == nil || len(got.Support.Links) != 0 {
+		t.Fatalf("support links = %+v, want empty slice", got.Support.Links)
+	}
+}
+
+func TestLocalPortalConfigProjectsConfiguredValues(t *testing.T) {
+	service, err := NewLocal(LocalSources{
+		Config: &instance.Config{Portal: instance.PortalConfig{
+			Brand: instance.PortalBrandConfig{
+				Name:       "Acme Ops",
+				Tagline:    "AI workforce platform",
+				ScopeMark:  "A",
+				LogoURL:    "/assets/logo.svg",
+				FaviconURL: "/assets/favicon.ico",
+			},
+			Theme: instance.PortalThemeConfig{
+				AccentLight:     "#6847d9",
+				AccentDark:      "#a98cff",
+				AccentSoftLight: "#eee9ff",
+				AccentSoftDark:  "#2c2445",
+				AccentInkLight:  "#4c2db8",
+				AccentInkDark:   "#c5b4ff",
+			},
+			Support: instance.PortalSupportConfig{
+				DocsURL:   "https://acme.example/docs",
+				IssuesURL: "https://acme.example/help",
+				ChatURL:   "https://acme.example/chat",
+				Links: []instance.PortalSupportLink{{
+					Label: "Runbooks",
+					URL:   "https://acme.example/runbooks",
+				}},
+			},
+		}},
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.PortalConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Brand.LogoURL == nil || *got.Brand.LogoURL != "/assets/logo.svg" {
+		t.Fatalf("logoUrl = %v", got.Brand.LogoURL)
+	}
+	if got.Theme.AccentDark == nil || *got.Theme.AccentDark != "#a98cff" {
+		t.Fatalf("accentDark = %v", got.Theme.AccentDark)
+	}
+	if len(got.Support.Links) != 1 || got.Support.Links[0].Label != "Runbooks" {
+		t.Fatalf("support links = %+v", got.Support.Links)
+	}
+}
+
 func TestLocalHealthSurfacesJournalReadError(t *testing.T) {
 	l := instance.NewLayout(t.TempDir())
 	service, err := NewLocal(LocalSources{Layout: l, Definitions: testDefinitions()}, func() bool { return false })

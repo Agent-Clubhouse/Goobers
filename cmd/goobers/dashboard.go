@@ -150,7 +150,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: load dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
 	}
-	handler, err := newDashboardHandler(assets, api.handler, api.mode)
+	handler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
 	if err != nil {
 		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
@@ -416,7 +416,7 @@ func dashboardAssetFS(devAssets string) (fs.FS, error) {
 	return os.DirFS(devAssets), nil
 }
 
-func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (http.Handler, error) {
+func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, instanceRoot string) (http.Handler, error) {
 	if assets == nil {
 		return nil, errors.New("dashboard asset filesystem is required")
 	}
@@ -432,9 +432,23 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 		return nil, err
 	}
 	files := http.FileServer(http.FS(assets))
-	mux := http.NewServeMux()
-	mux.Handle("/api/", api)
-	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
+	// A manual dispatcher rather than http.ServeMux: ServeMux redirects any
+	// non-canonical path (e.g. a "/assets/../x" traversal) to its cleaned form
+	// with a 3xx before dispatching, which both leaks routing behavior and
+	// prevents the asset handlers' own containment checks from returning 404.
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/") {
+			api.ServeHTTP(response, request)
+			return
+		}
+		// Co-brand assets: an operator-supplied file in the instance's assets/
+		// dir overrides the embedded bundle at the same /assets/ path; anything
+		// not present there (notably the portal's own /assets/index-*.js|css)
+		// falls through to the embedded file server below.
+		if strings.HasPrefix(request.URL.Path, "/assets/") &&
+			serveInstanceAsset(response, request, instanceRoot) {
+			return
+		}
 		name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
 		if name == "" || name == "." || name == "index.html" {
 			serveDashboardIndex(response, request, index)
@@ -447,7 +461,33 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 		}
 		http.NotFound(response, request)
 	})
-	return mux, nil
+	return handler, nil
+}
+
+// serveInstanceAsset serves a co-branding file from the instance's assets/ dir
+// when the cleaned request path resolves to an existing regular file inside
+// that dir, and reports whether it did. On any miss — traversal outside the
+// dir, a directory, or a nonexistent file — it serves nothing and returns
+// false so the caller falls through to the embedded bundle.
+func serveInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot string) bool {
+	assetsDir := filepath.Join(instanceRoot, "assets")
+	name := strings.TrimPrefix(r.URL.Path, "/assets/")
+	name = filepath.FromSlash(path.Clean("/" + name))
+	name = strings.TrimPrefix(name, string(filepath.Separator))
+	if name == "" {
+		return false
+	}
+	full := filepath.Join(assetsDir, name)
+	rel, err := filepath.Rel(assetsDir, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Stat(full)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	http.ServeFile(w, r, full)
+	return true
 }
 
 func dashboardIndex(index []byte, mode dashboardMode) ([]byte, error) {
