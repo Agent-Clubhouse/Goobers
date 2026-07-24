@@ -345,7 +345,7 @@ func TestBuildInvocationKeepsCheckoutOffTheWire(t *testing.T) {
 	in := runInput("checkout", linearSpec())
 	in.RepoRef.Checkout = &apiv1.CheckoutSpec{Sparse: []string{"services/web"}}
 
-	env := buildInvocation(in, "implement", "implement the fix", nil, apiv1.Limits{})
+	env := buildInvocation(in, "implement", "implement the fix", nil, nil, apiv1.Limits{}, nil)
 
 	if env.RepoRef.Checkout != nil {
 		t.Fatalf("envelope RepoRef.Checkout = %+v, want stripped", env.RepoRef.Checkout)
