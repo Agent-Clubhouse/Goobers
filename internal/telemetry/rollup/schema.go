@@ -393,4 +393,20 @@ CREATE TABLE IF NOT EXISTS ready_label_transitions (
 CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_time ON ready_label_transitions(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_ready_label_transitions_item ON ready_label_transitions(item_id, occurred_at);
 `,
+	// v13 (issue #1411): incremental scheduler-log ingest. Before this, every
+	// IngestSchedulerLog deleted and re-inserted scheduler_events and
+	// scheduler_errors from the ENTIRE instance journal on every scheduler
+	// tick — O(journal size) writes that churned the WAL and, on a large
+	// journal, pinned it open (the #1410 dashboard bloat). The cursor stores
+	// how far the journal has been ingested (byte offset) plus the highest seq
+	// applied, so steady-state ingest reads only the new tail and writes only
+	// new rows. Single-row table (id is pinned to 1); a full Rebuild drops the
+	// db file and starts the cursor empty.
+	`
+CREATE TABLE IF NOT EXISTS scheduler_ingest_cursor (
+	id          INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	byte_offset INTEGER NOT NULL,
+	last_seq    INTEGER NOT NULL
+);
+`,
 }
