@@ -81,7 +81,7 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the two
+	// The compatibility warnings are the manual-only advisories on the three
 	// example workflows that carry no schedule trigger. Preview warnings are
 	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
@@ -90,10 +90,10 @@ func TestExampleConfigPasses(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 2 {
-		t.Fatalf("expected two actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 3 {
+		t.Fatalf("expected three actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDotnetImplementation bool
+	var sawDefaultImplement, sawDotnetImplementation, sawQuickstart bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -104,9 +104,12 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
 			sawDotnetImplementation = true
 		}
+		if strings.Contains(w.Explanation, "goobers run quickstart") {
+			sawQuickstart = true
+		}
 	}
-	if !sawDefaultImplement || !sawDotnetImplementation {
-		t.Fatalf("expected manual-only warnings for both default-implement and the dotnet-service implementation, got %+v", warnings)
+	if !sawDefaultImplement || !sawDotnetImplementation || !sawQuickstart {
+		t.Fatalf("expected manual-only warnings for default-implement, quickstart, and the dotnet-service implementation, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
