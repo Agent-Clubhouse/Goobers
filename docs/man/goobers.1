@@ -223,7 +223,10 @@ show the instance lifetime summary card
 validate config, show warnings, list runs, or report daemon health
 .TP
 \fBgoobers telemetry\fR
-query, export, or prune run telemetry
+query, export, prune, or compact run telemetry
+.TP
+\fBgoobers telemetry compact\fR
+drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 .TP
 \fBgoobers telemetry errors\fR
 recent errors across runs, by class, with run/stage refs
@@ -330,6 +333,7 @@ show a workflow as a text DAG
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
+\fBgoobers-telemetry-compact\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
