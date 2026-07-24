@@ -963,12 +963,25 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]
 
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
-prune:  remove terminal runs outside the configured retention bounds
+prune:   remove terminal runs outside the configured retention bounds
+compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+
+### telemetry compact
+Usage: goobers telemetry compact [--dry-run] [path]
+
+Reclaim disk from a bloated instance: drop scheduler journal records
+(scheduler/events.jsonl) and rollup scheduler rows older than
+telemetry.retention.window, then VACUUM the rollup database and truncate its
+write-ahead log so freed pages return to the filesystem. The daemon must be
+stopped first — compaction rewrites files a running daemon holds open.
+--dry-run reports what would be reclaimed without changing anything. The
+default 90d window applies when none is configured. Exit codes: 0 = OK,
+1 = compaction error, 2 = usage/config error.
 
 ### telemetry errors
 Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]

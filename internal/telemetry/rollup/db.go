@@ -69,6 +69,59 @@ func Open(path string) (*DB, error) {
 // Close closes the underlying database handle.
 func (db *DB) Close() error { return db.sql.Close() }
 
+// Compact reclaims disk after large deletions — a retention prune, or scheduler
+// journal compaction (#1412) — that free pages but never shrink the file on
+// their own. It truncates the WAL back into the main database, VACUUMs (which
+// rewrites the file at its true size), then truncates the WAL once more.
+// VACUUM needs exclusive access and rewrites the whole database, so the caller
+// must run this with the daemon stopped; unlike checkpointWAL's best-effort
+// maintenance, a failure here is surfaced so the operator knows compaction did
+// not complete.
+func (db *DB) Compact() error {
+	if _, err := db.sql.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("rollup: checkpoint before vacuum: %w", err)
+	}
+	if _, err := db.sql.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("rollup: vacuum: %w", err)
+	}
+	if _, err := db.sql.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("rollup: checkpoint after vacuum: %w", err)
+	}
+	return nil
+}
+
+// PruneSchedulerBefore deletes scheduler_events and scheduler_errors rows whose
+// occurred_at predates cutoff — the rollup-side counterpart to compacting the
+// instance journal (#1412), so a bloated scheduler_errors table (its rows are
+// never overwritten, only appended) can actually shrink. occurred_at is stored
+// in a fixed-width, lexicographically-ordered UTC layout, so the string
+// comparison is a correct time comparison; rows with a NULL occurred_at are
+// conservatively kept. Returns the number of scheduler_events rows removed.
+// Call Compact afterward to reclaim the freed pages.
+func (db *DB) PruneSchedulerBefore(cutoff time.Time) (int, error) {
+	ts := formatTime(cutoff)
+	if !ts.Valid {
+		return 0, nil // a zero cutoff prunes nothing
+	}
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("rollup: begin scheduler prune tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM scheduler_errors WHERE occurred_at < ?`, ts.String); err != nil {
+		return 0, fmt.Errorf("rollup: prune scheduler_errors: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM scheduler_events WHERE occurred_at < ?`, ts.String)
+	if err != nil {
+		return 0, fmt.Errorf("rollup: prune scheduler_events: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("rollup: commit scheduler prune: %w", err)
+	}
+	removed, _ := res.RowsAffected()
+	return int(removed), nil
+}
+
 // checkpointWAL runs a TRUNCATE-mode WAL checkpoint (#530): writes every WAL
 // frame back into the main db file and, only if that fully succeeds,
 // truncates the -wal file to zero bytes — bounding its otherwise-unbounded
