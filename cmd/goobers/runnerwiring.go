@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -298,9 +299,17 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, r := range cfg.Repos {
-		ref := r.Owner + "/" + r.Name
-		refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
-		bindings = append(bindings, credentials.RepoBinding{Owner: r.Owner, Name: r.Name, TokenRef: ref})
+		owner := r.Owner
+		if r.Provider == "ado" && r.Project != "" {
+			owner += "/" + r.Project
+		}
+		ref := owner + "/" + r.Name
+		tokenRef := ""
+		if r.Token.Env != "" || r.Token.File != "" {
+			tokenRef = ref
+			refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
+		}
+		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
 	// Per-capability credential refs (#287): each sources one capability from
 	// its own token, named distinctly so it never collides with a repo ref.
@@ -1125,6 +1134,15 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
+		if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
+			source, sourceErr := adoauth.Source(adoRepo, nil)
+			if sourceErr != nil {
+				return runner.Config{}, nil, fmt.Errorf("configure ADO worktree authentication: %w", sourceErr)
+			}
+			managerOptions = append(managerOptions, worktree.WithGitEnvironment(func(ctx context.Context, repoURL string) ([]string, error) {
+				return providers.ADOGitAuthEnvironment(ctx, source, sharedReg, repoURL)
+			}))
+		}
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
 		}
@@ -1137,7 +1155,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
 	// legacy instance, which falls back to the first repo's token unchanged.
-	resolver, grants, err := buildCredentials(cfg, gaggleProject.Owner, gaggleProject.Name)
+	gaggleOwner := gaggleProject.Owner
+	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
+		gaggleOwner += "/" + gaggleProject.Project
+	}
+	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1341,6 +1363,29 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		rc.Telemetry = tel
 	}
 	return rc, wtMgr, nil
+}
+
+func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "ado" {
+		return cfg.Repos[0], true
+	}
+	if project.Provider != apiv1.ProviderADO {
+		return instance.RepoRef{}, false
+	}
+	organization := project.Owner
+	projectName := project.Project
+	if projectName == "" {
+		organization, projectName, _ = strings.Cut(project.Owner, "/")
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == "ado" && repo.Owner == organization && repo.Project == projectName && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	return instance.RepoRef{}, false
 }
 
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers

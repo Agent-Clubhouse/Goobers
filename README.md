@@ -91,6 +91,8 @@ the daemon as a supervised service via
 [Daemon supervision](docs/guides/supervision.md)
 (systemd · launchd · Windows Service). How binaries are built, packaged, and
 verified for distribution: [Releases & packaging](docs/guides/releases.md).
+Azure DevOps instances can use
+[Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
 
 ## Authoring workflow DSL with an agent
 

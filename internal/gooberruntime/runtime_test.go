@@ -530,6 +530,46 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	}
 }
 
+func TestEnvProviderResolverBuildsAzureCLIADOProvider(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "")
+	t.Setenv("AZURE_DEVOPS_TOKEN", "")
+	t.Setenv("ADO_TOKEN", "")
+	t.Setenv("GOOBERS_ADO_AUTH_KIND", "azure-cli")
+	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
+	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
+
+	provider, err := (EnvProviderResolver{
+		SecretRegistrar: journal.NewRegistryScrubber(),
+	}).RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider == nil {
+		t.Fatal("RepoProvider(ADO) returned nil provider")
+	}
+}
+
+func TestToProviderRepoMapsADOProject(t *testing.T) {
+	got := toProviderRepo(apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "ado-org",
+		Project:  "ado-project",
+		Name:     "repo",
+	})
+	if got.Owner != "ado-org" || got.Project != "ado-project" || got.Name != "repo" {
+		t.Fatalf("toProviderRepo() = %#v", got)
+	}
+
+	legacy := toProviderRepo(apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "ado-org/ado-project",
+		Name:     "repo",
+	})
+	if legacy.Owner != "ado-org" || legacy.Project != "ado-project" {
+		t.Fatalf("legacy toProviderRepo() = %#v", legacy)
+	}
+}
+
 type runtimeRateLimitObserver struct {
 	events []providers.RateLimitEvent
 }

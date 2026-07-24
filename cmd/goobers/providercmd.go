@@ -159,6 +159,9 @@ func providerRepo(root string) (providers.RepositoryRef, error) {
 		return providers.RepositoryRef{}, fmt.Errorf("no repo configured in %s", l.ConfigFile())
 	}
 	repo := cfg.Repos[0]
+	if repo.Provider != "github" {
+		return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not yet support repository provider %q", repo.Provider)
+	}
 	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
 }
 

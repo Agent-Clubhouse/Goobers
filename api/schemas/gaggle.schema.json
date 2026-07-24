@@ -74,6 +74,7 @@
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado"] },
         "owner": { "type": "string", "minLength": 1 },
+        "project": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
         "branch": { "type": "string" },
         "connectionRef": { "type": "string" }
