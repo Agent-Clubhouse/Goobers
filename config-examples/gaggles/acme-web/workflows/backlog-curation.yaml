@@ -97,7 +97,7 @@ spec:
         Curate the claimed backlog items using each item's deterministic
         staleness signal and the ranked duplicate candidates as evidence.
         Unclaimed candidate members are read-only except for narrowly scoped
-        roadmap maintenance on directly linked tracking parents and children.
+        roadmap maintenance on directly linked tracking parents.
         Dedupe, handle staleness, tag, split oversized items, maintain milestone
         and tracking-parent organization, and mark each item goobers:ready or
         goobers:needs-human. Explain every action in a comment.

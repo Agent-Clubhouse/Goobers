@@ -95,6 +95,10 @@ func TestSelfhostCuratorDeclaresRoadmapMutation(t *testing.T) {
 		if !containsString(task.PolicyActions, "assign-milestone") {
 			t.Errorf("curate policyActions = %v, want assign-milestone", task.PolicyActions)
 		}
+		if !strings.Contains(task.Goal, "roadmap maintenance on directly linked tracking parents.") ||
+			strings.Contains(task.Goal, "tracking parents and children") {
+			t.Errorf("curate goal grants roadmap maintenance outside directly linked tracking parents: %q", task.Goal)
+		}
 		return
 	}
 	t.Fatal("curate task not found")

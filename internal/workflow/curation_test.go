@@ -101,6 +101,10 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !containsString(curate.PolicyActions, "assign-milestone") {
 		t.Errorf("curate policyActions = %v, want assign-milestone", curate.PolicyActions)
 	}
+	if !strings.Contains(curate.Goal, "roadmap maintenance on directly linked tracking parents.") ||
+		strings.Contains(curate.Goal, "tracking parents and children") {
+		t.Errorf("curate goal grants roadmap maintenance outside directly linked tracking parents: %q", curate.Goal)
+	}
 	release, ok := m.Task("release-claim")
 	if !ok {
 		t.Fatal("release-claim task not found")
@@ -123,7 +127,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:236b3eea1a1cab77391800289a3fc10791dce4457f81b22a64239e4c262a8877"
+	const wantDigest = "sha256:901c08bab61ebd3844af3dfd5c328d359dcbefca2fd8a2ac7d5ba8a1041a224c"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
