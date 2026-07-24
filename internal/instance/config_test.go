@@ -95,6 +95,43 @@ notifications: true
 	}
 }
 
+// TestLoadConfigGitHubAppAuth: appId/installationId accept both the YAML
+// number and string spellings GitHub surfaces (numeric IDs vs client-ID
+// strings), normalized to strings; the loaded repo reports GitHubAppAuth.
+func TestLoadConfigGitHubAppAuth(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    auth:
+      kind: github-app
+      appId: 123456
+      installationId: "42"
+      privateKey:
+        file: /run/secrets/goobers-app.pem
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	repo := cfg.Repos[0]
+	if !repo.GitHubAppAuth() {
+		t.Fatalf("GitHubAppAuth() = false for %+v", repo.Auth)
+	}
+	if repo.Auth.AppID != "123456" {
+		t.Fatalf("appId = %q, want numeric YAML normalized to \"123456\"", repo.Auth.AppID)
+	}
+	if repo.Auth.InstallationID != "42" {
+		t.Fatalf("installationId = %q, want \"42\"", repo.Auth.InstallationID)
+	}
+	if repo.Auth.PrivateKey == nil || repo.Auth.PrivateKey.File != "/run/secrets/goobers-app.pem" {
+		t.Fatalf("privateKey = %+v, want file ref", repo.Auth.PrivateKey)
+	}
+}
+
 func TestLoadConfigWorkcopies(t *testing.T) {
 	base := `
 apiVersion: goobers.dev/v1alpha1
@@ -798,20 +835,20 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid ado Azure CLI",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
 			}},
 		},
 		{
 			name: "ado missing project",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+				{Provider: "ado", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
 			}},
 			wantErr: "project is required",
 		},
 		{
 			name: "ado identity auth rejects PAT",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &ADOAuthConfig{Kind: ADOAuthWorkloadIdentity}},
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthWorkloadIdentity}},
 			}},
 			wantErr: "must not configure token",
 		},
@@ -841,6 +878,148 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
 			}},
+		},
+		{
+			name: "valid github-app",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+		},
+		{
+			name: "valid github-app store-backed key",
+			cfg: Config{
+				SecretStores: []SecretStoreConfig{{
+					Name: "prod-kv", Kind: SecretStoreKindAzureKeyVault,
+					VaultURI: "https://acme.vault.azure.net",
+					Auth:     &SecretStoreAuthConfig{Kind: SecretStoreAuthWorkloadIdentity},
+				}},
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "Iv1.abcdef", InstallationID: "42",
+						PrivateKey: &TokenRef{Store: "prod-kv/app-key"},
+					}},
+				},
+			},
+		},
+		{
+			name: "github-app rejects token alongside minting",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "must not configure token",
+		},
+		{
+			name: "github-app missing appId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.appId is required",
+		},
+		{
+			name: "github-app missing installationId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.installationId is required",
+		},
+		{
+			name: "github-app non-numeric installationId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "acme-corp",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "must be the numeric installation ID",
+		},
+		{
+			name: "github-app missing privateKey",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				}},
+			}},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey with two sources",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Env: "K", File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey undeclared store",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Store: "missing-kv/app-key"},
+				}},
+			}},
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "github-app rejects ADO fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, Tenant: "contoso", AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "only valid for ADO auth kinds",
+		},
+		{
+			name: "github pat kind rejects app fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{
+					Kind: GitHubAuthPAT, AppID: "123456",
+				}},
+			}},
+			wantErr: "only valid for auth kind \"github-app\"",
+		},
+		{
+			name: "github unsupported auth kind",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{Kind: "workload-identity"}},
+			}},
+			wantErr: "unsupported GitHub auth kind",
+		},
+		{
+			name: "ado rejects github-app fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{
+					Kind: ADOAuthAzureCLI, AppID: "123456",
+				}},
+			}},
+			wantErr: "only valid for provider \"github\"",
+		},
+		{
+			name: "github-app privateKey env exposed via passthrough",
+			cfg: Config{
+				Runner: RunnerConfig{EnvPassthrough: []string{"GOOBERS_APP_KEY"}},
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+						PrivateKey: &TokenRef{Env: "GOOBERS_APP_KEY"},
+					}},
+				},
+			},
+			wantErr: "must not be exposed to stages",
 		},
 		{
 			name:    "unresolvable timezone",

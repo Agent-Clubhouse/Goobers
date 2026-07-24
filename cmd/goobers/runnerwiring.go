@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -299,9 +300,17 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // root (daemon setup, or a one-shot command's own scope) so every consumer
 // shares one TTL cache; a store ref with a nil stores fails closed at
 // resolver construction rather than degrading into an unconfigured token.
-func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
+//
+// A github-app repo (#686) contributes a minting dynamic source under the same
+// ref name a static token would use, so every consumer that resolves the repo
+// ref — capability grants, ci-poll, the open-PR lister, worktree git auth —
+// receives short-lived installation tokens with no further wiring. registrar
+// receives every minted token (and the App key) at mint time; nil is only for
+// display-path callers that never write journals.
+func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	var sources map[string]credentials.ResolveFunc
 	for _, r := range cfg.Repos {
 		owner := r.Owner
 		if r.Provider == "ado" && r.Project != "" {
@@ -309,7 +318,20 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		ref := owner + "/" + r.Name
 		tokenRef := ""
-		if r.Token.Configured() {
+		if r.GitHubAppAuth() {
+			mint, err := newGitHubAppTokenSource(r, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ResolveFunc)
+			}
+			sources[ref] = mint
+			tokenRef = ref
+		} else if r.Token.Configured() {
+			// The full token ref (env|file|store) is appended; a store-backed ref
+			// resolves through stores below (#683) and fails closed there if no
+			// store resolver is configured.
 			tokenRef = ref
 			refs = append(refs, r.Token.CredentialTokenRef(ref))
 		}
@@ -323,7 +345,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(cg.Capability)))
 	}
-	resolver, err := credentials.NewResolverWithStores(refs, stores)
+	resolver, err := credentials.NewResolverWith(refs, stores, sources)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
@@ -375,6 +397,18 @@ func buildGooberCredentialGrants(gooberName string, capabilities []string, sourc
 // credentialRefName is the resolver ref name for a per-capability credentials:
 // entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
 func credentialRefName(cap string) string { return "credential:" + cap }
+
+// newGitHubAppTokenSource builds the installation-token minting source for a
+// github-app repo (#686). A package var so CLI tests substitute an
+// httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
+// production source caches until near expiry and single-flights refreshes.
+var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.Token, nil
+}
 
 // ciPollTaskExecutor admits ci-poll's credential against each invocation's
 // declared capabilities. Other deterministic kinds retain TaskExecutor's
@@ -1000,7 +1034,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, stores, "", "")
+	resolver, _, err := buildCredentials(cfg, stores, "", "", reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1261,7 +1295,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
 		gaggleOwner += "/" + gaggleProject.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name)
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name, sharedReg)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1513,30 +1547,48 @@ func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.
 
 // githubWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
 // that authenticates mirror clone/fetch of a GitHub repo with its configured
-// token (#667), via the secret-free askpass helper — the token only ever
+// credential (#667), via the secret-free askpass helper — the token only ever
 // exists in the git child process's environment, never on disk or argv.
 //
-// A repo with no token ref returns a nil resolver and writes nothing: a
+// A repo with no credential returns a nil resolver and writes nothing: a
 // public-repo instance keeps today's unauthenticated child environment, byte
 // for byte. With a token ref configured the resolver re-resolves it on every
 // clone/fetch (rotation without restart, matching the env/file resolver's
-// contract) and fails closed — an unresolvable ref aborts provisioning rather
-// than falling back to an anonymous fetch, and GIT_TERMINAL_PROMPT=0 turns a
-// rejected credential into an immediate error instead of an interactive hang.
-// The token is scoped to the configured repo: any other remote URL the
-// manager is ever pointed at gets the ambient (unauthenticated) environment.
-// A store-backed token ref (#683) resolves through stores like env/file refs;
-// it can never fall into the nil-resolver (unauthenticated) arm because
-// Configured() counts it as a source and resolver construction fails closed
-// without store support.
+// contract); a github-app repo (#686) mints per operation instead, so a
+// refreshed installation token flows into the next fetch with no worktree
+// changes. A store-backed token ref (#683) resolves through stores like
+// env/file refs. All three fail closed — an unresolvable ref or failed mint
+// aborts provisioning rather than falling back to an anonymous fetch, and
+// GIT_TERMINAL_PROMPT=0 turns a rejected credential into an immediate error
+// instead of an interactive hang. The token is scoped to the configured repo:
+// any other remote URL the manager is ever pointed at gets the ambient
+// (unauthenticated) environment.
 func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
-	if !repo.Token.Configured() {
+	var resolve credentials.ResolveFunc
+	switch {
+	case repo.GitHubAppAuth():
+		// The minting source registers tokens with registrar itself, at mint
+		// time — before any consumer (including this one) sees the value.
+		mint, err := newGitHubAppTokenSource(repo, registrar, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = mint
+	case repo.Token.Configured():
+		// A static token ref (env|file|store) resolves through stores; a
+		// store-backed ref can never fall into the unauthenticated arm because
+		// Configured() counts it as a source and resolver construction fails
+		// closed without store support.
+		refName := repo.Owner + "/" + repo.Name
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = func(ctx context.Context) (string, error) {
+			return resolver.Resolve(ctx, refName)
+		}
+	default:
 		return nil, nil
-	}
-	refName := repo.Owner + "/" + repo.Name
-	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
-	if err != nil {
-		return nil, err
 	}
 	askpass, err := credentials.WriteAskpassScript(filepath.Join(workcopiesDir, "auth"))
 	if err != nil {
@@ -1547,7 +1599,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 		if !sameGitRemote(repoURL, cloneURL) {
 			return nil, nil
 		}
-		token, err := resolver.Resolve(ctx, refName)
+		token, err := resolve(ctx)
 		if err != nil {
 			return nil, err
 		}

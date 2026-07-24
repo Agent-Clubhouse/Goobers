@@ -76,7 +76,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretReg
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, "", "")
+	resolver, grants, err := buildCredentials(cfg, stores, "", "", registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}

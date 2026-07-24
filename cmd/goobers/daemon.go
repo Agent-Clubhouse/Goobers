@@ -403,7 +403,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg, stores, "", "")
+	credResolver, _, err := buildCredentials(cfg, stores, "", "", sharedReg)
 	if err != nil {
 		return nil, err
 	}

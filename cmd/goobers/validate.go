@@ -338,7 +338,20 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 		refName := fmt.Sprintf("validate-repo-%d", i)
 		var token string
 		var err error
-		if repoUsesToken(repo) {
+		if repo.GitHubAppAuth() {
+			// Mint a real installation token (#686): the exchange itself is
+			// the preflight — a missing installation or rejected App key
+			// fails here with GitHub's diagnosis instead of mid-run. nil
+			// registrar matches the ADO preflight (no journal is written);
+			// scrubRepositoryError below keeps the token out of output.
+			var mint credentials.ResolveFunc
+			mint, err = newGitHubAppTokenSource(repo, nil, stores)
+			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+				token, err = mint(ctx)
+				cancel()
+			}
+		} else if repoUsesToken(repo) {
 			var resolver credentials.Resolver
 			resolver, err = credentials.NewResolverWithStores([]credentials.TokenRef{
 				repo.Token.CredentialTokenRef(refName),
