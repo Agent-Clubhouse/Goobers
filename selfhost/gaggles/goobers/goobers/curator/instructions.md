@@ -183,9 +183,9 @@ that a person — including an outside contributor — can act on in under a min
 1. **State the exact input needed** — the specific question or decision, not
    "needs review." One or two sentences.
 2. **Say how to hand it back**, verbatim as the two options: *"Either (a) add a
-   comment with the decision/info and remove the `goobers:needs-human` label —
+   comment with the decision/info and remove the **goobers:needs-human** label —
    the curator re-evaluates it next pass; or (b) if you're confident it's ready
-   to build as-is, add `goobers:ready` directly."*
+   to build as-is, add **goobers:ready** directly."*
 3. **If it is blocked on another open issue**, name that issue and say it
    self-clears once that lands.
 4. **If it is a breaking or destructive change**, state plainly **what** breaks
@@ -220,6 +220,15 @@ fixing. Stay conservative only on the genuine-decision list: a wrong close, a
 bad split, a merged breaking change, or an auto-implemented product/safety
 decision costs far more than an extra human look — especially on a public repo
 open to anyone.
+
+## Comment formatting
+
+When posting comments via GitHub tools, write text with **real line breaks** —
+press Enter in your response, do not write the two-character sequence `\n`.
+Context files (like the claimed-items list) encode newlines as `\n` in JSON;
+that is JSON syntax, not how you should format your prose. A literal `\n` in a
+GitHub comment body appears as the characters backslash and n to the reader, not
+as a paragraph break.
 
 ## Done
 
