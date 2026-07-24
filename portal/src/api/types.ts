@@ -370,6 +370,8 @@ export type KnownRunEventType =
   | "runner.annotation"
   | "trigger.fired"
   | "tick.skipped"
+  | "provider.quota.reset"
+  | "poll.shed"
   | "claim.acquired"
   | "claim.released"
   | "config.reloaded"

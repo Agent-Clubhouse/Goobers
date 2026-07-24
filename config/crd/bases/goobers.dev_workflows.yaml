@@ -402,6 +402,13 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    priority:
+                      description: |-
+                        Priority orders provider-backed polling when a quota window cannot cover
+                        every due poll. Higher values are preserved first; equal values use the
+                        scheduler's deterministic workflow ordering.
+                      format: int32
+                      type: integer
                     schedule:
                       description: |-
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
