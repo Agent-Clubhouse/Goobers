@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -124,6 +125,31 @@ func salvageStartInput(runID string, m *workflow.Machine) StartInput {
 		Gaggle:  "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}
+}
+
+func TestWithSalvagedDiagnosticsPreservesAuthoritativeUsage(t *testing.T) {
+	transcript := &apiv1.ArtifactPointer{Path: "spans/attempt.jsonl", Digest: "sha256:transcript", Size: 12}
+	metrics := map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  120,
+		telemetry.AttrGenAIUsageOutputTokens: 30,
+		telemetry.AttrUsageCostUSD:           0.15,
+	}
+
+	got := withSalvagedDiagnostics(
+		apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "salvaged"},
+		apiv1.ResultEnvelope{Transcript: transcript, Metrics: metrics},
+	)
+	if got.Transcript != transcript {
+		t.Fatalf("transcript = %+v, want %+v", got.Transcript, transcript)
+	}
+	if len(got.Metrics) != len(metrics) {
+		t.Fatalf("metrics = %v, want %v", got.Metrics, metrics)
+	}
+	for name, want := range metrics {
+		if got.Metrics[name] != want {
+			t.Fatalf("metric %q = %v, want %v", name, got.Metrics[name], want)
+		}
 	}
 }
 

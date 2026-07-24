@@ -195,23 +195,16 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	out, transcript, err := e.run(ctx, ModeInvoke, env, e.resultPath)
 	if err != nil {
-		return apiv1.ResultEnvelope{Transcript: transcript}, err
+		return adapterDiagnostics(out, transcript), err
 	}
 	if err := e.validator.ValidateEnvelope("result", out.Payload); err != nil {
-		return apiv1.ResultEnvelope{Transcript: transcript}, fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		return adapterDiagnostics(out, transcript), fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
 	}
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
-		return apiv1.ResultEnvelope{Transcript: transcript}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
+		return adapterDiagnostics(out, transcript), fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
 	}
-	if len(out.Metrics) > 0 {
-		if result.Metrics == nil {
-			result.Metrics = make(map[string]float64, len(out.Metrics))
-		}
-		for name, value := range out.Metrics {
-			result.Metrics[name] = value
-		}
-	}
+	mergeAdapterMetrics(&result, out.Metrics)
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
@@ -322,17 +315,18 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 
 	out, runErr := e.adapter.Run(ctx, req)
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
+	invoke.ReportAgentUsage(ctx, out.Metrics)
 	if out.TranscriptSchema == "" {
 		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
 		output := e.scrubber.Scrub(out.Transcript)
 		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
 		if err != nil {
-			return Outcome{}, nil, fmt.Errorf("harness: encode transcript floor: %w", err)
+			return out, nil, fmt.Errorf("harness: encode transcript floor: %w", err)
 		}
 		var dropped int64
 		out.Transcript, dropped, err = boundCanonicalTranscript(out.Transcript, req.MaxTranscriptBytes, out.TranscriptDroppedBytes)
 		if err != nil {
-			return Outcome{}, nil, fmt.Errorf("harness: bound transcript floor: %w", err)
+			return out, nil, fmt.Errorf("harness: bound transcript floor: %w", err)
 		}
 		if dropped > out.TranscriptDroppedBytes {
 			out.TranscriptTruncated = true
@@ -361,21 +355,59 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		// importing this package or matching on error strings — mirroring how
 		// worktree-provision transients are marked invoke.InfrastructureFailure.
 		if errors.Is(runErr, ErrTimeout) {
-			return Outcome{}, transcript, invoke.Timeout(wrapped)
+			return out, transcript, invoke.Timeout(wrapped)
 		}
 		if errors.Is(runErr, ErrNoCompletion) {
-			return Outcome{}, transcript, invoke.InfrastructureFailure(wrapped)
+			return out, transcript, invoke.InfrastructureFailure(wrapped)
 		}
-		return Outcome{}, transcript, wrapped
+		return out, transcript, wrapped
 	}
 	if len(out.Payload) == 0 {
 		// Defense in depth: an Adapter contract violation (nil error, empty
 		// payload) still fails closed rather than surfacing a zero-value
 		// result/verdict as a false success.
 		err := fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
-		return Outcome{}, transcript, invoke.InfrastructureFailure(err)
+		return out, transcript, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil
+}
+
+func mergeAdapterMetrics(result *apiv1.ResultEnvelope, metrics map[string]float64) {
+	for name := range result.Metrics {
+		if telemetry.IsCanonicalAgentUsageMetric(name) {
+			delete(result.Metrics, name)
+		}
+	}
+	if len(result.Metrics) == 0 {
+		result.Metrics = nil
+	}
+	if len(metrics) == 0 {
+		return
+	}
+	if result.Metrics == nil {
+		result.Metrics = make(map[string]float64, len(metrics))
+	}
+	for name, value := range metrics {
+		result.Metrics[name] = value
+	}
+}
+
+func copyMetrics(metrics map[string]float64) map[string]float64 {
+	if len(metrics) == 0 {
+		return nil
+	}
+	copied := make(map[string]float64, len(metrics))
+	for name, value := range metrics {
+		copied[name] = value
+	}
+	return copied
+}
+
+func adapterDiagnostics(out Outcome, transcript *apiv1.ArtifactPointer) apiv1.ResultEnvelope {
+	return apiv1.ResultEnvelope{
+		Transcript: transcript,
+		Metrics:    copyMetrics(out.Metrics),
+	}
 }
 
 func invocationTimeout(env apiv1.InvocationEnvelope, fallback time.Duration) time.Duration {

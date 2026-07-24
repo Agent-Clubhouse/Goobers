@@ -17,6 +17,20 @@ func TestProgressReporter(t *testing.T) {
 	}
 }
 
+func TestAgentUsageReporter(t *testing.T) {
+	reported := map[string]float64{}
+	ctx := WithAgentUsageReporter(context.Background(), func(metrics map[string]float64) {
+		for name, value := range metrics {
+			reported[name] = value
+		}
+	})
+	ReportAgentUsage(ctx, map[string]float64{"tokens": 42})
+	ReportAgentUsage(context.Background(), map[string]float64{"ignored": 1})
+	if reported["tokens"] != 42 || len(reported) != 1 {
+		t.Fatalf("reported usage = %v, want only tokens=42", reported)
+	}
+}
+
 func TestInfrastructureFailure(t *testing.T) {
 	cause := errors.New("provider unavailable")
 	err := InfrastructureFailure(cause)

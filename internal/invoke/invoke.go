@@ -12,6 +12,7 @@ import (
 )
 
 type progressReporterKey struct{}
+type agentUsageReporterKey struct{}
 
 // WithProgressReporter attaches the runner's coalesced stage-progress signal
 // to an invocation context.
@@ -28,6 +29,23 @@ func WithProgressReporter(ctx context.Context, report func()) context.Context {
 func ReportProgress(ctx context.Context) {
 	if report, ok := ctx.Value(progressReporterKey{}).(func()); ok {
 		report()
+	}
+}
+
+// WithAgentUsageReporter attaches the runner's trusted usage collector to an
+// agentic invocation. Only harness adapters call ReportAgentUsage; completion
+// envelope metrics remain stage-authored data.
+func WithAgentUsageReporter(ctx context.Context, report func(map[string]float64)) context.Context {
+	if report == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentUsageReporterKey{}, report)
+}
+
+// ReportAgentUsage reports adapter-observed usage to the runner.
+func ReportAgentUsage(ctx context.Context, metrics map[string]float64) {
+	if report, ok := ctx.Value(agentUsageReporterKey{}).(func(map[string]float64)); ok {
+		report(metrics)
 	}
 }
 
