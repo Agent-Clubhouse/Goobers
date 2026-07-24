@@ -262,6 +262,8 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: max-parallel"},
 		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: budget"},
 		{Type: EventWorkflowStarved, Workflow: "implement", SkipCount: 3},
+		{Type: EventProviderQuotaReset, Reason: "provider=github reset=2026-07-23T09:00:00Z remaining=0; provider budget reopened"},
+		{Type: EventPollShed, Workflow: "nominate", Reason: "provider-quota-budget: provider=github priority=1 remaining=0 requested=2 reset=2026-07-23T09:00:00Z"},
 		{Type: EventRunStarted, Workflow: "nominate", RunID: testIdentity().RunID},
 		{Type: EventRunFinished, Workflow: "nominate", RunID: testIdentity().RunID, Status: string(PhaseCompleted)},
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},

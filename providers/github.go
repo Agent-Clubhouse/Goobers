@@ -30,6 +30,11 @@ type GitHubProvider struct {
 	recorder MutationRecorder
 	// rateObserver receives rate-limit backoff signals for telemetry.
 	rateObserver RateLimitObserver
+	// quotaObserver receives absolute remaining/reset response headers.
+	quotaObserver QuotaObserver
+	// quotaGate reserves provider budget before each attempted request.
+	quotaGate         QuotaRequestGate
+	quotaGateInClient bool
 	// maxRetries bounds rate-limit retries on a single request.
 	maxRetries int
 	// maxRateLimitWait bounds the total time one request spends sleeping on
@@ -57,6 +62,10 @@ func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvi
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
+	if setter, ok := p.Client.(interface{ SetQuotaRequestGate(QuotaRequestGate) }); ok && p.quotaGate != nil {
+		setter.SetQuotaRequestGate(p.quotaGate)
+		p.quotaGateInClient = true
+	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -84,6 +93,16 @@ func WithMutationRecorder(recorder MutationRecorder) func(*GitHubProvider) {
 // WithRateLimitObserver receives rate-limit backoff signals for telemetry.
 func WithRateLimitObserver(observer RateLimitObserver) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.rateObserver = observer }
+}
+
+// WithQuotaObserver receives quota-window observations from provider responses.
+func WithQuotaObserver(observer QuotaObserver) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.quotaObserver = observer }
+}
+
+// WithQuotaRequestGate reserves quota before each attempted provider request.
+func WithQuotaRequestGate(gate QuotaRequestGate) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.quotaGate = gate }
 }
 
 // WithHTTPClient overrides the HTTP client every provider request is sent
@@ -2166,6 +2185,11 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
+		if p.quotaGate != nil && !p.quotaGateInClient {
+			if err := p.quotaGate.AcquireQuotaRequest(ctx, ProviderGitHub); err != nil {
+				return nil, err
+			}
+		}
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			// Transport error (connection reset, DNS blip, timeout): retry with
@@ -2179,6 +2203,7 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		p.observeQuota(ctx, resp)
 		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
 			_ = resp.Body.Close()
@@ -2285,6 +2310,24 @@ func (p *GitHubProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent
 	if p.rateObserver != nil {
 		p.rateObserver.ObserveRateLimit(ctx, ev)
 	}
+}
+
+func (p *GitHubProvider) observeQuota(ctx context.Context, resp *http.Response) {
+	if p.quotaObserver == nil {
+		return
+	}
+	observation := QuotaObservation{
+		Provider: ProviderGitHub,
+		Cached:   resp.Header.Get(QuotaCacheHitHeader) == "true",
+	}
+	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")))
+	resetUnix, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetUnix > 0 {
+		observation.Remaining = remaining
+		observation.Reset = time.Unix(resetUnix, 0)
+		observation.Known = true
+	}
+	p.quotaObserver.ObserveQuota(ctx, observation)
 }
 
 type githubIssue struct {

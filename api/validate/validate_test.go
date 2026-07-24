@@ -285,6 +285,29 @@ func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaAcceptsPollingPriority(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "priority-flow"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "backlog-item", "priority": 25}],
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Act on ready work.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
+		t.Fatalf("polling priority failed schema validation: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesDSLVersion(t *testing.T) {
 	v := newV(t)
 	workflow := `apiVersion: goobers.dev/v1alpha1
