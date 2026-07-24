@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -1007,9 +1008,10 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 }
 
-// TestRebasePRRefusesWithoutCapability proves rebase-pr fails closed before
-// any git/provider call when a required capability is absent.
-func TestRebasePRRefusesWithoutCapability(t *testing.T) {
+// TestRebasePRFailureWritesDownstreamContract proves rebase-pr fails closed
+// before any git/provider call when a required capability is absent while
+// preserving every output needed to route through remediation-checkpoint.
+func TestRebasePRFailureWritesDownstreamContract(t *testing.T) {
 	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-363-nocap")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
@@ -1022,5 +1024,21 @@ func TestRebasePRRefusesWithoutCapability(t *testing.T) {
 	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "rebase-result.json"))
+	want := map[string]interface{}{
+		"selectedNumber":         "58",
+		"head":                   "goobers/impl/run-d",
+		"needsAgent":             "true",
+		"conflict":               "false",
+		"conflictLocations":      "[]",
+		"attemptedHeadSha":       "",
+		"rebaseBaseSha":          "",
+		executor.OutputErrorCode: errorCodeProvider,
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
 	}
 }
