@@ -38,7 +38,9 @@ const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
 // concurrent merge-review and pr-remediation runs cannot select it together.
 const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"Select at most one open, non-draft, green-CI goober-authored PR for\n" +
-	"merge-review to evaluate this cycle (a workflow stage). Writes the\n" +
+	"merge-review to evaluate this cycle (a workflow stage). Before selection,\n" +
+	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
+	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url to the declared\n" +
 	"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
@@ -85,7 +87,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -93,16 +95,49 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
 	defer cancelBlockerScan()
 	siblingBlocked := make(map[int]bool)
+	liveSiblingBlockers := make(map[int][]int)
 	blockedDependents := make(map[int]int)
-	for _, pr := range prs {
+	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
+		liveSiblingBlockers[pr.Number] = blockers
 		siblingBlocked[pr.Number] = len(blockers) > 0
 		for _, blocker := range blockers {
 			blockedDependents[blocker]++
 		}
+	}
+	var couplingDependents []providers.PullRequestSummary
+	for _, pr := range openPRs {
+		if pr.State == "open" && pr.Base == base && strings.HasPrefix(pr.Head, headPrefix) {
+			couplingDependents = append(couplingDependents, pr)
+		}
+	}
+	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, siblingBlocked)
+	if err != nil {
+		return failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
+	}
+	for _, warning := range couplingWarnings {
+		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
+	}
+	for _, coupling := range couplings {
+		changed, ferr := flagFoundationCoupling(
+			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
+		)
+		if ferr != nil {
+			return failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), ferr, "selected-pr.json")
+		}
+		if !changed {
+			continue
+		}
+		liveSiblingBlockers[coupling.dependent.Number] = append(
+			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
+		)
+		siblingBlocked[coupling.dependent.Number] = true
+		blockedDependents[coupling.foundation.Number]++
+		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
+			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
 	}
 
 	var eligible []providers.PullRequestSummary
@@ -231,22 +266,38 @@ func pullRequestsForSelection(
 	headPrefix string,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
-) ([]providers.PullRequestSummary, error) {
+) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	openPRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, SkipCheckState: true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
+	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if !targeted || completeness == prSelectCompleteSnapshot {
-		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-			Repository: repo, Base: base, HeadPrefix: headPrefix,
-		})
+	if targeted && completeness != prSelectCompleteSnapshot {
+		pr, err := provider.GetPullRequest(ctx, repo, pullID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+		}
+		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+		}
+		return []providers.PullRequestSummary{pr}, openPRs, nil
 	}
-	pr, err := provider.GetPullRequest(ctx, repo, pullID)
-	if err != nil {
-		return nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+
+	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
+	for _, pr := range openPRs {
+		if !strings.HasPrefix(pr.Head, headPrefix) {
+			continue
+		}
+		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
+		}
+		prs = append(prs, pr)
 	}
-	pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-	if err != nil {
-		return nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
-	}
-	return []providers.PullRequestSummary{pr}, nil
+	return prs, openPRs, nil
 }
 
 func splitLabelList(value string) []string {

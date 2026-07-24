@@ -604,15 +604,18 @@ type ListPullRequestsRequest struct {
 // per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
 // also populate State and Merged for consumers that need current sibling state.
 type PullRequestSummary struct {
-	ID         string     `json:"id"`
-	Number     int        `json:"number"`
-	URL        string     `json:"url"`
-	State      string     `json:"state"`
-	Merged     bool       `json:"merged"`
-	Head       string     `json:"head"`
-	Base       string     `json:"base"`
-	HeadSHA    string     `json:"headSha"`
-	BaseSHA    string     `json:"baseSha"`
+	ID      string `json:"id"`
+	Number  int    `json:"number"`
+	URL     string `json:"url"`
+	State   string `json:"state"`
+	Merged  bool   `json:"merged"`
+	Head    string `json:"head"`
+	Base    string `json:"base"`
+	HeadSHA string `json:"headSha"`
+	BaseSHA string `json:"baseSha"`
+	// MergeSHA is the landed commit GitHub reports for a merged PR. It is
+	// empty for open/unmerged PRs and providers that do not expose one.
+	MergeSHA   string     `json:"mergeSha,omitempty"`
 	Draft      bool       `json:"draft"`
 	Labels     []string   `json:"labels,omitempty"`
 	CheckState CheckState `json:"checkState"`
@@ -631,10 +634,13 @@ type PullRequestSummary struct {
 // context: what does the OTHER open PR touch, for cross-PR conflict/drift
 // detection).
 type ChangedFile struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"` // added|modified|removed|renamed
-	Additions int    `json:"additions,omitempty"`
-	Deletions int    `json:"deletions,omitempty"`
+	Path string `json:"path"`
+	// PreviousPath is populated for renames so consumers can correlate
+	// conflicts reported under either side of the move.
+	PreviousPath string `json:"previousPath,omitempty"`
+	Status       string `json:"status"` // added|modified|removed|renamed
+	Additions    int    `json:"additions,omitempty"`
+	Deletions    int    `json:"deletions,omitempty"`
 	// Patch is the file's unified-diff hunk text as the provider reports it
 	// (GitHub omits this for binary files and diffs over its size cutoff —
 	// empty in that case, not an error). Issue #718: the rebase-invariant

@@ -32,8 +32,8 @@ func TestPRSelectConsumesWebhookTargetBeforePollingFallback(t *testing.T) {
 		if got := selectedPullNumber(t, filepath.Join(dir, "selected-pr.json")); got != "11" {
 			t.Fatalf("selected pull request = %q, want webhook target 11", got)
 		}
-		if got := server.pullListRequestCount(); got != 0 {
-			t.Fatalf("pull-request list calls = %d, want 0 for webhook target", got)
+		if got := server.pullListRequestCount(); got != 1 {
+			t.Fatalf("pull-request list calls = %d, want 1 complete foundation scan", got)
 		}
 	})
 
