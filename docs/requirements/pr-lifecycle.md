@@ -104,6 +104,13 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   candidates, whether the hard guard applied, and the numbers of any unclaimed
   eligible PRs already over the one-hour bound. These scalar outputs are the W2
   soak's starvation signal.
+- **PRL-009 (MUST, Shipped):** Once verdict application durably parks a
+  non-lander behind its elected predecessor, it MUST enqueue an immediate,
+  targeted re-tick of the same gaggle's `merge-review` workflow. The re-tick
+  remains subject to ordinary scheduler admission and PRL-007 ordering, so it
+  neither changes the existing selection tiers nor bypasses the starvation
+  guard. The verdict-stage result MUST report whether it requested this
+  priority dispatch so the election-to-dispatch latency is measurable.
 
 ### Sibling context & the verdict contract
 
@@ -444,10 +451,6 @@ mutation and therefore have no action row.
 
 Verified open issues this spec expects to be closed against these IDs:
 
-- **#952** — the crowned lander gets no *added* election-stage priority, so a
-  freshly-crowned cluster can wait a full cycle to start draining. (pr-select's
-  blocked-dependents ordering, PRL-004, already prioritizes landers at
-  selection time; the residual is the elect-lander-side latency.) → PRL-004/020.
 - **#1061** — `apply-verdict` fails with `selectedHeadSha is required` on the
   elect-lander `elected:false` branch under some threading orders — a
   violation of PRL-030's "every non-void verdict is applied".

@@ -114,6 +114,7 @@ spec:
         - selectedBaseSha
         - decision
         - verdictAuthor
+        - priorityDispatchRequested
       next: published-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
