@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/credentials"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -1426,16 +1428,21 @@ func TestConfigValidateStoreRefs(t *testing.T) {
 	}
 }
 
-// TestTokenRefEnvFileSources pins the fail-closed contract every local-only
-// consumer relies on (#683): a store-backed ref must error, never read as an
-// unconfigured ref, until a build path wires real store resolution.
-func TestTokenRefEnvFileSources(t *testing.T) {
-	env, file, err := TokenRef{Env: "T"}.EnvFileSources()
-	if err != nil || env != "T" || file != "" {
-		t.Fatalf("env ref = (%q, %q, %v)", env, file, err)
+// TestTokenRefCredentialTokenRef pins the conversion every consumer feeds
+// credentials.NewResolverWithStores (#683): all three sources carry through
+// under the caller's ref name, so a store-backed ref reaches the resolver
+// intact (and a resolver built without store support still rejects it at
+// construction — see the credentials package's own fail-closed tests).
+func TestTokenRefCredentialTokenRef(t *testing.T) {
+	got := TokenRef{Env: "T"}.CredentialTokenRef("repo")
+	if got.Name != "repo" || got.Env != "T" || got.File != "" || got.Store != "" {
+		t.Fatalf("env ref = %+v", got)
 	}
-	if _, _, err := (TokenRef{Store: "prod-kv/github-token"}).EnvFileSources(); err == nil ||
-		!strings.Contains(err.Error(), "secret store resolution is not configured in this build path yet") {
-		t.Fatalf("store ref must fail closed, got %v", err)
+	got = TokenRef{Store: "prod-kv/github-token"}.CredentialTokenRef("repo")
+	if got.Name != "repo" || got.Store != "prod-kv/github-token" || got.Env != "" || got.File != "" {
+		t.Fatalf("store ref = %+v", got)
+	}
+	if _, err := credentials.NewResolver([]credentials.TokenRef{got}); err == nil {
+		t.Fatal("a store-backed ref must fail closed in a resolver built without store support")
 	}
 }

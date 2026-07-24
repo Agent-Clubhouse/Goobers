@@ -87,7 +87,7 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		URL:   repositoryURL,
 		Ref:   "main",
 		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
-	}, registrar)
+	}, registrar, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestWorkflowGitSourceFailsWhenDedicatedTokenIsWrong(t *testing.T) {
 		Kind:  WorkflowSourceKindGit,
 		URL:   repositoryURL,
 		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
-	}, &gitSourceTestRegistrar{})
+	}, &gitSourceTestRegistrar{}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestWorkflowGitSourceFailsClosedWhenTokenDoesNotResolve(t *testing.T) {
 		Kind:  WorkflowSourceKindGit,
 		URL:   "https://example.invalid/workflows.git",
 		Token: &TokenRef{Env: "EMPTY_WORKFLOW_SOURCE_TOKEN"},
-	}, &gitSourceTestRegistrar{})
+	}, &gitSourceTestRegistrar{}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -188,6 +188,20 @@ func TestWorkflowGitSourceFailsClosedWhenTokenDoesNotResolve(t *testing.T) {
 	}
 	if _, err := os.Stat(source.mirror); !os.IsNotExist(err) {
 		t.Fatalf("managed mirror exists after credential failure: %v", err)
+	}
+}
+
+// TestWorkflowGitSourceStoreBackedTokenFailsClosedWithoutStores pins the #683
+// guard at this seam: a store-backed workflowSource token without a store
+// resolver is a construction error, never an unauthenticated source.
+func TestWorkflowGitSourceStoreBackedTokenFailsClosedWithoutStores(t *testing.T) {
+	_, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   "https://example.invalid/workflows.git",
+		Token: &TokenRef{Store: "prod-kv/workflow-source-token"},
+	}, &gitSourceTestRegistrar{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "no secret store resolver is configured") {
+		t.Fatalf("NewWorkflowGitSource error = %v, want fail-closed store-resolver error", err)
 	}
 }
 
