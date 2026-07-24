@@ -41,6 +41,8 @@ func newNative() (Sandbox, error) {
 	return nativeSandbox{bubblewrapPath: path}, nil
 }
 
+func (nativeSandbox) Mechanism() string { return "bwrap" }
+
 func (s nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	validated, err := validate(command, policy)
 	if err != nil {
