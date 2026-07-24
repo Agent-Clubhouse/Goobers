@@ -93,6 +93,37 @@ notifications: true
 	}
 }
 
+func TestLoadConfigWorkcopies(t *testing.T) {
+	base := `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+`
+	cfg, err := LoadConfig(writeInstanceYAML(t, base))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone must default to false")
+	}
+
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
+workcopies:
+  partialClone: true
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies: %v", err)
+	}
+	if !cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone: true was not honored")
+	}
+}
+
 func TestLoadConfigWorkflowSource(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -116,6 +116,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	largeBlobBytes := fs.Int64("large-blob-bytes", 0, "override the size of each incompressible binary")
 	touch := fs.Int("touch-per-commit", 0, "override files rewritten per history commit")
 	cycles := fs.Int("cycles", 3, "worktree add/teardown cycles to measure")
+	partialClone := fs.Bool("partial-clone", false, "provision mirrors as blobless partial clones (#646) for before/after comparison")
 	fixtureDir := fs.String("fixture", "", "generate (or reuse, if it already exists) the fixture at this path instead of a temp dir")
 	keepFixture := fs.Bool("keep-fixture", false, "keep the generated fixture instead of deleting it")
 	repo := fs.String("repo", "", "benchmark this existing repo URL instead of generating a fixture")
@@ -163,13 +164,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	rep, err := benchmark(context.Background(), benchOptions{
-		spec:        spec,
-		preset:      *preset,
-		repo:        *repo,
-		fixtureDir:  *fixtureDir,
-		keepFixture: *keepFixture,
-		baseRef:     *baseRef,
-		cycles:      *cycles,
+		spec:         spec,
+		preset:       *preset,
+		repo:         *repo,
+		fixtureDir:   *fixtureDir,
+		keepFixture:  *keepFixture,
+		partialClone: *partialClone,
+		baseRef:      *baseRef,
+		cycles:       *cycles,
 	}, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
@@ -195,21 +197,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 type benchOptions struct {
-	spec        fixtureSpec
-	preset      string
-	repo        string
-	fixtureDir  string
-	keepFixture bool
-	baseRef     string
-	cycles      int
+	spec         fixtureSpec
+	preset       string
+	repo         string
+	fixtureDir   string
+	keepFixture  bool
+	partialClone bool
+	baseRef      string
+	cycles       int
 }
 
 func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*report, error) {
 	rep := &report{
-		Schema:     schemaID,
-		GOOS:       runtime.GOOS,
-		GOARCH:     runtime.GOARCH,
-		GitVersion: gitVersion(ctx),
+		Schema:       schemaID,
+		GOOS:         runtime.GOOS,
+		GOARCH:       runtime.GOARCH,
+		GitVersion:   gitVersion(ctx),
+		PartialClone: opts.partialClone,
 	}
 
 	repoURL := opts.repo
@@ -264,7 +268,11 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 	}
 	defer os.RemoveAll(workRoot)
 
-	manager, err := worktree.NewManager(workRoot)
+	var managerOpts []worktree.ManagerOption
+	if opts.partialClone {
+		managerOpts = append(managerOpts, worktree.WithPartialClone())
+	}
+	manager, err := worktree.NewManager(workRoot, managerOpts...)
 	if err != nil {
 		return nil, err
 	}

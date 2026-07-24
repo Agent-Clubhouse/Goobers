@@ -82,3 +82,12 @@ runConditions:
 # runner:
 #   capabilities: [dotnet@8]
 #   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
+# Optional workcopies block. `partialClone: true` provisions NEW repo mirrors
+# as blobless partial clones (--filter=blob:none) with a heads+tags refresh
+# refspec — the large-repo clone-time/disk win (#646). Blobs are then fetched
+# on demand when a stage worktree materializes, so provisioning needs network
+# (and, on private repos, git credentials) at worktree-create time. Off (the
+# default) keeps full mirrors with byte-identical git behavior; existing
+# mirrors are never migrated either way.
+# workcopies:
+#   partialClone: true

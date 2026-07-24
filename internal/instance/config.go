@@ -81,6 +81,30 @@ type Config struct {
 	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
 	// a Go-only instance that declares no requirements is unaffected.
 	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+	// Workcopies tunes managed working-copy provisioning (docs/design/
+	// v2-cloud-scale.md §3). Nil keeps every default — a pointer, unlike the
+	// sibling sections, so an unconfigured instance's written instance.yaml
+	// stays byte-identical.
+	Workcopies *WorkcopiesConfig `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
+}
+
+// WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
+type WorkcopiesConfig struct {
+	// PartialClone opts newly created mirrors into blobless partial clones
+	// with a heads+tags-narrowed refresh refspec (#646, design §3 B1): blobs
+	// are fetched on demand when a stage worktree first materializes them,
+	// which makes worktree provisioning network-dependent (and, on private
+	// repos, credential-dependent — see worktree.WithPartialClone). False —
+	// the default — keeps mirrors full clones with git invocations
+	// byte-identical to previous releases; existing mirrors are never
+	// migrated in either direction.
+	PartialClone bool `json:"partialClone,omitempty" yaml:"partialClone,omitempty"`
+}
+
+// PartialCloneEnabled reports whether newly created mirrors should be
+// blobless partial clones (workcopies.partialClone, defaults to false).
+func (c *Config) PartialCloneEnabled() bool {
+	return c.Workcopies != nil && c.Workcopies.PartialClone
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.

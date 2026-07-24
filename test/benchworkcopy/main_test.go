@@ -102,6 +102,40 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunEndToEndPartialClone exercises the harness in the mode B1 (#646)
+// before/after numbers are collected in: a blobless mirror must come out
+// smaller than the fixture while still provisioning full worktrees.
+func TestRunEndToEndPartialClone(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "report.json")
+	args := []string{
+		"-files", "24", "-depth", "4", "-branches", "2", "-tags", "1",
+		"-large-blobs", "1", "-large-blob-bytes", "32768",
+		"-cycles", "1", "-partial-clone", "-out", out,
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("run = %d, stderr:\n%s", code, stderr.String())
+	}
+
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep report
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("report is not valid JSON: %v\n%s", err, raw)
+	}
+	if !rep.PartialClone {
+		t.Fatal("report does not record partialClone: true")
+	}
+	if rep.MirrorBytes >= rep.Fixture.RepoBytes {
+		t.Fatalf("blobless mirror (%d bytes) is not smaller than the fixture (%d bytes) — the filter did not apply", rep.MirrorBytes, rep.Fixture.RepoBytes)
+	}
+	if len(rep.Cycles) != 1 || rep.Cycles[0].WorktreeBytes <= 0 {
+		t.Fatalf("cycles = %+v, want one cycle with a materialized worktree", rep.Cycles)
+	}
+}
+
 func TestRunRejectsUnknownPreset(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-preset", "galactic"}, &stdout, &stderr); code != 2 {
