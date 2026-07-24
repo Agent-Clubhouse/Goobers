@@ -101,6 +101,9 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "initialized instance at") {
 		t.Fatalf("init stdout = %q", stdout)
 	}
+	if !strings.Contains(stdout, "docs/concepts/README.md") {
+		t.Fatalf("init stdout lacks concepts guide: %q", stdout)
+	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)
 	if code != 0 {

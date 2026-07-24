@@ -106,6 +106,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
+	pf(stdout, "\nLearn the desired-state model: %s\n", conceptsGuideURL)
 	demoSeeded := false
 	for _, created := range res.Created {
 		if created == instance.ConfigDirName {
@@ -425,6 +426,8 @@ Developer docs:
   Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and docs/stage-contract.md
   View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (` + "`goobers trace` / `goobers telemetry`" + `)
 `
+
+const conceptsGuideURL = "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
 
 const demoTourBanner = `
 Demo full loop (run these from %s):

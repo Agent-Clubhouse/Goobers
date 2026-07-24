@@ -167,6 +167,8 @@ func TestInitDemoBannerGolden(t *testing.T) {
   created  scheduler
   created  telemetry.db
 
+Learn the desired-state model: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md
+
 Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact

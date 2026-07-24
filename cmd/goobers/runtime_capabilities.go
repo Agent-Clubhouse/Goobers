@@ -397,6 +397,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).
 			withExamples("goobers gather-pr-context"),
+		command("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
+			withSynopsis(synopsisByID["gather-issue-context"]).
+			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
+			withExamples("goobers gather-issue-context"),
 		command("rebase-pr", apicontract.ActionWorkflowExecution, runRebasePR).
 			withSynopsis(synopsisByID["rebase-pr"]).
 			withHelp("rebase-first, finding-driven remediation routing (a workflow stage)", rebasePRHelp).

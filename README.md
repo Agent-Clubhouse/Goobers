@@ -8,6 +8,8 @@ clustered orchestration over a large monorepo.
 - **Architecture of record:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one
   system across three deployment tiers; local runner first, cloud (Temporal/AKS) as
   drop-ins behind named seams.
+- **Concepts:** [`docs/concepts/`](docs/concepts/) — desired state, the config
+  repository as source of truth, and the propose-via-PR trust model.
 - **Product vision:** [`docs/VISION.md`](docs/VISION.md)
 - **Requirements:** [`docs/requirements/`](docs/requirements/)
 - **Roadmap:** GitHub milestones — **V0** "works locally, begins to build itself",
@@ -55,6 +57,11 @@ Every binary shares `internal/app.Main`, which wires `--version`, structured log
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
 ## Quickstart (tier 1, local)
+
+New to declarative control systems? Read
+[How Goobers works](docs/concepts/README.md) first; it explains why `config/`
+defines behavior while runs, workcopies, and scheduler records are runtime
+state.
 
 ```sh
 go build -o bin/goobers ./cmd/goobers    # or: make build

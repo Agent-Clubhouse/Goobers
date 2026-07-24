@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -14,10 +16,37 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
+
+const (
+	milestoneHelperEnv    = "GOOBERS_TEST_MILESTONE_HELPER"
+	milestoneHelperMarker = "GOOBERS_TEST_MILESTONE_MARKER"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(milestoneHelperEnv) == "1" {
+		want := []string{"set-milestone", "--item", "7", "--milestone", "22"}
+		if !slices.Equal(os.Args[1:], want) {
+			fmt.Fprintf(os.Stderr, "milestone helper args = %q, want %q\n", os.Args[1:], want)
+			os.Exit(2)
+		}
+		marker := os.Getenv(milestoneHelperMarker)
+		if marker == "" {
+			fmt.Fprintln(os.Stderr, "milestone helper marker is empty")
+			os.Exit(2)
+		}
+		if err := os.WriteFile(marker, []byte("invoked"), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "write milestone helper marker: %v\n", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // fakeProcessRunner is a scripted ProcessRunner double: it lets tests inspect
 // the built command/env/dir and script an arbitrary side effect (e.g. writing
@@ -150,6 +179,80 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 		if strings.Contains(arg, "copilot-pat") || strings.Contains(arg, "org-repo-token") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
 		}
+	}
+}
+
+func TestCopilotAdapterInjectsMilestoneCommandEnvironment(t *testing.T) {
+	workspace := t.TempDir()
+	selfBin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(workspace, "milestone-invoked")
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			var goobersBin string
+			for _, entry := range req.Env {
+				if value, ok := strings.CutPrefix(entry, executor.GoobersBinEnvVar+"="); ok {
+					goobersBin = value
+					break
+				}
+			}
+			if goobersBin == "" {
+				return errors.New("GOOBERS_BIN is missing")
+			}
+			cmd := exec.Command(goobersBin, "set-milestone", "--item", "7", "--milestone", "22")
+			cmd.Env = append(req.Env,
+				milestoneHelperEnv+"=1",
+				milestoneHelperMarker+"="+marker,
+			)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("invoke resolved milestone command: %w: %s", err, output)
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:      []string{"copilot"},
+		Runner:       runner,
+		InstanceRoot: "/instances/acme",
+		SelfBin:      selfBin,
+		EnvCapabilities: map[string]string{
+			"github:issues:write":     "GH_TOKEN",
+			"github:milestones:write": executor.CredentialEnvVar("github:milestones:write"),
+		},
+	}
+	creds := twoTokenCredentials(t,
+		"github:issues:write", "issues-token",
+		"github:milestones:write", "milestones-token",
+	)
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace, "github:issues:write", "github:milestones:write"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := []string{
+		"GH_TOKEN=issues-token",
+		"GOOBERS_CRED_GITHUB_MILESTONES_WRITE=milestones-token",
+		executor.InstanceRootEnvVar + "=/instances/acme",
+		executor.GoobersBinEnvVar + "=" + selfBin,
+		executor.RepoProviderEnvVar + "=github",
+		executor.RepoOwnerEnvVar + "=acme",
+		executor.RepoNameEnvVar + "=web",
+	}
+	for _, entry := range want {
+		if !slices.Contains(runner.lastReq.Env, entry) {
+			t.Errorf("subprocess env missing %q: %v", entry, runner.lastReq.Env)
+		}
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "invoked" {
+		t.Fatalf("resolved milestone command marker = %q, %v", got, err)
 	}
 }
 

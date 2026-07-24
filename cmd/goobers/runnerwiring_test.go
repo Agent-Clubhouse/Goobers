@@ -243,8 +243,8 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 
 // TestBuildEnvCapabilities is #288's wiring: the Copilot adapter's capability→
 // env-var map routes agent:model to COPILOT_GITHUB_TOKEN, the nomination
-// approval authority to its dedicated GOOBERS_CRED_* variable, and other
-// org-repo capabilities to GH_TOKEN.
+// approval and milestone-command authorities to dedicated GOOBERS_CRED_*
+// variables, and other org-repo capabilities to GH_TOKEN.
 func TestBuildEnvCapabilities(t *testing.T) {
 	envCaps := buildEnvCapabilities()
 	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
@@ -252,7 +252,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	}
 	for _, c := range credentialedCapabilities {
 		want := credentialGrantEnv
-		if c == capability.GitHubIssuesApprove {
+		if c == capability.GitHubIssuesApprove || c == capability.GitHubMilestonesWrite {
 			want = executor.CredentialEnvVar(string(c))
 		}
 		if got := envCaps[string(c)]; got != want {
@@ -265,11 +265,14 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	if got := envCaps["github:issues:approve"]; got != "GOOBERS_CRED_GITHUB_ISSUES_APPROVE" {
 		t.Fatalf("github:issues:approve env = %q, want dedicated approval variable", got)
 	}
+	if got := envCaps["github:milestones:write"]; got != "GOOBERS_CRED_GITHUB_MILESTONES_WRITE" {
+		t.Fatalf("github:milestones:write env = %q, want dedicated milestone variable", got)
+	}
 }
 
 func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil)
+	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme", "/opt/goobers/bin/goobers")
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -292,6 +295,12 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 	if len(copilot.AuthCheckArgs) == 0 {
 		t.Fatal("registered Copilot adapter is missing its authentication preflight")
+	}
+	if copilot.InstanceRoot != "/instances/acme" {
+		t.Fatalf("adapter instance root = %q, want /instances/acme", copilot.InstanceRoot)
+	}
+	if copilot.SelfBin != "/opt/goobers/bin/goobers" {
+		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", copilot.SelfBin)
 	}
 }
 

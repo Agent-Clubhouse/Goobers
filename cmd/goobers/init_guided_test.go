@@ -46,6 +46,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"Repository push PAT permissions: Contents: Read and write.",
 		"Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.",
 		"For a headless service/CI account",
+		"docs/concepts/README.md",
 		"Author workflows:",
 		"Quickstart safety/upgrade:",
 		"docs/guides/dsl-authoring-skill.md",
