@@ -112,11 +112,14 @@ jobs:
           goobers --version | grep --fixed-strings "$TAG"
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers init ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers init --guided ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers run implementation ./my-instance" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
-          goobers init smoke/quickstart-instance
+          printf '%s\n\n\n\n\n\n\n\n\n' 'Agent-Clubhouse/Goobers' |
+            goobers init --guided smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
+          test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli

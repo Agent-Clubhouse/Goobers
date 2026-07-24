@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func TestFirstNonEmpty(t *testing.T) {
@@ -138,6 +140,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"goobers --version",
 		"goobers init --guided ./my-instance",
 		"goobers init --template=quickstart ./tutorial-instance",
+		"goobers run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 	} {
 		if !strings.Contains(string(readme), want) {
 			t.Errorf("README.md missing installed onboarding command %q:\n%s", want, readme)
@@ -148,6 +151,14 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
 	}
+	assertSubstringsInOrder(
+		t,
+		"bundled README onboarding",
+		string(readme),
+		"goobers --version",
+		"goobers init --guided ./my-instance",
+		"goobers run "+instance.GuidedWorkflowImplementation+" ./my-instance",
+	)
 
 	quickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart.md"])
 	if err != nil {
@@ -156,18 +167,28 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers --version",
-		"goobers init ./my-instance",
+		"goobers init --guided ./my-instance",
 		"goobers init --template=quickstart ./tutorial-instance",
+		"goobers run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 	} {
 		if !strings.Contains(string(quickstart), want) {
 			t.Errorf("docs/guides/quickstart.md missing installed onboarding command %q:\n%s", want, quickstart)
 		}
 	}
-	for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init"} {
+	for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init", "goobers init ./my-instance", "default-implement"} {
 		if strings.Contains(string(quickstart), stale) {
 			t.Errorf("docs/guides/quickstart.md retains source-checkout command %q:\n%s", stale, quickstart)
 		}
 	}
+	assertSubstringsInOrder(
+		t,
+		"bundled quickstart direct onboarding",
+		string(quickstart),
+		"goobers --version",
+		"goobers init --guided ./my-instance",
+		"goobers validate ./my-instance",
+		"goobers run "+instance.GuidedWorkflowImplementation+" ./my-instance",
+	)
 	linuxQuickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart-linux.md"])
 	if err != nil {
 		t.Fatalf("read Linux quickstart: %v", err)
@@ -249,6 +270,18 @@ func TestRunEndToEnd(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("missing release metadata %s: %v", name, err)
 		}
+	}
+}
+
+func assertSubstringsInOrder(t *testing.T, name, text string, wants ...string) {
+	t.Helper()
+	offset := 0
+	for _, want := range wants {
+		index := strings.Index(text[offset:], want)
+		if index < 0 {
+			t.Fatalf("%s does not contain %q after byte %d", name, want, offset)
+		}
+		offset += index + len(want)
 	}
 }
 

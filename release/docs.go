@@ -21,7 +21,32 @@ const (
 		"  -- \"$VERSION\" ./my-instance\n\n"
 	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
-	linuxQuickstartSourceIntro = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
+	quickstartSourceInit = "## 2. `init` — scaffold an instance root\n\n" +
+		"```sh\n" +
+		"bin/goobers init ./my-instance\n" +
+		"```\n\n" +
+		"Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one\n" +
+		"implement-only workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
+		"`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each\n" +
+		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing\n" +
+		"pieces are left untouched.\n\n"
+	quickstartInstalledInit = "## 2. Use the guided instance\n\n" +
+		"The release installer and bundled README already run guided setup for\n" +
+		"`./my-instance`; if you used either path, do not initialize it again. Continue\n" +
+		"with step 3 below.\n\n" +
+		"If you opened this guide directly from an extracted archive, create the same\n" +
+		"guided instance now:\n\n" +
+		"```sh\n" +
+		"goobers init --guided ./my-instance\n" +
+		"```\n\n" +
+		"Keep the default workflow selection, or explicitly select `implementation`, so\n" +
+		"the first manual run below uses the workflow the guided setup created. Guided\n" +
+		"setup validates the instance and refuses an already configured target.\n\n"
+	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
+	quickstartInstalledRun            = "goobers run implementation ./my-instance"
+	quickstartSourceStatusWorkflow    = "default-implement         example"
+	quickstartInstalledStatusWorkflow = "implementation            example"
+	linuxQuickstartSourceIntro        = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
 		"build, configure credentials, and drive a first run. This is the Linux-specific\n" +
 		"companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI\n" +
 		"surface is identical; this page calls out the few things that are Linux-specific\n" +
@@ -166,15 +191,29 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		},
 		{
 			path: "docs/guides/quickstart.md",
-			sections: []onboardingSectionRewrite{{
-				source: quickstartSourceBuild,
-				installed: fmt.Sprintf(
-					"## 1. Confirm the installed binary\n\n"+
-						"This copy is bundled with release `%s` and uses the `goobers` executable from `PATH`.\n\n"+
-						"```sh\ngoobers --version\n```\n\n",
-					version,
-				),
-			}},
+			sections: []onboardingSectionRewrite{
+				{
+					source: quickstartSourceBuild,
+					installed: fmt.Sprintf(
+						"## 1. Confirm the installed binary\n\n"+
+							"This copy is bundled with release `%s` and uses the `goobers` executable from `PATH`.\n\n"+
+							"```sh\ngoobers --version\n```\n\n",
+						version,
+					),
+				},
+				{
+					source:    quickstartSourceInit,
+					installed: quickstartInstalledInit,
+				},
+				{
+					source:    quickstartSourceRun,
+					installed: quickstartInstalledRun,
+				},
+				{
+					source:    quickstartSourceStatusWorkflow,
+					installed: quickstartInstalledStatusWorkflow,
+				},
+			},
 			sourceCommandPrefix:  "bin/goobers",
 			installedCommandName: "goobers",
 		},
