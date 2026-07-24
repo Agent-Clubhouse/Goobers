@@ -3,6 +3,8 @@ package runner
 import (
 	"fmt"
 	"math"
+	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -16,6 +18,12 @@ type attemptUsageCollector struct {
 	mu       sync.Mutex
 	metrics  map[string]float64
 	reported bool
+}
+
+type stageUsageTotals struct {
+	metrics     map[string]float64
+	costUSD     *big.Rat
+	invalidCost bool
 }
 
 func (c *attemptUsageCollector) report(metrics map[string]float64) {
@@ -42,15 +50,39 @@ func (c *attemptUsageCollector) snapshot() (map[string]float64, bool) {
 	return metrics, c.reported
 }
 
-func accumulateStageUsage(total, attempt map[string]float64) {
+func newStageUsageTotals() *stageUsageTotals {
+	return &stageUsageTotals{metrics: make(map[string]float64)}
+}
+
+func accumulateStageUsage(total *stageUsageTotals, attempt map[string]float64) {
 	for name, value := range attempt {
-		if telemetry.IsCanonicalAgentUsageMetric(name) {
-			total[name] += value
+		if !telemetry.IsCanonicalAgentUsageMetric(name) {
+			continue
 		}
+		if name != telemetry.AttrUsageCostUSD {
+			total.metrics[name] += value
+			continue
+		}
+
+		valueDecimal, ok := decimalFloat64(value)
+		if !ok || total.invalidCost {
+			total.metrics[name] += value
+			total.invalidCost = true
+			continue
+		}
+		if total.costUSD == nil {
+			total.costUSD = new(big.Rat)
+		}
+		total.costUSD.Add(total.costUSD, valueDecimal)
+		total.metrics[name], _ = total.costUSD.Float64()
 	}
 }
 
-func enforceStageBudget(limits apiv1.Limits, attempt, total map[string]float64, result apiv1.ResultEnvelope) (apiv1.ResultEnvelope, bool) {
+func decimalFloat64(value float64) (*big.Rat, bool) {
+	return new(big.Rat).SetString(strconv.FormatFloat(value, 'f', -1, 64))
+}
+
+func enforceStageBudget(limits apiv1.Limits, attempt map[string]float64, total *stageUsageTotals, result apiv1.ResultEnvelope) (apiv1.ResultEnvelope, bool) {
 	var violations []string
 	if limits.MaxTokens > 0 {
 		attemptInput, hasInput := attempt[telemetry.AttrGenAIUsageInputTokens]
@@ -74,8 +106,8 @@ func enforceStageBudget(limits apiv1.Limits, attempt, total map[string]float64, 
 				limits.MaxTokens, attemptInput, attemptOutput,
 			))
 		default:
-			input := total[telemetry.AttrGenAIUsageInputTokens]
-			output := total[telemetry.AttrGenAIUsageOutputTokens]
+			input := total.metrics[telemetry.AttrGenAIUsageInputTokens]
+			output := total.metrics[telemetry.AttrGenAIUsageOutputTokens]
 			switch {
 			case !validTokenUsage(input) || !validTokenUsage(output) || math.IsInf(input+output, 0):
 				violations = append(violations, fmt.Sprintf(
@@ -104,14 +136,20 @@ func enforceStageBudget(limits apiv1.Limits, attempt, total map[string]float64, 
 				limits.MaxCostUSD, attemptCost,
 			))
 		default:
-			cost := total[telemetry.AttrUsageCostUSD]
+			cost := total.metrics[telemetry.AttrUsageCostUSD]
+			limit, validLimit := decimalFloat64(limits.MaxCostUSD)
 			switch {
-			case math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0:
+			case total.invalidCost || math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0:
 				violations = append(violations, fmt.Sprintf(
 					"cannot enforce maxCostUSD %g: invalid cumulative cost usage %g",
 					limits.MaxCostUSD, cost,
 				))
-			case cost > limits.MaxCostUSD:
+			case !validLimit:
+				violations = append(violations, fmt.Sprintf(
+					"cannot enforce invalid maxCostUSD %g",
+					limits.MaxCostUSD,
+				))
+			case total.costUSD.Cmp(limit) > 0:
 				violations = append(violations, fmt.Sprintf(
 					"cost usage $%g exceeds maxCostUSD $%g",
 					cost, limits.MaxCostUSD,

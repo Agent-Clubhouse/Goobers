@@ -1966,7 +1966,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	}
 
 	var lastErr error
-	cumulativeUsage := make(map[string]float64)
+	cumulativeUsage := newStageUsageTotals()
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
@@ -2382,7 +2382,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		// (and a pre-commit timeout) falls through to the normal retry/fail path.
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
-				salvaged.Transcript = result.Transcript
+				salvaged = withSalvagedDiagnostics(salvaged, result)
 				return salvaged, nil, nil, nil
 			}
 		}
@@ -2390,6 +2390,12 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	salvaged.Transcript = attempt.Transcript
+	salvaged.Metrics = attempt.Metrics
+	return salvaged
 }
 
 // salvageTimeout implements Task.OnTimeout == salvage (#724): when an agentic

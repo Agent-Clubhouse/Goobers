@@ -90,7 +90,9 @@ func TestEnforceStageBudgetBoundaries(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, exceeded := enforceStageBudget(tc.limits, tc.metrics, tc.metrics, apiv1.ResultEnvelope{
+			total := newStageUsageTotals()
+			accumulateStageUsage(total, tc.metrics)
+			got, exceeded := enforceStageBudget(tc.limits, tc.metrics, total, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Metrics: tc.metrics,
 			})
@@ -108,6 +110,47 @@ func TestEnforceStageBudgetBoundaries(t *testing.T) {
 			}
 			if !strings.Contains(got.Error.Message, tc.wantMessage) {
 				t.Fatalf("error message = %q, want %q", got.Error.Message, tc.wantMessage)
+			}
+		})
+	}
+}
+
+func TestEnforceStageBudgetCumulativeCostBoundaries(t *testing.T) {
+	tests := []struct {
+		name        string
+		attempts    []float64
+		wantFailure bool
+		wantTotal   float64
+	}{
+		{name: "below", attempts: []float64{0.1, 0.19}, wantTotal: 0.29},
+		{name: "equal", attempts: []float64{0.1, 0.2}, wantTotal: 0.3},
+		{name: "above", attempts: []float64{0.1, 0.21}, wantTotal: 0.31, wantFailure: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			total := newStageUsageTotals()
+			var got apiv1.ResultEnvelope
+			var exceeded bool
+			for _, cost := range tc.attempts {
+				attempt := map[string]float64{telemetry.AttrUsageCostUSD: cost}
+				accumulateStageUsage(total, attempt)
+				got, exceeded = enforceStageBudget(
+					apiv1.Limits{MaxCostUSD: 0.3},
+					attempt,
+					total,
+					apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				)
+				if exceeded {
+					break
+				}
+			}
+
+			if total.metrics[telemetry.AttrUsageCostUSD] != tc.wantTotal {
+				t.Fatalf("cumulative cost = %.17g, want %.17g", total.metrics[telemetry.AttrUsageCostUSD], tc.wantTotal)
+			}
+			if exceeded != tc.wantFailure {
+				t.Fatalf("exceeded = %v, want %v; result = %+v", exceeded, tc.wantFailure, got)
 			}
 		})
 	}
@@ -142,7 +185,9 @@ func TestEnforceStageBudgetFailsClosedWithoutRequiredUsage(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, exceeded := enforceStageBudget(tc.limits, tc.metrics, tc.metrics, apiv1.ResultEnvelope{
+			total := newStageUsageTotals()
+			accumulateStageUsage(total, tc.metrics)
+			got, exceeded := enforceStageBudget(tc.limits, tc.metrics, total, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Metrics: tc.metrics,
 			})
@@ -171,7 +216,9 @@ func TestEnforceStageBudgetPreservesAttemptDiagnostics(t *testing.T) {
 		},
 	}
 
-	got, exceeded := enforceStageBudget(apiv1.Limits{MaxTokens: 100}, result.Metrics, result.Metrics, result)
+	total := newStageUsageTotals()
+	accumulateStageUsage(total, result.Metrics)
+	got, exceeded := enforceStageBudget(apiv1.Limits{MaxTokens: 100}, result.Metrics, total, result)
 	if !exceeded || got.Status != apiv1.ResultFailure || got.Error == nil || got.Error.Code != budgetExceededErrorCode {
 		t.Fatalf("result = %+v, want budget failure", got)
 	}

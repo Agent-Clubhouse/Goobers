@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,10 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, metricsFile), []byte(
 		"{\"name\":\"exitCode\",\"value\":99}\n"+
 			"{\"name\":\"build.items\",\"value\":42,\"unit\":\"count\",\"attrs\":{\"source\":\"scan\",\"cached\":true}}\n"+
+			fmt.Sprintf("{\"name\":%q,\"value\":0}\n", AttrGenAIUsageInputTokens)+
+			fmt.Sprintf("{\"name\":%q,\"value\":0}\n", AttrGenAIUsageOutputTokens)+
+			fmt.Sprintf("{\"name\":%q,\"value\":0}\n", AttrCopilotPremiumRequests)+
+			fmt.Sprintf("{\"name\":%q,\"value\":0}\n", AttrUsageCostUSD)+
 			"not-json\n"+
 			"{\"name\":\"\",\"value\":1}\n",
 	), 0o600); err != nil {
@@ -60,6 +65,16 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 	if got := result.Metrics["build.items"]; got != 42 {
 		t.Fatalf("build.items = %v, want 42", got)
 	}
+	for _, name := range []string{
+		AttrGenAIUsageInputTokens,
+		AttrGenAIUsageOutputTokens,
+		AttrCopilotPremiumRequests,
+		AttrUsageCostUSD,
+	} {
+		if _, ok := result.Metrics[name]; ok {
+			t.Fatalf("stage-authored canonical metric %q was merged", name)
+		}
+	}
 
 	spans := exporter.Spans()
 	if len(spans) != 1 {
@@ -89,7 +104,7 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 		t.Fatalf("warning events missing: %#v", events[3:])
 	}
 	assertSpanEventAttribute(t, events[3].Attributes, warningFileAttribute, metricsFile)
-	assertSpanEventAttribute(t, events[3].Attributes, warningCountAttribute, "2")
+	assertSpanEventAttribute(t, events[3].Attributes, warningCountAttribute, "6")
 	assertSpanEventAttribute(t, events[4].Attributes, warningFileAttribute, eventsFile)
 	assertSpanEventAttribute(t, events[4].Attributes, warningCountAttribute, "1")
 }
