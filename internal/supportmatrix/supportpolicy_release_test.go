@@ -28,7 +28,7 @@ func main() {
 
 func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
-	released, tag := loadLatestReleasedSupportMatrix(t, root)
+	released, tag, developmentReleases := loadLatestReleasedSupportMatrix(t, root)
 	current := GetDSL()
 	baseline := tag
 	if baseline == "" {
@@ -38,7 +38,7 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("compiled-in DSL support matrix violates support policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current, baseline); err != nil {
+	if err := validateSupportMatrixEvolution(released, current, baseline, developmentReleases); err != nil {
 		if tag == "" {
 			t.Fatalf("current DSL support matrix violates the pre-release evolution policy: %v", err)
 		}
@@ -49,30 +49,35 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	root := t.TempDir()
 	writeSupportFile(t, filepath.Join(root, "go.mod"), "module github.com/goobers/goobers\n\ngo 1.26\n")
-	releasedVersions := []Version{
+	initialVersions := []Version{
 		{
 			Version: "1.0",
 			Level:   LevelSupported,
 			History: []SupportTransition{
-				{Level: LevelSupported, SinceVersion: "v1.0.0"},
-			},
-		},
-		{
-			Version: "1.1",
-			Level:   LevelSupported,
-			History: []SupportTransition{
-				{Level: LevelSupported, SinceVersion: "v1.1.0"},
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
 			},
 		},
 	}
-	writeFixtureSupportMatrix(t, root, releasedVersions)
+	writeFixtureSupportMatrix(t, root, initialVersions)
 	runSupportGit(t, root, "init", "-q")
 	runSupportGit(t, root, "config", "user.email", "test@example.com")
 	runSupportGit(t, root, "config", "user.name", "Test")
 	runSupportGit(t, root, "config", "commit.gpgSign", "false")
 	runSupportGit(t, root, "config", "tag.gpgSign", "false")
 	runSupportGit(t, root, "add", ".")
-	runSupportGit(t, root, "commit", "-q", "-m", "release supported matrix")
+	runSupportGit(t, root, "commit", "-q", "-m", "release initial supported matrix")
+	runSupportGit(t, root, "tag", "v1.0.0")
+
+	releasedVersions := append(initialVersions, Version{
+		Version: "1.1",
+		Level:   LevelSupported,
+		History: []SupportTransition{
+			{Level: LevelSupported, SinceVersion: "v1.1.0"},
+		},
+	})
+	writeFixtureSupportMatrix(t, root, releasedVersions)
+	runSupportGit(t, root, "add", ".")
+	runSupportGit(t, root, "commit", "-q", "-m", "release second supported matrix")
 	runSupportGit(t, root, "tag", "v1.1.0")
 
 	fabricatedVersions := []Version{
@@ -80,7 +85,7 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 			Version: "1.0",
 			Level:   LevelUnsupported,
 			History: []SupportTransition{
-				{Level: LevelSupported, SinceVersion: "v1.0.0"},
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
 				{Level: LevelDeprecated, SinceVersion: "v1.3.0"},
 				{Level: LevelUnsupported, SinceVersion: "v1.4.0"},
 			},
@@ -91,9 +96,12 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	runSupportGit(t, root, "add", ".")
 	runSupportGit(t, root, "commit", "-q", "-m", "fabricate deprecation and unsupported transition")
 
-	released, tag := loadLatestReleasedSupportMatrix(t, root)
+	released, tag, developmentReleases := loadLatestReleasedSupportMatrix(t, root)
 	if tag != "v1.1.0" {
 		t.Fatalf("latest release tag = %q, want v1.1.0", tag)
+	}
+	if firstRelease := developmentReleases["1.0"]; firstRelease.String() != "v1.0.0" {
+		t.Fatalf("DSL 1.0 first release = %q, want v1.0.0", firstRelease.String())
 	}
 	previous, ok := released.Lookup("1.0")
 	if !ok {
@@ -107,19 +115,40 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("fabricated current matrix must satisfy its self-reported policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current, tag); err == nil ||
+	if err := validateSupportMatrixEvolution(released, current, tag, developmentReleases); err == nil ||
 		!strings.Contains(err.Error(), "must be deprecated in the latest released support matrix") {
 		t.Fatalf("same-change deprecation and unsupported error = %v, want tagged-release failure", err)
 	}
 }
 
-func loadLatestReleasedSupportMatrix(t *testing.T, repository string) (SupportMatrix, string) {
+func loadLatestReleasedSupportMatrix(
+	t *testing.T,
+	repository string,
+) (SupportMatrix, string, map[string]releaseVersion) {
 	t.Helper()
-	tag := latestSupportReleaseTag(t, repository)
-	if tag == "" {
-		return SupportMatrix{}, ""
+	firstTag, latestTag := supportReleaseTagRange(t, repository)
+	if latestTag == "" {
+		return SupportMatrix{}, "", nil
 	}
 
+	latest := loadSupportMatrixAtRelease(t, repository, latestTag)
+	firstRelease, err := parseSupportReleaseVersion(firstTag, false)
+	if err != nil {
+		t.Fatalf("parse first release tag %s: %v", firstTag, err)
+	}
+	developmentReleases := make(map[string]releaseVersion)
+	// Evolution rejects new dev histories after a real release, so every dev
+	// history retained by the latest matrix first appeared in the first tag.
+	for _, version := range latest.Versions() {
+		if len(version.History) > 0 && version.History[0].SinceVersion == initialSupportVersion {
+			developmentReleases[version.Version] = firstRelease
+		}
+	}
+	return latest, latestTag, developmentReleases
+}
+
+func loadSupportMatrixAtRelease(t *testing.T, repository, tag string) SupportMatrix {
+	t.Helper()
 	releaseTree := filepath.Join(t.TempDir(), "release")
 	runSupportGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, tag)
 	t.Cleanup(func() {
@@ -149,25 +178,29 @@ func loadLatestReleasedSupportMatrix(t *testing.T, repository string) (SupportMa
 	if err := ValidateSupportPolicy(matrix); err != nil {
 		t.Fatalf("support matrix from release %s is invalid: %v", tag, err)
 	}
-	return matrix, tag
+	return matrix
 }
 
-func latestSupportReleaseTag(t *testing.T, repository string) string {
+func supportReleaseTagRange(t *testing.T, repository string) (string, string) {
 	t.Helper()
 	output := runSupportGit(t, repository, "tag", "--merged", "HEAD", "--list")
-	var latestTag string
-	var latestVersion releaseVersion
+	var firstTag, latestTag string
+	var firstVersion, latestVersion releaseVersion
 	for _, tag := range strings.Fields(output) {
 		version, err := parseSupportReleaseVersion(tag, false)
 		if err != nil {
 			continue
+		}
+		if firstTag == "" || compareReleaseVersions(version, firstVersion) < 0 {
+			firstTag = tag
+			firstVersion = version
 		}
 		if latestTag == "" || compareReleaseVersions(version, latestVersion) > 0 {
 			latestTag = tag
 			latestVersion = version
 		}
 	}
-	return latestTag
+	return firstTag, latestTag
 }
 
 func versionsToSupportMatrix(versions []Version) SupportMatrix {

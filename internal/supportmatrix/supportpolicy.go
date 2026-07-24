@@ -31,6 +31,14 @@ type versionLifecycle struct {
 // ValidateSupportPolicy checks the lifecycle history and support-window policy
 // for every DSL version in matrix.
 func ValidateSupportPolicy(matrix SupportMatrix) error {
+	return validateSupportPolicy(matrix, nil, false)
+}
+
+func validateSupportPolicy(
+	matrix SupportMatrix,
+	developmentReleases map[string]releaseVersion,
+	requireDevelopmentAnchors bool,
+) error {
 	lifecycles := make([]versionLifecycle, 0, len(matrix))
 	for _, version := range matrix.Versions() {
 		major, minor, ok := parseDSLVersion(version.Version)
@@ -43,6 +51,11 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 		}
 		lifecycle.dslMajor = major
 		lifecycle.dslMinor = minor
+		if lifecycle.supportedAt.development {
+			if firstRelease, ok := developmentReleases[lifecycle.version]; ok {
+				lifecycle.supportedAt = firstRelease
+			}
+		}
 		lifecycles = append(lifecycles, lifecycle)
 	}
 
@@ -57,6 +70,18 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 				lifecycle.version,
 				lifecycle.unsupportedAt.String(),
 			)
+		}
+		if superseding.supportedAt.development {
+			if requireDevelopmentAnchors {
+				return fmt.Errorf(
+					"DSL version %q support window cannot be measured because superseding DSL version %q has no first release anchor",
+					lifecycle.version,
+					superseding.version,
+				)
+			}
+			// Evolution validation supplies the first tagged appearance needed
+			// to measure a release window from the pre-release sentinel.
+			continue
 		}
 		if !atLeastMinorReleases(
 			superseding.supportedAt,
@@ -76,10 +101,17 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 	return nil
 }
 
-func validateSupportMatrixEvolution(released, current SupportMatrix, latestRelease string) error {
+func validateSupportMatrixEvolution(
+	released, current SupportMatrix,
+	latestRelease string,
+	developmentReleases map[string]releaseVersion,
+) error {
 	baseline, err := parseSupportReleaseVersion(latestRelease, true)
 	if err != nil {
 		return fmt.Errorf("invalid latest release %q: %w", latestRelease, err)
+	}
+	if err := validateSupportPolicy(current, developmentReleases, !baseline.development); err != nil {
+		return fmt.Errorf("current support matrix violates support policy: %w", err)
 	}
 
 	for _, previous := range released.Versions() {
@@ -333,6 +365,9 @@ func compareReleaseVersions(left, right releaseVersion) int {
 }
 
 func atLeastMinorReleases(from, to releaseVersion, minimum uint64) bool {
+	if from.development || to.development {
+		return false
+	}
 	if compareReleaseVersions(from, to) >= 0 {
 		return false
 	}

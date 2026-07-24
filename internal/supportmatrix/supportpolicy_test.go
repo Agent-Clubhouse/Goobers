@@ -24,7 +24,7 @@ func TestSupportPolicyAllowsCoexistingVersionWithInitialHistory(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("coexisting DSL version violates support policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current, initialSupportVersion); err != nil {
+	if err := validateSupportMatrixEvolution(released, current, initialSupportVersion, nil); err != nil {
 		t.Fatalf("coexisting DSL version evolution was rejected: %v", err)
 	}
 }
@@ -271,7 +271,7 @@ func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
 			if err := ValidateSupportPolicy(test.current); err != nil {
 				t.Fatalf("synthetic current matrix must satisfy its self-reported policy: %v", err)
 			}
-			err := validateSupportMatrixEvolution(released, test.current, test.baseline)
+			err := validateSupportMatrixEvolution(released, test.current, test.baseline, nil)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateSupportMatrixEvolution() error = %v, want containing %q", err, test.want)
 			}
@@ -311,7 +311,7 @@ func TestSupportPolicyAllowsUnsupportedAfterReleasedDeprecation(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("current matrix violates support policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current, "v1.3.0"); err != nil {
+	if err := validateSupportMatrixEvolution(released, current, "v1.3.0", nil); err != nil {
 		t.Fatalf("unsupported transition after released deprecation was rejected: %v", err)
 	}
 }
@@ -330,7 +330,61 @@ func TestSupportPolicyAllowsInitialDevelopmentHistory(t *testing.T) {
 		SupportMatrix{},
 		current,
 		initialSupportVersion,
+		nil,
 	); err != nil {
 		t.Fatalf("initial development lifecycle history was rejected: %v", err)
+	}
+}
+
+func TestSupportPolicyRejectsUnsupportedBeforeAnchoredDevelopmentWindow(t *testing.T) {
+	released := SupportMatrix{
+		"1.4": {
+			Level:            LevelDeprecated,
+			UnsupportedAfter: "v1.2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v1.1.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+	current := SupportMatrix{
+		"1.4": {
+			Level: LevelUnsupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v1.1.0"},
+				{Level: LevelUnsupported, SinceVersion: "v1.2.0"},
+			},
+		},
+		"2.0": released["2.0"],
+	}
+	firstRelease, err := parseSupportReleaseVersion("v1.0.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	developmentReleases := map[string]releaseVersion{
+		"1.4": firstRelease,
+		"2.0": firstRelease,
+	}
+
+	err = validateSupportMatrixEvolution(released, current, "v1.1.0", developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), `fewer than 3 minor releases after DSL version "2.0" superseded it in "v1.0.0"`) {
+		t.Fatalf("early unsupported transition error = %v, want anchored support-window failure", err)
+	}
+}
+
+func TestMinorReleaseWindowDoesNotTreatDevelopmentAsZero(t *testing.T) {
+	release, err := parseSupportReleaseVersion("v1.2.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atLeastMinorReleases(releaseVersion{development: true}, release, MinimumSupportWindowMinorReleases) {
+		t.Fatal("development sentinel satisfied a numeric release window without an anchor")
 	}
 }
