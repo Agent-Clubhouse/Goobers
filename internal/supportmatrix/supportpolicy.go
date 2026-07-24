@@ -76,7 +76,12 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 	return nil
 }
 
-func validateSupportMatrixEvolution(released, current SupportMatrix) error {
+func validateSupportMatrixEvolution(released, current SupportMatrix, latestRelease string) error {
+	baseline, err := parseSupportReleaseVersion(latestRelease, true)
+	if err != nil {
+		return fmt.Errorf("invalid latest release %q: %w", latestRelease, err)
+	}
+
 	for _, previous := range released.Versions() {
 		candidate, ok := current.Lookup(previous.Version)
 		if !ok {
@@ -89,11 +94,37 @@ func validateSupportMatrixEvolution(released, current SupportMatrix) error {
 	}
 
 	for _, candidate := range current.Versions() {
+		previous, existed := released.Lookup(candidate.Version)
+		releasedHistoryLength := 0
+		if existed {
+			releasedHistoryLength = len(previous.History)
+		}
+		for i, transition := range candidate.History[releasedHistoryLength:] {
+			historyIndex := releasedHistoryLength + i
+			transitionRelease, err := parseSupportReleaseVersion(transition.SinceVersion, historyIndex == 0)
+			if err != nil {
+				return fmt.Errorf(
+					"DSL version %q has invalid new lifecycle version %q: %w",
+					candidate.Version,
+					transition.SinceVersion,
+					err,
+				)
+			}
+			if compareReleaseVersions(transitionRelease, baseline) <= 0 &&
+				!(baseline.development && transitionRelease.development) {
+				return fmt.Errorf(
+					"DSL version %q new lifecycle transition %q must be later than latest release %q",
+					candidate.Version,
+					transition.SinceVersion,
+					latestRelease,
+				)
+			}
+		}
+
 		if candidate.Level != LevelUnsupported {
 			continue
 		}
-		previous, ok := released.Lookup(candidate.Version)
-		if !ok || (previous.Level != LevelDeprecated && previous.Level != LevelUnsupported) {
+		if !existed || (previous.Level != LevelDeprecated && previous.Level != LevelUnsupported) {
 			return fmt.Errorf(
 				"DSL version %q must be deprecated in the latest released support matrix before becoming unsupported",
 				candidate.Version,

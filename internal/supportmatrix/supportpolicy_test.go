@@ -172,9 +172,10 @@ func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		current SupportMatrix
-		want    string
+		name     string
+		current  SupportMatrix
+		baseline string
+		want     string
 	}{
 		{
 			name: "same change deprecates and makes unsupported",
@@ -189,7 +190,8 @@ func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
 				},
 				"1.1": released["1.1"],
 			},
-			want: "must be deprecated in the latest released support matrix",
+			baseline: "v1.1.0",
+			want:     "must be deprecated in the latest released support matrix",
 		},
 		{
 			name: "released history rewritten",
@@ -202,14 +204,47 @@ func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
 				},
 				"1.1": released["1.1"],
 			},
-			want: "lifecycle history must not change",
+			baseline: "v1.1.0",
+			want:     "lifecycle history must not change",
 		},
 		{
 			name: "released version omitted",
 			current: SupportMatrix{
 				"1.1": released["1.1"],
 			},
-			want: "must remain in the support matrix",
+			baseline: "v1.1.0",
+			want:     "must remain in the support matrix",
+		},
+		{
+			name: "backdated transition appended",
+			current: SupportMatrix{
+				"1.0": {
+					Level:            LevelDeprecated,
+					UnsupportedAfter: "v1.4.0",
+					History: []SupportTransition{
+						transition(LevelSupported, "v1.0.0"),
+						transition(LevelDeprecated, "v1.2.0"),
+					},
+				},
+				"1.1": released["1.1"],
+			},
+			baseline: "v1.3.0",
+			want:     `new lifecycle transition "v1.2.0" must be later than latest release "v1.3.0"`,
+		},
+		{
+			name: "new version has backdated history",
+			current: SupportMatrix{
+				"1.0": released["1.0"],
+				"1.1": released["1.1"],
+				"1.2": {
+					Level: LevelSupported,
+					History: []SupportTransition{
+						transition(LevelSupported, "v1.2.0"),
+					},
+				},
+			},
+			baseline: "v1.3.0",
+			want:     `new lifecycle transition "v1.2.0" must be later than latest release "v1.3.0"`,
 		},
 	}
 
@@ -218,7 +253,7 @@ func TestSupportPolicyAgainstReleasedMatrix(t *testing.T) {
 			if err := ValidateSupportPolicy(test.current); err != nil {
 				t.Fatalf("synthetic current matrix must satisfy its self-reported policy: %v", err)
 			}
-			err := validateSupportMatrixEvolution(released, test.current)
+			err := validateSupportMatrixEvolution(released, test.current, test.baseline)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateSupportMatrixEvolution() error = %v, want containing %q", err, test.want)
 			}
@@ -258,7 +293,26 @@ func TestSupportPolicyAllowsUnsupportedAfterReleasedDeprecation(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("current matrix violates support policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current); err != nil {
+	if err := validateSupportMatrixEvolution(released, current, "v1.3.0"); err != nil {
 		t.Fatalf("unsupported transition after released deprecation was rejected: %v", err)
+	}
+}
+
+func TestSupportPolicyAllowsInitialDevelopmentHistory(t *testing.T) {
+	current := SupportMatrix{
+		"1.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+
+	if err := validateSupportMatrixEvolution(
+		SupportMatrix{},
+		current,
+		initialSupportVersion,
+	); err != nil {
+		t.Fatalf("initial development lifecycle history was rejected: %v", err)
 	}
 }

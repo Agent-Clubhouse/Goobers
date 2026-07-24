@@ -30,11 +30,15 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
 	released, tag := loadLatestReleasedSupportMatrix(t, root)
 	current := GetDSL()
+	baseline := tag
+	if baseline == "" {
+		baseline = initialSupportVersion
+	}
 
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("compiled-in DSL support matrix violates support policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current); err != nil {
+	if err := validateSupportMatrixEvolution(released, current, baseline); err != nil {
 		if tag == "" {
 			t.Fatalf("current DSL support matrix violates the pre-release evolution policy: %v", err)
 		}
@@ -103,7 +107,7 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	if err := ValidateSupportPolicy(current); err != nil {
 		t.Fatalf("fabricated current matrix must satisfy its self-reported policy: %v", err)
 	}
-	if err := validateSupportMatrixEvolution(released, current); err == nil ||
+	if err := validateSupportMatrixEvolution(released, current, tag); err == nil ||
 		!strings.Contains(err.Error(), "must be deprecated in the latest released support matrix") {
 		t.Fatalf("same-change deprecation and unsupported error = %v, want tagged-release failure", err)
 	}
