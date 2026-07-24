@@ -61,12 +61,21 @@ export interface OperationalSnapshotQuery {
 export function useOperationalSnapshot(client: DaemonClient): OperationalSnapshotQuery {
   const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
   const request = useRef<AbortController | undefined>(undefined);
+  const generation = useRef(0);
   const { freshness, isFresh, subscribe } = useLiveData();
 
   const refresh = useCallback(() => {
-    request.current?.abort();
+    // Do NOT abort an in-flight request here. On a busy instance a burst of
+    // SSE events would otherwise cancel the request already answering the
+    // backend mid-scan (the "list runs failed: context canceled" churn of
+    // #1367). Let it finish and gate its result on a generation token so only
+    // the newest refresh applies its data. The live-data controller already
+    // coalesces (invalidation window) and serializes (refresh queue)
+    // event-driven refreshes, so overlap is rare in practice.
     const controller = new AbortController();
     request.current = controller;
+    const token = ++generation.current;
+    const isCurrent = () => token === generation.current && !controller.signal.aborted;
     setState((current) =>
       current.status === "ready" || current.status === "stale"
         ? { status: "stale", data: current.data }
@@ -75,13 +84,13 @@ export function useOperationalSnapshot(client: DaemonClient): OperationalSnapsho
 
     return loadOperationalSnapshot(client, controller.signal).then(
       (data) => {
-        if (!controller.signal.aborted) {
+        if (isCurrent()) {
           setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         }
         return true;
       },
       (error: unknown) => {
-        if (!controller.signal.aborted) {
+        if (isCurrent()) {
           const queryError =
             error instanceof Error ? error : new Error("Unable to read daemon data.");
           setState((current) =>
@@ -114,7 +123,15 @@ export function useOperationalSnapshot(client: DaemonClient): OperationalSnapsho
 
   usePeriodicHealth(client, freshness, setState);
 
-  useEffect(() => () => request.current?.abort(), []);
+  // Invalidate any in-flight settle and cancel the latest request on unmount —
+  // the only point where aborting the backend read is the right thing to do.
+  useEffect(
+    () => () => {
+      generation.current += 1;
+      request.current?.abort();
+    },
+    [],
+  );
 
   return { retry: refresh, state };
 }
@@ -258,14 +275,21 @@ export function workflowDisplayName(
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
   const [state, setState] = useState<QueryState<OperationalOverview>>({ status: "loading" });
   const request = useRef<AbortController | undefined>(undefined);
+  const generation = useRef(0);
   const data = useRef<OperationalOverview | undefined>(undefined);
   const { freshness, isFresh, subscribe } = useLiveData();
 
   const load = useCallback(
     (models?: ReadonlySet<UpdateModel>) => {
-      request.current?.abort();
+      // Do NOT abort an in-flight request here (see #1367): a burst of SSE
+      // events must not cancel the load already answering the backend
+      // mid-scan. Let it finish and gate its result on a generation token so
+      // only the newest load applies. The live-data controller already
+      // coalesces and serializes event-driven refreshes.
       const controller = new AbortController();
       request.current = controller;
+      const token = ++generation.current;
+      const isCurrent = () => token === generation.current && !controller.signal.aborted;
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -277,14 +301,14 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
         models,
       }).then(
         (loaded) => {
-          if (!controller.signal.aborted) {
+          if (isCurrent()) {
             data.current = loaded;
             setState(isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded });
           }
           return true;
         },
         (error: unknown) => {
-          if (!controller.signal.aborted) {
+          if (isCurrent()) {
             const queryError =
               error instanceof Error ? error : new Error("Unable to read daemon data.");
             setState((current) =>
@@ -322,7 +346,15 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
   }, []);
   usePeriodicHealth(client, freshness, setState, rememberOverview);
 
-  useEffect(() => () => request.current?.abort(), []);
+  // Invalidate any in-flight settle and cancel the latest request on unmount —
+  // the only point where aborting the backend read is the right thing to do.
+  useEffect(
+    () => () => {
+      generation.current += 1;
+      request.current?.abort();
+    },
+    [],
+  );
 
   return { retry: () => void load(), state };
 }

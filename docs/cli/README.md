@@ -30,7 +30,9 @@
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
+| [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
+| [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
@@ -547,6 +549,28 @@ $ goobers features --dsl-version 1.4
 $ goobers features --used
 ~~~
 
+## `goobers gather-ci-failures`
+
+add failing CI diagnostics to a remediation brief (a workflow stage)
+
+~~~text
+Usage: goobers gather-ci-failures [path]
+
+Enrich this run's remediation brief with failing check names,
+conclusions, summaries, and annotations. Passing CI leaves the brief
+unchanged and performs no provider API calls. Raw job logs are never
+fetched: their explicit per-check volume bound is 0 bytes. [path] is
+the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+0 = evidence gathered (or passing-CI no-op), 1 = business error,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-ci-failures
+~~~
+
 ## `goobers gather-implement-context`
 
 load first-pass implementation review and hot-file context (a workflow stage)
@@ -568,6 +592,29 @@ error.
 
 ~~~console
 $ goobers gather-implement-context
+~~~
+
+## `goobers gather-issue-context`
+
+add originating issue bodies to a remediation brief (a workflow stage)
+
+~~~text
+Usage: goobers gather-issue-context [path]
+
+Read this run's latest remediation brief, resolve the selected PR's
+Fixes/Closes/Resolves issue references, and replace only the brief's
+gatherIssueContext section with the originating issue bodies. Missing
+PRs, absent references, and referenced issues that no longer resolve
+produce an empty issues list rather than failing the remediation cycle.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = issue context
+gathered (possibly empty), 1 = business/provider/journal error, 2 =
+usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gather-issue-context
 ~~~
 
 ## `goobers gather-pr-context`
@@ -631,7 +678,7 @@ $ goobers gather-sibling-context
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo] [path]
+Usage: goobers init [--guided | --demo | --template=quickstart] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -639,7 +686,8 @@ telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It prompts for
 a GitHub repository, work tracking, token references, and canonical workflows,
-then validates the result. --demo seeds a hermetic mock-provider full-loop tour
+then validates the result. --template=quickstart seeds the versioned onboarding
+workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced.
 ~~~
@@ -648,6 +696,7 @@ demo is supported on Linux and macOS, where network isolation is enforced.
 
 ~~~console
 $ goobers init
+$ goobers init --template=quickstart ./tutorial
 $ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
@@ -1417,7 +1466,7 @@ Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--work
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
-Status also reports parked issue dependencies and separate blocked-on-sibling/merge-escalated PR counts.
+Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
@@ -1696,7 +1745,8 @@ bundles. Distinct from `goobers version`, which reports this build's own
 version/commit/date.
 
 Default output is human-readable. --json emits a structured object with keys:
-minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement),
+minGoVersion, dslVersions[] (version, level, unsupportedAfter, replacement,
+history[] (level, sinceVersion)),
 platforms[] (os, arch, tier), and host — machine-readable for scripts.
 
 Exit codes: 0 = OK, 2 = usage error.

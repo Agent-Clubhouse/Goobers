@@ -4,6 +4,11 @@ Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
 at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
 layout these commands operate on.
 
+If declarative systems are new to you, read
+[How Goobers works: desired state, not scripts](../concepts/README.md) first.
+It explains the config/runtime split and why agents propose definition changes
+through pull requests.
+
 ## Prerequisites
 
 - `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
@@ -31,6 +36,30 @@ implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
 `telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
 gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
 pieces are left untouched.
+
+### Onboarding-only template
+
+For a first autonomous run against a disposable tutorial target, seed the
+versioned `quickstart@v1` template:
+
+```sh
+bin/goobers init --template=quickstart ./tutorial-instance
+bin/goobers validate ./tutorial-instance
+bin/goobers run quickstart ./tutorial-instance
+```
+
+This linear template claims one approved issue, implements it, performs an
+advisory code-review task, pushes the run branch, and opens a pull request. It
+is **not for production**: it intentionally omits CI gates, remediation loops,
+bounded escalation, merge policy, and issue close-out so the onboarding happy
+path has no stall points.
+
+Graduate by scaffolding the canonical `implementation` workflow through
+`goobers init --guided`, or by adapting
+`config-examples/gaggles/acme-web/workflows/implementation.yaml`. That workflow
+adds reviewer verdict policy, local CI with bounded implementation repasses,
+explicit escalation paths, and PR CI polling. Add the separate `merge-review`
+workflow only after those safeguards are configured.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into

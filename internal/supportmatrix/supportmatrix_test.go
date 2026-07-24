@@ -46,6 +46,10 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 		if support.Level != LevelSupported {
 			t.Fatalf("DSL version %q level = %q, want %q", version, support.Level, LevelSupported)
 		}
+		if len(support.History) != 1 ||
+			support.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) {
+			t.Fatalf("DSL version %q history = %+v", version, support.History)
+		}
 	}
 	for version, support := range matrix {
 		if _, _, ok := parseDSLVersion(version); !ok {
@@ -61,6 +65,14 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelUnsupported}
 	if GetDSL()[CurrentDSLVersion].Level != LevelSupported {
 		t.Fatal("GetDSL exposed the package's backing map")
+	}
+
+	matrix = GetDSL()
+	mutated := matrix[CurrentDSLVersion]
+	mutated.History[0].Level = LevelUnsupported
+	matrix[CurrentDSLVersion] = mutated
+	if GetDSL()[CurrentDSLVersion].History[0].Level != LevelSupported {
+		t.Fatal("GetDSL exposed the package's backing lifecycle history")
 	}
 }
 

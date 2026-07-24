@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -67,79 +69,98 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	}
 	root := providerStageRoot(pathArg)
 
+	resultFile := providerInput("resultFile", "rebase-result.json")
 	selectedNumber := providerInput("selectedNumber", "")
 	head := providerInput("head", "")
 	base := providerInput("base", "main")
 	if selectedNumber == "" || head == "" {
-		pf(stderr, "error: selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)\n")
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
 	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
 	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
 
 	repo, err := providerRepo(root)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 
 	preRebaseSHA, err := checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
-		pf(stderr, "error: checkout PR #%s's branch %q: %v\n", selectedNumber, head, err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
-	conflict, err := attemptRebase(".", base, pushToken)
+	conflict, conflictLocations, rebaseBaseSHA, err := attemptRebase(".", base, pushToken)
 	if err != nil {
-		pf(stderr, "error: rebase PR #%s onto %q: %v\n", selectedNumber, base, err)
-		return 1
+		return failRebasePR(stderr, resultFile, selectedNumber, head,
+			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
 
 	needsAgent := conflict || hasSubstantiveFindings || hasFailingCI
-	resultFile := providerInput("resultFile", "rebase-result.json")
 
 	if !conflict && !hasSubstantiveFindings {
 		if err := forcePushWithLease(".", head, preRebaseSHA, pushToken); err != nil {
-			pf(stderr, "error: force-push rebased PR #%s branch %q: %v\n", selectedNumber, head, err)
-			return 1
+			return failRebasePR(stderr, resultFile, selectedNumber, head,
+				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
 
 	if !needsAgent {
 		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 		}
 		provider := newGitHubProvider(issuesToken)
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%s", needsRemediationLabel, selectedNumber), err, "rebase-result.json")
+			return failRebasePR(stderr, resultFile, selectedNumber, head,
+				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, preRebaseSHA, rebaseBaseSHA); err != nil {
+			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, preRebaseSHA, rebaseBaseSHA); err != nil {
+		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
+}
+
+func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head string, err error) int {
+	pf(stderr, "error: %v\n", err)
+	code, retryable, extra := classifyProviderError(err)
+	payload := map[string]interface{}{
+		"selectedNumber":              selectedNumber,
+		"head":                        head,
+		"needsAgent":                  "true",
+		"conflict":                    "false",
+		"conflictLocations":           "[]",
+		"attemptedHeadSha":            "",
+		"rebaseBaseSha":               "",
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   err.Error(),
+		executor.OutputErrorRetryable: retryable,
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	if writeErr := writeProviderStageResult(resultFile, payload); writeErr != nil {
+		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, writeErr)
+	}
+	return 1
 }
 
 // writeRebaseResult echoes selectedNumber/head forward alongside this
@@ -150,12 +171,25 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 // checkpoint (after rebase-gate) can only read selectedNumber/head if THIS
 // stage re-emits them, exactly like gather-sibling-context re-emits
 // pr-select's selectedNumber for apply-verdict two hops later.
-func writeRebaseResult(resultFile, selectedNumber, head string, conflict, needsAgent bool) error {
+func writeRebaseResult(
+	resultFile, selectedNumber, head string,
+	conflict, needsAgent bool,
+	conflictLocations []rebaseConflictLocation,
+	attemptedHeadSHA string,
+	rebaseBaseSHA string,
+) error {
+	locationsJSON, err := json.Marshal(conflictLocations)
+	if err != nil {
+		return fmt.Errorf("marshal rebase conflict locations: %w", err)
+	}
 	data, err := json.Marshal(map[string]string{
-		"selectedNumber": selectedNumber,
-		"head":           head,
-		"needsAgent":     strconv.FormatBool(needsAgent),
-		"conflict":       strconv.FormatBool(conflict),
+		"selectedNumber":    selectedNumber,
+		"head":              head,
+		"needsAgent":        strconv.FormatBool(needsAgent),
+		"conflict":          strconv.FormatBool(conflict),
+		"conflictLocations": string(locationsJSON),
+		"attemptedHeadSha":  attemptedHeadSHA,
+		"rebaseBaseSha":     rebaseBaseSHA,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal rebase result: %w", err)
@@ -169,41 +203,53 @@ func writeRebaseResult(resultFile, selectedNumber, head string, conflict, needsA
 // attemptRebase resolves only the narrow case where both sides added one
 // distinct entry to the same existing line-oriented list at an unambiguous
 // ancestor position, ordering the base branch's addition before the PR's.
-// Every other conflict is aborted cleanly and reported for the existing
-// agentic path.
-func attemptRebase(dir, base, token string) (conflict bool, err error) {
+// Every other conflict is inspected for structural-collision evidence,
+// aborted cleanly, and reported for the existing agentic path.
+func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
 	url, err := originURL(dir)
 	if err != nil {
-		return false, err
+		return false, nil, "", err
 	}
 	auth := gitAuthEnv(token)
 	fetch := exec.Command("git", "fetch", url, "refs/heads/"+base)
 	fetch.Dir = dir
 	fetch.Env = auth
 	if out, err := fetch.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
+		return false, nil, "", fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
+	baseRev := exec.Command("git", "rev-parse", "FETCH_HEAD")
+	baseRev.Dir = dir
+	baseOut, err := baseRev.Output()
+	if err != nil {
+		return false, nil, "", gitOutputError("git rev-parse FETCH_HEAD", err)
+	}
+	rebaseBaseSHA = strings.TrimSpace(string(baseOut))
 
 	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
 	rebase.Dir = dir
 	out, rerr := rebase.CombinedOutput()
 	if rerr == nil {
-		return false, nil
+		return false, nil, rebaseBaseSHA, nil
 	}
 
 	for {
 		status, resolveErr := resolveAdjacentLineConflicts(dir)
 		if resolveErr != nil {
-			return false, abortRebaseAfterError(dir, resolveErr)
+			return false, nil, "", abortRebaseAfterError(dir, resolveErr)
 		}
 		if status != rebaseConflictResolved {
-			if err := abortRebase(dir); err != nil {
-				return false, fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
-			}
 			if status == rebaseConflictAbsent {
-				return false, fmt.Errorf("git rebase FETCH_HEAD: %w: %s", rerr, strings.TrimSpace(string(out)))
+				rebaseErr := fmt.Errorf("git rebase FETCH_HEAD: %w: %s", rerr, strings.TrimSpace(string(out)))
+				return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
 			}
-			return true, nil
+			locations, inspectErr := currentRebaseConflictLocations(dir)
+			if inspectErr != nil {
+				return false, nil, "", abortRebaseAfterError(dir, fmt.Errorf("inspect rebase conflict: %w", inspectErr))
+			}
+			if err := abortRebase(dir); err != nil {
+				return false, nil, "", fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
+			}
+			return true, locations, rebaseBaseSHA, nil
 		}
 
 		cont := exec.Command("git", "rebase", "--continue")
@@ -211,16 +257,16 @@ func attemptRebase(dir, base, token string) (conflict bool, err error) {
 		cont.Env = append(os.Environ(), "GIT_EDITOR=true")
 		continueOut, continueErr := cont.CombinedOutput()
 		if continueErr == nil {
-			return false, nil
+			return false, nil, rebaseBaseSHA, nil
 		}
 
 		nextStatus, statusErr := unmergedConflictStatus(dir)
 		if statusErr != nil {
-			return false, abortRebaseAfterError(dir, statusErr)
+			return false, nil, "", abortRebaseAfterError(dir, statusErr)
 		}
 		if nextStatus == rebaseConflictAbsent {
 			rebaseErr := fmt.Errorf("git rebase --continue: %w: %s", continueErr, strings.TrimSpace(string(continueOut)))
-			return false, abortRebaseAfterError(dir, rebaseErr)
+			return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
 		}
 		out, rerr = continueOut, continueErr
 	}

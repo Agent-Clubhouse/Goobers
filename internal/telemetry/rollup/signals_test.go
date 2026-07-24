@@ -160,6 +160,46 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerLogCapturesProviderQuotaDecisions(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	resetReason := "provider=github reset=2026-07-23T09:00:00Z remaining=0; provider budget reopened"
+	shedReason := "provider-quota-budget: provider=github priority=1 remaining=0 requested=2 reset=2026-07-23T09:00:00Z"
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "provider.quota.reset", `"reason":"`+resetReason+`"`),
+		instanceEventLine(2, "poll.shed", `"workflow":"nominate","reason":"`+shedReason+`"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
+
+	events, err := db.SchedulerEvents("")
+	if err != nil {
+		t.Fatalf("SchedulerEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("scheduler events = %d, want 2: %#v", len(events), events)
+	}
+	if events[0].Type != "provider.quota.reset" || events[0].Reason != resetReason {
+		t.Fatalf("provider.quota.reset row = %#v", events[0])
+	}
+	if events[1].Type != "poll.shed" || events[1].Workflow != "nominate" || events[1].Reason != shedReason {
+		t.Fatalf("poll.shed row = %#v", events[1])
+	}
+
+	filtered, err := db.SchedulerEvents("nominate")
+	if err != nil {
+		t.Fatalf("SchedulerEvents filtered: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Type != "poll.shed" {
+		t.Fatalf("filtered scheduler events = %#v, want one poll.shed", filtered)
+	}
+}
+
 func TestIngestSchedulerLogCapturesRollingSpans(t *testing.T) {
 	tmp := t.TempDir()
 	schedulerDir := filepath.Join(tmp, "scheduler")

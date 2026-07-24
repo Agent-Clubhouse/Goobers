@@ -114,11 +114,36 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
-	if got := siblings.Next; got != "implement" {
-		t.Errorf("gather-sibling-context next = %q, want implement", got)
+	if got := siblings.Next; got != "gather-issue-context" {
+		t.Errorf("gather-sibling-context next = %q, want gather-issue-context", got)
 	}
 	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
 		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
+
+	issues, ok := m.Task("gather-issue-context")
+	if !ok {
+		t.Fatal("gather-issue-context stage not found")
+	}
+	if issues.Run == nil ||
+		len(issues.Run.Command) != 2 ||
+		issues.Run.Command[0] != "goobers" ||
+		issues.Run.Command[1] != "gather-issue-context" {
+		t.Errorf("gather-issue-context command = %v, want [goobers gather-issue-context]", issues.Run)
+	}
+	if issues.Run != nil && issues.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-issue-context workspace = %q, want scratch", issues.Run.Workspace)
+	}
+	if issues.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-issue-context resultFile = %q, want remediation-brief.json", issues.Inputs["resultFile"])
+	}
+	if len(issues.Capabilities) != 2 ||
+		issues.Capabilities[0] != "github:pr:write" ||
+		issues.Capabilities[1] != "github:issues:write" {
+		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:write]", issues.Capabilities)
+	}
+	if issues.Next != "implement" {
+		t.Errorf("gather-issue-context next = %q, want implement", issues.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -285,6 +310,40 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	if got := gather.Inputs["resultFile"]; got != "remediation-brief.json" {
 		t.Fatalf("gather-pr-context resultFile = %q, want remediation-brief.json", got)
 	}
+	if gather.Next != "gather-ci-failures" {
+		t.Fatalf("gather-pr-context next = %q, want gather-ci-failures", gather.Next)
+	}
+
+	gatherCI, ok := m.Task("gather-ci-failures")
+	if !ok {
+		t.Fatal("gather-ci-failures not found")
+	}
+	if gatherCI.Run == nil ||
+		len(gatherCI.Run.Command) != 2 ||
+		gatherCI.Run.Command[0] != "goobers" ||
+		gatherCI.Run.Command[1] != "gather-ci-failures" {
+		t.Fatalf("gather-ci-failures command = %v, want [goobers gather-ci-failures]", gatherCI.Run)
+	}
+	if gatherCI.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("gather-ci-failures workspace = %q, want scratch", gatherCI.Run.Workspace)
+	}
+	if gatherCI.Inputs["resultFile"] != "remediation-brief.json" {
+		t.Errorf("gather-ci-failures resultFile = %q, want remediation-brief.json", gatherCI.Inputs["resultFile"])
+	}
+	if gatherCI.Next != "rebase-pr" {
+		t.Errorf("gather-ci-failures next = %q, want rebase-pr", gatherCI.Next)
+	}
+	if len(gatherCI.Capabilities) != 1 || gatherCI.Capabilities[0] != "github:pr:write" {
+		t.Errorf("gather-ci-failures capabilities = %v, want [github:pr:write]", gatherCI.Capabilities)
+	}
+	for _, output := range []string{
+		"selectedNumber", "head", "base", "isBehindBase",
+		"hasSubstantiveFindings", "hasFailingCI", "workspaceBranch",
+	} {
+		if !containsString(gatherCI.ExpectedOutputs, output) {
+			t.Errorf("gather-ci-failures expectedOutputs = %v, missing %q", gatherCI.ExpectedOutputs, output)
+		}
+	}
 
 	rebase, ok := m.Task("rebase-pr")
 	if !ok {
@@ -310,8 +369,11 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	if !ok {
 		t.Fatal("implement not found")
 	}
-	if !strings.Contains(implement.Goal, "remediation-brief.json") {
-		t.Fatalf("implement goal does not direct the agent to the brief: %q", implement.Goal)
+	if !strings.Contains(implement.Goal, "gather-ci-failures remediation-brief.json") {
+		t.Fatalf("implement goal does not direct the agent to the enriched brief: %q", implement.Goal)
+	}
+	if !strings.Contains(implement.Goal, "originating issue body") {
+		t.Fatalf("implement goal does not direct the agent to originating issue context: %q", implement.Goal)
 	}
 }
 
@@ -419,9 +481,21 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	_, m := loadPRRemediation(t)
 
+	rebase, ok := m.Task("rebase-pr")
+	if !ok {
+		t.Fatal("rebase-pr not found")
+	}
 	checkpoint, ok := m.Task("remediation-checkpoint")
 	if !ok {
 		t.Fatal("remediation-checkpoint not found")
+	}
+	for _, output := range []string{"conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
+		if !containsString(rebase.ExpectedOutputs, output) {
+			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
+		}
+		if checkpoint.InputsFrom[output] != output {
+			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)
+		}
 	}
 	declared := map[string]bool{}
 	for _, out := range checkpoint.ExpectedOutputs {

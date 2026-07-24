@@ -8,6 +8,8 @@ clustered orchestration over a large monorepo.
 - **Architecture of record:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one
   system across three deployment tiers; local runner first, cloud (Temporal/AKS) as
   drop-ins behind named seams.
+- **Concepts:** [`docs/concepts/`](docs/concepts/) — desired state, the config
+  repository as source of truth, and the propose-via-PR trust model.
 - **Product vision:** [`docs/VISION.md`](docs/VISION.md)
 - **Requirements:** [`docs/requirements/`](docs/requirements/)
 - **Roadmap:** GitHub milestones — **V0** "works locally, begins to build itself",
@@ -29,6 +31,7 @@ clustered orchestration over a large monorepo.
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
+| `samples/` | Versioned, disposable onboarding targets | Active |
 | `skills/` | Portable agent skills for authoring Goobers config | Active |
 | `test/` | CI + e2e harness | Active |
 
@@ -56,29 +59,45 @@ Every binary shares `internal/app.Main`, which wires `--version`, structured log
 
 ## Quickstart (tier 1, local)
 
-```sh
-go build -o bin/goobers ./cmd/goobers    # or: make build
+New to declarative control systems? Read
+[How Goobers works](docs/concepts/README.md) first; it explains why `config/`
+defines behavior while runs, workcopies, and scheduler records are runtime
+state.
 
-bin/goobers init ./my-instance           # scaffold an instance root
-bin/goobers validate ./my-instance       # check instance.yaml + config/
-bin/goobers config show ./my-instance    # render the effective config (secrets redacted)
-bin/goobers run default-implement ./my-instance   # trigger a run manually
-bin/goobers status ./my-instance         # list runs + their phase
-bin/goobers claims list ./my-instance    # inspect current claim leases
-bin/goobers claims release --force <item-id> ./my-instance # override a live holder
+Install an exact tagged release on Linux or macOS and let its guided flow create
+and validate a release-pinned instance:
+
+```sh
+VERSION=v1.2.3 # replace with the exact release to install
+/bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
+  -- "$VERSION" ./my-instance
+
+# Or seed the onboarding-only backlog -> review -> PR path on a disposable instance:
+$HOME/.local/bin/goobers init --template=quickstart ./tutorial-instance
+
+$HOME/.local/bin/goobers config show ./my-instance    # effective config (secrets redacted)
+$HOME/.local/bin/goobers run implementation ./my-instance # trigger a run manually
+$HOME/.local/bin/goobers status ./my-instance         # list runs + their phase
+$HOME/.local/bin/goobers claims list ./my-instance    # inspect current claim leases
+$HOME/.local/bin/goobers claims release --force <item-id> ./my-instance # override a live holder
 # If an item ID is claimed in multiple namespaces, add:
 #   --gaggle=<name> --provider=<name>
-bin/goobers trace <run-id> ./my-instance # inspect one run's journal
-bin/goobers escalations ./my-instance    # list escalated runs
-bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifact timeline
+$HOME/.local/bin/goobers trace <run-id> ./my-instance # inspect one run's journal
+$HOME/.local/bin/goobers escalations ./my-instance    # list escalated runs
+$HOME/.local/bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifacts
 ```
 
-`goobers init` scaffolds the instance root described in
+The checksummed installer and reproducibility details are documented in
+[Releases & packaging](docs/guides/releases.md#install-a-pinned-release).
+`goobers init --guided` scaffolds the instance root described in
 `docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/` (seeded with a starter
 gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
-`telemetry.db` placeholder — and is safe to re-run (existing pieces are left
-untouched). Edit `instance.yaml` to point at your own repo and set the
-referenced token env var or file; edit `config/` to shape your workforce.
+`telemetry.db` placeholder — using the canonical config embedded in that
+release, and is safe to re-run (existing pieces are left untouched). Edit
+`instance.yaml` to point at your own repo and set the referenced token env var
+or file; edit `config/` to shape your workforce. The `quickstart@v1` template is
+intentionally limited to a disposable first success and omits production
+remediation, escalation, CI, and merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts
 any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
@@ -119,6 +138,7 @@ goobers completion fish | source  # fish
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
+make tidy-check  # check that go.mod/go.sum match tidy output
 make ci          # merge gate (Go + config + portal)
 make verify-full # merge plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities

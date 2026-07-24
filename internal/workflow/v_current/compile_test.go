@@ -668,6 +668,31 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	}
 }
 
+func TestCompileSetMilestoneRequiresRoadmapPolicy(t *testing.T) {
+	task := apiv1.Task{
+		Name:         "milestone",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "assign roadmap milestone",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "set-milestone"}},
+		Capabilities: []string{string(capability.GitHubMilestonesWrite)},
+	}
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `task "milestone" command "goobers set-milestone" prescribes policy action "assign-milestone" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"assign-milestone"}
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `task "milestone" policy action "assign-milestone" requires capability "github:milestones:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+}
+
 func TestCompileGatherSiblingContextRequiresScopeDriftAction(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

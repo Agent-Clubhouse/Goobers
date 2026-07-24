@@ -206,18 +206,21 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 
 // AdmitWorkflow applies run conditions to one gaggle-scoped workflow.
 func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
+	return c.AdmitProviderWorkflow(identity, apiv1.ProviderGitHub, r, now)
+}
+
+// AdmitProviderWorkflow applies run conditions using the provider the run
+// targets.
+func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider apiv1.Provider, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Provider-quota circuit breaker (#712), checked first: while a provider
-	// the run would need is known-exhausted, dispatching is pure waste
-	// regardless of what the parallelism/budget checks below would otherwise
-	// allow — every workflow today requires GitHub for its first stage (the
-	// issue's own "all four" note), so this applies unconditionally rather
-	// than per-workflow. No claim/budget/parallelism slot is reserved for a
-	// quota-skipped tick (this returns before any of those increment).
+	// Provider-quota circuit breaker (#712), checked first: while the provider
+	// this run targets is known-exhausted, dispatching is pure waste regardless
+	// of what the parallelism/budget checks below would otherwise allow. No
+	// claim/budget/parallelism slot is reserved for a quota-skipped tick.
 	if c.providerQuota != nil {
-		if resetAt, exhausted := c.providerQuota.Exhausted(now); exhausted {
+		if resetAt, exhausted := c.providerQuota.ExhaustedFor(provider, now); exhausted {
 			return false, ReasonProviderQuota + ": resumes at " + resetAt.UTC().Format(time.RFC3339)
 		}
 	}

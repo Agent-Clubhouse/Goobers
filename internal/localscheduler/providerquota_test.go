@@ -62,6 +62,94 @@ func TestProviderQuotaStateRecordExhaustedZeroIsNoOp(t *testing.T) {
 	}
 }
 
+func TestProviderQuotaStateBudgetsProvidersIndependently(t *testing.T) {
+	s := NewProviderQuotaState()
+	now := time.Now()
+	resetAt := now.Add(time.Hour)
+	s.Record(apiv1.ProviderGitHub, 2, resetAt)
+	s.Record(apiv1.ProviderADO, 1, resetAt)
+
+	github := s.ReservePolls(apiv1.ProviderGitHub, now, 3)
+	if !github.Known || github.Allowed != 2 || github.RemainingAfter != 0 {
+		t.Fatalf("GitHub reservation = %+v, want 2 of 3 allowed with 0 remaining", github)
+	}
+	ado := s.ReservePolls(apiv1.ProviderADO, now, 2)
+	if !ado.Known || ado.Allowed != 1 || ado.RemainingAfter != 0 {
+		t.Fatalf("ADO reservation = %+v, want independent 1 of 2 allowance", ado)
+	}
+}
+
+func TestProviderQuotaStateReopensAtResetOnce(t *testing.T) {
+	s := NewProviderQuotaState()
+	now := time.Now()
+	resetAt := now.Add(time.Minute)
+	s.Record(apiv1.ProviderGitHub, 0, resetAt)
+
+	before := s.ReservePolls(apiv1.ProviderGitHub, now, 2)
+	if before.Allowed != 0 || !before.Known || before.Reset {
+		t.Fatalf("reservation before reset = %+v, want known exhausted window", before)
+	}
+	atReset := s.ReservePolls(apiv1.ProviderGitHub, resetAt, 2)
+	if atReset.Allowed != 2 || !atReset.Reset || atReset.Known {
+		t.Fatalf("reservation at reset = %+v, want full reopened allowance and reset decision", atReset)
+	}
+	after := s.ReservePolls(apiv1.ProviderGitHub, resetAt.Add(time.Second), 2)
+	if after.Allowed != 2 || after.Reset || after.Known {
+		t.Fatalf("reservation after reported reset = %+v, want unbounded allowance without duplicate reset", after)
+	}
+}
+
+func TestProviderQuotaStateSameWindowCannotAddBudgetBack(t *testing.T) {
+	s := NewProviderQuotaState()
+	now := time.Now()
+	resetAt := now.Add(time.Hour)
+	s.Record(apiv1.ProviderGitHub, 2, resetAt)
+	s.ReservePolls(apiv1.ProviderGitHub, now, 1)
+
+	s.Record(apiv1.ProviderGitHub, 5, resetAt)
+	decision := s.ReservePolls(apiv1.ProviderGitHub, now, 2)
+	if decision.Allowed != 1 {
+		t.Fatalf("stale higher observation restored budget: %+v", decision)
+	}
+}
+
+func TestProviderQuotaStateRefundsCachedPoll(t *testing.T) {
+	s := NewProviderQuotaState()
+	now := time.Now()
+	resetAt := now.Add(time.Hour)
+	s.Record(apiv1.ProviderGitHub, 2, resetAt)
+	budget := s.ReservePolls(apiv1.ProviderGitHub, now, 1)
+	reservation, ok := budget.Reservation()
+	if !ok {
+		t.Fatalf("reservation = %+v, want active window token", budget)
+	}
+	s.RefundReservation(reservation)
+
+	decision := s.ReserveCurrentPolls(apiv1.ProviderGitHub, 2)
+	if decision.RemainingBefore != 2 || decision.Allowed != 2 || decision.RemainingAfter != 0 {
+		t.Fatalf("reservation after cached refund = %+v, want both requests restored", decision)
+	}
+}
+
+func TestProviderQuotaStateRejectsStaleCachedRefund(t *testing.T) {
+	s := NewProviderQuotaState()
+	now := time.Now()
+	resetAt := now.Add(time.Hour)
+	s.Record(apiv1.ProviderGitHub, 1, resetAt)
+	budget := s.ReservePolls(apiv1.ProviderGitHub, now, 1)
+	reservation, ok := budget.Reservation()
+	if !ok {
+		t.Fatalf("reservation = %+v, want active window token", budget)
+	}
+
+	s.Record(apiv1.ProviderGitHub, 0, resetAt)
+	s.RefundReservation(reservation)
+	decision := s.ReserveCurrentPolls(apiv1.ProviderGitHub, 1)
+	if decision.Allowed != 0 || decision.RemainingBefore != 0 {
+		t.Fatalf("stale cached refund reopened exhausted window: %+v", decision)
+	}
+}
+
 // TestAdmitBlocksWhileProviderQuotaExhausted is #712's core acceptance
 // criterion: with a provider-quota gate wired and reporting exhausted,
 // Admit refuses dispatch — regardless of workflow-level readiness — and

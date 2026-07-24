@@ -19,14 +19,15 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-const initHelp = "Usage: goobers init [--guided | --demo] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
 	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
 	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
 	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
-	"then validates the result. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"then validates the result. --template=quickstart seeds the versioned onboarding\n" +
+	"workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced.\n"
 
@@ -43,12 +44,23 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	guided := fs.Bool("guided", false, "prompt for repository, work tracking, credentials, and workflows")
+	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
 	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *demo && *guided {
-		pf(stderr, "error: --demo and --guided cannot be used together\n")
+	selectedModes := 0
+	for _, selected := range []bool{*demo, *guided, *template != ""} {
+		if selected {
+			selectedModes++
+		}
+	}
+	if selectedModes > 1 {
+		pf(stderr, "error: --demo, --guided, and --template cannot be combined\n")
+		return 2
+	}
+	if *template != "" && *template != instance.QuickstartTemplate {
+		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
 		return 2
 	}
 	if fs.NArg() > 1 {
@@ -78,6 +90,8 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		if err == nil {
 			res, err = instance.InitGuided(root, opts)
 		}
+	} else if *template == instance.QuickstartTemplate {
+		res, err = instance.InitQuickstart(root)
 	} else if *demo {
 		res, err = instance.InitDemo(root)
 	} else {
@@ -106,6 +120,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
+	pf(stdout, "\nLearn the desired-state model: %s\n", conceptsGuideURL)
 	demoSeeded := false
 	for _, created := range res.Created {
 		if created == instance.ConfigDirName {
@@ -419,6 +434,8 @@ Developer docs:
   Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and docs/stage-contract.md
   View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (` + "`goobers trace` / `goobers telemetry`" + `)
 `
+
+const conceptsGuideURL = "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
 
 const demoTourBanner = `
 Demo full loop (run these from %s):

@@ -79,6 +79,7 @@ func featureMatrixRows(features []workflow.Feature, onlyVersion string) ([]featu
 			Level:            support.Level,
 			UnsupportedAfter: support.UnsupportedAfter,
 			Replacement:      support.Replacement,
+			History:          support.History,
 		}}
 	}
 

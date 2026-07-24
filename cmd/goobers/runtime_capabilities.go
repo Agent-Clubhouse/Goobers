@@ -85,7 +85,7 @@ func init() {
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		groupCommand(
 			"scaffold",
 			runScaffold,
@@ -397,6 +397,14 @@ func init() {
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).
 			withExamples("goobers gather-pr-context"),
+		command("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
+			withSynopsis(synopsisByID["gather-issue-context"]).
+			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
+			withExamples("goobers gather-issue-context"),
+		command("gather-ci-failures", apicontract.ActionWorkflowExecution, runGatherCIFailures).
+			withSynopsis(synopsisByID["gather-ci-failures"]).
+			withHelp("add failing CI diagnostics to a remediation brief (a workflow stage)", gatherCIFailuresHelp).
+			withExamples("goobers gather-ci-failures"),
 		command("rebase-pr", apicontract.ActionWorkflowExecution, runRebasePR).
 			withSynopsis(synopsisByID["rebase-pr"]).
 			withHelp("rebase-first, finding-driven remediation routing (a workflow stage)", rebasePRHelp).

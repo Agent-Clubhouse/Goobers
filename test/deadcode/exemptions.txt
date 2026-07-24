@@ -71,6 +71,7 @@ github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard
 github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
+github.com/goobers/goobers/internal/supportmatrix.validateSupportMatrixEvolution # Support-matrix evolution guard (DVL-7) exercised by release-history tests.
 github.com/goobers/goobers/internal/workflow/v_current.newFeatureRegistryAgainstReleased # Feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_current.validateFeatureRegistryEvolution # Feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_next.newFeatureRegistryAgainstReleased # Next-interpreter feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.

@@ -34,6 +34,8 @@ type remediationGoober struct {
 	invoked           int
 	reviewed          int
 	sawSiblingContext bool
+	sawIssueContext   bool
+	sawCIContext      bool
 	// visitMu/visited are the SHARED dispatch log the deterministic stub also
 	// appends to — an agentic stage goes through a different executor, so
 	// recording only deterministic dispatches would silently omit `implement`,
@@ -54,6 +56,12 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	for _, pointer := range env.ContextPointers {
 		if pointer.Name == "gather-sibling-context.artifact[0]" && pointer.Artifact != nil {
 			g.sawSiblingContext = true
+		}
+		if pointer.Name == "gather-issue-context.artifact[0]" && pointer.Artifact != nil {
+			g.sawIssueContext = true
+		}
+		if pointer.Name == "gather-ci-failures.artifact[0]" && pointer.Artifact != nil {
+			g.sawCIContext = true
 		}
 	}
 	g.mu.Unlock()
@@ -186,8 +194,23 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"hasSubstantiveFindings": "true",
 			"hasFailingCI":           "false",
 		}},
+		runID + ":gather-ci-failures": {
+			status: apiv1.ResultSuccess,
+			outputs: map[string]interface{}{
+				WorkspaceBranchOutput:    rebindBranch,
+				"selectedNumber":         "77",
+				"head":                   rebindBranch,
+				"base":                   "main",
+				"isBehindBase":           "true",
+				"hasSubstantiveFindings": "true",
+				"hasFailingCI":           "false",
+			},
+			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
+			artifactMediaType: "application/json",
+		},
 		runID + ":rebase-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
+			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "true", "selectedNumber": "77",
@@ -197,6 +220,12 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			status:       apiv1.ResultSuccess,
 			outputs:      map[string]interface{}{"selectedNumber": "77"},
 			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
+			artifactMediaType: "application/json",
+		},
+		runID + ":gather-issue-context": {
+			status:            apiv1.ResultSuccess,
+			artifactName:      "remediation-brief.json",
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherIssueContext":{"issues":[{"number":"945","body":"acceptance criteria"}]}}`),
 			artifactMediaType: "application/json",
 		},
 		runID + ":validate-finding-responses": {status: opts.validationStatus},
@@ -250,8 +279,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 //
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
-// gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → gather-sibling-context → implement → validate-finding-responses
+// gather-pr-context → gather-ci-failures → rebase-pr → [needs agent] → remediation-checkpoint →
+// [continue] → gather-sibling-context → gather-issue-context → implement → validate-finding-responses
 // → [response validation pass] → [review pass] → local-ci → [ci pass] →
 // push-remediated → respond-to-findings, and complete. Before #392 this run
 // dead-ended at remediation-checkpoint.
@@ -265,9 +294,11 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	want := []string{
 		"update-behind-pr",
 		"gather-pr-context",
+		"gather-ci-failures",
 		"rebase-pr",
 		"remediation-checkpoint",
 		"gather-sibling-context",
+		"gather-issue-context",
 		"implement",
 		"validate-finding-responses",
 		"local-ci",
@@ -282,6 +313,12 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if !goober.sawSiblingContext {
 		t.Error("implementer context is missing gather-sibling-context.artifact[0]")
+	}
+	if !goober.sawIssueContext {
+		t.Error("implementer context is missing gather-issue-context.artifact[0]")
+	}
+	if !goober.sawCIContext {
+		t.Error("implementer context is missing gather-ci-failures.artifact[0]")
 	}
 }
 

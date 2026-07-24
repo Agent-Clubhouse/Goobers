@@ -512,6 +512,55 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 	}
 }
 
+// TestClientCancelledReadsAreQuiet locks #1367: when a client aborts an
+// in-flight read the daemon must not log it as an error (the "list runs failed:
+// context canceled" / "telemetry stats read failed: context canceled" noise on
+// a busy instance) and must report it as a 499 client-closed-request rather
+// than a 500 server fault.
+func TestClientCancelledReadsAreQuiet(t *testing.T) {
+	tests := []struct {
+		name   string
+		reader readservice.Reader
+		path   string
+	}{
+		{
+			name:   "list runs",
+			reader: &fakeReader{err: context.Canceled},
+			path:   RunsPath,
+		},
+		{
+			name:   "telemetry stats",
+			reader: &fakeReader{telemetryErr: context.Canceled},
+			path:   TelemetryStatsPath,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler, err := NewHandler(test.reader, AllowAll, log.New(&logs, "", 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+
+			if response.Code != statusClientClosedRequest {
+				t.Fatalf("status = %d, want %d; body = %s", response.Code, statusClientClosedRequest, response.Body)
+			}
+			var envelope ErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Error.Code != "request_cancelled" {
+				t.Fatalf("error code = %q, want request_cancelled", envelope.Error.Code)
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("client cancellation logged as an error: %q", logs.String())
+			}
+		})
+	}
+}
+
 func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	since := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
 	until := since.Add(2 * time.Hour)

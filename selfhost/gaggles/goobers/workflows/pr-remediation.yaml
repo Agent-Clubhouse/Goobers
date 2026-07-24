@@ -18,8 +18,9 @@ spec:
   # implementation's query-backlog head. rebase-pr (issue #363, design doc §5
   # D3) rebases and routes on the combination of rebase outcome + verdict
   # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs on
-  # the "needs agent" branch to detect a stuck PR (same diff pushed twice, or
-  # the liberal repass budget exhausted) and escalate.
+  # the "needs agent" branch to detect a stuck PR (same diff pushed twice, the
+  # liberal repass budget exhausted, or a rebase conflict inside a function a
+  # merged sibling substantially restructured) and escalate.
   #
   # The agentic implement/review/local-ci chain is WIRED (issue #392, design
   # doc §10's "share the goober, copy the stage wiring"): implement, the
@@ -106,6 +107,30 @@ spec:
         # fail any test, it would silently hand implement/review/local-ci a
         # pristine branch cut from main and remediate the wrong tree.
         - workspaceBranch
+      next: gather-ci-failures
+
+    # PRR-2: enrich only a failing-CI brief with the provider's high-signal,
+    # bounded diagnostics. Passing CI is a journal-only no-op with no provider
+    # calls. Raw job logs have an explicit 0-byte bound; check summaries and
+    # annotations carry the failure reason without swamping agent context.
+    - name: gather-ci-failures
+      type: deterministic
+      goal: Add failing check names, conclusions, summaries, and annotations to the remediation brief.
+      run:
+        command: ["goobers", "gather-ci-failures"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-brief.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - base
+        - isBehindBase
+        - hasSubstantiveFindings
+        - hasFailingCI
+        - workspaceBranch
       next: rebase-pr
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
@@ -129,15 +154,12 @@ spec:
     #     BEFORE spending an agentic session on it, and then routes into
     #     implement (#392).
     #
-    # selectedNumber is echoed forward in this stage's own result
-    # (writeRebaseResult) alongside needsAgent/conflict: a gate never
-    # updates Task.InputsFrom's upstream-Outputs chain (only a task does —
-    # see apply-verdict's own doc comment for the established convention),
-    # so remediation-checkpoint (after rebase-gate) can only read it if
-    # THIS stage re-emits it, same as gather-sibling-context re-emitting
-    # pr-select's selectedNumber two hops ahead of apply-verdict. head is
-    # echoed too but not currently consumed downstream — remediation-
-    # checkpoint (#393) re-lists PRs itself and reads Head from there.
+    # Every failure result sets needsAgent=true and preserves every declared
+    # output, using empty defaults when rebase evidence is unavailable. A gate
+    # never updates Task.InputsFrom's upstream-Outputs chain (only a task does —
+    # see apply-verdict's own doc comment for the established convention), so
+    # remediation-checkpoint (after rebase-gate) can only read these values if
+    # THIS stage emits them on both success and failure.
     - name: rebase-pr
       type: deterministic
       goal: Rebase the selected PR onto its base; force-push and clear the label if clean, else defer to agentic remediation.
@@ -161,6 +183,10 @@ spec:
         - selectedNumber
         - head
         - needsAgent
+        - conflict
+        - conflictLocations
+        - attemptedHeadSha
+        - rebaseBaseSha
       next: rebase-gate
 
     # D4/D5 loop-control (issue #364, design doc §6): runs only when
@@ -170,8 +196,11 @@ spec:
     # other stage here), computes its current diff against base, and
     # escalates (goobers:merge-escalated, clearing needs-remediation) if
     # that diff is byte-identical to the immediately prior recorded cycle's
-    # (stuck, no progress) or the liberal repass budget is exhausted;
-    # otherwise records the advanced cycle state as a new sticky comment.
+    # (stuck, no progress), the liberal repass budget is exhausted, or a
+    # rebase conflict from this exact PR head lands inside a function a merged
+    # sibling substantially restructured. That structural case escalates on
+    # cycle one and includes both PRs' relevant hunks; otherwise this records
+    # the advanced cycle state as a new sticky comment.
     - name: remediation-checkpoint
       type: deterministic
       goal: Detect a stuck PR (no-progress repeat or budget exhaustion) and escalate, or record the advanced cycle state.
@@ -179,6 +208,10 @@ spec:
         command: ["goobers", "remediation-checkpoint"]
       inputsFrom:
         selectedNumber: selectedNumber
+        conflict: conflict
+        conflictLocations: conflictLocations
+        attemptedHeadSha: attemptedHeadSha
+        rebaseBaseSha: rebaseBaseSha
       inputs:
         resultFile: "checkpoint-result.json"
       capabilities:
@@ -224,6 +257,23 @@ spec:
         - flag-scope-drift
       expectedOutputs:
         - selectedNumber
+      next: gather-issue-context
+
+    # PRR-4 / design doc D1: enrich the versioned brief with every resolvable
+    # issue the PR declares through GitHub's closing-keyword grammar. Missing
+    # references produce an explicit empty section, so this optional evidence
+    # source never blocks remediation when there is no originating issue.
+    - name: gather-issue-context
+      type: deterministic
+      goal: Add the originating issue body and acceptance criteria to the remediation brief.
+      run:
+        command: ["goobers", "gather-issue-context"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-brief.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
       next: implement
 
     # Agentic rework in a worktree provisioned on the PR's own branch (see
@@ -238,10 +288,14 @@ spec:
       goal: >-
         Remediate this pull request. The worktree is already checked out on
         the PR's own branch, rebased onto its base where that was possible.
-        Read remediation-brief.json from the attached context for the full
-        merge-review verdict and PR thread comments, the sibling PR file/overlap
-        context (sibling-context.json), plus any rebase conflict left to
-        resolve, and address EVERY
+        Read the enriched remediation-brief.json from the attached context —
+        the gather-issue-context artifact, which supersedes the earlier
+        gather-pr-context and gather-ci-failures remediation-brief.json copies
+        (ignore those). It contains the full merge-review verdict, PR thread
+        comments, failing check summaries/annotations, and the originating
+        issue body and acceptance criteria. Also read the sibling PR
+        file/overlap context (sibling-context.json), plus any rebase conflict
+        left to resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. In every successful

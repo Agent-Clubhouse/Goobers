@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -239,16 +240,16 @@ var credentialedCapabilities = []capability.Capability{
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
 // environment variable that consumes its token. General org-repo capabilities
-// use GH_TOKEN (the github tool's var), github:issues:approve uses its dedicated
-// GOOBERS_CRED_* variable so the nominator can detect and exercise that opt-in
-// separately, and agent:model uses COPILOT_GITHUB_TOKEN (the model backend's
-// var, #288, §3.3).
+// use GH_TOKEN (the github tool's var), command-scoped capabilities use their
+// dedicated GOOBERS_CRED_* variables, and agent:model uses
+// COPILOT_GITHUB_TOKEN (the model backend's var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
 	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
 	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
+	envCaps[string(capability.GitHubMilestonesWrite)] = executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
 }
@@ -256,7 +257,7 @@ func buildEnvCapabilities() map[string]string {
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot, selfBin string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	adapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
@@ -266,6 +267,8 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*
 			string(capability.AgentModel): true,
 		},
 		ExtraEnvAllowlist: envPassthrough,
+		InstanceRoot:      instanceRoot,
+		SelfBin:           selfBin,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -1027,21 +1030,48 @@ type backlogCounter struct {
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
+	quota        *localscheduler.ProviderQuotaState
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
+	var accounting *providerQuotaAccounting
+	if b.quota != nil {
+		accounting = &providerQuotaAccounting{state: b.quota}
+		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+			accounting.prepaid = &reservation
+		}
+		defer accounting.RefundUnused()
+	}
+
 	token, err := b.resolver.Resolve(ctx, b.ref)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	b.reg.Register([]byte(token))
-	items, err := newGitHubProvider(token, apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx))).ListWorkItems(ctx, providers.ListWorkItemsRequest{
+	opts := []func(*providers.GitHubProvider){
+		apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx)),
+	}
+	if accounting != nil {
+		opts = append(opts,
+			providers.WithQuotaObserver(accounting),
+			providers.WithQuotaRequestGate(accounting),
+		)
+	}
+	// Fail fast on rate limits so polling waits for the scheduler's next
+	// reset-aware admission. Transport and 5xx retries remain enabled and each
+	// attempt is reserved through the quota gate above.
+	opts = append(opts, providers.WithMaxRateLimitRetries(0))
+	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
 	})
 	if err != nil {
 		return 0, err
 	}
 	return len(items), nil
+}
+
+func (b *backlogCounter) ProviderQuotaGuarded() bool {
+	return b.quota != nil
 }
 
 // buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
@@ -1057,7 +1087,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) localscheduler.BacklogCounter {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -1078,7 +1108,7 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 		labels = append(labels, k)
 	}
 	sort.Strings(labels)
-	return &backlogCounter{
+	counter := &backlogCounter{
 		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
 		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
 		labels:       labels,
@@ -1086,6 +1116,70 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 		reg:          reg,
 		schedulerDir: schedulerDir,
 	}
+	if quota != nil {
+		counter.quota = quota
+	}
+	return counter
+}
+
+type providerQuotaAccounting struct {
+	mu          sync.Mutex
+	state       *localscheduler.ProviderQuotaState
+	prepaid     *localscheduler.ProviderPollReservation
+	outstanding []localscheduler.ProviderPollReservation
+}
+
+func (a *providerQuotaAccounting) AcquireQuotaRequest(_ context.Context, provider providers.ProviderKind) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepaid != nil {
+		a.outstanding = append(a.outstanding, *a.prepaid)
+		a.prepaid = nil
+		return nil
+	}
+	decision := a.state.ReserveCurrentPolls(apiv1.Provider(provider), 1)
+	if decision.Allowed == 0 {
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
+	reservation, _ := decision.Reservation()
+	a.outstanding = append(a.outstanding, reservation)
+	return nil
+}
+
+func (a *providerQuotaAccounting) ObserveQuota(_ context.Context, observation providers.QuotaObservation) {
+	a.mu.Lock()
+	var reservation localscheduler.ProviderPollReservation
+	if len(a.outstanding) > 0 {
+		reservation = a.outstanding[0]
+		a.outstanding = a.outstanding[1:]
+	}
+	a.mu.Unlock()
+
+	provider := apiv1.Provider(observation.Provider)
+	if observation.Cached {
+		a.state.RefundReservation(reservation)
+		return
+	}
+	if observation.Known {
+		a.state.Record(provider, observation.Remaining, observation.Reset)
+	}
+}
+
+func (a *providerQuotaAccounting) RefundUnused() {
+	a.mu.Lock()
+	if a.prepaid == nil {
+		a.mu.Unlock()
+		return
+	}
+	reservation := *a.prepaid
+	a.prepaid = nil
+	a.mu.Unlock()
+	a.state.RefundReservation(reservation)
 }
 
 // instructionsPath resolves a goober's Instructions field to an absolute
@@ -1177,7 +1271,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, instanceRoot, selfBin)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1424,7 +1518,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	adapterRegistry, err := buildHarnessRegistry(nil, nil)
+	adapterRegistry, err := buildHarnessRegistry(nil, nil, "", "")
 	if err != nil {
 		return nil, err
 	}

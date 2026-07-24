@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -48,8 +49,13 @@ type WorkflowEntry struct {
 	// fixed one-shot-per-fire model, a backlog-item trigger starts as many
 	// runs as there are ready items, bounded by run conditions.
 	BacklogCounter BacklogCounter
-	Starter        Starter
-	RepoRef        apiv1.RepoRef
+	// PollProvider identifies the quota ledger used by BacklogCounter.
+	PollProvider apiv1.Provider
+	// PollPriority preserves higher-priority polls when a provider budget cannot
+	// cover every poll due in one tick.
+	PollPriority int32
+	Starter      Starter
+	RepoRef      apiv1.RepoRef
 	// RequiredCapabilities is the union of runner (toolchain/platform)
 	// capabilities this workflow's gaggle and stages require (RRQ-1/#1101).
 	// dispatch refuses the run before admission when the runner does not claim
@@ -70,6 +76,13 @@ func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
 // to actual backlog readiness.
 type BacklogCounter interface {
 	EligibleCount(ctx context.Context) (int, error)
+}
+
+// ProviderQuotaGuardedBacklogCounter can consult a local snapshot before its
+// request gate spends provider quota.
+type ProviderQuotaGuardedBacklogCounter interface {
+	BacklogCounter
+	ProviderQuotaGuarded() bool
 }
 
 // minPoll floors the computed sleep-until-next-tick duration, so a schedule
@@ -109,6 +122,7 @@ type Scheduler struct {
 	now               func() time.Time
 	after             func(d time.Duration) <-chan time.Time
 	telemetry         SpanStarter
+	providerQuota     ProviderQuotaGate
 	afterTick         func(context.Context)
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
@@ -219,12 +233,13 @@ func WithOpenPRCounter(counter OpenPRCounter) Option {
 	}
 }
 
-// WithProviderQuota wires the gate that backs the provider-quota circuit
-// breaker (#712). Optional — nil/unset leaves the breaker unenforced.
+// WithProviderQuota wires the shared provider-quota circuit breaker and
+// polling budget. Optional — nil/unset leaves both unenforced.
 func WithProviderQuota(gate ProviderQuotaGate) Option {
 	return func(s *Scheduler) {
 		if gate != nil {
 			s.conditions.SetProviderQuota(gate)
+			s.providerQuota = gate
 		}
 	}
 }
@@ -461,6 +476,7 @@ type tickCandidate struct {
 	entry              WorkflowEntry
 	schedule           TickResult
 	scheduleDue        bool
+	backlogPollDue     bool
 	backlogRemaining   int
 	poolSkips          int
 	dispatchedThisTick bool
@@ -499,12 +515,13 @@ func (g *tickGaggle) next() (*tickCandidate, TickResult, journal.TriggerKind, bo
 	return nil, TickResult{}, "", false
 }
 
-// Tick evaluates every workflow's trigger at now, orders due workflows by
-// starvation age within each gaggle, and dispatches one item per ready gaggle
-// per pass until demand or capacity is exhausted. The gaggle order resumes
-// after the most recently admitted gaggle. With G continuously ready gaggles,
-// this bounds a gaggle's wait to G-1 successful dispatches by other gaggles.
-// Gaggles without ready work are omitted, so they never reserve capacity.
+// Tick evaluates every workflow's trigger at now, budgets provider-backed
+// polls by priority, orders ready workflows by starvation age within each
+// gaggle, and dispatches one item per ready gaggle per pass until demand or
+// capacity is exhausted. The gaggle order resumes after the most recently
+// admitted gaggle. With G continuously ready gaggles, this bounds a gaggle's
+// wait to G-1 successful dispatches by other gaggles. Gaggles without ready
+// work are omitted, so they never reserve capacity.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -517,7 +534,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 	s.mu.Unlock()
 
-	candidates := make([]*tickCandidate, 0, len(entries))
+	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
 		identity := entryIdentity(entry)
 		candidate := &tickCandidate{
@@ -557,9 +574,16 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		}
 
 		if entry.BacklogCounter != nil {
-			candidate.backlogRemaining = s.pollBacklog(ctx, entry, now)
+			candidate.backlogPollDue = s.backlogPollDue(entry, now)
 		}
+		allCandidates = append(allCandidates, candidate)
+	}
+
+	s.pollBacklogs(ctx, allCandidates, now)
+	candidates := make([]*tickCandidate, 0, len(allCandidates))
+	for _, candidate := range allCandidates {
 		if candidate.scheduleDue || candidate.backlogRemaining > 0 {
+			identity := entryIdentity(candidate.entry)
 			s.mu.Lock()
 			candidate.poolSkips = s.consecutivePoolSkips[identity]
 			s.mu.Unlock()
@@ -731,23 +755,76 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	return nil
 }
 
-// pollBacklog returns the current demand for a backlog-triggered workflow when
-// its provider polling interval is due.
-func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) int {
+func (s *Scheduler) backlogPollDue(entry WorkflowEntry, now time.Time) bool {
 	identity := entryIdentity(entry)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	last := s.backlogLastCheck[identity]
 	due := last.IsZero() || !now.Before(last.Add(backlogPollInterval))
 	if due {
 		s.backlogLastCheck[identity] = now
 	}
-	s.mu.Unlock()
-	if !due {
-		return 0
-	}
+	return due
+}
 
+func (s *Scheduler) pollBacklogs(ctx context.Context, candidates []*tickCandidate, now time.Time) {
+	byProvider := make(map[apiv1.Provider][]*tickCandidate)
+	for _, candidate := range candidates {
+		if candidate.backlogPollDue {
+			provider := quotaProvider(candidate.entry.PollProvider)
+			byProvider[provider] = append(byProvider[provider], candidate)
+		}
+	}
+	providerNames := make([]string, 0, len(byProvider))
+	for provider := range byProvider {
+		providerNames = append(providerNames, string(provider))
+	}
+	sort.Strings(providerNames)
+
+	for _, providerName := range providerNames {
+		provider := apiv1.Provider(providerName)
+		due := byProvider[provider]
+		sort.Slice(due, func(i, j int) bool {
+			if due[i].entry.PollPriority != due[j].entry.PollPriority {
+				return due[i].entry.PollPriority > due[j].entry.PollPriority
+			}
+			if due[i].entry.Workflow != due[j].entry.Workflow {
+				return due[i].entry.Workflow < due[j].entry.Workflow
+			}
+			return due[i].entry.Gaggle < due[j].entry.Gaggle
+		})
+
+		s.journalProviderQuotaReset(provider, now)
+		for _, candidate := range due {
+			decision := ProviderPollBudget{Provider: provider, Requested: 1, Allowed: 1}
+			if s.providerQuota != nil {
+				decision = s.providerQuota.ReservePolls(provider, now, 1)
+			}
+			if decision.Reset {
+				s.journalProviderQuotaResetDecision(provider, decision.RemainingBefore, decision.ResetAt)
+			}
+			if decision.Allowed > 0 {
+				pollCtx := WithProviderPollBudget(ctx, decision)
+				candidate.backlogRemaining = s.pollBacklog(pollCtx, candidate.entry)
+				continue
+			}
+			if guarded, ok := candidate.entry.BacklogCounter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
+				candidate.backlogRemaining = s.pollBacklog(ctx, candidate.entry)
+				continue
+			}
+			s.journalPollShed(candidate.entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
+		}
+	}
+}
+
+func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry) int {
 	ready, err := entry.BacklogCounter.EligibleCount(ctx)
 	if err != nil {
+		var budgetErr *ProviderPollBudgetError
+		if errors.As(err, &budgetErr) {
+			s.journalPollShed(entry, budgetErr.Provider, budgetErr.Remaining, budgetErr.Requested, budgetErr.ResetAt)
+			return 0
+		}
 		s.journalEvent(journal.Event{
 			Type:     journal.EventError,
 			Workflow: entry.Workflow,
@@ -760,6 +837,40 @@ func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry, now ti
 		return 0
 	}
 	return ready
+}
+
+func (s *Scheduler) journalPollShed(entry WorkflowEntry, provider apiv1.Provider, remaining, requested int, resetAt time.Time) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventPollShed,
+		Workflow: entry.Workflow,
+		Gaggle:   entry.Gaggle,
+		Reason: fmt.Sprintf(
+			"%s: provider=%s priority=%d remaining=%d requested=%d reset=%s",
+			ReasonProviderQuotaBudget, provider, entry.PollPriority,
+			remaining, requested, resetAt.UTC().Format(time.RFC3339),
+		),
+	})
+}
+
+func (s *Scheduler) journalProviderQuotaReset(provider apiv1.Provider, now time.Time) {
+	if s.providerQuota == nil {
+		return
+	}
+	reset, ok := s.providerQuota.ResetIfDue(provider, now)
+	if !ok {
+		return
+	}
+	s.journalProviderQuotaResetDecision(reset.Provider, reset.Remaining, reset.ResetAt)
+}
+
+func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, remaining int, resetAt time.Time) {
+	s.journalEvent(journal.Event{
+		Type: journal.EventProviderQuotaReset,
+		Reason: fmt.Sprintf(
+			"provider=%s reset=%s remaining=%d; provider budget reopened",
+			provider, resetAt.UTC().Format(time.RFC3339), remaining,
+		),
+	})
 }
 
 // Trigger manually fires workflow now, bypassing its cron schedule but still
@@ -789,12 +900,37 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	if matches > 1 {
 		return "", fmt.Errorf("localscheduler: workflow %q is ambiguous across gaggles", workflow)
 	}
-	tick := TickResult{Fire: true, LastEval: now}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now,
+	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
-		fireReason(tick, journal.TriggerManual))
+		"manual")
+}
+
+// TriggerPriority immediately re-evaluates one exact workflow after a prior run
+// publishes state that can change its selection order. It is an output-driven
+// signal, not a bypass: normal readiness admission still applies.
+func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	if strings.TrimSpace(sourceRun) == "" {
+		return "", errors.New("localscheduler: priority trigger source run is required")
+	}
+	return s.triggerWorkflow(ctx, entry, now,
+		journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + sourceRun},
+		"priority re-tick requested by run "+sourceRun)
+}
+
+func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string) (runID string, err error) {
+	tick := TickResult{Fire: true, LastEval: now}
+	if reason == "" {
+		reason = fireReason(tick, trigger.Kind)
+	}
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason)
 	if !admitted {
-		return "", &TriggerRejectedError{Workflow: workflow, Reason: skipReason}
+		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
 	return runID, nil
 }
@@ -1001,7 +1137,9 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
-	ok, reason := s.conditions.AdmitWorkflow(identity, entry.Readiness, now)
+	provider := quotaProvider(entry.RepoRef.Provider)
+	s.journalProviderQuotaReset(provider, now)
+	ok, reason := s.conditions.AdmitProviderWorkflow(identity, provider, entry.Readiness, now)
 	if !ok {
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
