@@ -123,6 +123,66 @@ Verify before a live run: `goobers validate --check-harness` preflights the
 Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
 mis-scoped token fails fast at validation rather than mid-run.
 
+## GitHub App installation tokens (`auth.kind: github-app`)
+
+Instead of a static PAT, a repo can authenticate through a **GitHub App
+installation**: Goobers signs a short-lived App JWT with the App's private key
+and exchanges it for an **installation token** on every run that needs one
+(#686, `docs/design/v2-cloud-scale.md` §5 D4). Minted tokens flow everywhere
+the repo token flows — capability grants, `gh`/API stages, mirror clone/fetch,
+`push-branch` — with no other configuration:
+
+```yaml
+repos:
+  - provider: github
+    owner: your-org
+    name: your-repo
+    auth:
+      kind: github-app
+      appId: 123456            # or the App's client ID string
+      installationId: 987654
+      privateKey:
+        file: /run/secrets/goobers-app.pem   # env: or store: work too
+```
+
+Exactly one identity mechanism per repo: `github-app` **forbids** `token`
+(there is no silent PAT fallback — a failed mint fails the stage closed), and
+an absent `auth` block keeps today's PAT behavior byte for byte.
+
+**Why short-lived tokens for regulated environments.** Installation tokens
+expire after about an hour and are minted on demand, so there is no long-lived
+repo credential to rotate, escrow, or leak: a token captured from a log or a
+compromised stage is dead within the hour, and revocation is immediate and
+coarse (uninstall the App or rotate one key) instead of a hunt across every
+copied PAT. Access is also auditable as the **App's own identity** — commits,
+PRs, and API calls attribute to the app, not to whichever employee's PAT
+happened to be pasted into the instance — and the blast radius is pinned to
+the installation's repository list and permission set rather than a person's
+entire grant. The remaining long-lived secret is the App private key, which
+never leaves the daemon process (stages, git subprocesses, and providers only
+ever see minted tokens) and can itself live in a secret store via
+`privateKey.store`.
+
+**Installation permissions.** Grant the App the union of what the selected
+workflows' capabilities need — same table as above: Contents (Read and write
+for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
+requests (Read and write), Checks + Commit statuses (Read-only, for
+`ci-poll`). Install it on **only the target repositories**.
+
+**Limits.**
+
+- `agent:model` cannot come from an App: "Copilot Requests" is an account
+  permission on a personal fine-grained PAT. Keep the `credentials:` entry (or
+  stored Copilot CLI login) from the section above.
+- GitHub forbids self-approval: `github:pr:review` on goober-authored PRs
+  still needs a second identity (the App counts as one identity).
+- Per-capability `credentials:` overrides still work and still win over the
+  repo credential for their capability — they remain static token refs.
+
+Verify with `goobers validate`: the repository preflight performs a real
+token exchange, so a missing installation or rejected key fails there with
+GitHub's diagnosis instead of mid-run.
+
 ## Least privilege per workflow
 
 A workflow's declared capabilities (`goober.md` GBO-052, `task.md` TSK-042)
