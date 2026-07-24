@@ -1285,6 +1285,7 @@ func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) Pul
 		Base:       pr.Base.Ref,
 		HeadSHA:    pr.Head.SHA,
 		BaseSHA:    pr.Base.SHA,
+		MergeSHA:   pr.MergeCommitSHA,
 		Draft:      pr.Draft,
 		Labels:     labels,
 		CheckState: checkState,
@@ -1322,12 +1323,8 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	out := make([]ChangedFile, 0, len(files))
 	for _, f := range files {
 		out = append(out, ChangedFile{
-			Path:         f.Filename,
-			PreviousPath: f.PreviousFilename,
-			Status:       f.Status,
-			Additions:    f.Additions,
-			Deletions:    f.Deletions,
-			Patch:        f.Patch,
+			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
+			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
 		})
 	}
 	return out, nil
@@ -1401,12 +1398,8 @@ func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef,
 	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
 	for _, f := range files {
 		out.Files = append(out.Files, ChangedFile{
-			Path:         f.Filename,
-			PreviousPath: f.PreviousFilename,
-			Status:       f.Status,
-			Additions:    f.Additions,
-			Deletions:    f.Deletions,
-			Patch:        f.Patch,
+			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
+			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
 		})
 	}
 	return out, nil
@@ -2374,6 +2367,7 @@ type githubPullRequestDetail struct {
 	State          string        `json:"state"`
 	Merged         bool          `json:"merged"`
 	MergedAt       *time.Time    `json:"merged_at"`
+	MergeCommitSHA string        `json:"merge_commit_sha"`
 	ClosedAt       *time.Time    `json:"closed_at"`
 	Mergeable      *bool         `json:"mergeable"`
 	MergeableState string        `json:"mergeable_state"`

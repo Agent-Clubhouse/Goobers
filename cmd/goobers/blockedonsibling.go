@@ -45,9 +45,32 @@ func blockedOnSiblingScanContext(parent context.Context) (context.Context, conte
 	return context.WithTimeout(parent, stageTimeout())
 }
 
+func namedBlockerStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, blocker int) (bool, error) {
+	item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
+	if err != nil {
+		return false, err
+	}
+	if !strings.EqualFold(item.State, "open") {
+		return false, nil
+	}
+	if !item.HasLabel(mergeDemotedLabel) {
+		return true, nil
+	}
+	pr, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(blocker))
+	if err != nil {
+		return false, err
+	}
+	demoted, err := demotionStillHolds(ctx, provider, repo, pr)
+	if err != nil {
+		return false, err
+	}
+	// A live demotion lets successors drain; a stale label does not.
+	return !demoted, nil
+}
+
 // liveBlockedOnSiblingBlockers returns the named blocker PRs that are still
-// open for a parked PR. A blocker is resolved when it is no longer open:
-// merged (done) or closed without merging (nothing left to wait for).
+// effective for a parked PR. A blocker resolves when it closes or while a
+// snapshot-valid merge demotion lets its successors drain around it.
 func liveBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
 	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
 	if err != nil {
@@ -60,15 +83,11 @@ func liveBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHu
 			continue
 		}
 		seen[blocker] = true
-		item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
+		blocks, err := namedBlockerStillBlocks(ctx, provider, repo, blocker)
 		if err != nil {
 			return nil, err
 		}
-		// #950: a demoted blocker (one the election dropped because it could not
-		// merge at an unchanged head) no longer holds its successors back — they
-		// must be free to drain around it. Treat it as resolved even though it is
-		// still open. Label-based off the already-fetched item, so no extra call.
-		if strings.EqualFold(item.State, "open") && !item.HasLabel(mergeDemotedLabel) {
+		if blocks {
 			open = append(open, blocker)
 		}
 	}
@@ -83,12 +102,11 @@ func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHub
 		return false, err
 	}
 	for _, blocker := range blockers {
-		item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
+		blocks, err := namedBlockerStillBlocks(ctx, provider, repo, blocker)
 		if err != nil {
 			return false, err
 		}
-		// #950: a demoted blocker no longer blocks — see liveBlockedOnSiblingBlockers.
-		if strings.EqualFold(item.State, "open") && !item.HasLabel(mergeDemotedLabel) {
+		if blocks {
 			return true, nil
 		}
 	}

@@ -343,6 +343,25 @@ func TestPRSelectFoundationScanIncludesSelfHealedLifecycleLabels(t *testing.T) {
 				t.Fatalf("selected PR = %s, want self-healed foundation PR #709", got)
 			}
 			assertFoundationBlocker(t, server, 700, 709)
+			if tc.label == mergeDemotedLabel {
+				provider := server.newGitHubProvider("token")
+				filtered, err := filterRemediationPullRequests(
+					context.Background(),
+					provider,
+					providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+					[]providers.PullRequestSummary{{
+						Number: 700,
+						Labels: []string{needsRemediationLabel, blockedOnSiblingLabel},
+					}},
+					nil,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(filtered) != 0 {
+					t.Fatalf("remediation candidates = %+v, want dependent held behind self-healed demoted foundation #709", filtered)
+				}
+			}
 		})
 	}
 }
@@ -391,9 +410,8 @@ func TestPRSelectFoundationScanSkipsUnavailableContent(t *testing.T) {
 }
 
 func addFoundationScanFixture(server *fakeGitHubServer, foundationHead string, foundationLabels ...string) {
-	for _, number := range []int{700, 709} {
-		server.addIssue(number, "PR "+strconv.Itoa(number))
-	}
+	server.addIssue(700, "PR 700")
+	server.addIssue(709, "PR 709", foundationLabels...)
 	server.addOpenPR(700, "goobers/implementation/700", "main", "h700", "base", false, nil, []fakePRFile{{
 		path: "portal/src/App.tsx", status: "modified", additions: 6, deletions: 4,
 		patch: "@@ -100,4 +100,6 @@",
