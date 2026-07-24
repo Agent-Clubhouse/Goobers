@@ -133,7 +133,7 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 			return nil, 1
 		}
 		for _, feature := range features {
-			used[feature.ID] = feature
+			addUsedFeature(used, feature)
 		}
 	}
 	for i := range set.Goobers {
@@ -144,7 +144,7 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 			return nil, 1
 		}
 		for _, feature := range features {
-			used[feature.ID] = feature
+			addUsedFeature(used, feature)
 		}
 	}
 
@@ -154,6 +154,24 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, 0
+}
+
+func addUsedFeature(used map[workflow.FeatureID]workflow.Feature, feature workflow.Feature) {
+	existing, ok := used[feature.ID]
+	if !ok {
+		used[feature.ID] = feature
+		return
+	}
+	versions := make(map[string]bool, len(existing.DSLVersions))
+	for _, support := range existing.DSLVersions {
+		versions[support.Version] = true
+	}
+	for _, support := range feature.DSLVersions {
+		if !versions[support.Version] {
+			existing.DSLVersions = append(existing.DSLVersions, support)
+		}
+	}
+	used[feature.ID] = existing
 }
 
 // writeFeatureTable prints versioned feature rows followed by a count.

@@ -38,12 +38,14 @@ func TestDSLMatrixLookupAndOrder(t *testing.T) {
 
 func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	matrix := GetDSL()
-	support, ok := matrix.Lookup(CurrentDSLVersion)
-	if !ok {
-		t.Fatalf("current DSL version %q is missing", CurrentDSLVersion)
-	}
-	if support.Level != LevelSupported {
-		t.Fatalf("current DSL version level = %q, want %q", support.Level, LevelSupported)
+	for _, version := range []string{CurrentDSLVersion, NextDSLVersion} {
+		support, ok := matrix.Lookup(version)
+		if !ok {
+			t.Fatalf("DSL version %q is missing", version)
+		}
+		if support.Level != LevelSupported {
+			t.Fatalf("DSL version %q level = %q, want %q", version, support.Level, LevelSupported)
+		}
 	}
 	for version, support := range matrix {
 		if _, _, ok := parseDSLVersion(version); !ok {

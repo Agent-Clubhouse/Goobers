@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,31 +27,36 @@ func TestFeaturesListsBuildMatrix(t *testing.T) {
 		t.Fatalf("output missing table header:\n%s", stdout)
 	}
 	all := workflow.AllFeatures()
+	rowCount := 0
 	for _, feature := range all {
 		if !strings.Contains(stdout, string(feature.ID)) {
 			t.Errorf("feature %q missing from output", feature.ID)
 		}
+		rowCount += len(feature.DSLVersions)
 	}
-	if footer := strconv.Itoa(len(all)) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
+	if footer := strconv.Itoa(rowCount) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
 		t.Errorf("output missing %q count footer:\n%s", footer, stdout)
 	}
 }
 
 func TestFeaturesScopesToDSLVersion(t *testing.T) {
-	version := supportmatrix.CurrentDSLVersion
-	code, stdout, stderr := runArgs(t, "features", "--dsl-version", version)
-	if code != 0 {
-		t.Fatalf("code = %d, stderr = %q", code, stderr)
-	}
-	if !strings.Contains(stdout, "DSL VERSION") || !strings.Contains(stdout, version) {
-		t.Fatalf("output missing scoped DSL version:\n%s", stdout)
-	}
-	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if footer := strconv.Itoa(len(features)) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
-		t.Errorf("output missing %q count footer:\n%s", footer, stdout)
+	for _, version := range []string{supportmatrix.CurrentDSLVersion, supportmatrix.NextDSLVersion} {
+		t.Run(version, func(t *testing.T) {
+			code, stdout, stderr := runArgs(t, "features", "--dsl-version", version)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stdout, "DSL VERSION") || !strings.Contains(stdout, version) {
+				t.Fatalf("output missing scoped DSL version:\n%s", stdout)
+			}
+			features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if footer := strconv.Itoa(len(features)) + " feature/version row(s)"; !strings.Contains(stdout, footer) {
+				t.Errorf("output missing %q count footer:\n%s", footer, stdout)
+			}
+		})
 	}
 }
 
@@ -117,6 +123,45 @@ func TestFeaturesUsedListsInstanceSubset(t *testing.T) {
 	for _, want := range []string{"workflow.spec.gaggle", "workflow.spec.start"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("expected used feature %q in demo instance output:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	layout := instance.NewLayout(root)
+	currentPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	raw, err := os.ReadFile(currentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := strings.Replace(string(raw), "kind: Workflow\n", "kind: Workflow\ndslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", 1)
+	next = strings.Replace(next, "name: default-implement", "name: next-implement", 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "next-implement.yaml"), []byte(next), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "features", "--used", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	const feature = "workflow.spec.gaggle"
+	seen := map[string]bool{}
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == feature {
+			seen[fields[1]] = true
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("%s versions = %v, want one row per interpreter version:\n%s", feature, seen, stdout)
+	}
+	for _, version := range []string{supportmatrix.CurrentDSLVersion, supportmatrix.NextDSLVersion} {
+		if !seen[version] {
+			t.Errorf("output missing %s row for DSL %s:\n%s", feature, version, stdout)
 		}
 	}
 }
