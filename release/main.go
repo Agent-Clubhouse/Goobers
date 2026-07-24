@@ -74,6 +74,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	checksumAssets := append([]string(nil), archives...)
 	if len(archives) > 0 {
+		installerPath, err := writeInstallScript(opts.outDir)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, installerPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(installerPath))
+
 		notesPath, snapshotPaths, err := writeReleaseMetadata(
 			opts.version,
 			opts.previousFeatures,

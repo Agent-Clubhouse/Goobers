@@ -10,12 +10,12 @@ Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 `.github/workflows/release.yml`. The workflow builds the packaging engine's
 complete matrix, verifies its shared checksum manifest and Linux binary, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
-`feature-registry.json`, `dsl-support-matrix.json`, and `RELEASE_NOTES.md`. The
-release body and attached notes are the same document: curated highlights and
-the commit changelog followed by the DSL feature-support delta, DSL
-support-matrix delta, and external-consumer policy. Re-running the workflow
-updates the existing release and replaces its assets, so a partially failed
-publication can be recovered safely.
+`install.sh`, `feature-registry.json`, `dsl-support-matrix.json`, and
+`RELEASE_NOTES.md`. The release body and attached notes are the same document:
+curated highlights and the commit changelog followed by the DSL feature-support
+delta, DSL support-matrix delta, and external-consumer policy. Re-running the
+workflow updates the existing release and replaces its assets, so a partially
+failed publication can be recovered safely.
 
 Release notes combine a curated overview with the first-parent commit history
 since the previous stable tag. Conventional-Commit messages are grouped by type,
@@ -37,14 +37,43 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
+## Install a pinned release
+
+On Linux or macOS, choose an exact stable release tag and run its attached
+installer. Replace `v1.2.3` with the release you intend to adopt:
+
+```sh
+VERSION=v1.2.3
+/bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
+  -- "$VERSION" ./goobers-instance
+```
+
+The command downloads only assets attached to that tag. The helper detects the
+host OS and architecture, downloads the matching archive plus `SHA256SUMS`,
+verifies the archive before extraction, and installs `goobers` to
+`$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It then runs the
+release binary's `goobers init --guided` flow, which prompts for the repository,
+work tracking, credential references, and canonical workflows and finishes by
+validating the generated instance. Use an empty instance path; guided setup
+refuses to overwrite existing configuration.
+
+The helper intentionally delegates all config generation and validation to the
+installed binary. The canonical workflow templates are embedded in that tagged
+binary, so the same tag selects the same checksummed archive and the same
+starter config without reading the development repository's moving `main`.
+`curl`, `tar`, and either `sha256sum` (Linux) or `shasum` (macOS) are required.
+Windows adopters should use the checksum-verified
+[Windows release path](quickstart-windows.md).
+
 ## The packaging engine
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
 packages each target into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest, generated release notes, and the shipped DSL feature
-and version-support snapshots into `dist/` (override with `-output`). It is a
-standalone Go tool — matching `test/ci` and `test/coveragegate` — so it runs
-identically on any release runner without a shell dependency.
+`SHA256SUMS` manifest, the tagged install helper, generated release notes, and
+the shipped DSL feature and version-support snapshots into `dist/` (override
+with `-output`). It is a standalone Go tool — matching `test/ci` and
+`test/coveragegate` — so it runs identically on any release runner without a
+shell dependency.
 
 ```sh
 go run ./release -first-feature-snapshot      # first recorded snapshot only
@@ -115,11 +144,11 @@ the binary under its natural name.
 ### Checksums
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
-`<hex>  <filename>` line per binary archive and the authoritative
+`<hex>  <filename>` line per binary archive, `install.sh`, and the authoritative
 `feature-registry.json` and `dsl-support-matrix.json`, sorted by filename. The
 generated release note remains editable for curation and is not checksummed.
-The same file verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
-`Get-FileHash -Algorithm SHA256` on Windows (see the
+The same file verifies on every platform: `sha256sum -c SHA256SUMS` on unix,
+and PowerShell `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
 **primary integrity mechanism** for the initially-unsigned Windows artifacts.
 
