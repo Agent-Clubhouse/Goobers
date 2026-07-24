@@ -59,6 +59,47 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	}
 }
 
+func TestSelfhostCuratorDeclaresRoadmapMutation(t *testing.T) {
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+
+	var curator apiv1.Goober
+	raw, err := os.ReadFile(filepath.Join(root, "goobers", "curator", "goober.yaml"))
+	if err != nil {
+		t.Fatalf("read curator goober: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &curator); err != nil {
+		t.Fatalf("unmarshal curator goober: %v", err)
+	}
+	if !containsString(curator.Spec.Capabilities, "github:milestones:write") {
+		t.Errorf("curator capabilities = %v, want github:milestones:write", curator.Spec.Capabilities)
+	}
+	if !containsString(curator.Spec.PolicyActions, "assign-milestone") {
+		t.Errorf("curator policyActions = %v, want assign-milestone", curator.Spec.PolicyActions)
+	}
+
+	var curation apiv1.Workflow
+	raw, err = os.ReadFile(filepath.Join(root, "workflows", "backlog-curation.yaml"))
+	if err != nil {
+		t.Fatalf("read backlog-curation workflow: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &curation); err != nil {
+		t.Fatalf("unmarshal backlog-curation workflow: %v", err)
+	}
+	for _, task := range curation.Spec.Tasks {
+		if task.Name != "curate" {
+			continue
+		}
+		if !containsString(task.Capabilities, "github:milestones:write") {
+			t.Errorf("curate capabilities = %v, want github:milestones:write", task.Capabilities)
+		}
+		if !containsString(task.PolicyActions, "assign-milestone") {
+			t.Errorf("curate policyActions = %v, want assign-milestone", task.PolicyActions)
+		}
+		return
+	}
+	t.Fatal("curate task not found")
+}
+
 func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 	actions := map[string]bool{}

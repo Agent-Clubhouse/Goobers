@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -94,6 +95,12 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if curate.Goober != "curator" {
 		t.Errorf("curate.goober = %q, want curator", curate.Goober)
 	}
+	if !containsString(curate.Capabilities, "github:milestones:write") {
+		t.Errorf("curate capabilities = %v, want github:milestones:write", curate.Capabilities)
+	}
+	if !containsString(curate.PolicyActions, "assign-milestone") {
+		t.Errorf("curate policyActions = %v, want assign-milestone", curate.PolicyActions)
+	}
 	release, ok := m.Task("release-claim")
 	if !ok {
 		t.Fatal("release-claim task not found")
@@ -109,12 +116,14 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Capability grant is issues-only (issue #25 scope: "no repo access").
-	if len(curator.Spec.Capabilities) != 1 || curator.Spec.Capabilities[0] != "github:issues:write" {
-		t.Errorf("curator capabilities = %v, want exactly [github:issues:write]", curator.Spec.Capabilities)
+	if len(curator.Spec.Capabilities) != 2 ||
+		curator.Spec.Capabilities[0] != "github:issues:write" ||
+		curator.Spec.Capabilities[1] != "github:milestones:write" {
+		t.Errorf("curator capabilities = %v, want exactly [github:issues:write github:milestones:write]", curator.Spec.Capabilities)
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:6246830e4f63ae3358ea3a17195d4a0440e0defb322fbdf3cbf11d235d63a423"
+	const wantDigest = "sha256:236b3eea1a1cab77391800289a3fc10791dce4457f81b22a64239e4c262a8877"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
@@ -127,6 +136,30 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 	if m.Digest() != m2.Digest() {
 		t.Errorf("digest not stable across compiles: %s vs %s", m.Digest(), m2.Digest())
+	}
+}
+
+func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		instructions := string(raw)
+		for _, required := range []string{
+			"goobers set-milestone --item",
+			"already has the target milestone, leave it completely untouched",
+			"genuine roadmap priority call",
+			"Keep epic and tracking checklists synchronized",
+			"directly linked tracking parent",
+		} {
+			if !strings.Contains(instructions, required) {
+				t.Errorf("%s does not define %q", path, required)
+			}
+		}
 	}
 }
 

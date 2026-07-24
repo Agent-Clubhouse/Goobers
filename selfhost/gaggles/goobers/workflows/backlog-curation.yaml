@@ -97,23 +97,27 @@ spec:
       expectedOutputs:
         - dedupe-candidates
       next: curate
-    # Agentic curation: dedupe, prune stale, tag, and split oversized items.
+    # Agentic curation: dedupe, prune stale, tag, split oversized items, maintain
+    # roadmap milestones, and synchronize tracking checklists.
     # Issues-only — the curator goober is granted no repo capability (issue
     # #25 scope: "touching issues only, never code").
     - name: curate
       type: agentic
       goober: curator
       goal: >-
-        Curate only the claimed backlog items using each item's deterministic
-        staleness signal and the ranked duplicate candidates as evidence;
-        unclaimed candidate members are read-only. Dedupe, handle staleness,
-        tag, split oversized items, and mark each item goobers:ready or
-        goobers:needs-human. Explain every action in a comment on the claimed
-        item.
+        Curate the claimed backlog items using each item's deterministic
+        staleness signal and the ranked duplicate candidates as evidence.
+        Unclaimed candidate members are read-only except for narrowly scoped
+        roadmap maintenance on directly linked tracking parents and children.
+        Dedupe, handle staleness, tag, split oversized items, maintain milestone
+        and tracking-parent organization, and mark each item goobers:ready or
+        goobers:needs-human. Explain every action in a comment.
       capabilities:
         - github:issues:write
+        - github:milestones:write
         - agent:model
       policyActions:
+        - assign-milestone
         - close-issue
         - comment-on-issue
         - create-issue
