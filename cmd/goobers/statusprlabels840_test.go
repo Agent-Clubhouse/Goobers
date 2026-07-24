@@ -58,7 +58,6 @@ func TestStatusKeepsLocalOutputWhenPullRequestCountsAreUnavailable(t *testing.T)
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
 	for _, want := range []string{
-		"Issues parked on learned dependencies: 0",
 		"Open PR label counts unavailable: provider unavailable",
 		"no runs found",
 	} {

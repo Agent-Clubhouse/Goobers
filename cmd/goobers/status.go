@@ -48,22 +48,6 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
 }
 
-func parkedDependencyStatusText(parked []blockedListRecord) string {
-	var text strings.Builder
-	pf(&text, "Issues parked on learned dependencies: %d\n", len(parked))
-	for _, dependency := range parked {
-		blockers := make([]string, len(dependency.BlockedBy))
-		for i, blocker := range dependency.BlockedBy {
-			blockers[i] = humanBlockedReference(blocker)
-		}
-		pf(&text, "  %s blocked by %s\n",
-			humanBlockedReference(blockedListReference{Ref: dependency.Ref, Kind: dependency.Kind}),
-			strings.Join(blockers, ", "),
-		)
-	}
-	return text.String()
-}
-
 type statusPRLabelCounts struct {
 	blockedOnSibling int
 	mergeEscalated   int
@@ -432,12 +416,12 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 
 // statusHelp and runsListHelp are the two rendered variants of the shared
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
-// dependency/PR lines, while `runs list` is the flag-reduced alias. runRunTable
+// workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
 const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
-	"Status also reports parked issue dependencies and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"With --daemon, report daemon health instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
@@ -587,10 +571,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
-	// Scheduler state is loaded per redraw so watch reflects both quota
-	// transitions and backlog-query's learned-dependency refresh. Provider PR
-	// counts use the scheduler's coarser PR refresh cadence to keep watch API
-	// traffic bounded.
+	// Scheduler state is loaded per redraw so watch reflects quota transitions.
+	// Provider PR counts use the scheduler's coarser PR refresh cadence to keep
+	// watch API traffic bounded.
 	loadStatusText := func(ctx context.Context, runs []runSummary, now time.Time) (string, error) {
 		if !supportsWatch {
 			return "", nil
@@ -605,11 +588,6 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if err == nil {
 			text.WriteString(providerQuotaStatusLine(status, now))
 		}
-		parked, err := listParkedDependencies(l)
-		if err != nil {
-			return "", err
-		}
-		text.WriteString(parkedDependencyStatusText(parked))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))

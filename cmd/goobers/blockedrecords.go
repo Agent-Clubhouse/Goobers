@@ -721,14 +721,6 @@ func refreshBlockedEligibility(
 	return filtered, err
 }
 
-func listParkedDependencies(l instance.Layout) ([]blockedListRecord, error) {
-	recs, err := loadBlockedRecords(blockedRecordsPath(l))
-	if err != nil {
-		return nil, err
-	}
-	return blockedListRecords(recs), nil
-}
-
 // updateBlockedRecords applies fn to the records map under the instance's
 // claim lock (blocked.json shares claims.lock rather than growing a second
 // lock file — writers are the same claim-lifecycle actors) and persists the
