@@ -743,7 +743,7 @@ func skeletonOTLPAttributeValue(value *commonpb.AnyValue) (any, attribute.Type) 
 			return out, attribute.STRINGSLICE
 		}
 	default:
-		return nil, attribute.INVALID
+		return nil, attribute.EMPTY
 	}
 }
 
