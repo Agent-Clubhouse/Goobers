@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
@@ -358,17 +359,16 @@ func (r TokenRef) Configured() bool {
 	return r.sourceCount() > 0
 }
 
-// EnvFileSources returns the local env/file halves of the ref for consumers
-// that resolve only local sources. It fails closed on a store-backed ref: the
-// secretStores config surface (#683) is ahead of resolver wiring, so a store
-// ref reaching a local-only build path must be rejected with a diagnostic
-// naming it, never silently read as an unconfigured ref.
-func (r TokenRef) EnvFileSources() (env, file string, err error) {
-	if r.Store != "" {
-		return "", "", fmt.Errorf(
-			"token ref store %q: secret store resolution is not configured in this build path yet", r.Store)
-	}
-	return r.Env, r.File, nil
+// CredentialTokenRef converts this ref into the credentials package's source
+// shape under the given resolver ref name, carrying whichever single source
+// (env, file, or store) is configured. A store-backed ref resolves only
+// through a resolver built with the instance's secret-store registry
+// (credentials.NewResolverWithStores); plain credentials.NewResolver fails
+// closed on it at construction, so a composition site that was never wired
+// for stores rejects the ref with a diagnostic instead of silently reading
+// it as unconfigured.
+func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
+	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Store: r.Store}
 }
 
 // CredentialGrant sources one stage capability from its own token ref (#287).

@@ -45,6 +45,7 @@ func buildTelemetryClient(
 	scrubber journal.Scrubber,
 	registry *journal.RegistryScrubber,
 	otlp instance.OTLPConfig,
+	stores credentials.StoreResolver,
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
 		ServiceName:    "goobers",
@@ -54,7 +55,7 @@ func buildTelemetryClient(
 		Batch:          true,
 	}
 	if otlp.Enabled() {
-		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry)
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +71,7 @@ func resolveOTLPHeaders(
 	ctx context.Context,
 	headerRefs map[string]instance.TokenRef,
 	registry *journal.RegistryScrubber,
+	stores credentials.StoreResolver,
 ) (map[string]string, error) {
 	names := make([]string, 0, len(headerRefs))
 	for name := range headerRefs {
@@ -79,17 +81,9 @@ func resolveOTLPHeaders(
 
 	refs := make([]credentials.TokenRef, 0, len(names))
 	for _, name := range names {
-		env, file, err := headerRefs[name].EnvFileSources()
-		if err != nil {
-			return nil, fmt.Errorf("configure telemetry OTLP header %q: %w", name, err)
-		}
-		refs = append(refs, credentials.TokenRef{
-			Name: "telemetry.otlp.headers." + strings.ToLower(name),
-			Env:  env,
-			File: file,
-		})
+		refs = append(refs, headerRefs[name].CredentialTokenRef("telemetry.otlp.headers."+strings.ToLower(name)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWithStores(refs, stores)
 	if err != nil {
 		return nil, fmt.Errorf("configure telemetry OTLP headers: %w", err)
 	}
@@ -301,7 +295,11 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // token, byte-identical to the prior instance-global behavior. agent:model and
 // other cfg.Credentials entries stay unqualified (the shared token every gaggle
 // uses), overriding the repo-default grant for their capability (#287).
-func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
+// stores resolves store-backed token refs (#683) — built once per composition
+// root (daemon setup, or a one-shot command's own scope) so every consumer
+// shares one TTL cache; a store ref with a nil stores fails closed at
+// resolver construction rather than degrading into an unconfigured token.
+func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, r := range cfg.Repos {
@@ -310,17 +308,10 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 			owner += "/" + r.Project
 		}
 		ref := owner + "/" + r.Name
-		// Fail closed on a store-backed ref (#683): only the config surface has
-		// landed; this local composition root resolves env/file sources only,
-		// and a store ref must never degrade into an unconfigured repo token.
-		env, file, err := r.Token.EnvFileSources()
-		if err != nil {
-			return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
-		}
 		tokenRef := ""
-		if env != "" || file != "" {
+		if r.Token.Configured() {
 			tokenRef = ref
-			refs = append(refs, credentials.TokenRef{Name: ref, Env: env, File: file})
+			refs = append(refs, r.Token.CredentialTokenRef(ref))
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
@@ -330,17 +321,9 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		if !capability.StageDeclarable(cg.Capability) {
 			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
 		}
-		env, file, err := cg.Token.EnvFileSources()
-		if err != nil {
-			return nil, nil, fmt.Errorf("build credentials: capability %s: %w", cg.Capability, err)
-		}
-		refs = append(refs, credentials.TokenRef{
-			Name: credentialRefName(cg.Capability),
-			Env:  env,
-			File: file,
-		})
+		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(cg.Capability)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWithStores(refs, stores)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
@@ -1003,7 +986,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // starts/wires the returned refresher; a single `goobers run` has no accretion
 // to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
 // is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string) (*localscheduler.OpenPRRefresher, error) {
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -1017,7 +1000,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, "", "")
+	resolver, _, err := buildCredentials(cfg, stores, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1231,7 +1214,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1246,7 +1229,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
 		if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
-			source, sourceErr := adoauth.Source(adoRepo, nil)
+			source, sourceErr := adoauth.Source(adoRepo, nil, stores)
 			if sourceErr != nil {
 				return runner.Config{}, nil, fmt.Errorf("configure ADO worktree authentication: %w", sourceErr)
 			}
@@ -1254,7 +1237,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return providers.ADOGitAuthEnvironment(ctx, source, sharedReg, repoURL)
 			}))
 		} else if githubRepo, ok := githubRepoForGaggle(cfg, gaggleProject); ok {
-			resolve, resolveErr := githubWorktreeGitEnvironment(l.WorkcopiesDir(), githubRepo, sharedReg)
+			resolve, resolveErr := githubWorktreeGitEnvironment(l.WorkcopiesDir(), githubRepo, sharedReg, stores)
 			if resolveErr != nil {
 				return runner.Config{}, nil, fmt.Errorf("configure GitHub worktree authentication: %w", resolveErr)
 			}
@@ -1278,7 +1261,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
 		gaggleOwner += "/" + gaggleProject.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name)
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1542,12 +1525,16 @@ func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.
 // rejected credential into an immediate error instead of an interactive hang.
 // The token is scoped to the configured repo: any other remote URL the
 // manager is ever pointed at gets the ambient (unauthenticated) environment.
-func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar) (func(context.Context, string) ([]string, error), error) {
-	if repo.Token.Env == "" && repo.Token.File == "" {
+// A store-backed token ref (#683) resolves through stores like env/file refs;
+// it can never fall into the nil-resolver (unauthenticated) arm because
+// Configured() counts it as a source and resolver construction fails closed
+// without store support.
+func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	if !repo.Token.Configured() {
 		return nil, nil
 	}
 	refName := repo.Owner + "/" + repo.Name
-	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: refName, Env: repo.Token.Env, File: repo.Token.File}})
+	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
 	if err != nil {
 		return nil, err
 	}

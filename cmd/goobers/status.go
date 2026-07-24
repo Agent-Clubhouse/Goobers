@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/providers"
 )
@@ -99,7 +100,14 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	if len(cfg.Repos) == 0 {
 		return statusPRLabelCounts{}, errors.New("no target repository configured")
 	}
-	resolver, _, err := buildCredentials(cfg, "", "")
+	// One-shot query scope: its own composition root, so it builds its own
+	// store registry (#683); the surrounding label-count cache already bounds
+	// how often this path re-resolves.
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return statusPRLabelCounts{}, err
+	}
+	resolver, _, err := buildCredentials(cfg, stores, "", "")
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}

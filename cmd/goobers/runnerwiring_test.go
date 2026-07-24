@@ -64,7 +64,7 @@ func TestResolveOTLPHeaders(t *testing.T) {
 	registry := journal.NewRegistryScrubber()
 	headers, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Env: "OTLP_AUTHORIZATION"},
-	}, registry)
+	}, registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,9 +79,49 @@ func TestResolveOTLPHeaders(t *testing.T) {
 func TestResolveOTLPHeadersFailsOnMissingCredential(t *testing.T) {
 	_, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Env: "UNSET_OTLP_AUTHORIZATION"},
-	}, journal.NewRegistryScrubber())
+	}, journal.NewRegistryScrubber(), nil)
 	if err == nil || !strings.Contains(err.Error(), `env var "UNSET_OTLP_AUTHORIZATION" is not set`) {
 		t.Fatalf("expected missing collector credential error, got %v", err)
+	}
+}
+
+// wiringFakeStoreResolver stands in for the secretstore registry at the
+// cmd-level seams.
+type wiringFakeStoreResolver map[string]string
+
+func (f wiringFakeStoreResolver) FetchSecret(_ context.Context, ref string) (string, error) {
+	value, ok := f[ref]
+	if !ok {
+		return "", fmt.Errorf("secretstore: store ref %q is not declared", ref)
+	}
+	return value, nil
+}
+
+// TestResolveOTLPHeadersStoreRef pins #683's parity contract at a
+// representative consumer: a store-backed ref resolves exactly where env/file
+// refs do, and the resolved value is registered with the journal scrubber the
+// same way.
+func TestResolveOTLPHeadersStoreRef(t *testing.T) {
+	registry := journal.NewRegistryScrubber()
+	headers, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+		"authorization": {Store: "prod-kv/otlp-authorization"},
+	}, registry, wiringFakeStoreResolver{"prod-kv/otlp-authorization": "Bearer store-collector-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := headers["authorization"]; got != "Bearer store-collector-secret" {
+		t.Fatalf("authorization header = %q, want store-resolved value", got)
+	}
+	if got := string(registry.Scrub([]byte("credential: Bearer store-collector-secret"))); strings.Contains(got, "store-collector-secret") {
+		t.Fatalf("store-resolved collector credential was not registered for redaction: %q", got)
+	}
+
+	// Without a store resolver the same ref fails closed instead of reading
+	// as an unconfigured header.
+	if _, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+		"authorization": {Store: "prod-kv/otlp-authorization"},
+	}, journal.NewRegistryScrubber(), nil); err == nil {
+		t.Fatal("resolveOTLPHeaders: want fail-closed error for store ref without a store resolver, got nil")
 	}
 }
 
@@ -143,6 +183,7 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 				"authorization": {Env: "RUNNERWIRING_OTLP_SECRET"},
 			},
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +420,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -414,7 +455,7 @@ func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
 			Token: &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -436,9 +477,44 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 		Capability: string(capability.ConfigRepoRead),
 		Token:      instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 	}}}
-	if _, _, err := buildCredentials(cfg, "", ""); err == nil ||
+	if _, _, err := buildCredentials(cfg, nil, "", ""); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
+	}
+}
+
+// TestBuildCredentialsStoreBackedRepoToken pins #683 at the main composition
+// root: a store-backed repo token backs the credentialed capabilities exactly
+// like an env/file token, the value reaches the injector's registrar (the
+// journal-scrubber seam), and a missing store registry fails construction
+// closed instead of leaving the repo silently tokenless.
+func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Store: "prod-kv/github-token"}},
+	}}
+	resolver, grants, err := buildCredentials(cfg, wiringFakeStoreResolver{"prod-kv/github-token": "kv-repo-token"}, "", "")
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	registrar := &escTestRegistrar{}
+	injector, err := credentials.NewInjector(resolver, grants, registrar)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	set, err := injector.Materialize(context.Background(), []string{string(capability.RepoPush)})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	token, err := set.Token(context.Background(), string(capability.RepoPush))
+	if err != nil || token != "kv-repo-token" {
+		t.Fatalf("repo:push token = (%q, %v), want the store-resolved token", token, err)
+	}
+	if len(registrar.registered) != 1 || string(registrar.registered[0]) != "kv-repo-token" {
+		t.Fatalf("scrubber registrations = %q, want exactly the store-resolved token", registrar.registered)
+	}
+
+	if _, _, err := buildCredentials(cfg, nil, "", ""); err == nil {
+		t.Fatal("buildCredentials: want fail-closed error for store ref without a store registry, got nil")
 	}
 }
 
@@ -454,7 +530,7 @@ func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
 			Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
 		},
 	}}
-	_, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	_, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +548,7 @@ func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
 		Name:     "web",
 		Token:    instance.TokenRef{Env: "ADO_PAT"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	resolver, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +611,7 @@ func TestGitHubWorktreeGitEnvironmentNoTokenIsNoOp(t *testing.T) {
 	workcopies := t.TempDir()
 	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
 	}
@@ -547,6 +623,46 @@ func TestGitHubWorktreeGitEnvironmentNoTokenIsNoOp(t *testing.T) {
 	}
 }
 
+// TestGitHubWorktreeGitEnvironmentStoreBackedToken pins the #683 half of the
+// #667 seam: a store-backed repo token is a configured token — it must
+// authenticate clone/fetch (never silently fall into the public-repo nil-
+// resolver arm) and must fail closed when no store resolver is wired.
+func TestGitHubWorktreeGitEnvironmentStoreBackedToken(t *testing.T) {
+	repo := instance.RepoRef{
+		Provider: "github", Owner: "acme", Name: "web",
+		Token: instance.TokenRef{Store: "prod-kv/github-token"},
+	}
+	registrar := &escTestRegistrar{}
+	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registrar,
+		wiringFakeStoreResolver{"prod-kv/github-token": "kv-gh-token"})
+	if err != nil {
+		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+	}
+	if resolve == nil {
+		t.Fatal("store-backed token produced no git-environment resolver (would clone unauthenticated)")
+	}
+	env, err := resolve(context.Background(), "https://github.com/acme/web.git")
+	if err != nil {
+		t.Fatalf("resolve configured repo: %v", err)
+	}
+	found := false
+	for _, entry := range env {
+		if entry == "GOOBERS_GIT_TOKEN=kv-gh-token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("GOOBERS_GIT_TOKEN missing store-resolved token: %q", env)
+	}
+	if len(registrar.registered) != 1 || string(registrar.registered[0]) != "kv-gh-token" {
+		t.Fatalf("scrubber registrations = %q, want exactly the store-resolved token", registrar.registered)
+	}
+
+	if _, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registrar, nil); err == nil {
+		t.Fatal("githubWorktreeGitEnvironment: want fail-closed error for store ref without a store resolver, got nil")
+	}
+}
+
 func TestGitHubWorktreeGitEnvironmentInjectsAskpassForConfiguredRepoOnly(t *testing.T) {
 	t.Setenv("GOOBERS_TEST_667_TOKEN", "gh-token-value")
 	workcopies := t.TempDir()
@@ -554,7 +670,7 @@ func TestGitHubWorktreeGitEnvironmentInjectsAskpassForConfiguredRepoOnly(t *test
 	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_TOKEN"},
-	}, registrar)
+	}, registrar, nil)
 	if err != nil {
 		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
 	}
@@ -611,7 +727,7 @@ func TestGitHubWorktreeGitEnvironmentFailsClosedOnUnresolvableToken(t *testing.T
 	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_EMPTY_TOKEN"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
 	}
@@ -733,6 +849,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		journal.NewRegistryScrubber(),
 		nil,
 		localscheduler.NewProviderQuotaState(),
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -856,7 +973,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -885,7 +1002,7 @@ func TestBuildCredentialsOverride(t *testing.T) {
 			{Capability: "repo:push", Token: instance.TokenRef{Env: "PUSH_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -910,7 +1027,7 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1033,7 +1150,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, nil, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1210,20 +1327,20 @@ func repoConfig() *instance.Config {
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "")
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "")
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "")
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}

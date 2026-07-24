@@ -156,8 +156,10 @@ func validateRemoteGitURL(repository string) error {
 
 // NewWorkflowGitSource constructs a Git source from instance.yaml's
 // workflowSource block. Remote authentication is isolated behind a dedicated
-// configrepo:read grant backed only by workflowSource.token.
-func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar credentials.SecretRegistrar) (*GitSource, error) {
+// configrepo:read grant backed only by workflowSource.token. stores resolves
+// a store-backed token ref (#683); it may be nil only when the token is
+// env/file-backed — a store ref without it fails closed at construction.
+func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (*GitSource, error) {
 	if err := source.Validate(); err != nil {
 		return nil, fmt.Errorf("git config source: workflowSource: %w", err)
 	}
@@ -172,15 +174,9 @@ func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar 
 			return nil, errors.New("git config source: remote workflow source requires a secret registrar")
 		}
 		repository = source.URL
-		env, file, err := source.Token.EnvFileSources()
-		if err != nil {
-			return nil, fmt.Errorf("git config source: build workflow-source resolver: %w", err)
-		}
-		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
-			Name: workflowSourceCredentialRef,
-			Env:  env,
-			File: file,
-		}})
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
+			source.Token.CredentialTokenRef(workflowSourceCredentialRef),
+		}, stores)
 		if err != nil {
 			return nil, fmt.Errorf("git config source: build workflow-source resolver: %w", err)
 		}

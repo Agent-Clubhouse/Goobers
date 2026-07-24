@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -188,8 +189,15 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	if *checkRepos && !checkTargetRepositories(cfg.Repos, stdout) {
-		return 1
+	if *checkRepos {
+		stores, err := secretstore.NewRegistry(cfg.SecretStores)
+		if err != nil {
+			pf(stdout, "INVALID secretStores:\n  %v\n", err)
+			return 1
+		}
+		if !checkTargetRepositories(cfg.Repos, stores, stdout) {
+			return 1
+		}
 	}
 	if *strict && len(report.Warnings()) > 0 {
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
@@ -319,7 +327,7 @@ const (
 
 var targetRepositoryReachable = gitRepositoryReachable
 
-func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
+func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer) bool {
 	if len(repos) == 0 {
 		pln(stdout, "REPOSITORY: no target repositories configured; nothing to check")
 		return true
@@ -331,16 +339,10 @@ func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
 		var token string
 		var err error
 		if repoUsesToken(repo) {
-			var env, file string
-			env, file, err = repo.Token.EnvFileSources()
 			var resolver credentials.Resolver
-			if err == nil {
-				resolver, err = credentials.NewResolver([]credentials.TokenRef{{
-					Name: refName,
-					Env:  env,
-					File: file,
-				}})
-			}
+			resolver, err = credentials.NewResolverWithStores([]credentials.TokenRef{
+				repo.Token.CredentialTokenRef(refName),
+			}, stores)
 			if err == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 				token, err = resolver.Resolve(ctx, refName)
@@ -349,7 +351,7 @@ func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
 		}
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-			err = targetRepositoryReachable(ctx, repo, token)
+			err = targetRepositoryReachable(ctx, repo, token, stores)
 			cancel()
 		}
 		if err != nil {
@@ -367,9 +369,9 @@ func repoUsesToken(repo instance.RepoRef) bool {
 	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
 }
 
-func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string) error {
+func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
-		provider, err := adoauth.Provider(repo, nil, nil, nil)
+		provider, err := adoauth.Provider(repo, nil, nil, nil, stores)
 		if err != nil {
 			return err
 		}
