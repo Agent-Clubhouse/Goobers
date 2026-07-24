@@ -34,9 +34,12 @@ type RepoRef struct {
 	// +kubebuilder:validation:Enum=github;ado
 	// +kubebuilder:validation:Required
 	Provider Provider `json:"provider" yaml:"provider"`
-	// Owner/organization (GitHub org/user, or ADO organization/project owner).
+	// Owner/organization (GitHub org/user or Azure DevOps organization).
 	// +kubebuilder:validation:Required
 	Owner string `json:"owner" yaml:"owner"`
+	// Project is the Azure DevOps project. It is omitted for GitHub.
+	// +optional
+	Project string `json:"project,omitempty" yaml:"project,omitempty"`
 	// Name of the repository.
 	// +kubebuilder:validation:Required
 	Name string `json:"name" yaml:"name"`

@@ -3056,7 +3056,14 @@ func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	case apiv1.ProviderGitHub:
 		return fmt.Sprintf("https://github.com/%s/%s.git", ref.Owner, ref.Name), nil
 	case apiv1.ProviderADO:
-		organization, project, _ := strings.Cut(ref.Owner, "/")
+		organization := ref.Owner
+		project := ref.Project
+		if project == "" {
+			organization, project, _ = strings.Cut(ref.Owner, "/")
+		}
+		if organization == "" || project == "" {
+			return "", fmt.Errorf("runner: ADO repo owner and project are required")
+		}
 		return fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
 			url.PathEscape(organization), url.PathEscape(project), url.PathEscape(ref.Name)), nil
 	default:

@@ -33,6 +33,30 @@ func newSourceRepo(t *testing.T) string {
 	return dir
 }
 
+func TestManagerRemoteGitUsesConfiguredEnvironment(t *testing.T) {
+	repo := newSourceRepo(t)
+	calls := 0
+	manager, err := NewManager(t.TempDir(), WithGitEnvironment(func(_ context.Context, gotRepo string) ([]string, error) {
+		calls++
+		if gotRepo != repo {
+			t.Fatalf("repo URL = %q, want %q", gotRepo, repo)
+		}
+		return append(os.Environ(), "GOOBERS_TEST_GIT_AUTH=1"), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("git environment callback calls = %d, want 2", calls)
+	}
+}
+
 // TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
 // harness-owned paths written into a provisioned run worktree must be invisible
 // to git, even though the target repo has no matching .gitignore entries.

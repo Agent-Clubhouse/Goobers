@@ -432,6 +432,65 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 	}
 }
 
+func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
+	t.Setenv("GH_TOKEN", "must-not-cross-gaggle-boundary")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "other", Name: "repo", Token: instance.TokenRef{Env: "GH_TOKEN"}},
+		{
+			Provider: "ado",
+			Owner:    "acme",
+			Project:  "widgets",
+			Name:     "web",
+			Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+		},
+	}}
+	_, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("tokenless ADO grants = %#v, want none", grants)
+	}
+}
+
+func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
+	t.Setenv("ADO_PAT", "ado-token")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_PAT"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got[string(capability.RepoPush)] != "ado-token" {
+		t.Fatalf("repo:push = %q", got[string(capability.RepoPush)])
+	}
+}
+
+func TestADORepoForGaggleMatchesExplicitProject(t *testing.T) {
+	want := instance.RepoRef{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{want}}
+	got, ok := adoRepoForGaggle(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "acme/widgets",
+		Name:     "web",
+	})
+	if !ok || got.Owner != want.Owner || got.Project != want.Project || got.Name != want.Name {
+		t.Fatalf("adoRepoForGaggle() = %#v, %v", got, ok)
+	}
+}
+
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	testBin, err := os.Executable()
 	if err != nil {

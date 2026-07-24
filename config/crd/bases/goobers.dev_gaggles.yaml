@@ -75,8 +75,11 @@ spec:
                       description: Name of the repository.
                       type: string
                     owner:
-                      description: Owner/organization (GitHub org/user, or ADO organization/project
-                        owner).
+                      description: Owner/organization (GitHub org/user or Azure DevOps
+                        organization).
+                      type: string
+                    project:
+                      description: Project is the Azure DevOps project. It is omitted for GitHub.
                       type: string
                     provider:
                       description: |-
@@ -175,8 +178,11 @@ spec:
                     description: Name of the repository.
                     type: string
                   owner:
-                    description: Owner/organization (GitHub org/user, or ADO organization/project
-                      owner).
+                    description: Owner/organization (GitHub org/user or Azure DevOps
+                      organization).
+                    type: string
+                  project:
+                    description: Project is the Azure DevOps project. It is omitted for GitHub.
                     type: string
                   provider:
                     description: |-

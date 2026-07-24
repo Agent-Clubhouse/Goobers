@@ -156,6 +156,32 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 }
 
+func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
+	original := targetRepositoryReachable
+	t.Cleanup(func() { targetRepositoryReachable = original })
+
+	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string) error {
+		if repo.Provider != "ado" || repo.Project != "widgets" {
+			t.Fatalf("repository = %#v", repo)
+		}
+		if token != "" {
+			t.Fatalf("token = %q, want no materialized token", token)
+		}
+		return nil
+	}
+	var stdout strings.Builder
+	ok := checkTargetRepositories([]instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}}, &stdout)
+	if !ok || !strings.Contains(stdout.String(), "reachable") {
+		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
+	}
+}
+
 func replaceInFile(t *testing.T, path, old, replacement string) {
 	t.Helper()
 	raw, err := os.ReadFile(path)

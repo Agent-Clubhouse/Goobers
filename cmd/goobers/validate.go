@@ -14,12 +14,14 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/providers"
 )
 
 // copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
@@ -327,17 +329,23 @@ func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
 		label := fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name)
 		refName := fmt.Sprintf("validate-repo-%d", i)
 		var token string
-		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
-			Name: refName,
-			Env:  repo.Token.Env,
-			File: repo.Token.File,
-		}})
+		var err error
+		if repoUsesToken(repo) {
+			var resolver credentials.Resolver
+			resolver, err = credentials.NewResolver([]credentials.TokenRef{{
+				Name: refName,
+				Env:  repo.Token.Env,
+				File: repo.Token.File,
+			}})
+			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+				token, err = resolver.Resolve(ctx, refName)
+				cancel()
+			}
+		}
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-			token, err = resolver.Resolve(ctx, refName)
-			if err == nil {
-				err = targetRepositoryReachable(ctx, repo, token)
-			}
+			err = targetRepositoryReachable(ctx, repo, token)
 			cancel()
 		}
 		if err != nil {
@@ -351,7 +359,23 @@ func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
 	return ok
 }
 
+func repoUsesToken(repo instance.RepoRef) bool {
+	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
+}
+
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string) error {
+	if repo.Provider == "ado" {
+		provider, err := adoauth.Provider(repo, nil, nil, nil)
+		if err != nil {
+			return err
+		}
+		return provider.RepositoryReachable(ctx, providers.RepositoryRef{
+			Provider: providers.ProviderADO,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+	}
 	if repo.Provider != "github" {
 		return fmt.Errorf("provider %q does not support repository preflight", repo.Provider)
 	}

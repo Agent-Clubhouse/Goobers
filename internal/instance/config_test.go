@@ -752,9 +752,35 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "unsupported provider",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+				{Provider: "gitlab", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
 			}},
 			wantErr: "unsupported provider",
+		},
+		{
+			name: "valid ado PAT",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+		},
+		{
+			name: "valid ado Azure CLI",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+			}},
+		},
+		{
+			name: "ado missing project",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+			}},
+			wantErr: "project is required",
+		},
+		{
+			name: "ado identity auth rejects PAT",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &ADOAuthConfig{Kind: ADOAuthWorkloadIdentity}},
+			}},
+			wantErr: "must not configure token",
 		},
 		{
 			name: "missing owner",

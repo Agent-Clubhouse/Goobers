@@ -618,8 +618,8 @@ result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 Usage: goobers push-branch [path]
 
 Push the worktree's checked-out branch to origin, authenticated via the
-repo:push credential the runner already resolved for this stage — never
-the host's ambient git credentials, and never persisted to .git/config.
+configured repository credential — never the host's ambient git
+credentials, and never persisted to .git/config.
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 
