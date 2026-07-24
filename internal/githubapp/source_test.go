@@ -497,7 +497,7 @@ func (f fakeStoreResolver) FetchSecret(_ context.Context, ref string) (string, e
 func TestSourceResolvesStoreBackedKey(t *testing.T) {
 	key := appTestKey(t)
 	api := &fakeAppAPI{t: t, key: key, appID: "123456", installationID: "42",
-		expiresAt: func() time.Time { return time.Now().Add(time.Hour) },
+		expiresAt:        func() time.Time { return time.Now().Add(time.Hour) },
 		wantRepositories: []string{"web"}}
 	srv := httptest.NewServer(api.handler())
 	defer srv.Close()

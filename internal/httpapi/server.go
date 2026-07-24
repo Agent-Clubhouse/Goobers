@@ -53,6 +53,11 @@ func WithTLS(certFile, keyFile string) ServerOption {
 type Server struct {
 	address string
 	http    *http.Server
+	// secure records whether TLS was configured, captured at construction so
+	// Scheme/Start never read http.Server.TLSConfig — the net/http package
+	// mutates that field from the serve goroutine (lazy HTTP/2 ALPN setup),
+	// which would race a concurrent Scheme() read.
+	secure bool
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -109,6 +114,7 @@ func NewServer(address string, handler http.Handler, errorLog *log.Logger, opts 
 	server := &Server{
 		address: address,
 		http:    httpServer,
+		secure:  httpServer.TLSConfig != nil,
 		done:    make(chan struct{}),
 		errors:  make(chan error, 1),
 	}
@@ -132,7 +138,7 @@ func (s *Server) Start() error {
 	}
 	s.listener = listener
 	serve := s.http.Serve
-	if s.http.TLSConfig != nil {
+	if s.secure {
 		serve = func(listener net.Listener) error { return s.http.ServeTLS(listener, "", "") }
 	}
 	go func() {
@@ -147,7 +153,7 @@ func (s *Server) Start() error {
 
 // Scheme is the URL scheme the server answers on.
 func (s *Server) Scheme() string {
-	if s.http.TLSConfig != nil {
+	if s.secure {
 		return "https"
 	}
 	return "http"
