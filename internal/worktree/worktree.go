@@ -211,7 +211,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
 	}
-	if err := runGit(ctx, repoDir, args...); err != nil {
+	if m.partialClone && mirrorIsPartial(ctx, repoDir) {
+		// Materializing a tree from a blobless mirror fetches missing blobs
+		// from the promisor remote mid-checkout (#646), so this one nominally
+		// local operation is a remote one: it needs the same credential
+		// environment as clone/fetch, and its failure classifies through
+		// IsTransientProvisionError's promisor fragments.
+		if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, args...); err != nil {
+			return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
+		}
+	} else if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
 	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")

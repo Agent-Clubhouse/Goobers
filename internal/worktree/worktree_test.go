@@ -1501,6 +1501,14 @@ func TestIsTransientProvisionError(t *testing.T) {
 		{name: "remote reset", exitCode: 128, message: "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: the remote end hung up unexpectedly", want: true},
 		{name: "http 500", exitCode: 128, message: "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500", want: true},
 		{name: "http 503", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 503", want: true},
+		{name: "promisor blob fetch", exitCode: 128, message: "fatal: could not fetch ce013625030ba8dba906f756967f9e9ca394464a from promisor remote", want: true},
+		{name: "promisor backfill wrapper", exitCode: 128, message: "error: failed to fetch some objects from '/workcopies/abc/repo.git'", want: true},
+		// Deliberate asymmetry with the plain "authentication" case below: a
+		// promisor backfill only runs after this same remote was cloned or
+		// fetched successfully with the same credentials, so its wrapper
+		// classifies as transient even when the wrapped cause is not network
+		// text (see IsTransientProvisionError's doc).
+		{name: "promisor wrapping authentication", exitCode: 128, message: "fatal: Authentication failed for 'https://example.test/repo.git/'\nfatal: could not fetch ce01362 from promisor remote", want: true},
 		{name: "authentication", exitCode: 128, message: "remote: Invalid username or password.\nfatal: Authentication failed for 'https://example.test/repo.git/'"},
 		{name: "authorization", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 403"},
 		{name: "missing repository", exitCode: 128, message: "remote: Repository not found.\nfatal: repository 'https://example.test/missing.git/' not found"},
