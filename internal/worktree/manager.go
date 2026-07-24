@@ -103,7 +103,10 @@ func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 
 // WithGitEnvironment configures credentials for remote clone/fetch commands.
 // The callback receives the repository URL and returns the complete child
-// environment. Local worktree operations never receive this environment.
+// environment; a nil environment (with nil error) runs the command with the
+// process's own environment — the unauthenticated default, for remotes the
+// callback holds no credential for. Local worktree operations never receive
+// this environment.
 func WithGitEnvironment(resolve func(context.Context, string) ([]string, error)) ManagerOption {
 	return func(m *Manager) {
 		m.gitEnv = resolve

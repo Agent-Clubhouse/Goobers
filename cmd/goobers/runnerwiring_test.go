@@ -36,6 +36,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -497,6 +498,156 @@ func TestADORepoForGaggleMatchesExplicitProject(t *testing.T) {
 	})
 	if !ok || got.Owner != want.Owner || got.Project != want.Project || got.Name != want.Name {
 		t.Fatalf("adoRepoForGaggle() = %#v, %v", got, ok)
+	}
+}
+
+func TestGitHubRepoForGaggle(t *testing.T) {
+	want := instance.RepoRef{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ACME_WEB_TOKEN"},
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "other"},
+		want,
+	}}
+	got, ok := githubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
+	if !ok || got.Owner != want.Owner || got.Name != want.Name || got.Token.Env != want.Token.Env {
+		t.Fatalf("githubRepoForGaggle() = %#v, %v", got, ok)
+	}
+
+	// A legacy single-repo instance with an unqualified project falls back to
+	// the lone configured repo, mirroring adoRepoForGaggle.
+	single := &instance.Config{Repos: []instance.RepoRef{want}}
+	if got, ok := githubRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
+		t.Fatalf("githubRepoForGaggle(single-repo fallback) = %#v, %v", got, ok)
+	}
+
+	if got, ok := githubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Name: "web"}); ok {
+		t.Fatalf("githubRepoForGaggle(ado project) = %#v, want no match", got)
+	}
+}
+
+// --- #667: authenticated GitHub mirror clone/fetch ---
+
+func TestGitHubWorktreeGitEnvironmentNoTokenIsNoOp(t *testing.T) {
+	workcopies := t.TempDir()
+	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
+		Provider: "github", Owner: "acme", Name: "web",
+	}, nil)
+	if err != nil {
+		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+	}
+	if resolve != nil {
+		t.Fatal("token-less repo produced a git-environment resolver, want nil (public-repo path unchanged)")
+	}
+	if _, err := os.Stat(filepath.Join(workcopies, "auth")); !os.IsNotExist(err) {
+		t.Fatalf("askpass dir written for a token-less repo (stat err = %v)", err)
+	}
+}
+
+func TestGitHubWorktreeGitEnvironmentInjectsAskpassForConfiguredRepoOnly(t *testing.T) {
+	t.Setenv("GOOBERS_TEST_667_TOKEN", "gh-token-value")
+	workcopies := t.TempDir()
+	registrar := &escTestRegistrar{}
+	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
+		Provider: "github", Owner: "acme", Name: "web",
+		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_TOKEN"},
+	}, registrar)
+	if err != nil {
+		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+	}
+	if resolve == nil {
+		t.Fatal("configured token produced no git-environment resolver")
+	}
+
+	env, err := resolve(context.Background(), "https://github.com/acme/web.git")
+	if err != nil {
+		t.Fatalf("resolve configured repo: %v", err)
+	}
+	values := map[string]string{}
+	for _, entry := range env {
+		name, value, _ := strings.Cut(entry, "=")
+		values[name] = value
+	}
+	askpass := values["GIT_ASKPASS"]
+	if askpass == "" {
+		t.Fatalf("GIT_ASKPASS missing from environment: %q", env)
+	}
+	script, err := os.ReadFile(askpass)
+	if err != nil {
+		t.Fatalf("read askpass script: %v", err)
+	}
+	if strings.Contains(string(script), "gh-token-value") {
+		t.Fatal("askpass script on disk contains the token")
+	}
+	if got := values["GOOBERS_GIT_TOKEN"]; got != "gh-token-value" {
+		t.Fatalf("GOOBERS_GIT_TOKEN = %q, want the configured token", got)
+	}
+	if got := values["GIT_TERMINAL_PROMPT"]; got != "0" {
+		t.Fatalf("GIT_TERMINAL_PROMPT = %q, want 0 (fail closed, no interactive hang)", got)
+	}
+	if len(registrar.registered) != 1 || string(registrar.registered[0]) != "gh-token-value" {
+		t.Fatalf("scrubber registrations = %q, want exactly the resolved token", registrar.registered)
+	}
+
+	// .git-less spelling of the same repo still authenticates.
+	if env, err := resolve(context.Background(), "https://github.com/acme/web"); err != nil || env == nil {
+		t.Fatalf("resolve .git-less URL = (%v, %v), want authenticated environment", env, err)
+	}
+	// Any other remote gets the ambient, unauthenticated environment: the
+	// token is scoped to the configured repo.
+	if env, err := resolve(context.Background(), "https://github.com/acme/other.git"); err != nil || env != nil {
+		t.Fatalf("resolve foreign URL = (%v, %v), want (nil, nil)", env, err)
+	}
+}
+
+func TestGitHubWorktreeGitEnvironmentFailsClosedOnUnresolvableToken(t *testing.T) {
+	// Set but empty: TokenRef resolution treats an empty value as
+	// misconfiguration, and setting it makes the test hermetic regardless of
+	// the ambient environment.
+	t.Setenv("GOOBERS_TEST_667_EMPTY_TOKEN", "")
+	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
+		Provider: "github", Owner: "acme", Name: "web",
+		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_EMPTY_TOKEN"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+	}
+	if _, err := resolve(context.Background(), "https://github.com/acme/web.git"); err == nil {
+		t.Fatal("unresolvable token ref must fail provisioning closed, got nil error")
+	}
+}
+
+// TestGitAuthEnvironmentSupportsMirrorCloneAndFetch proves the injected
+// environment is a complete, working child environment for real git: both the
+// initial mirror clone and the subsequent refresh fetch run under exactly the
+// environment githubWorktreeGitEnvironment injects (a local origin stands in
+// for github.com — path-based access never prompts, so the run also shows the
+// askpass wiring is inert when the remote demands no credential).
+func TestGitAuthEnvironmentSupportsMirrorCloneAndFetch(t *testing.T) {
+	origin := initBareOrigin(t)
+	askpass, err := credentials.WriteAskpassScript(filepath.Join(t.TempDir(), "auth"))
+	if err != nil {
+		t.Fatalf("WriteAskpassScript: %v", err)
+	}
+	calls := 0
+	manager, err := worktree.NewManager(t.TempDir(), worktree.WithGitEnvironment(func(context.Context, string) ([]string, error) {
+		calls++
+		return credentials.GitAuthEnvironment(askpass, "test-token"), nil
+	}))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), origin); err != nil {
+		t.Fatalf("mirror clone under authenticated environment: %v", err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), origin); err != nil {
+		t.Fatalf("refresh fetch under authenticated environment: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("git environment resolutions = %d, want 2 (clone + fetch)", calls)
 	}
 }
 

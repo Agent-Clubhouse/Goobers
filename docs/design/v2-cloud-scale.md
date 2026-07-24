@@ -157,10 +157,11 @@ before/after by a benchmark harness.** No layer changes run semantics — the st
   fixture generator, so B1–B5 land with measured numbers instead of vibes, and regressions
   are catchable. Shared with the Validation & CI milestone.
 
-**Also in this workstream: B6, authenticated clone/fetch.** Private-repo mirrors must use
-the capability-scoped token via the existing (unwired) askpass helper — today only push is
-authenticated. This is arguably a V1 gap; it is filed here because every cloud form needs it
-and it blocks nothing in V1 dogfood (public repo).
+**Also in this workstream: B6, authenticated clone/fetch (#667 — shipped).** Private-repo
+mirrors use the repo's configured token via the askpass helper: the composition root wires
+`worktree.WithGitEnvironment` for GitHub repos with a token ref (ADO was already wired
+through its own credential sources), covering the initial mirror clone and every refresh
+fetch. Token-less (public) repos keep the unauthenticated environment byte for byte.
 
 ---
 
