@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -184,6 +185,50 @@ func initConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 		t.Fatalf("write main's conflicting change: %v", err)
 	}
 	runGitT(t, work, "commit", "-am", "main moved on, same line")
+	runGitT(t, work, "push", "origin", "main")
+
+	return origin
+}
+
+func initAdjacentThenStructuralConflictPRBranch(t *testing.T, prBranch string) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n"), 0o644); err != nil {
+		t.Fatalf("write seed list: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"seed\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write seed status: %v", err)
+	}
+	runGitT(t, work, "add", "items.yaml", "status.go")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n  - from-pr\n"), 0o644); err != nil {
+		t.Fatalf("write PR list addition: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "add PR item")
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"pr\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write PR status change: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "change PR status")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(work, "items.yaml"), []byte("items:\n  - existing\n  - from-base\n"), 0o644); err != nil {
+		t.Fatalf("write base list addition: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "status.go"), []byte("package status\n\nfunc runStatus() string {\n\treturn \"main\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write base status change: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "advance base")
 	runGitT(t, work, "push", "origin", "main")
 
 	return origin
@@ -445,6 +490,57 @@ func TestRebasePRResolvesDistinctAdjacentAdditions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) || !strings.Contains(string(data), `"conflict":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false conflict=false", data)
+	}
+}
+
+func TestRebasePRPreservesUnsafeEvidenceAfterAdjacentResolution(t *testing.T) {
+	const prBranch = "goobers/impl/run-adjacent-then-structural"
+	origin := initAdjacentThenStructuralConflictPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 62)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "62",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode rebase-result.json: %v", err)
+	}
+	if result["needsAgent"] != "true" || result["conflict"] != "true" {
+		t.Fatalf("rebase-result.json = %s, want unsafe conflict routed to the agent", data)
+	}
+	var locations []rebaseConflictLocation
+	if err := json.Unmarshal([]byte(result["conflictLocations"]), &locations); err != nil {
+		t.Fatalf("decode conflict locations %q: %v", result["conflictLocations"], err)
+	}
+	if len(locations) != 1 || locations[0].Path != "status.go" || !strings.Contains(locations[0].Scope, "runStatus") {
+		t.Fatalf("conflict locations = %+v, want status.go runStatus evidence", locations)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want none after the aborted rebase", unmerged)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	list, err := os.ReadFile(filepath.Join(verify, "items.yaml"))
+	if err != nil {
+		t.Fatalf("read original PR list: %v", err)
+	}
+	if string(list) != "items:\n  - existing\n  - from-pr\n" {
+		t.Fatalf("origin PR list = %q, want branch untouched after unsafe conflict", list)
 	}
 }
 
