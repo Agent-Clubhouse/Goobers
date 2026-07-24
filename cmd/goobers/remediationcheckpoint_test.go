@@ -646,8 +646,20 @@ func TestRemediationCheckpointIgnoresStructuralSiblingAlreadyInSelectedBase(t *t
 	}
 }
 
-func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidence(t *testing.T) {
+func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidenceWithPriorCheckpoint(t *testing.T) {
 	baseSHA, attemptedHeadSHA, mergeSHA := initStructuralCollisionCheckpointRepo(t, "goobers/impl/remediation-364")
+	runGitT(t, ".", "checkout", "-B", "goobers/impl/remediation-364", "origin/goobers/impl/remediation-364")
+	attemptedDigest, err := diffDigest(".", baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest attempted head: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: attemptedDigest, HeadSHA: attemptedHeadSHA, BaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
 	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
 	concurrent := filepath.Join(t.TempDir(), "concurrent")
 	runGitT(t, ".", "clone", "--branch", "goobers/impl/remediation-364", origin, concurrent)
@@ -664,6 +676,7 @@ func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidence(t *testing.
 	st := &remediationCheckpointServerState{
 		number: 77, headSHA: currentHeadSHA, listedHeadSHA: attemptedHeadSHA, baseSHA: baseSHA,
 		liveBaseSHA: mergeSHA, labels: []string{needsRemediationLabel},
+		comments: []string{priorComment},
 		files: []providers.ChangedFile{{
 			Path: "status.go", Status: "modified", Patch: structuralCollisionCurrentPatch,
 		}},
@@ -690,8 +703,11 @@ func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidence(t *testing.
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	state, ok := parseRemediationStateComment(st.comments[0])
-	if !ok || state.Escalated || state.HeadSHA != currentHeadSHA {
-		t.Fatalf("checkpoint state = %+v, ok = %v, want current head recorded without escalation", state, ok)
+	if !ok || state.Escalated || state.Cycles != 2 || state.HeadSHA != currentHeadSHA {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want current head recorded as ordinary cycle 2", state, ok)
+	}
+	if state.LastDiffDigest == attemptedDigest {
+		t.Fatalf("checkpoint digest = %q, want refreshed concurrent-head digest rather than prior attempted-head digest", state.LastDiffDigest)
 	}
 }
 

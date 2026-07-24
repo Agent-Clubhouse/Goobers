@@ -37,6 +37,25 @@ func TestMatchStructuralCollisionsRejectsMinorSameFunctionEdit(t *testing.T) {
 	}
 }
 
+func TestMatchStructuralCollisionsDetectsShortFunctionExtraction(t *testing.T) {
+	conflicts := []rebaseConflictLocation{{Path: "status.go", Scope: "func runStatus() {"}}
+	current := []providers.ChangedFile{{
+		Path:  "status.go",
+		Patch: "@@ -2,3 +2,3 @@ func runStatus() {\n-\told()\n+\tcurrent()\n }",
+	}}
+	extractedSibling := []providers.ChangedFile{{
+		Path: "status.go",
+		Patch: "@@ -2,8 +2,3 @@ func runStatus() {\n" +
+			"-\tloadStatus()\n-\tloadWarnings()\n-\trenderHeader()\n-\trenderBody()\n" +
+			"-\trenderWarnings()\n-\trenderFooter()\n+\trenderStatus(buildStatus())\n }",
+	}}
+
+	got := matchStructuralCollisions(conflicts, current, 609, extractedSibling)
+	if len(got) != 1 {
+		t.Fatalf("collisions = %+v, want short extraction to match", got)
+	}
+}
+
 func TestRenderStructuralCollisionContextPairsPRHunks(t *testing.T) {
 	context := renderStructuralCollisionContext(696, []structuralCollision{{
 		SiblingNumber: 609,
@@ -94,6 +113,29 @@ func TestMatchStructuralCollisionAggregatesSplitFunctionRewrite(t *testing.T) {
 	for _, want := range []string{"partOne", "partTwo"} {
 		if !strings.Contains(got[0].SiblingHunk, want) {
 			t.Fatalf("sibling hunk = %q, want all matching function hunks including %q", got[0].SiblingHunk, want)
+		}
+	}
+}
+
+func TestMatchStructuralCollisionAggregatesSelectedFunctionHunks(t *testing.T) {
+	conflicts := []rebaseConflictLocation{{Path: "status.go", Scope: "func runStatus() {"}}
+	current := []providers.ChangedFile{{
+		Path: "status.go",
+		Patch: "@@ -2,3 +2,3 @@ func runStatus() {\n-\toldHeader()\n+\tcurrentHeader()\n" +
+			"@@ -12,3 +12,3 @@ func runStatus() {\n-\toldFooter()\n+\tcurrentFooter()\n",
+	}}
+	sibling := []providers.ChangedFile{{
+		Path:  "status.go",
+		Patch: "@@ -2,8 +2,3 @@ func runStatus() {\n-\ta()\n-\tb()\n-\tc()\n-\td()\n-\te()\n-\tf()\n+\trenderStatus(buildStatus())\n }",
+	}}
+
+	got := matchStructuralCollisions(conflicts, current, 609, sibling)
+	if len(got) != 1 {
+		t.Fatalf("collisions = %+v, want one", got)
+	}
+	for _, want := range []string{"currentHeader", "currentFooter"} {
+		if !strings.Contains(got[0].CurrentHunk, want) {
+			t.Fatalf("current hunk = %q, want all matching selected-PR hunks including %q", got[0].CurrentHunk, want)
 		}
 	}
 }

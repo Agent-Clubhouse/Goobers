@@ -401,7 +401,23 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// and goobers:needs-remediation still set, so the PR is re-selected and the
 	// reviewer re-rejects the same approach, which is exactly what §4 D2's
 	// escalate-immediately rule exists to prevent.
+	conflicted, err := strconv.ParseBool(providerInput("conflict", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid conflict input: %v\n", err)
+		return 1
+	}
+	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
 	forced := *escalateReason != ""
+	attemptMatchesLiveHead := false
+	if conflicted && !forced && attemptedHeadSHA != "" {
+		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
+		}
+		current = &liveCurrent
+		attemptMatchesLiveHead = attemptedHeadSHA == current.HeadSHA
+	}
+
 	var digest string
 	if !forced {
 		onBranch, err := currentBranchIs(".", current.Head)
@@ -409,10 +425,26 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, err)
 			return 1
 		}
-		if !onBranch {
-			if _, err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
+		refreshBranch := !onBranch
+		if onBranch && conflicted && attemptedHeadSHA != "" {
+			localHeadSHA, err := resolveHead(".")
+			if err != nil {
+				pf(stderr, "error: resolve current head for PR #%d: %v\n", selectedNumber, err)
+				return 1
+			}
+			// A conflicted rebase was aborted, so there is no local rebase to
+			// preserve when a concurrent push makes this checkout stale.
+			refreshBranch = localHeadSHA != current.HeadSHA
+		}
+		if refreshBranch {
+			fetchedSHA, err := checkoutExistingBranch(".", current.Head, pushToken)
+			if err != nil {
 				pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
 				return 1
+			}
+			if conflicted && attemptedHeadSHA != "" {
+				current.HeadSHA = fetchedSHA
+				attemptMatchesLiveHead = attemptedHeadSHA == fetchedSHA
 			}
 		}
 		digest, err = diffDigest(".", current.BaseSHA)
@@ -422,32 +454,19 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	conflicted, err := strconv.ParseBool(providerInput("conflict", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid conflict input: %v\n", err)
-		return 1
-	}
 	var structuralCollisions []structuralCollision
-	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
-	if conflicted && !forced && attemptedHeadSHA != "" {
-		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+	if conflicted && !forced && attemptMatchesLiveHead {
+		conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
 		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
+			pf(stderr, "error: %v\n", err)
+			return 1
 		}
-		current = &liveCurrent
-		if attemptedHeadSHA == current.HeadSHA {
-			conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
-			if err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
-			structuralCollisions, err = findStructuralCollisions(
-				ctx, provider, repo, *current, base, headPrefix, conflictLocations,
-				".", pushToken, providerInput("rebaseBaseSha", ""),
-			)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
-			}
+		structuralCollisions, err = findStructuralCollisions(
+			ctx, provider, repo, *current, base, headPrefix, conflictLocations,
+			".", pushToken, providerInput("rebaseBaseSha", ""),
+		)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
 		}
 	}
 

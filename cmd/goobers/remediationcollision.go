@@ -248,7 +248,9 @@ func hunkStructurallyRewritten(hunk patchHunk, function string) bool {
 		return true
 	}
 	changed := additions + deletions
-	return (deletions >= 6 && additions >= 1 && changed >= 10) ||
+	substantialContraction := deletions >= 6 && additions >= 1 && additions*2 <= deletions
+	return substantialContraction ||
+		(deletions >= 6 && additions >= 1 && changed >= 10) ||
 		(deletions >= 4 && additions >= 4 && changed >= 12)
 }
 
@@ -289,53 +291,65 @@ func matchStructuralCollisions(
 		if function == "" {
 			continue
 		}
+		key := strconv.Itoa(siblingNumber) + "\x00" + conflict.Path + "\x00" + function
+		if seen[key] {
+			continue
+		}
+
+		var relevantCurrentHunks []patchHunk
 		for _, currentHunk := range currentByPath[conflict.Path] {
-			if !hunkTouchesFunction(currentHunk, function) {
+			if hunkTouchesFunction(currentHunk, function) {
+				relevantCurrentHunks = append(relevantCurrentHunks, currentHunk)
+			}
+		}
+		if len(relevantCurrentHunks) == 0 {
+			continue
+		}
+		var currentHunkTexts []string
+		for _, hunk := range relevantCurrentHunks {
+			currentHunkTexts = append(currentHunkTexts, hunk.Text)
+		}
+		currentHunkText := strings.Join(currentHunkTexts, "\n\n")
+
+		var relevantSiblingHunks []patchHunk
+		for _, siblingHunk := range siblingByPath[conflict.Path] {
+			if hunkTouchesFunction(siblingHunk, function) {
+				relevantSiblingHunks = append(relevantSiblingHunks, siblingHunk)
+			}
+		}
+		if hunksStructurallyRewritten(relevantSiblingHunks, function) {
+			seen[key] = true
+			var hunkTexts []string
+			for _, hunk := range relevantSiblingHunks {
+				hunkTexts = append(hunkTexts, hunk.Text)
+			}
+			collisions = append(collisions, structuralCollision{
+				SiblingNumber: siblingNumber,
+				Path:          conflict.Path,
+				Function:      strings.TrimSpace(conflict.Scope),
+				CurrentHunk:   currentHunkText,
+				SiblingHunk:   strings.Join(hunkTexts, "\n\n"),
+			})
+			continue
+		}
+		for _, siblingFile := range siblingFiles {
+			if siblingFile.PreviousPath == "" || siblingFile.PreviousPath == siblingFile.Path ||
+				(siblingFile.PreviousPath != conflict.Path && siblingFile.Path != conflict.Path) {
 				continue
 			}
-			key := strconv.Itoa(siblingNumber) + "\x00" + conflict.Path + "\x00" + function
-			var relevantSiblingHunks []patchHunk
-			for _, siblingHunk := range siblingByPath[conflict.Path] {
-				if hunkTouchesFunction(siblingHunk, function) {
-					relevantSiblingHunks = append(relevantSiblingHunks, siblingHunk)
-				}
-			}
-			if !seen[key] && hunksStructurallyRewritten(relevantSiblingHunks, function) {
-				seen[key] = true
-				var hunkTexts []string
-				for _, hunk := range relevantSiblingHunks {
-					hunkTexts = append(hunkTexts, hunk.Text)
-				}
-				collisions = append(collisions, structuralCollision{
-					SiblingNumber: siblingNumber,
-					Path:          conflict.Path,
-					Function:      strings.TrimSpace(conflict.Scope),
-					CurrentHunk:   currentHunk.Text,
-					SiblingHunk:   strings.Join(hunkTexts, "\n\n"),
-				})
-			}
-			if seen[key] {
-				continue
-			}
-			for _, siblingFile := range siblingFiles {
-				if siblingFile.PreviousPath == "" || siblingFile.PreviousPath == siblingFile.Path ||
-					(siblingFile.PreviousPath != conflict.Path && siblingFile.Path != conflict.Path) {
-					continue
-				}
-				seen[key] = true
-				collisions = append(collisions, structuralCollision{
-					SiblingNumber: siblingNumber,
-					Path:          conflict.Path,
-					Function:      strings.TrimSpace(conflict.Scope),
-					CurrentHunk:   currentHunk.Text,
-					SiblingHunk: fmt.Sprintf(
-						"diff --git a/%s b/%s\nrename from %s\nrename to %s",
-						siblingFile.PreviousPath, siblingFile.Path,
-						siblingFile.PreviousPath, siblingFile.Path,
-					),
-				})
-				break
-			}
+			seen[key] = true
+			collisions = append(collisions, structuralCollision{
+				SiblingNumber: siblingNumber,
+				Path:          conflict.Path,
+				Function:      strings.TrimSpace(conflict.Scope),
+				CurrentHunk:   currentHunkText,
+				SiblingHunk: fmt.Sprintf(
+					"diff --git a/%s b/%s\nrename from %s\nrename to %s",
+					siblingFile.PreviousPath, siblingFile.Path,
+					siblingFile.PreviousPath, siblingFile.Path,
+				),
+			})
+			break
 		}
 	}
 	return collisions
