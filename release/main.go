@@ -49,6 +49,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	ldflags := fmt.Sprintf("-s -w -X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
 		versionPkg, opts.version, versionPkg, opts.commit, versionPkg, opts.date)
 
+	releaseDocsDir, cleanupReleaseDocs, err := stageReleaseDocs(opts.version, opts.commit, ldflags)
+	if err != nil {
+		return err
+	}
+	defer cleanupReleaseDocs()
+
 	var archives []string
 	var skipped []string
 	for _, t := range opts.targets {
@@ -63,7 +69,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 				"target to compile (windows is gated on the #633 CI leg going green); "+
 				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
 		}
-		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir)
+		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
 		if err != nil {
 			return err
 		}

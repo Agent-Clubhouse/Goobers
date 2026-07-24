@@ -286,6 +286,7 @@ func init() {
 		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
 			return runCompletionCandidates(args, stdout)
 		}),
+		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
 		groupCommand(
 			"telemetry",
 			runTelemetry,

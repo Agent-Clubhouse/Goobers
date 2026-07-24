@@ -30,12 +30,6 @@ github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuni
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
 
 # Build-time generators exercised by drift tests and make docs.
-github.com/goobers/goobers/cmd/goobers.docsRootLong # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderCLIDocs # CLI documentation generator entrypoint invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.collectDocCommands # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.docDisplayName # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.writeCLIDocs # CLI documentation writer invoked by make docs through the drift test.
-github.com/goobers/goobers/cmd/goobers.isGeneratedDocFile # CLI documentation pruning helper invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
@@ -43,18 +37,6 @@ github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delt
 github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
-github.com/goobers/goobers/internal/clidocs.Command.Name # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.FullName # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.Slug # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.ManFile # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Sort # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.ManPage # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.ManIndex # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Reference # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.anchor # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.roffEscapeInline # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.roffPreformatted # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.mdEscapeCell # CLI documentation rendering helper reachable through generator tests.
 
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
