@@ -242,12 +242,22 @@ func TestCopilotAdapterSandboxWrapFailureFailsRun(t *testing.T) {
 	}
 }
 
-func TestGitWritableRootsResolvesLinkedWorktreeCommonDir(t *testing.T) {
+// TestGitWritableRootsNarrowsLinkedWorktreeCommonDir pins the S3/#166
+// containment shape for the mirror layout internal/worktree provisions: the
+// grant is the run's own gitdir plus the mirror's objects/refs/logs
+// subdirectories — never the mirror common dir itself, whose hooks/ and
+// config the daemon's next unconfined `git worktree add` would execute if a
+// confined agent could write them.
+func TestGitWritableRootsNarrowsLinkedWorktreeCommonDir(t *testing.T) {
 	mirror := t.TempDir()
 	workspace := t.TempDir()
 	gitdir := filepath.Join(mirror, "worktrees", "run-1")
-	if err := os.MkdirAll(gitdir, 0o755); err != nil {
-		t.Fatal(err)
+	// A real bare mirror always has objects/ and refs/; logs/ only appears
+	// after the first reflog write, so it is deliberately absent here.
+	for _, dir := range []string{gitdir, filepath.Join(mirror, "objects"), filepath.Join(mirror, "refs")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(gitdir, "commondir"), []byte("../..\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -260,12 +270,31 @@ func TestGitWritableRootsResolvesLinkedWorktreeCommonDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gitWritableRoots: %v", err)
 	}
-	if want := []string{mirror}; !slices.Equal(roots, want) {
-		t.Fatalf("roots = %v, want %v (the mirror common dir covers the per-worktree gitdir)", roots, want)
+	want := []string{
+		gitdir,
+		filepath.Join(mirror, "objects"),
+		filepath.Join(mirror, "refs"),
+		filepath.Join(mirror, "logs"),
+	}
+	if !slices.Equal(roots, want) {
+		t.Fatalf("roots = %v, want %v", roots, want)
+	}
+	// The missing reflog dir must have been created: the sandbox seam
+	// requires writable roots to exist, and a stage's first commit writes it.
+	if info, err := os.Stat(filepath.Join(mirror, "logs")); err != nil || !info.IsDir() {
+		t.Fatalf("mirror logs/ not materialized for the sandbox grant: %v", err)
+	}
+	// And no grant may cover the daemon-executed surface.
+	for _, root := range roots {
+		for _, denied := range []string{mirror, filepath.Join(mirror, "hooks"), filepath.Join(mirror, "worktrees", "run-2")} {
+			if rel, err := filepath.Rel(root, denied); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				t.Fatalf("root %s covers %s — a confined agent could plant daemon-executed state", root, denied)
+			}
+		}
 	}
 }
 
-func TestGitWritableRootsKeepsGitdirWhenCommonDirElsewhere(t *testing.T) {
+func TestGitWritableRootsNarrowsCommonDirElsewhere(t *testing.T) {
 	workspace := t.TempDir()
 	gitdir := t.TempDir()
 	common := t.TempDir()
@@ -279,8 +308,36 @@ func TestGitWritableRootsKeepsGitdirWhenCommonDirElsewhere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gitWritableRoots: %v", err)
 	}
-	if want := []string{gitdir, filepath.Clean(common)}; !slices.Equal(roots, want) {
+	cleaned := filepath.Clean(common)
+	want := []string{
+		gitdir,
+		filepath.Join(cleaned, "objects"),
+		filepath.Join(cleaned, "refs"),
+		filepath.Join(cleaned, "logs"),
+	}
+	if !slices.Equal(roots, want) {
 		t.Fatalf("roots = %v, want %v", roots, want)
+	}
+}
+
+// TestGitWritableRootsDanglingCommonDirFailsClosed: a commondir file naming a
+// nonexistent directory must be an error, not a silent mkdir at an
+// attacker-chosen path and not an unconfined fallback.
+func TestGitWritableRootsDanglingCommonDirFailsClosed(t *testing.T) {
+	workspace := t.TempDir()
+	gitdir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "gone")
+	if err := os.WriteFile(filepath.Join(gitdir, "commondir"), []byte(missing+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if roots, err := gitWritableRoots(workspace); err == nil {
+		t.Fatalf("gitWritableRoots = %v, want an error for a dangling commondir", roots)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("dangling common dir was materialized: %v", err)
 	}
 }
 
