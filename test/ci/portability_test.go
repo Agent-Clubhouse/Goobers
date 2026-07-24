@@ -154,6 +154,12 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			},
 		},
 		{
+			target: "tidy-check",
+			want: makeTarget{
+				recipes: []string{"$(GO) mod tidy -diff"},
+			},
+		},
+		{
 			target: "ci",
 			want: makeTarget{
 				prerequisites: []string{"deadcode"},

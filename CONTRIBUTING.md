@@ -21,6 +21,7 @@ Node.js 24 with npm, Git, and
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
+make tidy-check  # check that go.mod/go.sum match tidy output
 make ci          # merge gate: full Go, config, and portal validation
 make verify-full # ci plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities
@@ -34,12 +35,14 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 | Tier | Composition | Use |
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
-| `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
+| `make ci` | The portable merge gate: fast-tier checks plus module tidiness, shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
 | `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, journal conformance, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 `make vulncheck` is a separate, network-backed static-analysis gate. It runs the
 pinned `govulncheck` version used by pull-request and scheduled CI without adding
 network access to the hermetic merge-tier test process.
+`make tidy-check` reproduces the merge tier's `go mod tidy -diff` check with the
+same configured Go command and inherited module settings.
 
 The subset relationship is executable rather than documentary:
 `verify-fast` selects checks from the same Go check list as `ci`, while

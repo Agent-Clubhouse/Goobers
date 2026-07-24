@@ -167,6 +167,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			capture:     true,
 			expectEmpty: true,
 		},
+		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}},
 	}
 
