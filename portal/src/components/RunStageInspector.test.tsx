@@ -12,8 +12,12 @@ import { RunStageInspector } from "./RunStageInspector";
 const reviewNode: WorkflowGraphNode = { id: "review", kind: "gate", evaluator: "agentic" };
 
 function attempt(overrides: Partial<StageAttempt>): StageAttempt {
+  const visit = overrides.visit ?? 1;
+  const number = overrides.number ?? 1;
   return {
-    number: 1,
+    id: overrides.id ?? `sta-${visit}-${number}`,
+    visit,
+    number,
     class: "initial",
     status: "success",
     startedSeq: 1,
@@ -78,6 +82,25 @@ describe("run stage inspector", () => {
     await waitFor(() => expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument());
     // With a single visible attempt the switcher is not rendered at all.
     expect(screen.queryByText("Attempt 1")).not.toBeInTheDocument();
+  });
+
+  it("selects repeated attempt numbers by traversal ID", async () => {
+    const client = stubClient([
+      attempt({ id: "sta-first", visit: 1, number: 1, outputs: { result: "first visit" } }),
+      attempt({ id: "sta-second", visit: 2, number: 1, startedSeq: 3, outputs: { result: "second visit" } }),
+    ]);
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    const first = await screen.findByRole("button", { name: "Visit 1 · Attempt 1" });
+    expect(screen.getByRole("button", { name: "Visit 2 · Attempt 1" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByText("second visit")).toBeInTheDocument();
+
+    fireEvent.click(first);
+    expect(screen.getByText("first visit")).toBeInTheDocument();
+    expect(first).toHaveAttribute("aria-pressed", "true");
   });
 
   it("fetches and previews a textual artifact body on demand", async () => {

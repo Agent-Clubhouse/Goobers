@@ -450,6 +450,8 @@ export interface AttemptList {
 }
 
 export interface StageAttempt {
+  id: string;
+  visit: number;
   number: number;
   class: AttemptClass;
   status: StageAttemptStatus | "";
