@@ -36,6 +36,13 @@ func newFilterableSourceRepo(t *testing.T) (dir, url string) {
 	return dir, testFileURL(t, dir)
 }
 
+// hardenedGitPrefix restates the exact override prefix hardenedGitArgs
+// prepends to every package git invocation, so the byte-identical invocation
+// pins below fail loudly if the hardening prefix ever changes shape — the
+// safe-bare-repo opt-in (#247) plus the hook/fsmonitor neutralization that
+// keeps agent-plantable repo state inert under daemon-side git (S3/#166).
+var hardenedGitPrefix = "-c safe.bareRepository=all -c core.hooksPath=" + os.DevNull + " -c core.fsmonitor=false"
+
 // missingObjectCount counts objects reachable from the repo's refs that are
 // not present locally — non-zero exactly when a promisor mirror is holding
 // back blobs for on-demand fetch.
@@ -482,8 +489,8 @@ func TestManager_WorkingCopy_PartialCloneOffIsByteIdentical(t *testing.T) {
 	}
 
 	recorded := recordedGitLines(t, log)
-	wantClone := "-c safe.bareRepository=all clone --mirror " + repo + " " + mirror
-	wantFetch := "-c safe.bareRepository=all fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/*"
+	wantClone := hardenedGitPrefix + " clone --mirror " + repo + " " + mirror
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-off clone invocation:\n got %q\nwant %q", got, wantClone)
 	}
@@ -521,8 +528,8 @@ func TestManager_WorkingCopy_PartialCloneOnInvocations(t *testing.T) {
 	}
 
 	recorded := recordedGitLines(t, log)
-	wantClone := "-c safe.bareRepository=all clone --mirror --filter=blob:none " + url + " " + mirror
-	wantFetch := "-c safe.bareRepository=all fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/*"
+	wantClone := hardenedGitPrefix + " clone --mirror --filter=blob:none " + url + " " + mirror
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-on clone invocation:\n got %q\nwant %q", got, wantClone)
 	}

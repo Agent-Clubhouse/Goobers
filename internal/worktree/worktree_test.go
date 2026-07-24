@@ -271,7 +271,7 @@ func mustWriteFile(t *testing.T, path, content string) {
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", bareRepoSafeArgs(args)...)
+	cmd := exec.Command("git", hardenedGitArgs(args)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_COUNT=2",
@@ -302,7 +302,7 @@ func newTestManager(t *testing.T) *Manager {
 // unlike runTestGit.
 func mirrorRefExists(t *testing.T, m *Manager, repo, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", bareRepoSafeArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd := exec.Command("git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = m.repoDirForKey(repoKey(repo))
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_COUNT=2",
@@ -1374,7 +1374,7 @@ printf 'worktree %s\nHEAD deadbeef\n\n' "$FAKE_WORKTREE_PATH"
 // hardened `git config safe.bareRepository=explicit` (an increasingly common
 // security default) makes git refuse cwd-based discovery of a bare repo,
 // which is exactly how every call here reaches a managed mirror (cmd.Dir set
-// to the mirror, no --git-dir/GIT_DIR). Without bareRepoSafeArgs's
+// to the mirror, no --git-dir/GIT_DIR). Without hardenedGitArgs's
 // `-c safe.bareRepository=all` override, WorkingCopy/Create/Remove would all
 // fail under this setting. GIT_CONFIG_GLOBAL simulates the hardened machine
 // without mutating the real user/global git config.

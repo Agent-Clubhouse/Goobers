@@ -530,20 +530,39 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 	return flattened
 }
 
-// bareRepoSafeArgs prepends `-c safe.bareRepository=all` to args (#247): under
-// a hardened `safe.bareRepository=explicit` git config, git refuses cwd-based
-// discovery of a bare repo, which is exactly how every call here reaches our
-// managed mirrors (cmd.Dir set to the mirror, no --git-dir/GIT_DIR). Opting
-// back into implicit discovery is safe for these specific invocations because
-// the mirrors are ones this package created and owns; it does not relax the
-// setting for anything else on the machine.
-func bareRepoSafeArgs(args []string) []string {
-	return append([]string{"-c", "safe.bareRepository=all"}, args...)
+// hardenedGitArgs prepends the config overrides every git invocation this
+// package issues must carry:
+//
+//   - `safe.bareRepository=all` (#247): under a hardened
+//     `safe.bareRepository=explicit` git config, git refuses cwd-based
+//     discovery of a bare repo, which is exactly how every call here reaches
+//     our managed mirrors (cmd.Dir set to the mirror, no --git-dir/GIT_DIR).
+//     Opting back into implicit discovery is safe for these specific
+//     invocations because the mirrors are ones this package created and owns;
+//     it does not relax the setting for anything else on the machine.
+//   - `core.hooksPath=<null device>` and `core.fsmonitor=false`: never run
+//     repo-state-configured programs. These commands execute unconfined as
+//     the daemon against state an agentic stage can influence — the checked
+//     out workspace tree always, and (before the harness narrowed its sandbox
+//     grants, or on any not-yet-narrowed deployment) the shared mirror's own
+//     hooks/ and config — so a planted post-checkout hook or fsmonitor
+//     command must stay inert during provisioning (`git worktree add` runs
+//     post-checkout), fetch, diff, and teardown (S3/#166). Command-line -c
+//     carries the highest config precedence, so no tampered repo or worktree
+//     config can re-enable either. Behavior-neutral for every legitimate
+//     flow: hooks are never cloned into a mirror and Goobers never configures
+//     fsmonitor.
+func hardenedGitArgs(args []string) []string {
+	return append([]string{
+		"-c", "safe.bareRepository=all",
+		"-c", "core.hooksPath=" + os.DevNull,
+		"-c", "core.fsmonitor=false",
+	}, args...)
 }
 
 // gitOutput runs git in dir and returns its trimmed stdout.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -560,7 +579,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // carrying the exit code and captured stderr, so IsTransientProvisionError can
 // classify it — unlike gitOutput's plain wrap.
 func rawGitOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -670,7 +689,7 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 }
 
 func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -697,7 +716,7 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 // per mirror rather than per Manager so a pre-existing full mirror is left
 // as-is (#646: new mirrors only, no in-place migration).
 func mirrorIsPartial(ctx context.Context, dir string) bool {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"config", "--get", "remote.origin.promisor"})...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"config", "--get", "remote.origin.promisor"})...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
@@ -710,7 +729,7 @@ func mirrorIsPartial(ctx context.Context, dir string) bool {
 // Create to decide whether to create the run branch or check out the existing
 // one (#133).
 func branchExists(ctx context.Context, repoDir, branch string) bool {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }
