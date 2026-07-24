@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
@@ -40,6 +41,21 @@ type RunInput struct {
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
 	RepoRef                apiv1.RepoRef      `json:"repoRef"`
 	Item                   *apiv1.BacklogItem `json:"item,omitempty"`
+	// TriggerRef identifies the event or item that caused the run — the same
+	// bounded scheduler metadata the local runner threads into every
+	// envelope's triggerRef field (#621 envelope parity).
+	TriggerRef string `json:"triggerRef,omitempty"`
+	// BranchNamespace is the gaggle's configured run-branch namespace root
+	// (GaggleSpec.BranchNamespace), stamped into every envelope exactly as the
+	// local runner does. Empty means the default namespace.
+	BranchNamespace string `json:"branchNamespace,omitempty"`
+	// GateGooberCapabilities maps a reviewer goober name to its granted
+	// capabilities, pinned at start like the rest of the run's policy. An
+	// agentic gate's envelope carries the reviewer's own grants — AgenticGate
+	// declares no stage-level capabilities — mirroring the local runner's
+	// Config.GateGooberCapabilities (#294). Automated/human gates stay
+	// uncredentialed.
+	GateGooberCapabilities map[string][]string `json:"gateGooberCapabilities,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -80,6 +96,11 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 
 	upstream := map[string]apiv1.ResultEnvelope{}
+	// pointers accumulates every completed stage's artifacts as read-only
+	// ContextPointers — the only channel through which a stage consumes prior
+	// work (§2.4) — exactly as the local runner's walk does.
+	var pointers []apiv1.ContextPointer
+	var lastResult apiv1.ResultEnvelope
 	state := in.Spec.Start
 	steps := 0
 
@@ -99,18 +120,20 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult)
 			if terr != nil {
 				return RunResult{}, terr
 			}
 			upstream[t.Name] = res
+			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
+			lastResult = res
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
 			state = t.Next
 			continue
 		}
 
 		if g, ok := m.Gate(state); ok {
-			outcome, gerr := evaluateGate(ctx, m, g, in)
+			outcome, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -133,7 +156,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
@@ -142,7 +165,20 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
-	env := buildInvocation(in, t.Name, t.Goal, inputs, limits)
+	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	// InputsFrom overlays the immediately preceding task's declared outputs on
+	// top of the static Inputs (#132). A declared outputKey missing upstream
+	// fails the stage closed — the declaration is a contract, not a hint —
+	// matching the local runner's dispatchTask. Keys are walked sorted so the
+	// first-missing error is deterministic under replay.
+	for _, inputKey := range sortedKeys(t.InputsFrom) {
+		outputKey := t.InputsFrom[inputKey]
+		v, ok := upstreamResult.Outputs[outputKey]
+		if !ok {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey)
+		}
+		env.Inputs[inputKey] = v
+	}
 	ctx = stageActivityContext(ctx, env.Limits)
 	var res apiv1.ResultEnvelope
 	if t.Type == apiv1.TaskAgentic {
@@ -161,7 +197,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return res, nil
 }
 
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput) (string, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (string, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -172,7 +208,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if g.Automated != nil {
 			conf = *g.Automated
 		}
-		env := buildInvocation(in, g.Name, "automated gate: "+g.Name, nil, limits)
+		// An automated gate gets no workspace, capabilities, or context
+		// pointers — its checks are pure functions over env.Inputs alone,
+		// matching the local runner (#112).
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
 		ctx := stageActivityContext(ctx, env.Limits)
 		var outcome string
 		if err := workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome); err != nil {
@@ -181,7 +220,15 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		return outcome, nil
 
 	case apiv1.EvaluatorAgentic:
-		env := buildInvocation(in, g.Name, "review gate: "+g.Name, nil, limits)
+		// The reviewer runs a real goober subprocess, so — unlike an
+		// automated/human gate — it needs its capability-scoped credentials
+		// (#294). AgenticGate carries no stage-level capabilities, so they are
+		// sourced from the reviewer goober's own grants, pinned at start.
+		var gateCaps []string
+		if g.Agentic != nil {
+			gateCaps = in.GateGooberCapabilities[g.Agentic.Goober]
+		}
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
 		ctx := stageActivityContext(ctx, env.Limits)
 		var verdict apiv1.Verdict
 		if err := workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict); err != nil {
@@ -199,30 +246,57 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 	}
 }
 
-// buildInvocation assembles a stage invocation envelope. Under the V0 stage
-// contract it does not inject upstream stage results: a stage consumes prior work
-// only through journal-backed ContextPointers (ARCHITECTURE.md §2.4). This
-// superseded Temporal engine has no local journal to point into, so it passes no
-// context pointers; the local runner (#17) populates them. The run's per-stage
-// results still aggregate into RunResult.Outputs for the run's own return value.
-func buildInvocation(in RunInput, stateName, goal string, inputs map[string]string, limits apiv1.Limits) apiv1.InvocationEnvelope {
-	env := apiv1.InvocationEnvelope{
-		TaskID:     in.RunID + ":" + stateName,
-		WorkflowID: in.WorkflowName,
-		RunID:      in.RunID,
-		Gaggle:     in.Gaggle,
-		Goal:       goal,
-		RepoRef:    in.RepoRef,
-		Item:       in.Item,
-		Limits:     limits,
+// buildInvocation assembles a stage invocation envelope to the closed
+// invocation schema, mirroring the local runner's buildEnvelope
+// (internal/runner/run.go) field for field: identity, trigger, branch
+// namespace, goal, repo, item, read-only context pointers, capability grants,
+// limits, and static inputs (#621). The one field deliberately absent here is
+// Workspace: provisioning a working copy is a side effect, so the activity
+// host provisions one fresh per attempt and stamps it into the envelope
+// before the stage executes (Activities.provisionWorkspace) — failing closed,
+// never dispatching a partial envelope.
+func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
+	inputs := make(map[string]interface{}, len(taskInputs))
+	for k, v := range taskInputs {
+		inputs[k] = v
 	}
-	if len(inputs) > 0 {
-		env.Inputs = make(map[string]interface{}, len(inputs))
-		for k, v := range inputs {
-			env.Inputs[k] = v
-		}
+	return apiv1.InvocationEnvelope{
+		TaskID:          in.RunID + ":" + stateName,
+		WorkflowID:      in.WorkflowName,
+		RunID:           in.RunID,
+		TriggerRef:      in.TriggerRef,
+		Gaggle:          in.Gaggle,
+		BranchNamespace: in.BranchNamespace,
+		Goal:            goal,
+		RepoRef:         in.RepoRef,
+		Item:            in.Item,
+		ContextPointers: upstream,
+		Capabilities:    capabilities,
+		Limits:          limits,
+		Inputs:          inputs,
 	}
-	return env
+}
+
+// contextPointersFor converts a finished stage's artifacts into the read-only
+// context pointers handed to downstream stages, mirroring the local runner's
+// contextPointersFor (internal/runner/run.go) so both runners name upstream
+// evidence identically.
+func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []apiv1.ContextPointer {
+	out := make([]apiv1.ContextPointer, 0, len(artifacts))
+	for i := range artifacts {
+		a := artifacts[i]
+		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
+	}
+	return out
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {

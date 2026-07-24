@@ -115,7 +115,10 @@ func TestImplementationDryRunCIFailThenPass(t *testing.T) {
 			case "backlog-query":
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"claimed-item": "301"}}, nil
 			case "open-pr":
-				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"pull-request-url": "https://github.com/acme/web/pull/1"}}, nil
+				// prNumber is the well-known handoff key ci-poll's inputsFrom
+				// declares; the engine now threads it exactly like the local
+				// runner (#132), failing closed when it is missing.
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"pull-request-url": "https://github.com/acme/web/pull/1", "prNumber": "1"}}, nil
 			case "ci-poll":
 				ciPollCalls++
 				if ciPollCalls == 1 {
@@ -151,7 +154,7 @@ func TestImplementationDryRunCIFailThenPass(t *testing.T) {
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto})
+	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, implementationRunInput(spec))
 
@@ -205,7 +208,7 @@ func TestImplementationDryRunReviewerRepassThenApprove(t *testing.T) {
 			case "backlog-query":
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"claimed-item": "302"}}, nil
 			case "open-pr":
-				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"pull-request-url": "https://github.com/acme/web/pull/2"}}, nil
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"pull-request-url": "https://github.com/acme/web/pull/2", "prNumber": "2"}}, nil
 			case "ci-poll":
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"ciStatus": "passing"}}, nil
 			case "issue-close-out":
@@ -241,7 +244,7 @@ func TestImplementationDryRunReviewerRepassThenApprove(t *testing.T) {
 
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto})
+	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, implementationRunInput(spec))
 

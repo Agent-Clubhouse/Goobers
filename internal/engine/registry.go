@@ -92,6 +92,15 @@ type StartSpec struct {
 	Gaggle  string
 	RepoRef apiv1.RepoRef
 	Item    *apiv1.BacklogItem
+	// TriggerRef identifies the event or item that caused the run (bounded
+	// scheduler metadata, threaded into every stage envelope).
+	TriggerRef string
+	// BranchNamespace is the gaggle's run-branch namespace root; empty means
+	// the default namespace.
+	BranchNamespace string
+	// GateGooberCapabilities maps reviewer goober names to their granted
+	// capabilities; instance policy pinned into the run at start (WF-016).
+	GateGooberCapabilities map[string][]string
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -122,5 +131,8 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		Spec:                   def.Spec,
 		RepoRef:                s.RepoRef,
 		Item:                   s.Item,
+		TriggerRef:             s.TriggerRef,
+		BranchNamespace:        s.BranchNamespace,
+		GateGooberCapabilities: s.GateGooberCapabilities,
 	}, nil
 }
