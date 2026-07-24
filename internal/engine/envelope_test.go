@@ -284,6 +284,81 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	}
 }
 
+// TestGateVerdictSurfacesAsRepassContextPointer is #412's engine-side
+// acceptance, mirroring the local walk: after an agentic gate evaluates, the
+// next dispatch — the repass back to the subject stage, and every dispatch
+// after it — carries the reviewer's verdict as the "<gate>.verdict"
+// ContextPointer, addressed exactly as the projection will commit it.
+func TestGateVerdictSurfacesAsRepassContextPointer(t *testing.T) {
+	in := runInput("verdict-pointer", gatedSpec())
+
+	needsChanges := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "rename the flag"}
+	var mu sync.Mutex
+	var implementEnvs, reviewEnvs []apiv1.InvocationEnvelope
+	inv := &fakeInvoker{
+		invoke: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			implementEnvs = append(implementEnvs, env)
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		},
+		review: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reviewEnvs = append(reviewEnvs, env)
+			if len(reviewEnvs) == 1 {
+				return needsChanges, nil
+			}
+			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+		},
+	}
+
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Goober: inv, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+
+	if len(implementEnvs) != 2 || len(reviewEnvs) != 2 {
+		t.Fatalf("dispatches = %d implement + %d review, want 2 + 2 (one repass)", len(implementEnvs), len(reviewEnvs))
+	}
+	if p := findContextPointer(implementEnvs[0].ContextPointers, "review.verdict"); p != nil {
+		t.Fatalf("first implement dispatch already carries a verdict pointer: %+v", p)
+	}
+	got := findContextPointer(implementEnvs[1].ContextPointers, "review.verdict")
+	if got == nil || got.Artifact == nil {
+		t.Fatalf("repass context pointers = %+v, want review.verdict (#412: the repass must receive the reviewer's rationale)", implementEnvs[1].ContextPointers)
+	}
+	data, err := json.Marshal(&needsChanges)
+	if err != nil {
+		t.Fatalf("marshal verdict: %v", err)
+	}
+	wantRef, err := journal.ArtifactRef(data)
+	if err != nil {
+		t.Fatalf("ArtifactRef: %v", err)
+	}
+	want := apiv1.ArtifactPointer{Path: wantRef.Path, Digest: wantRef.Digest, Size: wantRef.Size, MediaType: "application/json"}
+	if *got.Artifact != want {
+		t.Errorf("verdict pointer = %+v, want %+v (the projection's committed address)", *got.Artifact, want)
+	}
+	// The re-review sees the prior verdict too — the same pointer accumulation
+	// the local walk applies on its advance path.
+	if findContextPointer(reviewEnvs[1].ContextPointers, "review.verdict") == nil {
+		t.Errorf("second review dispatch context pointers = %+v, want the prior review.verdict", reviewEnvs[1].ContextPointers)
+	}
+}
+
+func findContextPointer(pointers []apiv1.ContextPointer, name string) *apiv1.ContextPointer {
+	for i := range pointers {
+		if pointers[i].Name == name {
+			return &pointers[i]
+		}
+	}
+	return nil
+}
+
 // TestAutomatedGateGetsNoWorkspace mirrors the local runner's #112 contract:
 // an automated gate's checks are pure functions over env.Inputs, so no
 // workspace is provisioned for it.

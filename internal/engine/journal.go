@@ -306,7 +306,13 @@ func (r *runJournal) evaluatorRetry(ctx workflow.Context, gate string, attempt i
 // verdict event, with the full agentic Verdict committed as a
 // "verdict/<gate>-<attempt>.json" artifact the event's Name references (the
 // projection writer resolves the event Ref from the recorded artifact).
-func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict *apiv1.Verdict) error {
+//
+// Like recordVerdict it hands the verdict's ArtifactPointer back (nil for a
+// non-agentic gate) so walk can surface it as the "<gate>.verdict" repass
+// ContextPointer (#412). The pointer is computed workflow-side from the same
+// bytes the projection will commit (journal.ArtifactRef), keeping it a
+// deterministic function of history.
+func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict *apiv1.Verdict) (*apiv1.ArtifactPointer, error) {
 	at := workflow.Now(ctx)
 	ev := journal.Event{
 		Type: journal.EventGateEvaluated,
@@ -316,17 +322,23 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 			"escalated":     gr.Escalated,
 		},
 	}
+	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {
 		data, err := json.Marshal(verdict)
 		if err != nil {
-			return fmt.Errorf("engine: marshal verdict for gate %q: %w", gr.Gate, err)
+			return nil, fmt.Errorf("engine: marshal verdict for gate %q: %w", gr.Gate, err)
+		}
+		ref, err := journal.ArtifactRef(data)
+		if err != nil {
+			return nil, fmt.Errorf("engine: address verdict for gate %q: %w", gr.Gate, err)
 		}
 		name := fmt.Sprintf("verdict/%s-%d.json", gr.Gate, gr.Attempt)
 		r.artifactAt(at, JournalArtifactOp{Name: name, Data: data})
 		ev.Name = name
+		artifact = &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json"}
 	}
 	r.appendAt(at, ev)
-	return nil
+	return artifact, nil
 }
 
 // runFailedCause mirrors failTerminal/finishStageFailure's run_failed cause

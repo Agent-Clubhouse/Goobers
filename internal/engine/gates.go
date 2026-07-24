@@ -18,9 +18,10 @@ import (
 // dispatch itself is an activity; this resolution (branch lookup, bounded
 // repass, escalation override) is deterministic and runs workflow-side,
 // mirroring gate.Evaluator.resolveOutcome/trackRepass exactly. Verdict
-// journaling, the identical-diff dedup (#316), the empty-diff fast-fail
-// (#415), and the cross-run verdict cache (#523) stay with the local runner
-// until the engine has journal-backed diff evidence (#629/#301).
+// journaling (runJournal.gateEvaluated) and the #412 verdict ContextPointer
+// are engine-side; the diff-evidence features — identical-diff dedup (#316),
+// empty-diff fast-fail (#415), cross-run verdict cache (#523) — stay with the
+// local runner until the engine has journal-backed diff evidence (#629/#301).
 type gateResult struct {
 	// Gate is the evaluated gate's name.
 	Gate string

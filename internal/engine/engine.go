@@ -225,13 +225,23 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
-			if jerr := rec.gateEvaluated(ctx, gr, verdict); jerr != nil {
+			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
+			if jerr != nil {
 				return RunResult{}, jerr
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
 			if terminal {
 				return out, nil
+			}
+			if verdictArtifact != nil {
+				// #412: the next dispatch — most commonly a repass back to the
+				// stage that produced the subject this gate just evaluated —
+				// must actually receive the reviewer's verdict as context, not
+				// infer "something needs to change" from git. The local
+				// runner's walk appends the same "<gate>.verdict" pointer on
+				// both its retry route and its advance path.
+				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: verdictArtifact})
 			}
 			state = next
 			continue
