@@ -41,6 +41,14 @@ func (w *fakeWorker) Stop() {
 	w.mu.Unlock()
 }
 
+// isStarted reads started under the worker's own lock — Start runs on the
+// h.Run goroutine, so a polling test must not read the flag bare.
+func (w *fakeWorker) isStarted() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.started
+}
+
 type fakeFleet struct {
 	mu       sync.Mutex
 	workers  []*fakeWorker
@@ -97,7 +105,9 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 	waitFor(t, func() bool {
 		fleet.mu.Lock()
 		defer fleet.mu.Unlock()
-		return len(fleet.workers) == 2 && fleet.workers[0].started && fleet.workers[1].started
+		// fleet.mu only guards the workers slice; each started flag has its
+		// own lock.
+		return len(fleet.workers) == 2 && fleet.workers[0].isStarted() && fleet.workers[1].isStarted()
 	})
 	cancel()
 	if err := <-done; err != nil {
