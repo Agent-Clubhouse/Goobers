@@ -379,7 +379,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
 			Token: &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 		Capability: string(capability.ConfigRepoRead),
 		Token:      instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 	}}}
-	if _, _, err := buildCredentials(cfg, "", ""); err == nil ||
+	if _, _, err := buildCredentials(cfg, "", "", nil); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
 	}
@@ -451,10 +451,10 @@ func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
 			Owner:    "acme",
 			Project:  "widgets",
 			Name:     "web",
-			Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+			Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 		},
 	}}
-	_, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	_, grants, err := buildCredentials(cfg, "acme/widgets", "web", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
 		Name:     "web",
 		Token:    instance.TokenRef{Env: "ADO_PAT"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, "acme/widgets", "web")
+	resolver, grants, err := buildCredentials(cfg, "acme/widgets", "web", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestADORepoForGaggleMatchesExplicitProject(t *testing.T) {
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{want}}
 	got, ok := adoRepoForGaggle(cfg, apiv1.RepoRef{
@@ -617,6 +617,134 @@ func TestGitHubWorktreeGitEnvironmentFailsClosedOnUnresolvableToken(t *testing.T
 	}
 	if _, err := resolve(context.Background(), "https://github.com/acme/web.git"); err == nil {
 		t.Fatal("unresolvable token ref must fail provisioning closed, got nil error")
+	}
+}
+
+// --- #686: GitHub App installation-token minting ---
+
+// TestBuildCredentialsGitHubAppMintsRepoToken: a github-app repo's ref
+// resolves through the minting source under the same owner/name ref a static
+// token would use, so every capability grant receives installation tokens —
+// and re-resolution reaches the source again (its cache, not the resolver,
+// decides freshness).
+func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
+	prev := newGitHubAppTokenSource
+	mints := 0
+	var gotRepo instance.RepoRef
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar) (credentials.ResolveFunc, error) {
+		gotRepo = repo
+		return func(context.Context) (string, error) {
+			mints++
+			return fmt.Sprintf("minted-token-%d", mints), nil
+		}, nil
+	}
+	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github", Owner: "acme", Name: "web",
+		Auth: &instance.RepoAuthConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			PrivateKey: &instance.TokenRef{File: "/run/secrets/app.pem"},
+		},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if gotRepo.Owner != "acme" || gotRepo.Name != "web" || !gotRepo.GitHubAppAuth() {
+		t.Fatalf("minting source built for %+v, want the github-app repo", gotRepo)
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range credentialedCapabilities {
+		if !strings.HasPrefix(got[string(c)], "minted-token-") {
+			t.Fatalf("capability %s = %q, want a minted installation token", c, got[string(c)])
+		}
+	}
+	if _, err := resolver.Resolve(context.Background(), "acme/web"); err != nil {
+		t.Fatalf("Resolve repo ref: %v", err)
+	}
+	if mints < 2 {
+		t.Fatalf("mints = %d, want the source consulted per resolve", mints)
+	}
+}
+
+func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
+	prev := newGitHubAppTokenSource
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar) (credentials.ResolveFunc, error) {
+		return nil, errors.New("store-backed key not resolvable here")
+	}
+	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github", Owner: "acme", Name: "web",
+		Auth: &instance.RepoAuthConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			PrivateKey: &instance.TokenRef{Store: "kv/app-key"},
+		},
+	}}}
+	if _, _, err := buildCredentials(cfg, "", "", nil); err == nil ||
+		!strings.Contains(err.Error(), "repo acme/web") {
+		t.Fatalf("buildCredentials error = %v, want fail-closed repo diagnosis", err)
+	}
+}
+
+// TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo: a github-app repo's
+// mirror clone/fetch environment mints per operation, so a refreshed
+// installation token reaches the next fetch without re-wiring (#667 + #686).
+func TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo(t *testing.T) {
+	prev := newGitHubAppTokenSource
+	mints := 0
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar) (credentials.ResolveFunc, error) {
+		return func(context.Context) (string, error) {
+			mints++
+			return fmt.Sprintf("ghs_minted_%d", mints), nil
+		}, nil
+	}
+	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+
+	registrar := &escTestRegistrar{}
+	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
+		Provider: "github", Owner: "acme", Name: "web",
+		Auth: &instance.RepoAuthConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			PrivateKey: &instance.TokenRef{File: "/run/secrets/app.pem"},
+		},
+	}, registrar)
+	if err != nil {
+		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+	}
+	if resolve == nil {
+		t.Fatal("github-app repo produced no git-environment resolver")
+	}
+	env, err := resolve(context.Background(), "https://github.com/acme/web.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	var token string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "GOOBERS_GIT_TOKEN="); ok {
+			token = value
+		}
+	}
+	if token != "ghs_minted_1" {
+		t.Fatalf("GOOBERS_GIT_TOKEN = %q, want the minted token", token)
+	}
+	if len(registrar.registered) != 1 || string(registrar.registered[0]) != "ghs_minted_1" {
+		t.Fatalf("scrubber registrations = %q, want the minted token", registrar.registered)
+	}
+	// The next operation re-resolves: a refreshed token flows in transparently.
+	if _, err := resolve(context.Background(), "https://github.com/acme/web.git"); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if mints != 2 {
+		t.Fatalf("mints = %d, want per-operation resolution", mints)
+	}
+	// Foreign remotes stay unauthenticated — no mint spent on them.
+	if env, err := resolve(context.Background(), "https://github.com/acme/other.git"); err != nil || env != nil {
+		t.Fatalf("resolve foreign URL = (%v, %v), want (nil, nil)", env, err)
+	}
+	if mints != 2 {
+		t.Fatalf("mints = %d after foreign URL, want no extra mint", mints)
 	}
 }
 
@@ -856,7 +984,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -885,7 +1013,7 @@ func TestBuildCredentialsOverride(t *testing.T) {
 			{Capability: "repo:push", Token: instance.TokenRef{Env: "PUSH_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -910,7 +1038,7 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1033,7 +1161,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
