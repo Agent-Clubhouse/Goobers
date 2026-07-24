@@ -39,7 +39,7 @@ var synopsisByID = map[string]string{
 	"trace":                  "  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]\n                                show a run's journal events, follow a live run, or show recorded agent transcripts\n",
 	"escalations":            "  goobers escalations [--json] [path]\n                                list escalated runs newest first\n",
 	"escalations show":       "  goobers escalations show [--json] <run-id> [path]\n                                show escalation cause + per-stage artifact timeline\n",
-	"completion":             "  goobers completion bash|zsh|fish  generate a shell completion script\n",
+	"completion":             "  goobers completion bash|zsh|fish|powershell  generate a shell completion script\n",
 	"telemetry":              "  goobers telemetry stats|errors|export|prune [flags] [path]\n                                query, export, or prune run telemetry\n",
 	"journal redact":         "  goobers journal redact --run <id> --path <blob> --reason <text> [path]\n                                remove a leaked secret from a stored blob (SEC-041)\n",
 	"backlog-dedupe":         "  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)\n",

@@ -79,7 +79,7 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 }
 
 func TestCompletionScriptsGolden(t *testing.T) {
-	for _, shell := range []string{"bash", "zsh", "fish"} {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		t.Run(shell, func(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "completion", shell)
 			if code != 0 {
@@ -108,8 +108,21 @@ func TestCompletionScriptsGolden(t *testing.T) {
 	}
 }
 
-func TestCompletionRejectsUnknownShell(t *testing.T) {
+func TestCompletionPowerShellContainsArgumentCompleter(t *testing.T) {
 	code, stdout, stderr := runArgs(t, "completion", "powershell")
+	if code != 0 {
+		t.Fatalf("completion powershell: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Register-ArgumentCompleter") {
+		t.Fatalf("completion powershell missing Register-ArgumentCompleter:\n%s", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("completion powershell stderr = %q, want empty", stderr)
+	}
+}
+
+func TestCompletionRejectsUnknownShell(t *testing.T) {
+	code, stdout, stderr := runArgs(t, "completion", "bogus")
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}

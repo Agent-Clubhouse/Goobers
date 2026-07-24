@@ -279,10 +279,18 @@ func init() {
 					return runCompletionScript(fishCompletion(), args, stdout, stderr)
 				},
 			).withHelp("generate a fish completion script", completionHelp),
+			subcommand(
+				"completion powershell",
+				"powershell",
+				apicontract.ActionConfigTime,
+				func(args []string, stdout, stderr io.Writer) int {
+					return runCompletionScript(powershellCompletion(), args, stdout, stderr)
+				},
+			).withHelp("generate a PowerShell completion script", completionHelp),
 		).
 			withSynopsis(synopsisByID["completion"]).
 			withHelp("generate a shell completion script", completionHelp).
-			withExamples("goobers completion bash", "goobers completion zsh"),
+			withExamples("goobers completion bash", "goobers completion zsh", "goobers completion powershell"),
 		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
 			return runCompletionCandidates(args, stdout)
 		}),

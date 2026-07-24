@@ -419,3 +419,33 @@ func keepFlag(keep bool) string {
 func fishKeepOrder(argKind string) bool {
 	return argKind == "runs" || argKind == "escalations"
 }
+
+// --- powershell ------------------------------------------------------------
+
+func renderPowerShellCompletion(m completionModel) string {
+	var b strings.Builder
+	b.WriteString("# PowerShell completion for goobers\n")
+	b.WriteString("Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {\n")
+	b.WriteString("    param($wordToComplete, $commandAst, $cursorPosition)\n\n")
+	b.WriteString("    $completions = @(\n")
+	for _, completion := range append(append([]string{}, commandNames(m)...), m.globalFlags...) {
+		fmt.Fprintf(&b, "        '%s'\n", completion)
+	}
+	b.WriteString("    )\n\n")
+	b.WriteString("    $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {\n")
+	b.WriteString("        if ($_.Extent) { $_.Extent.Text } else { \"$_\" }\n")
+	b.WriteString("    })\n")
+	b.WriteString("    if ($elements.Count -gt 1) {\n")
+	b.WriteString("        return\n")
+	b.WriteString("    }\n\n")
+	b.WriteString("    $pattern = if ([string]::IsNullOrEmpty($wordToComplete)) {\n")
+	b.WriteString("        '*'\n")
+	b.WriteString("    } else {\n")
+	b.WriteString("        [System.Management.Automation.WildcardPattern]::Escape($wordToComplete) + '*'\n")
+	b.WriteString("    }\n")
+	b.WriteString("    $completions | Where-Object { $_ -like $pattern } | ForEach-Object {\n")
+	b.WriteString("        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)\n")
+	b.WriteString("    }\n")
+	b.WriteString("}\n")
+	return b.String()
+}

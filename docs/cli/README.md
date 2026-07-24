@@ -21,6 +21,7 @@
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
+| [`goobers completion powershell`](#goobers-completion-powershell) | generate a PowerShell completion script |
 | [`goobers completion zsh`](#goobers-completion-zsh) | generate a zsh completion script |
 | [`goobers config`](#goobers-config) | inspect instance configuration and compare workflow definitions |
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
@@ -323,7 +324,7 @@ $ goobers claims release --force 955
 generate a shell completion script
 
 ~~~text
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 ~~~
@@ -333,6 +334,7 @@ Generate a shell completion script. Source the output in the target shell.
 ~~~console
 $ goobers completion bash
 $ goobers completion zsh
+$ goobers completion powershell
 ~~~
 
 ## `goobers completion bash`
@@ -340,7 +342,7 @@ $ goobers completion zsh
 generate a bash completion script
 
 ~~~text
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 ~~~
@@ -350,7 +352,17 @@ Generate a shell completion script. Source the output in the target shell.
 generate a fish completion script
 
 ~~~text
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
+
+Generate a shell completion script. Source the output in the target shell.
+~~~
+
+## `goobers completion powershell`
+
+generate a PowerShell completion script
+
+~~~text
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 ~~~
@@ -360,7 +372,7 @@ Generate a shell completion script. Source the output in the target shell.
 generate a zsh completion script
 
 ~~~text
-Usage: goobers completion <bash|zsh|fish>
+Usage: goobers completion <bash|zsh|fish|powershell>
 
 Generate a shell completion script. Source the output in the target shell.
 ~~~
