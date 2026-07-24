@@ -190,6 +190,8 @@ type RunEvent struct {
 	Branch          int                    `json:"branch"`
 	Time            time.Time              `json:"time"`
 	KnownSchema     bool                   `json:"knownSchema"`
+	Category        RunEventCategory       `json:"category"`
+	ReplayChapter   bool                   `json:"replayChapter"`
 	Stage           string                 `json:"stage,omitempty"`
 	Attempt         int                    `json:"attempt,omitempty"`
 	AttemptClass    string                 `json:"attemptClass,omitempty"`
@@ -1506,13 +1508,16 @@ func eventErrorReason(detail *journal.ErrorDetail) string {
 
 func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent {
 	event := record.Event
+	category, replayChapter := classifyRunEvent(event)
 	projected := RunEvent{
-		Schema:      event.Schema,
-		Seq:         event.Seq,
-		Type:        event.Type,
-		Branch:      event.Branch,
-		Time:        event.Time,
-		KnownSchema: event.KnownSchema(),
+		Schema:        event.Schema,
+		Seq:           event.Seq,
+		Type:          event.Type,
+		Branch:        event.Branch,
+		Time:          event.Time,
+		KnownSchema:   event.KnownSchema(),
+		Category:      category,
+		ReplayChapter: replayChapter,
 	}
 	if !projected.KnownSchema {
 		projected.Raw = append(json.RawMessage(nil), record.Raw...)

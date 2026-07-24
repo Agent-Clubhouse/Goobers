@@ -32,6 +32,10 @@ describe("Go daemon wire contract", () => {
     expect(checkedFixtures.health.apiVersion).toBe("v1");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");
+    expect(checkedFixtures.runEvents.events[0]).toMatchObject({
+      category: "transition",
+      replayChapter: true,
+    });
     expect(checkedUpdateEvent.data.models).toEqual(["instance", "run", "workflow"]);
     expect(checkedErrorEnvelope.error.code).toBe("not_found");
   });

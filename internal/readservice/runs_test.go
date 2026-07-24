@@ -796,6 +796,9 @@ func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 		!strings.Contains(string(future.Raw), `"answer":42`) {
 		t.Fatalf("future event = %+v", future)
 	}
+	if future.Category != RunEventUnknown || future.ReplayChapter {
+		t.Fatalf("future event classification = (%q, %t)", future.Category, future.ReplayChapter)
+	}
 	if future.Status != "" {
 		t.Fatalf("unsupported type-specific status was trusted: %+v", future)
 	}
