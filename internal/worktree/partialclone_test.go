@@ -271,7 +271,13 @@ func TestManager_Create_PartialCloneBlobFetchFailureFailsClosedAndTransient(t *t
 	// negotiated), so the failure surfaces exactly where production would
 	// hit it: the promisor blob fetch during `git worktree add`'s checkout.
 	blobOID := strings.TrimSpace(runTestGit(t, repo, "rev-parse", "main:README.md"))
-	if err := os.Remove(filepath.Join(repo, ".git", "objects", blobOID[:2], blobOID[2:])); err != nil {
+	objPath := filepath.Join(repo, ".git", "objects", blobOID[:2], blobOID[2:])
+	// Loose objects are written read-only; lift that first so the removal
+	// also works on Windows, where unlink honors the read-only attribute.
+	if err := os.Chmod(objPath, 0o644); err != nil {
+		t.Fatalf("chmod source blob object: %v", err)
+	}
+	if err := os.Remove(objPath); err != nil {
 		t.Fatalf("remove source blob object: %v", err)
 	}
 
