@@ -8,7 +8,8 @@ goobers telemetry stats \- success rate and duration aggregates per workflow and
 .nf
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
-Success rate and duration aggregates per workflow and per stage,
+Success rate and duration aggregates per workflow and stage, plus curation
+actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
 stage attempts; a run that used multiple grouped cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.

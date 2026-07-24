@@ -25,6 +25,9 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
+    expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
+    expect(screen.getByText("8 / 6")).toBeInTheDocument();
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
@@ -343,6 +346,24 @@ describe("Insight page", () => {
       stages: [],
       usage: [],
       models: [],
+      curation: {
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        claimAgeSamples: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
     });
     getTelemetryErrorSignatures.mockResolvedValueOnce({ items: [] });
 

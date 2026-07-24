@@ -218,6 +218,7 @@ const (
 var providerStageResultFiles = map[string]string{
 	"apply-verdict":          "verdict-result.json",
 	"backlog-dedupe":         "dedupe-candidates.json",
+	"backlog-health":         "backlog-health.json",
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
 	"gather-issue-context":   "remediation-brief.json",
