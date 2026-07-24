@@ -75,10 +75,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   liveness checks** (PRL-062/PRL-063), never via a permanent label test — an
   exclusion that cannot self-heal is forbidden (#716).
 - **PRL-004 (MUST, Shipped):** Among eligible PRs, selection order MUST be
-  deterministic. Before aging applies, order is descending count of open PRs
-  blocked on the candidate (so a cluster's lander is reviewed before its parked
-  dependents), then ascending PR number (FIFO). The first unclaimed candidate in
-  the effective order is selected.
+  deterministic. Below the starvation guard, a crowned lander (a candidate with
+  at least one open PR durably parked behind it) MUST sort ahead of every
+  ordinary candidate. Within each below-guard tier, order is descending
+  blocked-dependent count plus aging points, then ascending PR number (FIFO).
+  The first unclaimed candidate in the effective order is selected.
 - **PRL-005 (SHOULD, V1):** Selection priority SHOULD become configurable
   (label-driven / user-defined ordering) rather than FIFO-only; #509 owns the
   design. The PRL-004/PRL-007 order is the shipped default, not a ceiling.
@@ -86,10 +87,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   a normal no-work outcome (exit 0), never a failure.
 - **PRL-007 (MUST, Shipped):** `pr-select` MUST persist the first observation of
   each PR's current continuously eligible interval. Every complete 15 minutes
-  adds one deterministic aging point to its blocked-dependent priority. A PR
-  waiting at least one hour MUST sort ahead of every candidate below that
-  bound, regardless of blocked-dependent count. Ascending PR number remains the
-  tie-breaker for equivalent effective priority. Selection, an ineligible
+  adds one deterministic aging point to its effective priority within its
+  PRL-004 tier. A PR waiting at least one hour MUST sort ahead of every candidate
+  below that bound, including a crowned lander, regardless of blocked-dependent
+  count. Ascending PR number remains the tie-breaker for equivalent effective
+  priority. Selection, an ineligible
   observation, an active claim, or a head-SHA change resets the interval; an
   ineligible, claimed, escalated, demoted, sibling-blocked, or
   remediation-blocked PR therefore cannot accumulate priority merely by aging.
@@ -107,10 +109,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-009 (MUST, Shipped):** Once verdict application durably parks a
   non-lander behind its elected predecessor, it MUST enqueue an immediate,
   targeted re-tick of the same gaggle's `merge-review` workflow. The re-tick
-  remains subject to ordinary scheduler admission and PRL-007 ordering, so it
-  neither changes the existing selection tiers nor bypasses the starvation
-  guard. The verdict-stage result MUST report whether it requested this
-  priority dispatch so the election-to-dispatch latency is measurable.
+  remains subject to ordinary scheduler admission and PRL-004/PRL-007 ordering,
+  so the crowned predecessor receives its selection tier without bypassing the
+  starvation guard. The verdict-stage result MUST report whether it requested
+  this priority dispatch so the election-to-dispatch latency is measurable.
 
 ### Sibling context & the verdict contract
 
