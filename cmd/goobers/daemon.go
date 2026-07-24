@@ -365,12 +365,14 @@ func buildSchedulerDefinitions(
 	for i := range set.Gaggles {
 		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
 	}
+	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+			sandboxPostures[gaggle],
 		)
 		if err != nil {
 			return nil, err
@@ -523,6 +525,9 @@ func buildRetainedLegacyRunner(
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
 		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
+		// Legacy retained runtime is not gaggle-scoped, so only the
+		// instance-wide posture can apply (no gaggle override to consult).
+		instance.EffectiveAgenticSandbox(cfg, nil),
 	)
 }
 
@@ -556,9 +561,10 @@ func buildRuntimeRunner(
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
+	sandboxPosture instance.SandboxPosture,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo, sandboxPosture,
 	)
 	if err != nil {
 		return nil, nil, err
