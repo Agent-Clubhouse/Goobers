@@ -39,6 +39,26 @@ type recordingObserver struct {
 	events []RateLimitEvent
 }
 
+type recordingQuotaObserver struct {
+	mu           sync.Mutex
+	observations []QuotaObservation
+}
+
+func (o *recordingQuotaObserver) ObserveQuota(_ context.Context, observation QuotaObservation) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.observations = append(o.observations, observation)
+}
+
+func (o *recordingQuotaObserver) last() (QuotaObservation, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.observations) == 0 {
+		return QuotaObservation{}, false
+	}
+	return o.observations[len(o.observations)-1], true
+}
+
 func (o *recordingObserver) ObserveRateLimit(_ context.Context, ev RateLimitEvent) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -59,6 +79,37 @@ type staticTokenSource struct {
 func (s *staticTokenSource) Token(context.Context) (string, error) {
 	s.calls++
 	return s.token, nil
+}
+
+func TestGitHubProviderObservesQuotaHeaders(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).Truncate(time.Second)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "17")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	observer := &recordingQuotaObserver{}
+	provider := NewGitHubProvider("token", WithQuotaObserver(observer), func(p *GitHubProvider) {
+		p.BaseURL = server.URL
+	})
+	_, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "web"},
+		State:      "open",
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, ok := observer.last()
+	if !ok {
+		t.Fatal("quota observer received no observation")
+	}
+	if observation.Provider != ProviderGitHub || !observation.Known || observation.Cached ||
+		observation.Remaining != 17 || !observation.Reset.Equal(resetAt) {
+		t.Fatalf("quota observation = %+v, want GitHub remaining=17 reset=%s", observation, resetAt)
+	}
 }
 
 // issueMock is a minimal in-memory GitHub issue backend covering the endpoints the

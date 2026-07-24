@@ -70,6 +70,8 @@ const (
 	eventSpanRecorded       = "span.recorded"
 	eventTriggerFired       = "trigger.fired"
 	eventTickSkipped        = "tick.skipped"
+	eventProviderQuotaReset = "provider.quota.reset"
+	eventPollShed           = "poll.shed"
 	eventClaimAcquired      = "claim.acquired"
 	eventClaimReleased      = "claim.released"
 	eventClaimForceReleased = "claim.force_released"

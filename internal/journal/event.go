@@ -69,6 +69,12 @@ const (
 	// EventWorkflowStarved records a workflow crossing the scheduler's
 	// consecutive shared-pool skip threshold.
 	EventWorkflowStarved EventType = "workflow.starved"
+	// EventProviderQuotaReset records a provider budget window expiring and
+	// polling admission reopening.
+	EventProviderQuotaReset EventType = "provider.quota.reset"
+	// EventPollShed records one provider poll omitted to preserve a constrained
+	// quota window for higher-priority polling.
+	EventPollShed EventType = "poll.shed"
 	// EventClaimAcquired records the claim ledger granting a lease.
 	EventClaimAcquired EventType = "claim.acquired"
 	// EventClaimReleased records a lease release (run finished, expired, or

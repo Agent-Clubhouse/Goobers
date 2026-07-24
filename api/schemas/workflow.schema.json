@@ -83,6 +83,10 @@
           "description": "For backlog-item triggers, selector keys are required labels and values are ignored; full k8s-style selector matching remains V1.",
           "additionalProperties": { "type": "string" }
         },
+        "priority": {
+          "type": "integer",
+          "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
+        },
         "schedule": { "type": "string" },
         "signal": { "type": "string" },
         "events": {

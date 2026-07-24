@@ -13,7 +13,7 @@ const gatherContextID = "gather-implement-context"
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
-	"init":                   "  goobers init [--guided | --demo] [path]  scaffold an instance root\n",
+	"init":                   "  goobers init [--guided | --demo | --template=quickstart] [path]\n                                scaffold an instance root\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)\n",
@@ -65,6 +65,7 @@ var synopsisByID = map[string]string{
 	"update-behind-pr":       "  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)\n",
 	"gather-pr-context":      "  goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)\n",
 	"gather-issue-context":   "  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)\n",
+	"gather-ci-failures":     "  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)\n",
 	"rebase-pr":              "  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)\n",
 	"remediation-checkpoint": "  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)\n",
 	"push-remediated":        "  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)\n",

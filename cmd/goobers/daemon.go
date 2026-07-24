@@ -60,13 +60,11 @@ type schedulerSetup struct {
 	// in (or no repo is configured). Only the `up` daemon starts its Run loop
 	// and wires it as a scheduler option — see up.go.
 	OpenPRRefresher *localscheduler.OpenPRRefresher
-	// ProviderQuota backs the #712 provider-quota circuit breaker: shared by
-	// pointer with runnerCfg.RateLimited (buildRateLimitedHandler), which
-	// writes to it the instant a stage fails with providers.ErrorCodeRateLimited;
-	// SchedulerOptions wires the same pointer into the Scheduler's Admit check.
-	// Unlike OpenPRRefresher this needs no background Run loop (it's pushed to,
-	// not polled), so it's wired uniformly for both `up` and `run` in
-	// SchedulerOptions rather than needing an up.go-only branch. Never nil.
+	// ProviderQuota is the shared provider budget ledger. Stage rate-limit
+	// failures and provider response headers write to it; SchedulerOptions wires
+	// the same pointer into polling and run admission. Unlike OpenPRRefresher it
+	// needs no background Run loop, so it is wired uniformly for `up` and `run`.
+	// Never nil.
 	ProviderQuota    *localscheduler.ProviderQuotaState
 	SharedRegistry   *journal.RegistryScrubber
 	TerminalNotifier runner.TerminalNotifier
@@ -414,6 +412,8 @@ func buildSchedulerDefinitions(
 		var scheds []localscheduler.Schedule
 		var sigs []string
 		hasRepositoryWebhook := false
+		var pollPriority int32
+		pollPrioritySet := false
 		for _, trigger := range wf.Spec.Triggers {
 			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" {
 				schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
@@ -430,6 +430,10 @@ func buildSchedulerDefinitions(
 				for _, event := range trigger.Events {
 					sigs = append(sigs, webhookhttp.SignalName(event))
 				}
+			}
+			if trigger.Type == apiv1.TriggerBacklogItem && !pollPrioritySet {
+				pollPriority = trigger.Priority
+				pollPrioritySet = true
 			}
 		}
 		pollFallbackCause := ""
@@ -458,9 +462,13 @@ func buildSchedulerDefinitions(
 			Schedules:         scheds,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir()),
-			Starter:           &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
-			RepoRef:           repoRefs[identity],
+			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota),
+			// buildBacklogCounter currently uses GitHub; charge the provider
+			// actually called rather than a future configured adapter.
+			PollProvider: apiv1.ProviderGitHub,
+			PollPriority: pollPriority,
+			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 		})

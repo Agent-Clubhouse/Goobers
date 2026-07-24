@@ -9,15 +9,20 @@ import (
 	"path/filepath"
 )
 
-// starterFS embeds a minimal, valid starter config repo (mirrors
-// config-examples/) seeded into a freshly initialized instance's config/ dir.
+// starterFS embeds the valid configuration templates that init can seed into a
+// freshly initialized instance's config/ dir.
 //
-//go:embed starter demo
+//go:embed starter demo quickstart-v1
 var starterFS embed.FS
 
 const (
-	starterDir = "starter"
-	demoDir    = "demo"
+	starterDir    = "starter"
+	demoDir       = "demo"
+	quickstartDir = "quickstart-v1"
+
+	// QuickstartTemplate is the public init selector for the embedded
+	// onboarding-only quickstart@v1 configuration.
+	QuickstartTemplate = "quickstart"
 )
 
 // InitResult reports what Init created vs. left alone.
@@ -42,6 +47,12 @@ func Init(root string) (*InitResult, error) {
 // deterministic full-loop demo workflow backed by a hermetic mock provider.
 func InitDemo(root string) (*InitResult, error) {
 	return initWithConfig(root, demoDir, demoConfig())
+}
+
+// InitQuickstart scaffolds the versioned onboarding template: one manual
+// backlog-to-PR workflow with no production remediation or escalation paths.
+func InitQuickstart(root string) (*InitResult, error) {
+	return initWithConfig(root, quickstartDir, defaultConfig())
 }
 
 func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error) {

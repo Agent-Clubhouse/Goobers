@@ -1,0 +1,19 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: quickstart-v1
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+    goobers.dev/template: "quickstart@v1"
+spec:
+  instance:
+    name: quickstart
+    environment: dev
+  connections:
+    - name: repo-token
+      type: repo
+      provider: github
+      secretRef:
+        name: repo-token
+  gaggles:
+    - example

@@ -104,6 +104,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 			Triggers: []Trigger{{
 				Type:     TriggerBacklogItem,
 				Selector: map[string]string{"goobers": "true"},
+				Priority: 10,
 			}},
 			Readiness: ReadinessConditions{MaxConcurrentRuns: 2, MaxRunsPerHour: 10, MaxChainDepth: 3},
 			Start:     "implement",

@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -42,6 +42,8 @@
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
+        "provider.quota.reset",
+        "poll.shed",
         "claim.acquired",
         "claim.released",
         "claim.force_released",
@@ -176,7 +178,7 @@
       "x-conformance": "excluded"
     },
     "workflow": {
-      "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
+      "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, poll.shed, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
       "type": "string",
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },

@@ -250,16 +250,28 @@ func (c backoffObservedContext) Done() <-chan struct{} {
 // aborting it. started lets the test synchronize "cancel only once the
 // attempt is truly in flight" instead of racing the walk loop's own
 // between-stages cancellation check.
+//
+// progressed, when non-nil, is closed *after* invoke.ReportProgress returns.
+// A heartbeat is only journaled if progress was reported since the last tick
+// (run.go startStageHeartbeat gates on progressed.Swap(false)), so a test that
+// fires a single synthetic tick must wait for this signal before ticking —
+// otherwise the tick can be consumed before the progress flag is set, be
+// silently discarded, and never recur (#1402). started alone does NOT imply
+// ReportProgress has run.
 type blockingDeterministic struct {
-	started  chan struct{}
-	release  chan struct{}
-	finished chan struct{}
-	result   apiv1.ResultEnvelope
+	started    chan struct{}
+	release    chan struct{}
+	finished   chan struct{}
+	progressed chan struct{}
+	result     apiv1.ResultEnvelope
 }
 
 func (b *blockingDeterministic) Run(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	close(b.started)
 	invoke.ReportProgress(ctx)
+	if b.progressed != nil {
+		close(b.progressed)
+	}
 	<-b.release
 	close(b.finished)
 	if b.result.Status == "" {
@@ -370,9 +382,10 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 	}
 
 	blocker := &blockingDeterministic{
-		started:  make(chan struct{}),
-		release:  make(chan struct{}),
-		finished: make(chan struct{}),
+		started:    make(chan struct{}),
+		release:    make(chan struct{}),
+		finished:   make(chan struct{}),
+		progressed: make(chan struct{}),
 		result: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Outputs: map[string]interface{}{"partial": "must not escape"},
@@ -409,6 +422,15 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 	case <-blocker.started:
 	case <-time.After(runnerTestWaitTimeout):
 		t.Fatal("task did not start")
+	}
+	// Wait until the task has actually reported progress before firing the one
+	// synthetic tick. The heartbeat goroutine only journals a tick when progress
+	// was seen since the previous tick; ticking before ReportProgress runs would
+	// let the tick be swallowed and never recur (#1402).
+	select {
+	case <-blocker.progressed:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("task did not report progress")
 	}
 	ticker.ticks <- time.Now()
 
