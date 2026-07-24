@@ -26,6 +26,7 @@
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
+| [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
@@ -464,6 +465,51 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 
 ~~~console
 $ goobers docs-churn --format churn-digest
+~~~
+
+## `goobers doctor`
+
+preflight a Kubernetes cluster against the documented infra shape
+
+~~~text
+Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
+                          [--timeout <duration>]
+
+Preflight a target Kubernetes cluster against the documented infrastructure
+shape (docs/design/k8s-infra-shape.md) before installing Goobers on it — the
+install-time enforcement of that document (#668). --k8s is the only doctor
+mode today.
+
+The check set, each row citing the shape-doc section it enforces:
+
+  cluster-version    required  §1     cluster reachable, supported version
+  networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
+  rbac-install       required  §1/§3  permissions to install goobers-system
+  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
+  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
+  oidc-issuer        required* §1/§3  issuer discovery document reachable
+  egress             required* §1/§5  outbound targets reachable from this host
+  registry           optional  §1     registry reachable (host-side sanity)
+
+Checks marked required* apply when their probe target is configured; left
+unconfigured they report a skipped warn. Every check is read-only: nothing is
+created on the cluster, and a check that cannot run reports fail with the
+reason — never a silent pass. Reference manifests expressing the same
+requirements live under deploy/reference/ (#663).
+
+--report json emits the stable machine-readable report; text (default) prints
+the conformance table with remediation hints.
+
+Exit codes: 0 = cluster conforms (warns allowed), 1 = a required check
+failed, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers doctor --k8s
+$ goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0
 ~~~
 
 ## `goobers elect-lander`

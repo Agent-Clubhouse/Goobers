@@ -180,6 +180,30 @@ build-%:
 
 build-goobers: portal-build
 
+## image: Build the goobers container image (packaging/docker/Dockerfile) via docker.
+# Optional path — not part of `ci`, `build`, or `go run ./release`; requires a
+# local docker. Override the tag with IMAGE=<repo>:<tag>. CI publishing on
+# tagged releases is a follow-up.
+IMAGE ?= goobers:$(VERSION)
+.PHONY: image
+image:
+	docker build -f packaging/docker/Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		-t $(IMAGE) .
+
+## deploy-validate: Build the k8s reference manifests (deploy/reference) with kubectl kustomize.
+# Optional local validation for the #663 reference tree; requires kubectl.
+# Schema validation (kubeconform) + helm-template rendering are follow-ups for
+# the Validation & CI milestone.
+.PHONY: deploy-validate
+deploy-validate:
+	kubectl kustomize deploy/reference/goobers-system >/dev/null
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
+	@echo "deploy/reference kustomize builds OK"
+
 ## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:

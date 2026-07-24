@@ -1,0 +1,9 @@
+# Daemon API identity (k8s-infra-shape.md §3). The API serves reads and authed
+# mutations from journal state on the shared volume (§4) — it needs no
+# Kubernetes API access at all, so its token is not even mounted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+automountServiceAccountToken: false

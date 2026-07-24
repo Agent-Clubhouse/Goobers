@@ -1,0 +1,17 @@
+# Daemon API Service (k8s-infra-shape.md §2/§5): the single in-cluster
+# backend behind the one HTTPS ingress door.
+apiVersion: v1
+kind: Service
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-api
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    app.kubernetes.io/name: goobers-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

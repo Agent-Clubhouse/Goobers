@@ -1,0 +1,91 @@
+# Reference values for self-hosted OSS Temporal (k8s-infra-shape.md §2:
+# Temporal server, Helm release in goobers-temporal; DEP-011). Pinned chart —
+# bump deliberately and re-render:
+#
+#   helm repo add temporal https://go.temporal.io/helm-charts
+#   helm install temporal temporal/temporal \
+#     --namespace goobers-temporal --create-namespace \
+#     --version 0.62.0 -f values.yaml
+#
+# Persistence is the customer-managed PostgreSQL (§2/§4: managed cloud PG
+# recommended — the one stateful service Goobers requires); every bundled
+# datastore is disabled. Visibility is basic/SQL — no Elasticsearch (§2).
+
+# Do not deploy the chart's bundled datastores (§2: external PG only).
+cassandra:
+  enabled: false
+mysql:
+  enabled: false
+postgresql:
+  enabled: false
+elasticsearch:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+
+server:
+  # §7: HA optional at first; scale replicas with the chart defaults later.
+  replicaCount: 1
+  # §7 sizing: Temporal shares the 2-4 vCPU / 8-16GB control-plane band; §4:
+  # history is bounded per run and projected out to the run journal, so
+  # persistence stays modest.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  config:
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      additionalStores: {}
+      default:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: CHANGE-ME.postgres.example.com # customer-managed PG (§4)
+          port: 5432
+          database: temporal
+          user: temporal # CHANGE-ME
+          # Nothing secret in the config repo (§6, SEC-046): the password
+          # arrives via a pre-created Secret (CSI/secret-resolver, SEC-010).
+          existingSecret: temporal-postgres-credentials # CHANGE-ME
+          tls:
+            enabled: true
+            enableHostVerification: true
+          maxConns: 20
+          maxIdleConns: 20
+      visibility:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: CHANGE-ME.postgres.example.com # customer-managed PG (§4)
+          port: 5432
+          database: temporal_visibility
+          user: temporal # CHANGE-ME
+          existingSecret: temporal-postgres-credentials # CHANGE-ME
+          tls:
+            enabled: true
+            enableHostVerification: true
+          maxConns: 10
+          maxIdleConns: 10
+
+# Schema setup/update jobs (temporal-sql-tool) run against the external DB;
+# database creation itself is the customer's PG provisioning step (§1).
+schema:
+  createDatabase:
+    enabled: false
+  setup:
+    enabled: true
+  update:
+    enabled: true
+
+# Web UI: reachable only through the customer's authed ingress (§3: human
+# access via the OIDC issuer; cluster RBAC and Goobers RBAC not conflated).
+web:
+  enabled: true
+  replicaCount: 1

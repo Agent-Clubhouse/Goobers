@@ -10,6 +10,8 @@ Usage:
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
+  goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
+                                preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|diff [flags] [path]
                                 inspect instance config or compare workflows with canonical definitions
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
@@ -118,6 +120,8 @@ Usage:
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
+  goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
+                                preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|diff [flags] [path]
                                 inspect instance config or compare workflows with canonical definitions
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
@@ -415,6 +419,39 @@ churn-digest to GOOBERS_INPUT_resultFile when declared, else stdout.
 
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
+
+### doctor
+Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
+                          [--timeout <duration>]
+
+Preflight a target Kubernetes cluster against the documented infrastructure
+shape (docs/design/k8s-infra-shape.md) before installing Goobers on it — the
+install-time enforcement of that document (#668). --k8s is the only doctor
+mode today.
+
+The check set, each row citing the shape-doc section it enforces:
+
+  cluster-version    required  §1     cluster reachable, supported version
+  networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
+  rbac-install       required  §1/§3  permissions to install goobers-system
+  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
+  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
+  oidc-issuer        required* §1/§3  issuer discovery document reachable
+  egress             required* §1/§5  outbound targets reachable from this host
+  registry           optional  §1     registry reachable (host-side sanity)
+
+Checks marked required* apply when their probe target is configured; left
+unconfigured they report a skipped warn. Every check is read-only: nothing is
+created on the cluster, and a check that cannot run reports fail with the
+reason — never a silent pass. Reference manifests expressing the same
+requirements live under deploy/reference/ (#663).
+
+--report json emits the stable machine-readable report; text (default) prints
+the conformance table with remediation hints.
+
+Exit codes: 0 = cluster conforms (warns allowed), 1 = a required check
+failed, 2 = usage/IO error.
 
 ### elect-lander
 Usage: goobers elect-lander [--gate name] [path]
