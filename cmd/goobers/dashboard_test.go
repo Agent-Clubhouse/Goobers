@@ -276,7 +276,10 @@ func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler, err := newDashboardHandler(
-		fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(dashboardTestIndex)}},
+		fstest.MapFS{
+			"index.html":       &fstest.MapFile{Data: []byte(dashboardTestIndex)},
+			"assets/bundle.js": &fstest.MapFile{Data: []byte("//embedded-bundle")},
+		},
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 		dashboardModeStandalone,
 		root,
@@ -289,6 +292,15 @@ func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/logo.svg", nil))
 	if response.Code != http.StatusOK || response.Body.String() != "<svg/>" {
 		t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+	}
+
+	// An /assets/ path with no instance-root override must fall through to the
+	// embedded bundle — the portal ships its own /assets/index-*.js|css there,
+	// so instance co-branding must not shadow it.
+	bundle := httptest.NewRecorder()
+	handler.ServeHTTP(bundle, httptest.NewRequest(http.MethodGet, "/assets/bundle.js", nil))
+	if bundle.Code != http.StatusOK || bundle.Body.String() != "//embedded-bundle" {
+		t.Fatalf("embedded bundle response = %d %q, want 200 %q", bundle.Code, bundle.Body.String(), "//embedded-bundle")
 	}
 
 	traversal := httptest.NewRecorder()
