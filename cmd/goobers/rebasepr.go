@@ -13,9 +13,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
-	"sigs.k8s.io/yaml"
 )
 
 // runRebasePR implements `goobers rebase-pr` (issue #363): pr-remediation's
