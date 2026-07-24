@@ -419,6 +419,7 @@ therefore have no action row.
 | Create a split child or nominated issue (`create-issue`) | `backlog-curation/curate`, `work-nomination/nominate` | `github:issues:write` | Covered |
 | Edit a split parent into a tracking issue (`edit-issue`) | `backlog-curation/curate` | `github:issues:write` | Covered |
 | Apply curation or nomination labels (`label-issue`) | `backlog-curation/curate`, `work-nomination/nominate` | `github:issues:write` | Covered |
+| Assign or remap an issue to an existing milestone (`assign-milestone`) | `backlog-curation/curate` | `github:milestones:write` | Covered |
 | Self-approve a nominated issue (`approve-issue`) | `work-nomination/nominate` (conditional persona action) | `github:issues:approve` | Capability-gated; disabled in the shipped task |
 | Modify and commit a worktree (`modify-repository`) | `implementation/implement`, `pr-remediation/implement`, `tutor/draft-change` | `repo:push` | Covered |
 | Push a run branch (`push-repository-branch`) | `implementation/push-branch`, `tutor/push-branch` | `repo:push` | Covered |

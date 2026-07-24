@@ -15,7 +15,9 @@ spec:
   # never materialized into this goober's run environment.
   capabilities:
     - github:issues:write
+    - github:milestones:write
   policyActions:
+    - assign-milestone
     - close-issue
     - comment-on-issue
     - create-issue

@@ -129,7 +129,7 @@ func providerStageRoot(pathArg string) string {
 	if pathArg != "" {
 		return pathArg
 	}
-	if root := os.Getenv("GOOBERS_INSTANCE_ROOT"); root != "" {
+	if root := os.Getenv(executor.InstanceRootEnvVar); root != "" {
 		return root
 	}
 	return "."
