@@ -49,6 +49,33 @@ func TestIntegrationExecProcessRunnerKillsProcessGroup(t *testing.T) {
 	}
 }
 
+// TestIntegrationExecProcessRunnerKillsTreeUnderWrapperPrefix re-proves the
+// #119 group-kill guarantee for a sandbox-wrapped argv (S3/#166): enforcement
+// rewrites argv to <wrapper> <original command...> — the same shape
+// sandbox-exec/bwrap produce — and the wrapper, its exec'd child, and a
+// background grandchild must all die with the timeout kill exactly as an
+// unwrapped command's tree does. The wrapper here is a plain `sh -c 'exec
+// "$@"'` stand-in, so the test needs no installed sandbox; the real wrappers
+// preserve the same single-session shape (proc.Start owns the session, and
+// ADR-0001's wrapper deliberately creates no session of its own).
+func TestIntegrationExecProcessRunnerKillsTreeUnderWrapperPrefix(t *testing.T) {
+	testdep.Require(t, "sh", "sleep")
+
+	runner := ExecProcessRunner{}
+	start := time.Now()
+	_, err := runner.Run(context.Background(), ProcessRequest{
+		Command: []string{"sh", "-c", `exec "$@"`, "sandbox-wrapper-stub", "sh", "-c", "sleep 30 & wait"},
+		Timeout: 100 * time.Millisecond,
+	})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("error = %v, want ErrTimeout", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Run took %s, want well under the 30s sleep — the wrapped tree was not killed", elapsed)
+	}
+}
+
 // TestIntegrationExecProcessRunnerTimeoutGivesUpOnEscapedDescendant is the
 // regression test for #119's WaitDelay gap: a grandchild that escapes the
 // process group (via job control's own new-pgid-per-background-job behavior,

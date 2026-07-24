@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -46,6 +47,15 @@ var _ invoke.Goober = (*Executor)(nil)
 // small, stable Ref value type.
 type SpanRecorder interface {
 	RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error)
+}
+
+// EventAppender is the optional journal seam an enforced-sandbox Executor
+// requires of its recorder — satisfied by (*internal/journal.Run).Append. It
+// records the runner.isolation.posture annotation for every enforced agentic
+// stage attempt (#1305); a recorder that cannot journal the posture fails the
+// enforced stage closed rather than running with an unauditable posture.
+type EventAppender interface {
+	Append(ev journal.Event) error
 }
 
 // ArtifactRecorder persists stage output bytes into the run journal by content
@@ -90,6 +100,8 @@ type Executor struct {
 	verdictPath     string
 	timeout         time.Duration
 	transcriptLimit int64
+	sandboxEnforced bool
+	newSandbox      func() (sandbox.Sandbox, error)
 }
 
 // Option configures an Executor at construction.
@@ -120,6 +132,19 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 // WithHarnessVersion supplies the version captured by startup preflight.
 func WithHarnessVersion(version string) Option {
 	return func(e *Executor) { e.harnessVersion = version }
+}
+
+// WithSandboxEnforcement requires every harness session this Executor drives
+// to run confined by the platform filesystem sandbox (S3/#166, #1305). The
+// composition root sets it when the stage's gaggle resolves to an "enforced"
+// isolation posture (instance.EffectiveAgenticSandbox); the default —
+// posture "disabled" — leaves the Executor, adapter, and subprocess launch
+// byte-identical to the pre-sandbox behavior. Under enforcement each attempt
+// journals a runner.isolation.posture annotation, and a host without a usable
+// sandbox fails the stage closed with ErrSandboxUnavailable rather than
+// running the harness unconfined.
+func WithSandboxEnforcement() Option {
+	return func(e *Executor) { e.sandboxEnforced = true }
 }
 
 // WithAssetBundle supplies the goober's optional static assets.
@@ -175,6 +200,7 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 		instructions:    instructions,
 		resultPath:      DefaultResultPath,
 		verdictPath:     DefaultVerdictPath,
+		newSandbox:      sandbox.New,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -311,6 +337,38 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		ContextPaths:       contextPaths,
 		Timeout:            invocationTimeout(env, e.timeout),
 		MaxTranscriptBytes: e.transcriptLimit,
+	}
+	if e.sandboxEnforced {
+		// Fail closed BEFORE any harness subprocess can start: an enforced
+		// posture with no usable platform sandbox must block the stage, never
+		// downgrade to an unconfined run (S3/#166, ADR-0001).
+		sb, err := e.newSandbox()
+		if err != nil {
+			return Outcome{}, nil, fmt.Errorf(
+				"%w: %w — the effective agentic sandbox posture for this gaggle is %q; install the platform sandbox (macOS: sandbox-exec, Linux: bubblewrap) or set sandbox.agentic to %q in instance.yaml / the gaggle's sandbox override",
+				ErrSandboxUnavailable, err, "enforced", "disabled")
+		}
+		req.Sandbox = sb
+		// Journal the posture for this attempt (#1305) — runner.* payload,
+		// conformance-excluded. Only enforced attempts emit; a disabled
+		// posture writes nothing new anywhere. The audit record is part of
+		// the enforcement contract, so a recorder that cannot append it
+		// fails the stage closed too.
+		appender, ok := e.recorder.(EventAppender)
+		if !ok {
+			return Outcome{}, nil, fmt.Errorf("harness: sandbox enforcement requires a journal-backed recorder to record the isolation posture; %T cannot append events", e.recorder)
+		}
+		if err := appender.Append(journal.Event{
+			Type:  journal.EventRunnerIsolationPosture,
+			Stage: env.TaskID,
+			Runner: map[string]any{
+				"posture":   "enforced",
+				"mechanism": sb.Mechanism(),
+				"workspace": env.Workspace,
+			},
+		}); err != nil {
+			return Outcome{}, nil, fmt.Errorf("harness: journal isolation posture for %q: %w", env.TaskID, err)
+		}
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
