@@ -31,6 +31,7 @@ clustered orchestration over a large monorepo.
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
+| `samples/` | Versioned, disposable onboarding targets | Active |
 | `skills/` | Portable agent skills for authoring Goobers config | Active |
 | `test/` | CI + e2e harness | Active |
 
@@ -67,6 +68,8 @@ state.
 go build -o bin/goobers ./cmd/goobers    # or: make build
 
 bin/goobers init ./my-instance           # scaffold an instance root
+# Or seed the onboarding-only backlog -> review -> PR path:
+bin/goobers init --template=quickstart ./tutorial-instance
 bin/goobers validate ./my-instance       # check instance.yaml + config/
 bin/goobers config show ./my-instance    # render the effective config (secrets redacted)
 bin/goobers run default-implement ./my-instance   # trigger a run manually
@@ -86,6 +89,8 @@ gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
 `telemetry.db` placeholder — and is safe to re-run (existing pieces are left
 untouched). Edit `instance.yaml` to point at your own repo and set the
 referenced token env var or file; edit `config/` to shape your workforce.
+The `quickstart@v1` template is intentionally limited to a disposable first
+success and omits production remediation, escalation, CI, and merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts
 any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
