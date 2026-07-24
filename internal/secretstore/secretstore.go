@@ -31,6 +31,13 @@ type Store interface {
 // is picked up without a daemon restart.
 const DefaultCacheTTL = 5 * time.Minute
 
+// fetchTimeout bounds a single vault round-trip (mirroring internal/githubapp's
+// mintTimeout). The cache holds its mutex across the fetch, so an unbounded
+// call to an unreachable store would serialize every other ref behind it and
+// could wedge a daemon-start resolution path whose caller passed no deadline;
+// this cap guarantees the lock is always released.
+const fetchTimeout = 30 * time.Second
+
 // Registry resolves "<storeName>/<secretName>" refs across the declared
 // stores. It satisfies credentials.StoreResolver structurally, keeping the
 // credentials package free of any vendor dependency.
@@ -127,7 +134,12 @@ func (c *cachedStore) FetchSecret(ctx context.Context, name string) (string, err
 	if entry, ok := c.values[name]; ok && c.now().Sub(entry.fetchedAt) < c.ttl {
 		return entry.value, nil
 	}
-	value, err := c.inner.FetchSecret(ctx, name)
+	// Bound the round-trip so a hung/unreachable store cannot hold the mutex
+	// (and thus block every other ref) indefinitely, even when the caller's
+	// context carries no deadline.
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	value, err := c.inner.FetchSecret(fetchCtx, name)
 	if err != nil {
 		return "", err
 	}

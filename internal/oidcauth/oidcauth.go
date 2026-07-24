@@ -323,6 +323,9 @@ func (a *Authenticator) fetchKeys(ctx context.Context, jwksURI string) (map[stri
 		if document.JWKSURI == "" {
 			return nil, "", errors.New("OIDC discovery document carries no jwks_uri")
 		}
+		if err := a.checkJWKSURI(document.JWKSURI); err != nil {
+			return nil, "", err
+		}
 		jwksURI = document.JWKSURI
 	}
 	var document jwksDocument
@@ -341,6 +344,29 @@ func (a *Authenticator) fetchKeys(ctx context.Context, jwksURI string) (map[stri
 		keys[key.Kid] = public
 	}
 	return keys, jwksURI, nil
+}
+
+// checkJWKSURI rejects a discovered jwks_uri that would fetch signing keys over
+// a weaker transport than the issuer itself. The discovery document is fetched
+// from the (config-validated) issuer, but a compromised or misconfigured
+// document could point jwks_uri at a plaintext or non-http(s) endpoint; keys
+// fetched over http are trivially MITM'd into an auth bypass. The jwks_uri must
+// be an absolute http(s) URL, and if the issuer is https the jwks_uri must be
+// https too (a different host is allowed — some IdPs, e.g. Google, host JWKS
+// off-issuer).
+func (a *Authenticator) checkJWKSURI(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return fmt.Errorf("OIDC discovery jwks_uri %q must be an absolute http(s) URL", raw)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return fmt.Errorf("OIDC discovery jwks_uri %q must be an absolute http(s) URL", raw)
+	}
+	if strings.HasPrefix(strings.ToLower(a.issuer), "https://") && scheme != "https" {
+		return fmt.Errorf("OIDC discovery jwks_uri %q must use https for an https issuer", raw)
+	}
+	return nil
 }
 
 func (a *Authenticator) fetchJSON(ctx context.Context, endpoint string, target any) error {

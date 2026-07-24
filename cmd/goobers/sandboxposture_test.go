@@ -10,10 +10,11 @@ import (
 )
 
 // TestSandboxPosturesByGaggle pins the composition-root posture resolution
-// the per-gaggle runner wiring consumes (#1305): a gaggle's own sandbox
-// override beats the instance-wide sandbox.agentic posture, and an entirely
-// unconfigured instance resolves every gaggle to disabled — the opt-in
-// default that keeps unconfigured behavior byte-identical.
+// the per-gaggle runner wiring consumes (#1305): the most-restrictive of the
+// instance and gaggle posture wins — a gaggle may strengthen but never weaken
+// an operator-enforced instance — and an entirely unconfigured instance
+// resolves every gaggle to disabled (the opt-in default that keeps
+// unconfigured behavior byte-identical).
 func TestSandboxPosturesByGaggle(t *testing.T) {
 	gaggle := func(name, agentic string) apiv1.Gaggle {
 		g := apiv1.Gaggle{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -23,7 +24,7 @@ func TestSandboxPosturesByGaggle(t *testing.T) {
 		return g
 	}
 
-	t.Run("gaggle override beats instance posture", func(t *testing.T) {
+	t.Run("gaggle cannot weaken instance-enforced posture", func(t *testing.T) {
 		cfg := &instance.Config{Sandbox: &instance.SandboxConfig{Agentic: string(instance.SandboxEnforced)}}
 		set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
 			gaggle("inherits", ""),
@@ -33,8 +34,8 @@ func TestSandboxPosturesByGaggle(t *testing.T) {
 		if got["inherits"] != instance.SandboxEnforced {
 			t.Fatalf("inherits = %q, want the instance-wide enforced posture", got["inherits"])
 		}
-		if got["opts-down"] != instance.SandboxDisabled {
-			t.Fatalf("opts-down = %q, want the gaggle's disabled override to beat the instance posture", got["opts-down"])
+		if got["opts-down"] != instance.SandboxEnforced {
+			t.Fatalf("opts-down = %q, want the operator-enforced posture to hold against a gaggle downgrade", got["opts-down"])
 		}
 	})
 

@@ -804,6 +804,33 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// TestBuildCredentialsDuplicateGitHubAppReposFailClosed: two github-app repos
+// with the same owner/name must be rejected at build time (as a duplicate
+// static-token ref already is at NewResolverWith), never silently collapse to
+// the last entry's minting source and hand it the first's grants.
+func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
+	prev := newGitHubAppTokenSource
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ResolveFunc, error) {
+		return func(context.Context) (string, error) { return "minted", nil }, nil
+	}
+	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+
+	appRepo := func() instance.RepoRef {
+		return instance.RepoRef{
+			Provider: "github", Owner: "acme", Name: "web",
+			Auth: &instance.RepoAuthConfig{
+				Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				PrivateKey: &instance.TokenRef{File: "/run/secrets/app.pem"},
+			},
+		}
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{appRepo(), appRepo()}}
+	if _, _, err := buildCredentials(cfg, nil, "", "", nil); err == nil ||
+		!strings.Contains(err.Error(), "duplicate repository reference") {
+		t.Fatalf("buildCredentials error = %v, want duplicate-repo fail-closed", err)
+	}
+}
+
 // TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo: a github-app repo's
 // mirror clone/fetch environment mints per operation, so a refreshed
 // installation token reaches the next fetch without re-wiring (#667 + #686).

@@ -319,6 +319,12 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		ref := owner + "/" + r.Name
 		tokenRef := ""
 		if r.GitHubAppAuth() {
+			// Fail closed on a duplicate owner/name (as a static-token repo does
+			// at NewResolverWith's duplicate-ref check): silently overwriting the
+			// minting source would let a second entry hijack the first's grants.
+			if _, dup := sources[ref]; dup {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: duplicate repository reference", ref)
+			}
 			mint, err := newGitHubAppTokenSource(r, registrar, stores)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)

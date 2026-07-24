@@ -496,3 +496,38 @@ func TestNewValidatesConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckJWKSURIRejectsWeakerTransport pins the defense-in-depth rule that a
+// discovered jwks_uri may not fetch signing keys over a weaker transport than
+// the issuer (#644 review): an https issuer forces an https jwks_uri, and a
+// non-http(s) jwks_uri is rejected outright. An http issuer (loopback/test) may
+// keep an http jwks_uri.
+func TestCheckJWKSURIRejectsWeakerTransport(t *testing.T) {
+	cases := []struct {
+		name    string
+		issuer  string
+		jwksURI string
+		wantErr bool
+	}{
+		{name: "https issuer, https jwks", issuer: "https://idp.example.com", jwksURI: "https://keys.example.com/jwks", wantErr: false},
+		{name: "https issuer, http jwks rejected", issuer: "https://idp.example.com", jwksURI: "http://keys.example.com/jwks", wantErr: true},
+		{name: "http issuer, http jwks allowed", issuer: "http://127.0.0.1:8080", jwksURI: "http://127.0.0.1:8080/jwks", wantErr: false},
+		{name: "non-absolute jwks rejected", issuer: "https://idp.example.com", jwksURI: "/jwks", wantErr: true},
+		{name: "non-http scheme rejected", issuer: "https://idp.example.com", jwksURI: "file:///etc/keys", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := New(Config{Issuer: tc.issuer, Audience: "goobers"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			err = a.checkJWKSURI(tc.jwksURI)
+			if tc.wantErr && err == nil {
+				t.Fatalf("checkJWKSURI(%q) with issuer %q = nil, want error", tc.jwksURI, tc.issuer)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("checkJWKSURI(%q) with issuer %q = %v, want nil", tc.jwksURI, tc.issuer, err)
+			}
+		})
+	}
+}

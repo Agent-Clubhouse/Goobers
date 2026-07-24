@@ -45,9 +45,10 @@ sandbox:
 	}
 }
 
-// TestEffectiveAgenticSandbox pins the resolution order the sandbox wiring
-// consumes: gaggle override, else instance posture, else disabled (#1305 —
-// DEFAULT OFF; an unconfigured instance must resolve disabled everywhere).
+// TestEffectiveAgenticSandbox pins the resolution the sandbox wiring consumes:
+// the most-restrictive of instance and gaggle posture, else disabled (#1305 —
+// DEFAULT OFF; an unconfigured instance must resolve disabled everywhere; a
+// gaggle may strengthen but never weaken an operator-enforced instance).
 func TestEffectiveAgenticSandbox(t *testing.T) {
 	gaggleWith := func(agentic string) *apiv1.Gaggle {
 		g := &apiv1.Gaggle{}
@@ -73,13 +74,16 @@ func TestEffectiveAgenticSandbox(t *testing.T) {
 			want:   SandboxEnforced,
 		},
 		{
-			name:   "gaggle overrides instance off",
+			// A gaggle MUST NOT be able to downgrade an operator-enforced
+			// instance posture (SEC-021: the config dir is less trusted than
+			// instance.yaml) — most-restrictive wins.
+			name:   "gaggle cannot weaken instance-enforced",
 			cfg:    &Config{Sandbox: &SandboxConfig{Agentic: "enforced"}},
 			gaggle: gaggleWith("disabled"),
-			want:   SandboxDisabled,
+			want:   SandboxEnforced,
 		},
 		{
-			name:   "gaggle overrides instance on",
+			name:   "gaggle strengthens disabled instance",
 			cfg:    &Config{Sandbox: &SandboxConfig{Agentic: "disabled"}},
 			gaggle: gaggleWith("enforced"),
 			want:   SandboxEnforced,

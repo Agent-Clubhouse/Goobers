@@ -41,15 +41,27 @@ func (s SandboxConfig) Validate() error {
 }
 
 // EffectiveAgenticSandbox resolves the isolation posture one gaggle's agentic
-// stages run under: the gaggle's own override when declared, else the
-// instance-wide posture, else disabled. Pure — no config load or runner state
-// — so the sandbox wiring and the scheduler can agree on one resolution.
+// stages run under. It takes the MOST-RESTRICTIVE of the instance-wide posture
+// and the gaggle's own posture: a gaggle may STRENGTHEN a disabled instance to
+// enforced, but it may never WEAKEN an operator-enforced instance back to
+// disabled. This matters because instance.yaml is the operator-controlled trust
+// root while a Gaggle lives in the config directory, which the Tutor and other
+// less-privileged writers can reach (SEC-021) — a gaggle file must not be able
+// to silently opt a run out of an operator's mandated confinement. Absent on
+// both sides means disabled (the default, byte-identical to before). Pure — no
+// config load or runner state — so the sandbox wiring and the scheduler agree
+// on one resolution.
 func EffectiveAgenticSandbox(cfg *Config, gaggle *apiv1.Gaggle) SandboxPosture {
-	if gaggle != nil && gaggle.Spec.Sandbox != nil && gaggle.Spec.Sandbox.Agentic != "" {
-		return SandboxPosture(gaggle.Spec.Sandbox.Agentic)
-	}
+	instancePosture := SandboxDisabled
 	if cfg != nil && cfg.Sandbox != nil && cfg.Sandbox.Agentic != "" {
-		return SandboxPosture(cfg.Sandbox.Agentic)
+		instancePosture = SandboxPosture(cfg.Sandbox.Agentic)
+	}
+	gagglePosture := instancePosture
+	if gaggle != nil && gaggle.Spec.Sandbox != nil && gaggle.Spec.Sandbox.Agentic != "" {
+		gagglePosture = SandboxPosture(gaggle.Spec.Sandbox.Agentic)
+	}
+	if instancePosture == SandboxEnforced || gagglePosture == SandboxEnforced {
+		return SandboxEnforced
 	}
 	return SandboxDisabled
 }
