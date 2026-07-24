@@ -161,10 +161,11 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 
 	pln(stdout, "")
 	pln(stdout, "Canonical workflows:")
-	pln(stdout, "  1) implementation    issue -> implementation -> review -> CI -> PR")
-	pln(stdout, "  2) backlog-curation  approved issues -> scoped ready work")
-	pln(stdout, "  3) work-nomination   telemetry and code signals -> proposed issues")
-	workflowText, err := p.ask("Select workflows (comma-separated names or numbers)", "all", validWorkflowSelection)
+	pln(stdout, "  1) quickstart         onboarding issue -> implement -> advisory review -> PR (not for production)")
+	pln(stdout, "  2) implementation    issue -> implementation -> review -> CI -> PR")
+	pln(stdout, "  3) backlog-curation  approved issues -> scoped ready work")
+	pln(stdout, "  4) work-nomination   telemetry and code signals -> proposed issues")
+	workflowText, err := p.ask("Select workflows (comma-separated names or numbers)", "quickstart", validWorkflowSelection)
 	if err != nil {
 		return instance.GuidedOptions{}, err
 	}
@@ -205,12 +206,15 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 	}
 
 	pullRequestTokenEnv := ""
-	needsPullRequests := slices.Contains(workflows, instance.GuidedWorkflowImplementation) ||
+	needsPullRequests := slices.Contains(workflows, instance.GuidedWorkflowQuickstart) ||
+		slices.Contains(workflows, instance.GuidedWorkflowImplementation) ||
 		slices.Contains(workflows, instance.GuidedWorkflowBacklogCuration)
 	if needsPullRequests {
 		if slices.Contains(workflows, instance.GuidedWorkflowImplementation) {
 			pln(stdout, "Pull-request PAT permissions: Pull requests: Read and write; Contents: Read and write.")
 			pln(stdout, "Implementation CI polling also requires: Checks: Read-only; Commit statuses: Read-only.")
+		} else if slices.Contains(workflows, instance.GuidedWorkflowQuickstart) {
+			pln(stdout, "Pull-request PAT permissions: Pull requests: Read and write.")
 		} else {
 			pln(stdout, "Pull-request PAT permissions: Pull requests: Read-only.")
 		}
@@ -221,7 +225,8 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 	}
 
 	repoPushTokenEnv := ""
-	if slices.Contains(workflows, instance.GuidedWorkflowImplementation) {
+	if slices.Contains(workflows, instance.GuidedWorkflowQuickstart) ||
+		slices.Contains(workflows, instance.GuidedWorkflowImplementation) {
 		pln(stdout, "Repository push PAT permissions: Contents: Read and write.")
 		repoPushTokenEnv, err = p.ask("Repository push PAT environment variable", "GOOBERS_GITHUB_PUSH_TOKEN", instance.ValidGuidedTokenEnvName)
 		if err != nil {
@@ -415,6 +420,7 @@ Ready to run from %s:
   goobers run <workflow>
 
 Developer docs:
+  Quickstart safety/upgrade: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart.md
   Author workflows:          https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md
   Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and docs/stage-contract.md
   View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (` + "`goobers trace` / `goobers telemetry`" + `)

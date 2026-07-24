@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	input := strings.NewReader(strings.Join([]string{
 		"https://github.com/acme/Widget.Service.git",
 		"",
-		"",
+		"all",
 		"",
 		"",
 		"",
@@ -34,7 +35,8 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		t.Fatalf("guided init stderr = %q", stderr.String())
 	}
 	for _, want := range []string{
-		"OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))",
+		"OK: instance.yaml valid; config/ valid (1 gaggle(s), 6 goober(s), 4 workflow(s))",
+		"quickstart         onboarding issue -> implement -> advisory review -> PR (not for production)",
 		"docs/guides/github-token-scopes.md",
 		"Work tracking: GitHub Issues in acme/Widget.Service",
 		"Repository read PAT permissions: Contents: Read-only.",
@@ -45,6 +47,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.",
 		"For a headless service/CI account",
 		"Author workflows:",
+		"Quickstart safety/upgrade:",
 		"docs/guides/dsl-authoring-skill.md",
 		"Make custom agent stages:",
 		"docs/requirements/goober.md",
@@ -200,7 +203,7 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 }
 
 func TestParseWorkflowSelection(t *testing.T) {
-	got, err := parseWorkflowSelection("3, implementation")
+	got, err := parseWorkflowSelection("4, implementation")
 	if err != nil {
 		t.Fatalf("parseWorkflowSelection: %v", err)
 	}
@@ -208,10 +211,38 @@ func TestParseWorkflowSelection(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("selection = %v, want %v", got, want)
 	}
-	for _, input := range []string{"", "4", "1,implementation"} {
+	for _, input := range []string{"", "5", "1,quickstart"} {
 		if _, err := parseWorkflowSelection(input); err == nil {
 			t.Errorf("parseWorkflowSelection(%q) succeeded, want error", input)
 		}
+	}
+}
+
+func TestPromptGuidedOptionsDefaultsToQuickstart(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/tutorial",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if !slices.Equal(opts.Workflows, []string{instance.GuidedWorkflowQuickstart}) {
+		t.Fatalf("default workflows = %v, want quickstart", opts.Workflows)
+	}
+	if len(opts.CICommand) != 0 {
+		t.Fatalf("quickstart unexpectedly requested CI command: %v", opts.CICommand)
+	}
+	if strings.Contains(stdout.String(), "Implementation CI polling") {
+		t.Fatalf("quickstart requested production CI permissions:\n%s", stdout.String())
 	}
 }
 

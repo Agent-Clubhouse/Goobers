@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: quickstart-implementer
+spec:
+  gaggle: acme-web
+  role: implementer
+  displayName: Quickstart Implementer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - repo:push
+  policyActions:
+    - modify-repository
+  skills:
+    - implement
+    - run-tests
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - quickstart

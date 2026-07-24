@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	// GuidedWorkflowQuickstart identifies the onboarding-only quickstart workflow.
+	GuidedWorkflowQuickstart = "quickstart"
 	// GuidedWorkflowImplementation identifies the canonical implementation workflow.
 	GuidedWorkflowImplementation = "implementation"
 	// GuidedWorkflowBacklogCuration identifies the canonical backlog-curation workflow.
@@ -32,12 +34,14 @@ const (
 )
 
 var guidedWorkflowOrder = []string{
+	GuidedWorkflowQuickstart,
 	GuidedWorkflowImplementation,
 	GuidedWorkflowBacklogCuration,
 	GuidedWorkflowWorkNomination,
 }
 
 var guidedWorkflowGoobers = map[string][]string{
+	GuidedWorkflowQuickstart:      {"quickstart-implementer", "quickstart-reviewer"},
 	GuidedWorkflowImplementation:  {"implementer", "reviewer"},
 	GuidedWorkflowBacklogCuration: {"curator"},
 	GuidedWorkflowWorkNomination:  {"nominator"},
@@ -167,13 +171,13 @@ func validateGuidedOptions(opts GuidedOptions) error {
 		{label: "repository token environment variable", value: opts.RepoTokenEnv},
 		{label: "work-tracking token environment variable", value: opts.WorkTrackingTokenEnv},
 	}
-	if seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
+	if seen[GuidedWorkflowQuickstart] || seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
 		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
 			label: "pull-request token environment variable",
 			value: opts.PullRequestTokenEnv,
 		})
 	}
-	if seen[GuidedWorkflowImplementation] {
+	if seen[GuidedWorkflowQuickstart] || seen[GuidedWorkflowImplementation] {
 		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
 			label: "repository push token environment variable",
 			value: opts.RepoPushTokenEnv,
@@ -224,14 +228,16 @@ func guidedConfig(opts GuidedOptions) *Config {
 		Capability: string(capability.GitHubIssuesWrite),
 		Token:      TokenRef{Env: opts.WorkTrackingTokenEnv},
 	}}
-	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
+	if slices.Contains(opts.Workflows, GuidedWorkflowQuickstart) ||
+		slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
 		slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
 		credentials = append(credentials, CredentialGrant{
 			Capability: string(capability.GitHubPRWrite),
 			Token:      TokenRef{Env: opts.PullRequestTokenEnv},
 		})
 	}
-	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
+	if slices.Contains(opts.Workflows, GuidedWorkflowQuickstart) ||
+		slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
 		credentials = append(credentials, CredentialGrant{
 			Capability: string(capability.RepoPush),
 			Token:      TokenRef{Env: opts.RepoPushTokenEnv},
@@ -307,6 +313,12 @@ func copyGuidedWorkflow(dir, name string, opts GuidedOptions) error {
 	workflow.Spec.Gaggle = opts.GaggleName
 	for i := range workflow.Spec.Tasks {
 		task := &workflow.Spec.Tasks[i]
+		if task.Name == "open-pr" {
+			if task.Inputs == nil {
+				task.Inputs = make(map[string]string)
+			}
+			task.Inputs["base"] = opts.RepoBranch
+		}
 		if task.Type == apiv1.TaskAgentic {
 			task.Capabilities = prependCapability(task.Capabilities, string(capability.AgentModel))
 		}

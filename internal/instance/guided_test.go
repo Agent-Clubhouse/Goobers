@@ -90,6 +90,10 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 			t.Errorf("workflow %q gaggle = %q", workflow.Name, workflow.Spec.Gaggle)
 		}
 		for _, task := range workflow.Spec.Tasks {
+			if task.Name == "open-pr" && task.Inputs["base"] != "release/v1" {
+				t.Errorf("workflow %q open-pr base = %q, want release/v1",
+					workflow.Name, task.Inputs["base"])
+			}
 			if task.Goober != "" && !slices.Contains(task.Capabilities, string(capability.AgentModel)) {
 				t.Errorf("workflow %q agentic task %q lacks agent:model: %v",
 					workflow.Name, task.Name, task.Capabilities)
@@ -209,6 +213,9 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				Workflows:            []string{workflow},
 			}
 			switch workflow {
+			case GuidedWorkflowQuickstart:
+				opts.PullRequestTokenEnv = "PR_TOKEN"
+				opts.RepoPushTokenEnv = "PUSH_TOKEN"
 			case GuidedWorkflowImplementation:
 				opts.CICommand = []string{"go", "test", "./..."}
 				opts.PullRequestTokenEnv = "PR_TOKEN"
@@ -235,10 +242,11 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				string(capability.GitHubIssuesWrite): "ISSUES_TOKEN",
 				string(capability.AgentModel):        "MODEL_TOKEN",
 			}
-			if workflow == GuidedWorkflowImplementation || workflow == GuidedWorkflowBacklogCuration {
+			if workflow == GuidedWorkflowQuickstart || workflow == GuidedWorkflowImplementation ||
+				workflow == GuidedWorkflowBacklogCuration {
 				wantCredentials[string(capability.GitHubPRWrite)] = "PR_TOKEN"
 			}
-			if workflow == GuidedWorkflowImplementation {
+			if workflow == GuidedWorkflowQuickstart || workflow == GuidedWorkflowImplementation {
 				wantCredentials[string(capability.RepoPush)] = "PUSH_TOKEN"
 			}
 			if len(cfg.Credentials) != len(wantCredentials) {
@@ -250,6 +258,65 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInitGuidedQuickstartTemplateIsLinearAndVersioned(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	_, err := InitGuided(root, GuidedOptions{
+		GaggleName:           "tutorial",
+		RepoOwner:            "acme",
+		RepoName:             "tutorial",
+		RepoBranch:           "release/v1",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		PullRequestTokenEnv:  "PR_TOKEN",
+		RepoPushTokenEnv:     "PUSH_TOKEN",
+		Workflows:            []string{GuidedWorkflowQuickstart},
+	})
+	if err != nil {
+		t.Fatalf("InitGuided: %v", err)
+	}
+
+	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Workflows) != 1 || len(set.Goobers) != 2 {
+		t.Fatalf("quickstart config shape: workflows=%d goobers=%d", len(set.Workflows), len(set.Goobers))
+	}
+	quickstart := set.Workflows[0]
+	if quickstart.Name != GuidedWorkflowQuickstart ||
+		quickstart.DSLVersion != "1.4" ||
+		quickstart.Annotations["goobers.dev/template"] != GuidedWorkflowQuickstart ||
+		quickstart.Annotations["goobers.dev/template-version"] != "1" {
+		t.Fatalf("quickstart identity/version = name %q dsl %q annotations %v",
+			quickstart.Name, quickstart.DSLVersion, quickstart.Annotations)
+	}
+	if len(quickstart.Spec.Gates) != 0 {
+		t.Fatalf("quickstart has production gates: %+v", quickstart.Spec.Gates)
+	}
+	wantTasks := []string{"query-backlog", "implement", "push-branch", "review", "open-pr", "release-claim"}
+	if len(quickstart.Spec.Tasks) != len(wantTasks) {
+		t.Fatalf("quickstart tasks = %d, want %d", len(quickstart.Spec.Tasks), len(wantTasks))
+	}
+	for i, want := range wantTasks {
+		task := quickstart.Spec.Tasks[i]
+		if task.Name != want {
+			t.Errorf("quickstart task %d = %q, want %q", i, task.Name, want)
+		}
+		if i+1 < len(wantTasks) && task.Next != wantTasks[i+1] {
+			t.Errorf("quickstart task %q next = %q, want %q", task.Name, task.Next, wantTasks[i+1])
+		}
+	}
+	if !slices.Contains(quickstart.Spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite)) {
+		t.Fatal("quickstart query lacks the open-PR eligibility backstop")
+	}
+	if !quickstart.Spec.Tasks[3].ContinueOnError {
+		t.Fatal("quickstart advisory review is blocking")
+	}
+	if got := quickstart.Spec.Tasks[4].Inputs["base"]; got != "release/v1" {
+		t.Fatalf("quickstart open-pr base = %q, want release/v1", got)
 	}
 }
 

@@ -1,0 +1,95 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: quickstart
+  annotations:
+    goobers.dev/template: quickstart
+    goobers.dev/template-version: "1"
+dslVersion: "1.4"
+spec:
+  gaggle: acme-web
+  displayName: Quickstart v1 (onboarding - not for production)
+  # This intentionally linear template demonstrates one autonomous cycle with
+  # no production policy gates or repass branches.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one maintainer-approved tutorial item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers"
+        maxItems: "1"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+        # Excludes tutorial issues that already have an open PR, so rerunning
+        # quickstart cannot create a duplicate after the claim is released.
+        - github:pr:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed-item
+      next: implement
+
+    - name: implement
+      type: agentic
+      goober: quickstart-implementer
+      goal: Implement the claimed tutorial item, run targeted checks, and commit the change.
+      capabilities:
+        - repo:push
+      policyActions:
+        - modify-repository
+      next: push-branch
+
+    - name: push-branch
+      type: deterministic
+      goal: Push the tutorial run branch to origin.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      next: review
+
+    - name: review
+      type: agentic
+      goober: quickstart-reviewer
+      goal: Perform one advisory code review of the published change and record the findings.
+      # Publish first so a reviewer with local shell access cannot alter the
+      # commit that open-pr uses. A returned failure is advisory; harness and
+      # envelope errors still fail closed like every other agentic stage.
+      continueOnError: true
+      next: open-pr
+
+    - name: open-pr
+      type: deterministic
+      goal: Open a pull request for the tutorial run.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        runIdFooter: "true"
+        resultFile: "pr-result.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - open-or-update-pr
+      expectedOutputs:
+        - pull-request-url
+      next: release-claim
+
+    - name: release-claim
+      type: deterministic
+      goal: Clear the provider claim marker after opening the tutorial pull request.
+      run:
+        command: ["goobers", "backlog-query", "--release"]
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - release-backlog-claim

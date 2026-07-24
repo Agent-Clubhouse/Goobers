@@ -6,9 +6,9 @@ layout these commands operate on.
 
 ## Prerequisites
 
-- `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
-  stage (`make ci` -> `lint`) runs as a subprocess of the daemon, not your
-  interactive shell, so it inherits the daemon's `PATH`, not your dotfile's.
+- The onboarding `quickstart` template does not run local CI. If you graduate to
+  the production `implementation` workflow, `golangci-lint` must be on the
+  **daemon's** `PATH` because its `local-ci` stage runs as a daemon subprocess.
 - The daemon passes through the Go toolchain env family (`GOPATH`, `GOBIN`,
   `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
   `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
@@ -22,15 +22,33 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 
 ## 2. `init` — scaffold an instance root
 
+For a first autonomous tutorial cycle, use guided setup and accept its
+`quickstart` workflow default:
+
 ```sh
-bin/goobers init ./my-instance
+bin/goobers init --guided ./my-instance
 ```
 
-Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
-implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
-`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
-gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
-pieces are left untouched.
+The guided flow defaults to the named `quickstart` template, version 1, authored
+against DSL `1.4`. It configures a manual workflow that claims one issue carrying
+the maintainer-applied `goobers` trust label, implements it, performs one
+non-blocking advisory review of the published commit, opens a pull request, and
+clears the claim marker.
+The daemon creates each gaggle's `runs/` and `workcopies/` beneath
+`gaggles/<gaggle>/`.
+
+> **Onboarding only — not for production.** Quickstart intentionally omits a
+> reviewer verdict policy, remediation branches, local and remote CI gates,
+> escalation/parking, PR close-out, and merging. Its review task continues even
+> when the reviewer returns a failure result; harness or malformed-envelope
+> errors still fail closed. Use it only with a disposable tutorial target and
+> inspect the resulting pull request before merging.
+
+Plain `bin/goobers init ./my-instance` remains available for the smaller
+implement-only starter. Both modes create `instance.yaml`, `config/`, and the
+empty `gaggles/`, `scheduler/`, and `telemetry.db` placeholders
+(ARCHITECTURE.md §6). Plain init is safe to re-run because existing pieces are
+left untouched; guided setup is first-run only.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into
@@ -44,11 +62,11 @@ maintenance window; retained Git workcopies should stay at their legacy paths.
 
 ## 3. Configure
 
-Edit `my-instance/instance.yaml` to point at your own repo and set the
-referenced provider token (env var or file — never inline, CFG-009/SEC-010).
-Edit `my-instance/config/` to shape your workforce: the gaggle's `project`
-and `backlog` repo references, the goober's `harness`/`skills`/`tools`, and the
-workflow's `triggers`/`tasks`/`gates`.
+Guided setup writes the repository, branch, and token-reference names you
+entered. Export those token environment variables in the shell that starts
+Goobers, then review `my-instance/config/` before running. Token values belong
+in environment variables or files, never inline (CFG-009/SEC-010). Plain init
+users must also replace the placeholder repository references.
 
 For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
@@ -92,7 +110,7 @@ config source, #453.)
 ## 6. `run` — trigger one manually
 
 ```sh
-bin/goobers run default-implement ./my-instance
+bin/goobers run quickstart ./my-instance
 ```
 
 Triggers a run of the named `config/` workflow manually, still honoring run
@@ -102,6 +120,18 @@ real local runner — deterministic tasks execute in a fresh worktree, agentic
 tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
 until the run reaches a terminal state or pauses (e.g. a human gate). Prints
 the run id up front and the final phase/state once it returns.
+
+### Graduate to production safeguards
+
+After the tutorial cycle, replace quickstart with the canonical
+[`implementation.yaml`](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
+using the [arbitrary-repository onboarding guide](arbitrary-repo-onboarding.md).
+Graduate in this order: add the reviewer verdict policy, add remediation and CI
+repass paths, add bounded escalation/parking, then opt into the separate
+[`merge-review.yaml`](../../config-examples/gaggles/acme-web/workflows/merge-review.yaml)
+only after the repository's merge policy is configured. The production
+implementation workflow keeps pull-request opening separate and does not merge
+the first PR itself.
 
 ## 7. `status` — list runs
 
