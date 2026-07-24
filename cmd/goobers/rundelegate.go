@@ -33,14 +33,18 @@ import (
 // loop itself uses, no busy-polling) needs no new server, port, or auth
 // surface at all.
 
-// pendingTriggersDir is the SchedulerDir subdirectory delegation request/
-// response files live under.
+// pendingTriggersDir is the SchedulerDir subdirectory delegated and internal
+// priority-trigger request/response files live under.
 const pendingTriggersDir = "pending-triggers"
 
-// triggerRequest is one delegation request file's content: "please Trigger
-// this workflow on my behalf, I couldn't take the lock myself."
+// triggerRequest is one request for the daemon-owned scheduler to trigger a
+// workflow. Priority requests are internal, targeted, and fire-and-forget;
+// ordinary delegated requests retain the request/response protocol.
 type triggerRequest struct {
 	Workflow  string    `json:"workflow"`
+	Gaggle    string    `json:"gaggle,omitempty"`
+	SourceRun string    `json:"sourceRun,omitempty"`
+	Priority  bool      `json:"priority,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -71,6 +75,30 @@ const (
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
 func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err error) {
+	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
+		Workflow:  workflow,
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
+// writePriorityTriggerRequest queues a fire-and-forget re-tick for one exact
+// gaggle/workflow after sourceRun makes new durable selection state visible.
+// The daemon still routes it through ordinary scheduler admission, so budgets
+// and concurrency limits bound the resulting chain.
+func writePriorityTriggerRequest(schedulerDir, gaggle, workflow, sourceRun string) (requestID string, err error) {
+	if gaggle == "" || workflow == "" || sourceRun == "" {
+		return "", errors.New("delegate: priority trigger requires gaggle, workflow, and source run")
+	}
+	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
+		Workflow:  workflow,
+		Gaggle:    gaggle,
+		SourceRun: sourceRun,
+		Priority:  true,
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
+func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (requestID string, err error) {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
 		return "", fmt.Errorf("delegate: create pending-triggers dir: %w", err)
@@ -85,7 +113,7 @@ func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err e
 		_ = os.Remove(tmpPath)
 	}
 
-	data, err := json.Marshal(triggerRequest{Workflow: workflow, CreatedAt: time.Now().UTC()})
+	data, err := json.Marshal(req)
 	if err != nil {
 		cleanup()
 		return "", err
@@ -158,6 +186,18 @@ var delegationPollInterval = 100 * time.Millisecond
 // (up.go) by a wide margin under any normal daemon load.
 var triggerDelegationTimeout = 30 * time.Second
 
+// priorityTriggerTimeout keeps an internally-requested re-tick alive while the
+// source workflow's concurrent runs finish. Unlike an interactive delegation,
+// no client is waiting on a 30-second response deadline.
+const priorityTriggerTimeout = time.Hour
+
+func triggerRequestTimeout(req triggerRequest) time.Duration {
+	if req.Priority {
+		return priorityTriggerTimeout
+	}
+	return triggerDelegationTimeout
+}
+
 // sweepPendingTriggers is the daemon-side half of #343's delegation
 // protocol, called at startup and periodically from runUpContext's sweep
 // goroutine
@@ -225,14 +265,23 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 		} else {
 			sweepTime := now()
-			if sweepTime.Sub(req.CreatedAt) > triggerDelegationTimeout {
+			requestTimeout := triggerRequestTimeout(req)
+			if sweepTime.Sub(req.CreatedAt) > requestTimeout {
 				resp.Error = fmt.Sprintf(
 					"delegate: stale trigger request %s was created at %s, more than %s ago; refusing to dispatch",
-					requestID, req.CreatedAt.Format(time.RFC3339Nano), triggerDelegationTimeout,
+					requestID, req.CreatedAt.Format(time.RFC3339Nano), requestTimeout,
 				)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
-				runID, terr := sched.Trigger(ctx, req.Workflow, sweepTime)
+				var runID string
+				var terr error
+				if req.Priority {
+					runID, terr = sched.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
+						Gaggle: req.Gaggle, Workflow: req.Workflow,
+					}, req.SourceRun, sweepTime)
+				} else {
+					runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
+				}
 				var rejected *localscheduler.TriggerRejectedError
 				switch {
 				case terr != nil && errors.As(terr, &rejected) && rejected.Transient():
@@ -251,12 +300,19 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 					continue
 				case terr != nil:
 					resp.Error = terr.Error()
+					if req.Priority && !errors.As(terr, &rejected) {
+						sched.RecordTriggerRefusal(req.Workflow, resp.Error)
+						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: dispatch priority trigger %s: %w", requestID, terr))
+					}
 				default:
 					resp.RunID = runID
 				}
 			}
 		}
 
+		if req.Priority {
+			continue
+		}
 		respData, err := json.Marshal(resp)
 		if err != nil {
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err))

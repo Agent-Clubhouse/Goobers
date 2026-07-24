@@ -322,7 +322,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	runID, _, err := providerRunContext()
+	runID, workflowName, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -560,8 +560,20 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 
+	priorityDispatchRequested := false
+	if label == blockedOnSiblingLabel {
+		// #952: publish the blocker record first so the re-tick's selector can
+		// rank the elected predecessor from durable state.
+		if _, err := writePriorityTriggerRequest(l.SchedulerDir(), providerGaggle(), workflowName, runID); err != nil {
+			pf(stderr, "error: queue crowned-lander priority dispatch: %v\n", err)
+			return 1
+		}
+		priorityDispatchRequested = true
+		pf(stdout, "queued an immediate %s re-tick so the crowned lander is selected without waiting for the next poll\n", workflowName)
+	}
+
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
+	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
 }
 
 // reconcileMergeReviewStatusComment keeps the oldest marked comment authored
@@ -959,16 +971,25 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 }
 
 func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor string, stderr io.Writer) int {
-	return writeApplyVerdictResultWithReason(path, selectedNumber, headSHA, baseSHA, decision, verdictAuthor, "", stderr)
+	return writeApplyVerdictResultWithPriorityDispatch(path, selectedNumber, headSHA, baseSHA, decision, verdictAuthor, false, stderr)
 }
 
 func writeApplyVerdictResultWithReason(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, stderr io.Writer) int {
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(path, selectedNumber, headSHA, baseSHA, decision, verdictAuthor, reason, false, stderr)
+}
+
+func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor string, priorityDispatchRequested bool, stderr io.Writer) int {
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(path, selectedNumber, headSHA, baseSHA, decision, verdictAuthor, "", priorityDispatchRequested, stderr)
+}
+
+func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
 	out := map[string]string{
-		"selectedNumber":  strconv.Itoa(selectedNumber),
-		"selectedHeadSha": headSHA,
-		"selectedBaseSha": baseSHA,
-		"decision":        decision,
-		"verdictAuthor":   verdictAuthor,
+		"selectedNumber":            strconv.Itoa(selectedNumber),
+		"selectedHeadSha":           headSHA,
+		"selectedBaseSha":           baseSHA,
+		"decision":                  decision,
+		"verdictAuthor":             verdictAuthor,
+		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
 	}
 	if reason != "" {
 		out["reason"] = reason

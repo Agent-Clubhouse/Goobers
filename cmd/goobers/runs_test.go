@@ -31,13 +31,15 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 			statusCode, statusStderr, runsCode, runsStderr)
 	}
 	for _, want := range []string{
-		"Issues parked on learned dependencies: 0\n",
 		"Open PRs with goobers:blocked-on-sibling: 0\n",
 		"Open PRs with goobers:merge-escalated: 0\n",
 	} {
 		if !strings.Contains(statusStdout, want) {
 			t.Fatalf("status stdout = %q, want it to contain %q", statusStdout, want)
 		}
+	}
+	if strings.Contains(statusStdout, "learned dependencies") {
+		t.Fatalf("status stdout = %q, want learned dependencies reserved for blocked list", statusStdout)
 	}
 	// Find the run-table header directly (not "\nRUN ID"): with a GA-clean
 	// config (#1196) `runs list` emits no leading warnings, so the table can

@@ -124,6 +124,7 @@ goobers completion fish | source  # fish
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
+make tidy-check  # check that go.mod/go.sum match tidy output
 make ci          # merge gate (Go + config + portal)
 make verify-full # merge plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities
