@@ -38,7 +38,7 @@ func withFakeDoctorCluster(t *testing.T) {
 		GroupVersion: "networking.k8s.io/v1",
 		APIResources: []metav1.APIResource{{Name: "networkpolicies", Kind: "NetworkPolicy"}},
 	}}
-	client.Fake.PrependReactor("create", "selfsubjectaccessreviews",
+	client.PrependReactor("create", "selfsubjectaccessreviews",
 		func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, &authorizationv1.SelfSubjectAccessReview{
 				Status: authorizationv1.SubjectAccessReviewStatus{Allowed: true},

@@ -19,6 +19,8 @@ import (
 // Status is a check outcome.
 type Status string
 
+// Check outcomes: warn covers optional-check misses and skipped probes; fail
+// on a required check makes the report non-conformant.
 const (
 	StatusPass Status = "pass"
 	StatusWarn Status = "warn"
@@ -31,6 +33,7 @@ const (
 // blocks conformance on its own.
 type Severity string
 
+// Check severities, traced to k8s-infra-shape.md rather than ad-hoc judgment.
 const (
 	SeverityRequired Severity = "required"
 	SeverityOptional Severity = "optional"

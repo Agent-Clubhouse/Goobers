@@ -46,7 +46,7 @@ func newFakeCluster(t *testing.T) *fake.Clientset {
 }
 
 func allowSelfSubjectAccessReviews(client *fake.Clientset, allowed bool) {
-	client.Fake.PrependReactor("create", "selfsubjectaccessreviews",
+	client.PrependReactor("create", "selfsubjectaccessreviews",
 		func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, &authorizationv1.SelfSubjectAccessReview{
 				Status: authorizationv1.SubjectAccessReviewStatus{Allowed: allowed},
@@ -106,7 +106,7 @@ func TestRunConformantClusterPasses(t *testing.T) {
 
 func TestRunUnreachableClusterFailsClosed(t *testing.T) {
 	client := newFakeCluster(t)
-	client.Fake.PrependReactor("get", "version",
+	client.PrependReactor("get", "version",
 		func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, errors.New("connection refused")
 		})
@@ -161,7 +161,7 @@ func TestRBACDeniedFails(t *testing.T) {
 
 func TestRBACProbeErrorFailsClosed(t *testing.T) {
 	client := newFakeCluster(t)
-	client.Fake.PrependReactor("create", "selfsubjectaccessreviews",
+	client.PrependReactor("create", "selfsubjectaccessreviews",
 		func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, errors.New("selfsubjectaccessreviews is forbidden")
 		})
