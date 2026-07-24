@@ -48,15 +48,24 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Fatalf("backlog-curation warnings = %v, want warning-clean reference config", warnings)
 	}
 
-	// Structural shape: query-backlog -> surface-duplicates (deterministic) ->
-	// curate (agentic) -> release-claim (deterministic, terminal). No gates —
-	// curation is issues-only with no review/CI loop (ARCHITECTURE.md §12
-	// reserves reviewer gates for the implementation workflow, not curation).
+	// Structural shape: sample-ready-pool -> query-backlog ->
+	// surface-duplicates (deterministic) -> curate (agentic) -> release-claim
+	// (deterministic, terminal). No gates — curation is issues-only with no
+	// review/CI loop (ARCHITECTURE.md §12 reserves reviewer gates for the
+	// implementation workflow, not curation).
 	// release-claim (issue #234) is the explicit claim-ledger release
 	// curation needs since it never reaches issue-close-out's release
 	// (implementation-only).
-	if w.Spec.Start != "query-backlog" {
-		t.Errorf("start = %q, want query-backlog", w.Spec.Start)
+	if w.Spec.Start != "sample-ready-pool" {
+		t.Errorf("start = %q, want sample-ready-pool", w.Spec.Start)
+	}
+	health, ok := m.Task("sample-ready-pool")
+	if !ok {
+		t.Fatal("sample-ready-pool task not found")
+	}
+	if health.Next != "query-backlog" || health.Type != apiv1.TaskDeterministic ||
+		health.Run == nil || len(health.Run.Command) != 2 || health.Run.Command[1] != "backlog-health" {
+		t.Errorf("sample-ready-pool = %+v, want deterministic goobers backlog-health task", health)
 	}
 	query, ok := m.Task("query-backlog")
 	if !ok {

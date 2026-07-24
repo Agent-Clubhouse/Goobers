@@ -54,6 +54,9 @@ func (db *DB) ingestRun(runDir string) error {
 	if err := insertEvents(tx, runID, events); err != nil {
 		return err
 	}
+	if err := insertBacklogProjections(tx, identity, events); err != nil {
+		return err
+	}
 	if err := insertSpans(tx, runID, spans); err != nil {
 		return err
 	}
@@ -66,7 +69,7 @@ func (db *DB) ingestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -165,6 +168,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		current[stageAttemptKey{stage: stage, attempt: attempt}] = k
 		return k
 	}
+
 	for i, ev := range events {
 		if ev.Stage == "" {
 			continue
@@ -356,6 +360,151 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		}
 	}
 	return nil
+}
+
+var curationOutputKeys = []string{
+	"ready",
+	"needsHuman",
+	"closed",
+	"deduped",
+	"split",
+	"stale",
+	"reconciled",
+	"milestoned",
+	"bounced",
+}
+
+func insertBacklogProjections(tx *sql.Tx, id runIdentity, events []journalEvent) error {
+	if id.Workflow == "backlog-curation" {
+		if err := insertCurationAction(tx, id.RunID, events); err != nil {
+			return err
+		}
+		if err := insertReadyPoolSample(tx, id.RunID, events); err != nil {
+			return err
+		}
+	}
+	if id.Workflow == "implementation" {
+		if err := insertReadyClaims(tx, id.RunID, events); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error {
+	counts := make([]int, len(curationOutputKeys))
+	reported := false
+	status := ""
+	occurredAt := time.Time{}
+	for _, ev := range events {
+		if ev.Type == eventRunFinished {
+			status = ev.Status
+			occurredAt = ev.Time
+		}
+		if ev.Type != eventStageFinished || ev.Stage != "curate" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		valid := true
+		for i, key := range curationOutputKeys {
+			count, ok := nonnegativeOutputInt(ev.Outputs, key)
+			if !ok {
+				valid = false
+				break
+			}
+			counts[i] = count
+		}
+		reported = valid
+		if !valid {
+			counts = make([]int, len(curationOutputKeys))
+		}
+		if occurredAt.IsZero() {
+			occurredAt = ev.Time
+		}
+	}
+	if occurredAt.IsZero() {
+		return nil
+	}
+	_, err := tx.Exec(`
+		INSERT INTO curation_actions (
+			run_id, status, reported, ready_count, needs_human_count, closed_count,
+			deduped_count, split_count, stale_count, reconciled_count,
+			milestoned_count, bounced_count, occurred_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, nullIfEmpty(status), reported,
+		counts[0], counts[1], counts[2], counts[3], counts[4],
+		counts[5], counts[6], counts[7], counts[8], formatTime(occurredAt))
+	if err != nil {
+		return fmt.Errorf("rollup: insert curation action for run %s: %w", runID, err)
+	}
+	return nil
+}
+
+func insertReadyPoolSample(tx *sql.Tx, runID string, events []journalEvent) error {
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "sample-ready-pool" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		depth, ok := nonnegativeOutputInt(ev.Outputs, "readyPoolDepth")
+		average, averageOK := nonnegativeOutputFloat(ev.Outputs, "averageReadyAgeSeconds")
+		oldest, oldestOK := nonnegativeOutputFloat(ev.Outputs, "oldestReadyAgeSeconds")
+		observedText, observedOK := ev.Outputs["readyPoolObservedAt"].(string)
+		observedAt, timeErr := time.Parse(time.RFC3339Nano, observedText)
+		if !ok || !averageOK || !oldestOK || !observedOK || timeErr != nil {
+			continue
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO ready_pool_samples (
+				run_id, depth, average_age_seconds, oldest_age_seconds, observed_at
+			) VALUES (?, ?, ?, ?, ?)`,
+			runID, depth, average, oldest, formatTime(observedAt)); err != nil {
+			return fmt.Errorf("rollup: insert ready-pool sample for run %s: %w", runID, err)
+		}
+	}
+	return nil
+}
+
+func insertReadyClaims(tx *sql.Tx, runID string, events []journalEvent) error {
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Stage != "query-backlog" || ev.Status != stageStatusSuccess {
+			continue
+		}
+		updatedText, ok := ev.Outputs["updatedAt"].(string)
+		if !ok {
+			continue
+		}
+		readyAt, err := time.Parse(time.RFC3339Nano, updatedText)
+		if err != nil || ev.Time.Before(readyAt) {
+			continue
+		}
+		itemID, _ := ev.Outputs["id"].(string)
+		if _, err := tx.Exec(`
+			INSERT INTO ready_claims (run_id, seq, item_id, ready_age_seconds, claimed_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			runID, ev.Seq, nullIfEmpty(itemID), ev.Time.Sub(readyAt).Seconds(), formatTime(ev.Time)); err != nil {
+			return fmt.Errorf("rollup: insert ready claim seq %d: %w", ev.Seq, err)
+		}
+	}
+	return nil
+}
+
+func nonnegativeOutputInt(outputs map[string]any, key string) (int, bool) {
+	value, ok := nonnegativeOutputFloat(outputs, key)
+	if !ok || math.Trunc(value) != value || value >= math.Exp2(float64(strconv.IntSize-1)) {
+		return 0, false
+	}
+	return int(value), true
+}
+
+func nonnegativeOutputFloat(outputs map[string]any, key string) (float64, bool) {
+	value, ok := outputs[key]
+	if !ok {
+		return 0, false
+	}
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+		return 0, false
+	}
+	return number, true
 }
 
 // gateRunnerJSON merges a gate.evaluated event's Runner annotations

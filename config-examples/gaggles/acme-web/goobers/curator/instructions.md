@@ -259,7 +259,9 @@ look — especially on a public repo open to anyone.
 Signal completion via the designated completion tool with a `result`
 envelope: `status` and a one-paragraph `summary` of what you curated (counts
 of deduped/closed/tagged/split/marked-ready/marked-needs-human). Do not also
-emit a per-item breakdown as a structured `outputs` field — a result's
-`outputs` are scalar-only (structured or bulk data belongs in `artifacts`,
-never `outputs`). Each item's outcome is already recorded in the explanatory
-comment you post on that item, so no machine-readable per-item list is needed.
+emit a per-item breakdown. Set these numeric scalar `outputs` on every
+successful run: `ready`, `needsHuman`, `closed`, `deduped`, `split`, `stale`,
+`reconciled`, `milestoned`, and `bounced` (a ready item moved back to
+not-ready). Use `0` for actions that did not occur. These counts are the
+telemetry record; structured or bulk data belongs in artifacts, and each
+item's details remain in its explanatory issue comment.

@@ -19,8 +19,22 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
-  start: query-backlog
+  start: sample-ready-pool
   tasks:
+    - name: sample-ready-pool
+      type: deterministic
+      goal: Snapshot ready-pool depth and age before this curation pass.
+      run:
+        command: ["goobers", "backlog-health"]
+      inputs:
+        trustLabel: "goobers:approved"
+        readyLabel: "goobers:ready"
+        resultFile: "backlog-health.json"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - backlog-health
+      next: query-backlog
     # Built-in backlog-query stage kind (ARCHITECTURE.md §7, WF-055): queries the
     # issues provider and claims candidates, honoring the untrusted-input
     # eligibility gate (SEC-047) — only items carrying the maintainer-applied
@@ -111,9 +125,8 @@ spec:
         - create-issue
         - edit-issue
         - label-issue
-      # No structured output: per-item outcomes are posted as issue comments,
-      # and a result's `outputs` are scalar-only (#302). The scalar `summary`
-      # in the result envelope carries the run's counts.
+      # Per-item details stay in issue comments. Scalar action counts are
+      # journaled in outputs so telemetry can project a durable per-run record.
       next: release-claim
     # Explicit release (issue #234): curation touches issues only — there is
     # no CI-poll or reviewer loop, and it never opens a PR or closes the

@@ -38,6 +38,7 @@ _goobers_completion()
             'telemetry:query, export, or prune run telemetry'
             'journal:the one sanctioned edit to the append-only journal'
             'backlog-dedupe:surface ranked duplicate candidates for curator judgment (a workflow stage)'
+            'backlog-health:snapshot ready-pool depth and age (a workflow stage)'
             'backlog-query:query/claim one eligible backlog item (a workflow stage)'
             'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
             'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'

@@ -10,6 +10,7 @@
 | --- | --- |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
+| [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
@@ -136,6 +137,23 @@ error, 2 = usage error.
 
 ~~~console
 $ goobers backlog-dedupe
+~~~
+
+## `goobers backlog-health`
+
+snapshot ready-pool depth and age (a workflow stage)
+
+~~~text
+Usage: goobers backlog-health [path]
+
+Snapshot the current ready backlog depth and age into a flat stage result
+for telemetry rollups. Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers backlog-health
 ~~~
 
 ## `goobers backlog-query`
@@ -1461,7 +1479,7 @@ query, export, or prune run telemetry
 ~~~text
 Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
-stats:  success rate / durations per workflow + stage
+stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:  remove terminal runs outside the configured retention bounds
@@ -1543,7 +1561,8 @@ success rate and duration aggregates per workflow and stage
 ~~~text
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
-Success rate and duration aggregates per workflow and per stage,
+Success rate and duration aggregates per workflow and stage, plus curation
+actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
 stage attempts; a run that used multiple grouped cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.

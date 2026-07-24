@@ -52,6 +52,7 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
+  goobers backlog-health                 snapshot ready-pool depth and age (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
@@ -88,7 +89,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -156,6 +157,7 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
+  goobers backlog-health                 snapshot ready-pool depth and age (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
@@ -192,7 +194,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -236,6 +238,12 @@ The maxCandidates stage input defaults to 20 and must be between 1 and 100.
 
 Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
 error, 2 = usage error.
+
+### backlog-health
+Usage: goobers backlog-health [path]
+
+Snapshot the current ready backlog depth and age into a flat stage result
+for telemetry rollups. Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 
 ### backlog-query
 Usage: goobers backlog-query [--claim | --release] [path]
@@ -924,7 +932,7 @@ Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ### telemetry
 Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
 
-stats:  success rate / durations per workflow + stage
+stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:  remove terminal runs outside the configured retention bounds
@@ -956,7 +964,8 @@ retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config err
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
-Success rate and duration aggregates per workflow and per stage,
+Success rate and duration aggregates per workflow and stage, plus curation
+actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
 stage attempts; a run that used multiple grouped cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
