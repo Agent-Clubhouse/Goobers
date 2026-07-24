@@ -110,10 +110,11 @@ func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 // WithGitEnvironment configures credentials for remote clone/fetch commands.
 // The callback receives the repository URL and returns the complete child
 // environment. Local worktree operations never receive this environment, with
-// one deliberate exception: materializing a worktree from a partial-clone
-// mirror (WithPartialClone) fetches missing blobs from the promisor remote
-// mid-checkout, so that `git worktree add` is a remote operation and carries
-// this environment too.
+// one deliberate exception: on a partial-clone mirror (WithPartialClone), any
+// operation that materializes blobs spawns a fetch from the promisor remote —
+// `git worktree add`'s checkout, Create's SyncBase merge of an advanced base,
+// and Worktree.Diff against a base no checkout materialized — so those are
+// remote operations and carry this environment too.
 func WithGitEnvironment(resolve func(context.Context, string) ([]string, error)) ManagerOption {
 	return func(m *Manager) {
 		m.gitEnv = resolve
@@ -129,9 +130,10 @@ func WithGitEnvironment(resolve func(context.Context, string) ([]string, error))
 // branch, tag, and reachable-sha pinned bases all still resolve.
 //
 // Two consequences callers own:
-//   - Worktree provisioning becomes network-dependent (and, for private
-//     repos, credential-dependent — WithGitEnvironment covers the checkout's
-//     blob fetch): a blob-fetch failure fails Create closed, classified by
+//   - Blob-materializing worktree operations become network-dependent (and,
+//     for private repos, credential-dependent — WithGitEnvironment covers the
+//     checkout's blob fetch, the SyncBase merge, and Worktree.Diff): a
+//     blob-fetch failure fails the operation closed, classified by
 //     IsTransientProvisionError for the runner's bounded infrastructure retry.
 //   - Only NEW mirrors are affected. An existing full mirror keeps full-mirror
 //     fetches; a blobless mirror keeps its promisor config even if the option
@@ -332,6 +334,23 @@ func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ..
 	return runGitWithEnv(ctx, dir, env, args...)
 }
 
+// remoteGitOutput is runRemoteGit's output-capturing counterpart for
+// operations that both return bytes and may reach the remote (Worktree.Diff on
+// a partial-clone mirror): the credential environment is applied the same way,
+// stdout comes back raw, and a failure is a typed *gitCommandError so a
+// promisor fetch spawned mid-command classifies through
+// IsTransientProvisionError.
+func (m *Manager) remoteGitOutput(ctx context.Context, repoURL, dir string, args ...string) ([]byte, error) {
+	if m.gitEnv == nil {
+		return rawGitOutput(ctx, dir, nil, args...)
+	}
+	env, err := m.gitEnv(ctx, repoURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve git environment: %w", err)
+	}
+	return rawGitOutput(ctx, dir, env, args...)
+}
+
 // managedGitConfig is the explicit per-mirror git config the worktree layer sets
 // so a run's checkout behaves deterministically regardless of the host's ambient
 // or installer-provided git configuration (#643). A linked worktree inherits the
@@ -530,6 +549,33 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 		return "", fmt.Errorf("git %v: %w", args, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// rawGitOutput runs git in dir (with env as the child environment when
+// non-nil) and returns its raw, untrimmed stdout — for callers whose bytes are
+// digested verbatim (Worktree.Diff). Failure is a typed *gitCommandError
+// carrying the exit code and captured stderr, so IsTransientProvisionError can
+// classify it — unlike gitOutput's plain wrap.
+func rawGitOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		exitCode := -1
+		var stderr []byte
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+			stderr = exitErr.Stderr
+		}
+		return nil, &gitCommandError{args: args, cause: err, output: stderr, exitCode: exitCode}
+	}
+	return out, nil
 }
 
 // gitCommandError is runGit's typed failure: the raw exit code and combined

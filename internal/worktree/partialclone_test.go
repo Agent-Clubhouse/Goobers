@@ -295,6 +295,167 @@ func TestManager_Create_PartialCloneBlobFetchFailureFailsClosedAndTransient(t *t
 	}
 }
 
+// gitTraceEnv returns a WithGitEnvironment resolver whose environment carries
+// GIT_TRACE into every credential-seam git invocation: a command appears in
+// the trace file iff it ran with the resolver-provided environment, which is
+// how these tests pin that blob-materializing operations route through the
+// credential seam rather than the ambient environment.
+func gitTraceEnv(traceFile string) func(context.Context, string) ([]string, error) {
+	return func(context.Context, string) ([]string, error) {
+		return append(os.Environ(), "GIT_TRACE="+traceFile), nil
+	}
+}
+
+func readTrace(t *testing.T, traceFile string) string {
+	t.Helper()
+	raw, err := os.ReadFile(traceFile)
+	if err != nil {
+		t.Fatalf("read GIT_TRACE file: %v", err)
+	}
+	return string(raw)
+}
+
+// TestManager_Create_PartialCloneSyncBaseMergeCarriesCredentialEnvironment:
+// merging a base that advanced after the branch was cut materializes base-side
+// blobs the narrowed refresh fetch withheld, so on a blobless mirror the
+// SyncBase merge must run through the credential seam like the checkout does —
+// on a private repo the promisor fetch fails on auth otherwise.
+func TestManager_Create_PartialCloneSyncBaseMergeCarriesCredentialEnvironment(t *testing.T) {
+	ctx := context.Background()
+	repo, url := newFilterableSourceRepo(t)
+	traceFile := filepath.Join(t.TempDir(), "trace")
+	m, err := NewManager(t.TempDir(), WithPartialClone(), WithGitEnvironment(gitTraceEnv(traceFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: url, RunID: "run-1", BaseRef: "main", Branch: "goobers/wf/run-1",
+	})
+	if err != nil {
+		t.Fatalf("Create (cut branch): %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	advanceOrigin(t, repo, "advanced.txt")
+	if err := os.WriteFile(traceFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt, err = m.Create(ctx, CreateOptions{
+		RepoURL: url, RunID: "run-2", BaseRef: "main", Branch: "goobers/wf/run-1", SyncBase: true,
+	})
+	if err != nil {
+		t.Fatalf("Create (SyncBase after base advanced): %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(wt.Path, "advanced.txt"))
+	if err != nil {
+		t.Fatalf("read merged base file — the merge did not backfill base-side blobs: %v", err)
+	}
+	if string(got) != "advanced.txt\n" {
+		t.Fatalf("merged base file = %q, want %q", got, "advanced.txt\n")
+	}
+	if trace := readTrace(t, traceFile); !strings.Contains(trace, "merge --ff --no-edit main") {
+		t.Fatalf("SyncBase merge did not run with the credential environment; trace:\n%s", trace)
+	}
+}
+
+// preparePartialCloneReboundBranch builds the rebound-PR shape (#392 +
+// RequireExistingBranch) on a blobless mirror: a PR branch fetched into the
+// run-branch namespace, whose merge-base-side blob (main's README) no checkout
+// ever materialized — the shape where Worktree.Diff must backfill from the
+// promisor remote.
+func preparePartialCloneReboundBranch(t *testing.T, ctx context.Context, m *Manager, repo, url string) *Worktree {
+	t.Helper()
+	mirror, err := m.WorkingCopy(ctx, url)
+	if err != nil {
+		t.Fatalf("WorkingCopy (clone): %v", err)
+	}
+	runTestGit(t, repo, "switch", "-c", "pr")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("goodbye\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "pr change")
+	runTestGit(t, repo, "switch", "main")
+	// An earlier stage's fetch of the PR branch honors the mirror's configured
+	// partial-clone filter, so the branch arrives commits-and-trees only.
+	runTestGit(t, mirror, "fetch", "origin", "+refs/heads/pr:refs/heads/goobers/wf/run-1")
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: url, RunID: "run-1", BaseRef: "main",
+		Branch: "goobers/wf/run-1", RequireExistingBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("Create (rebound branch): %v", err)
+	}
+	return wt
+}
+
+// TestWorktree_Diff_PartialCloneBackfillsBaseBlobsWithCredentialEnvironment:
+// on a rebound-PR worktree only the PR tip's blobs were ever materialized, so
+// `git diff base...HEAD` fetches the merge-base side from the promisor remote
+// — it must succeed and must do so through the credential seam.
+func TestWorktree_Diff_PartialCloneBackfillsBaseBlobsWithCredentialEnvironment(t *testing.T) {
+	ctx := context.Background()
+	repo, url := newFilterableSourceRepo(t)
+	traceFile := filepath.Join(t.TempDir(), "trace")
+	m, err := NewManager(t.TempDir(), WithPartialClone(), WithGitEnvironment(gitTraceEnv(traceFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := preparePartialCloneReboundBranch(t, ctx, m, repo, url)
+
+	if err := os.WriteFile(traceFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := wt.Diff(ctx, "main")
+	if err != nil {
+		t.Fatalf("Diff on a rebound partial-clone worktree: %v", err)
+	}
+	if !strings.Contains(string(diff), "-hello") || !strings.Contains(string(diff), "+goodbye") {
+		t.Fatalf("diff does not carry the base...HEAD change:\n%s", diff)
+	}
+	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff main...HEAD") {
+		t.Fatalf("Diff did not run with the credential environment; trace:\n%s", trace)
+	}
+}
+
+// TestWorktree_Diff_PartialClonePromisorFailureClassifiesTransient: when the
+// promisor remote cannot serve the merge-base blob mid-diff, the error must
+// classify through IsTransientProvisionError (a typed *gitCommandError), not
+// surface as an opaque exec failure the runner can only fail the run on.
+func TestWorktree_Diff_PartialClonePromisorFailureClassifiesTransient(t *testing.T) {
+	ctx := context.Background()
+	repo, url := newFilterableSourceRepo(t)
+	m, err := NewManager(t.TempDir(), WithPartialClone())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobOID := strings.TrimSpace(runTestGit(t, repo, "rev-parse", "main:README.md"))
+	wt := preparePartialCloneReboundBranch(t, ctx, m, repo, url)
+
+	// Remove the merge-base README blob from the source's object store, same
+	// mechanics as the Create-time fail-closed test: the next promisor fetch
+	// for it cannot be served.
+	objPath := filepath.Join(repo, ".git", "objects", blobOID[:2], blobOID[2:])
+	if err := os.Chmod(objPath, 0o644); err != nil {
+		t.Fatalf("chmod source blob object: %v", err)
+	}
+	if err := os.Remove(objPath); err != nil {
+		t.Fatalf("remove source blob object: %v", err)
+	}
+
+	diff, err := wt.Diff(ctx, "main")
+	if err == nil {
+		t.Fatalf("Diff succeeded with an unservable merge-base blob:\n%s", diff)
+	}
+	if !IsTransientProvisionError(err) {
+		t.Fatalf("mid-diff promisor failure not classified for infrastructure retry: %v", err)
+	}
+}
+
 // TestManager_WorkingCopy_PartialCloneOffIsByteIdentical records every git
 // invocation through a PATH shim and pins the flag-off clone and refresh
 // fetch to today's exact command lines — the #646 acceptance criterion that
