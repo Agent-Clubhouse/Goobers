@@ -18,16 +18,33 @@ spec:
     - Ingress
   ingress:
     - from:
-        # Workers + operator in the control plane (§2/§3).
+        # Workers + operator in the control plane (§2/§3). Pod-scoped so the
+        # API pod (and anything else that lands in goobers-system) is NOT
+        # admitted — §5 says workers and operator only, and this ingress half
+        # must enforce that without leaning on source-side egress policies.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: goobers-system
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - operator
+                  - worker
         # Dedicated per-gaggle workers (G2 mode, #656): gaggle namespaces
-        # carry the goobers.dev/gaggle label stamped by the template.
+        # carry the goobers.dev/gaggle label stamped by the template. Only
+        # worker-role pods are admitted — stage pods run untrusted agent
+        # output and must never reach the unauthenticated frontend, even if
+        # their namespace's egress policy is widened or the CNI enforces
+        # ingress only.
         - namespaceSelector:
             matchExpressions:
               - key: goobers.dev/gaggle
                 operator: Exists
+          podSelector:
+            matchLabels:
+              goobers.dev/role: worker
       ports:
         - protocol: TCP
           port: 7233
