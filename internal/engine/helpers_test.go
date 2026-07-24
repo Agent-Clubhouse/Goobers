@@ -19,12 +19,14 @@ func boolPointer(value bool) *bool {
 // records every request and teardown so tests can assert the fresh/disposable
 // per-attempt workspace contract without git.
 type fakeWorkspaces struct {
-	mu           sync.Mutex
-	root         string
-	requests     []WorkspaceRequest
-	removed      []string
-	provisionErr error
-	emptyPath    bool
+	mu       sync.Mutex
+	root     string
+	requests []WorkspaceRequest
+	removed  []string
+	// provisionErrs are consumed FIFO: each Provision call pops and returns
+	// one until the script is exhausted, then provisioning succeeds.
+	provisionErrs []error
+	emptyPath     bool
 }
 
 func testWorkspaces(t *testing.T) *fakeWorkspaces {
@@ -35,8 +37,10 @@ func testWorkspaces(t *testing.T) *fakeWorkspaces {
 func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Workspace, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.provisionErr != nil {
-		return nil, f.provisionErr
+	if len(f.provisionErrs) > 0 {
+		err := f.provisionErrs[0]
+		f.provisionErrs = f.provisionErrs[1:]
+		return nil, err
 	}
 	f.requests = append(f.requests, req)
 	if f.emptyPath {

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -180,21 +181,22 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		env.Inputs[inputKey] = v
 	}
 	ctx = stageActivityContext(ctx, env.Limits)
-	var res apiv1.ResultEnvelope
 	if t.Type == apiv1.TaskAgentic {
-		if err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res); err != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		return res, nil
+		return dispatchWithRetry(ctx, t, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+			var res apiv1.ResultEnvelope
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res)
+			return res, err
+		})
 	}
 	run := apiv1.DeterministicRun{}
 	if t.Run != nil {
 		run = *t.Run
 	}
-	if err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res); err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	return res, nil
+	return dispatchWithRetry(ctx, t, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+		var res apiv1.ResultEnvelope
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)
+		return res, err
+	})
 }
 
 func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (string, error) {
@@ -300,9 +302,21 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
+	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits))
+}
+
+// stageActivityOptions builds the options every engine activity dispatches
+// under. The RetryPolicy is always explicit with a single attempt, so
+// Temporal's unlimited-attempts default is structurally unreachable for any
+// task shape (#622/#156); retry orchestration lives in dispatchWithRetry,
+// which enforces the local runner's split policy/infrastructure budgets.
+func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
 	timeout := activityTimeout
 	if limits.MaxDurationSeconds > 0 {
 		timeout = time.Duration(limits.MaxDurationSeconds) * time.Second
 	}
-	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: timeout})
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: timeout,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	}
 }

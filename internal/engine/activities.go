@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"go.temporal.io/sdk/temporal"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 )
@@ -39,6 +41,22 @@ type Activities struct {
 
 // ErrNotConfigured is returned by an activity whose backing seam was not wired.
 var ErrNotConfigured = errors.New("engine: activity dependency not configured")
+
+// classifySeamError converts a seam error into a typed Temporal application
+// error so the attempt class survives into workflow history (#622). The
+// invoke-level infrastructure marker cannot cross the activity boundary — the
+// SDK serializes errors — so the class is committed here, at the last point
+// the marker is visible; the workflow's retry loop and the history→journal
+// projection (#629) both read it back from the recorded type alone.
+func classifySeamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if invoke.IsInfrastructureFailure(err) {
+		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
+	}
+	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
+}
 
 // provisionWorkspace provisions the working copy for one stage attempt and
 // stamps its path into env's required workspace field. It fails closed
@@ -83,14 +101,18 @@ func removeWorkspace(ctx context.Context, ws Workspace) {
 // InvokeGoober executes an agentic task.
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	if a.Goober == nil {
-		return apiv1.ResultEnvelope{}, ErrNotConfigured
+		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
-	return a.Goober.Invoke(ctx, env)
+	res, err := a.Goober.Invoke(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	return res, nil
 }
 
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
@@ -98,28 +120,36 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 // workspace (unlike an automated gate).
 func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	if a.Goober == nil {
-		return apiv1.Verdict{}, ErrNotConfigured
+		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo)
 	if err != nil {
-		return apiv1.Verdict{}, err
+		return apiv1.Verdict{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
-	return a.Goober.Review(ctx, env)
+	verdict, err := a.Goober.Review(ctx, env)
+	if err != nil {
+		return apiv1.Verdict{}, classifySeamError(err)
+	}
+	return verdict, nil
 }
 
 // RunDeterministic executes a deterministic task in the workspace mode the
 // task's run block declares (repo by default, scratch on request).
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if a.Det == nil {
-		return apiv1.ResultEnvelope{}, ErrNotConfigured
+		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
-	return a.Det.Run(ctx, env, run)
+	res, err := a.Det.Run(ctx, env, run)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	return res, nil
 }
 
 // EvaluateAutomated runs an automated gate check. Automated gates are pure
@@ -127,7 +157,11 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 // runner (#112) — no provisioning here.
 func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	if a.Auto == nil {
-		return "", ErrNotConfigured
+		return "", classifySeamError(ErrNotConfigured)
 	}
-	return a.Auto.Evaluate(ctx, gate, env)
+	outcome, err := a.Auto.Evaluate(ctx, gate, env)
+	if err != nil {
+		return "", classifySeamError(err)
+	}
+	return outcome, nil
 }
