@@ -58,9 +58,13 @@ func TestGaggleRoundTrip(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "acme-web"},
 		Spec: GaggleSpec{
 			DisplayName: "Acme Web",
-			Project:     RepoRef{Provider: ProviderGitHub, Owner: "acme", Name: "web", Branch: "main", ConnectionRef: "github-main"},
-			Backlog:     BacklogRef{Provider: ProviderGitHub, Project: "acme/web", Labels: []string{"goobers"}, ConnectionRef: "github-backlog"},
-			Isolation:   GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
+			Project: RepoRef{
+				Provider: ProviderGitHub, Owner: "acme", Name: "web", Branch: "main", ConnectionRef: "github-main",
+				Checkout: &CheckoutSpec{Sparse: []string{"services/web", "docs"}},
+			},
+			Backlog:   BacklogRef{Provider: ProviderGitHub, Project: "acme/web", Labels: []string{"goobers"}, ConnectionRef: "github-backlog"},
+			Isolation: GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
+			Sandbox:   &GaggleSandbox{Agentic: "enforced"},
 		},
 	}
 	roundTripStable(t, g)

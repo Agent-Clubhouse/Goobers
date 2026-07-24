@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -34,7 +35,7 @@ var newTerminalBranchDeleter = func(source providers.TokenSource) providers.Bran
 	return providers.NewGitHubProvider("", providers.WithTokenSource(source))
 }
 
-func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, registrar terminalSecretRegistry) (runner.TerminalPreparer, error) {
+func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) (runner.TerminalPreparer, error) {
 	// An instance with no configured repo (the credential-free demo, #587)
 	// never touches a branch by design — every one of its runs is
 	// legitimately branch-less, not an anomaly finalizeTerminalBranch's
@@ -44,7 +45,7 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, regist
 	if len(cfg.Repos) == 0 {
 		return func(string, journal.RunPhase, *journal.Run) error { return nil }, nil
 	}
-	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar)
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar, stores)
 	if err != nil {
 		return nil, err
 	}
@@ -58,18 +59,24 @@ func prepareAbortedRunBranch(l instance.Layout, runID string, jr *journal.Run, r
 	if err != nil {
 		return fmt.Errorf("load terminal branch cleanup config: %w", err)
 	}
-	prepare, err := buildTerminalBranchPreparer(l, cfg, registrar)
+	// One-shot command scope: this is its own composition root, so it builds
+	// its own store registry (#683) rather than threading a daemon's.
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return fmt.Errorf("build terminal branch cleanup secret store registry: %w", err)
+	}
+	prepare, err := buildTerminalBranchPreparer(l, cfg, registrar, stores)
 	if err != nil {
 		return err
 	}
 	return prepare(runID, journal.PhaseAborted, jr)
 }
 
-func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretRegistry) (deleteBranchFunc, providers.RepositoryRef, error) {
+func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) (deleteBranchFunc, providers.RepositoryRef, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
 	}
-	resolver, grants, err := buildCredentials(cfg, "", "")
+	resolver, grants, err := buildCredentials(cfg, stores, "", "", registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}

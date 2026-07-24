@@ -81,6 +81,9 @@ serve and open the local operations portal
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
 .TP
+\fBgoobers doctor\fR
+preflight a Kubernetes cluster against the documented infra shape
+.TP
 \fBgoobers elect-lander\fR
 elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
@@ -252,6 +255,9 @@ print build version, commit, and date (--json for structured output)
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
 .TP
+\fBgoobers worker\fR
+host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+.TP
 \fBgoobers workflow\fR
 inspect workflows
 .TP
@@ -276,6 +282,7 @@ show a workflow as a text DAG
 \fBgoobers-config-show\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),
+\fBgoobers-doctor\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
@@ -333,5 +340,6 @@ show a workflow as a text DAG
 \fBgoobers-validate\fR(1),
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
+\fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
 \fBgoobers-workflow-show\fR(1)

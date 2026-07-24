@@ -117,6 +117,10 @@ func init() {
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
 			withExamples("goobers lint", "goobers lint --check-harness --check-repos"),
+		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
+			withSynopsis(synopsisByID["doctor"]).
+			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
+			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
 		groupCommand(
 			"config",
 			runConfig,
@@ -150,6 +154,10 @@ func init() {
 			withSynopsis(synopsisByID["service"]).
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
 			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
+		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
+			withSynopsis(synopsisByID["worker"]).
+			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
+			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).

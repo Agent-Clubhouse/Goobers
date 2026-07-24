@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // askpassScriptName is the fixed filename for the askpass helper written
@@ -54,4 +55,38 @@ func GitEnv(scriptPath, token string) []string {
 		"GOOBERS_GIT_TOKEN=" + token,
 		"GIT_TERMINAL_PROMPT=0",
 	}
+}
+
+// GitAuthEnvironment returns the COMPLETE child environment for a git network
+// command authenticated via the askpass helper at scriptPath — for callers
+// that replace a subprocess's environment wholesale (cmd.Env) rather than
+// appending to it, e.g. worktree.Manager's remote clone/fetch (#667). It is
+// the current process environment with two adjustments:
+//
+//   - Ambient credential configuration is removed and git's credential-helper
+//     chain is disabled (GIT_CONFIG_* env config, git 2.31+). Git consults
+//     helpers BEFORE falling back to askpass, so an operator's keychain or
+//     store helper would otherwise silently shadow the configured token with
+//     whatever identity the host happens to hold.
+//   - GitEnv's askpass variables are appended, so the token exists only in
+//     the child process environment — never on disk or argv.
+func GitAuthEnvironment(scriptPath, token string) []string {
+	env := make([]string, 0, len(os.Environ())+6)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		upper := strings.ToUpper(name)
+		if upper == "GIT_ASKPASS" || upper == "GIT_TERMINAL_PROMPT" ||
+			upper == "GOOBERS_GIT_TOKEN" || upper == "GOOBERS_GIT_USERNAME" ||
+			upper == "GIT_CONFIG_COUNT" ||
+			strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=",
+	)
+	return append(env, GitEnv(scriptPath, token)...)
 }

@@ -1,0 +1,15 @@
+# Example gaggle stamp (k8s-infra-shape.md §3): namespace + label for a
+# gaggle named "gaggle-a". Copy this overlay per gaggle; then replace the
+# base's CHANGE-ME egress CIDRs and workload-identity annotation with that
+# gaggle's values.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gaggle-a
+
+resources:
+  - ../../base
+
+labels:
+  - pairs:
+      goobers.dev/gaggle: gaggle-a

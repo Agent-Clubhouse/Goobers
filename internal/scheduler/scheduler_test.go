@@ -2,12 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -110,6 +112,47 @@ func TestTriggerFiresStartsRun(t *testing.T) {
 	}
 	if st.lastInput.Item == nil || st.lastInput.Item.ID != "42" {
 		t.Errorf("started input missing the backlog item: %+v", st.lastInput.Item)
+	}
+}
+
+// TestBuildRunInputPinsTriggerAndPolicy: the one production producer of
+// engine.RunInput must pin the event's trigger identity and the gaggle's
+// policy — an empty TriggerKind would make the #629 projection write a run.yaml
+// with no trigger kind and record an item run's branch provenance upfront,
+// and an empty BranchNamespace silently forces the default namespace (#1109).
+func TestBuildRunInputPinsTriggerAndPolicy(t *testing.T) {
+	st := &fakeStarter{}
+	s := newScheduler(t, Config{
+		Starter:                st,
+		BranchNamespace:        "bots/",
+		GateGooberCapabilities: map[string][]string{"reviewer": {"agent:model"}},
+		MaxRepasses:            5,
+	})
+
+	if _, err := s.Dispatch(context.Background(), backlogEvent()); err != nil {
+		t.Fatalf("Dispatch(item): %v", err)
+	}
+	in := st.lastInput
+	if in.TriggerKind != string(journal.TriggerItem) || in.TriggerRef != "github:42" {
+		t.Errorf("item trigger = %q %q, want %q %q", in.TriggerKind, in.TriggerRef, journal.TriggerItem, "github:42")
+	}
+	if in.BranchNamespace != "bots/" {
+		t.Errorf("branchNamespace = %q, want the gaggle's configured root", in.BranchNamespace)
+	}
+	if want := map[string][]string{"reviewer": {"agent:model"}}; !reflect.DeepEqual(in.GateGooberCapabilities, want) {
+		t.Errorf("gateGooberCapabilities = %v, want %v", in.GateGooberCapabilities, want)
+	}
+	if in.MaxRepasses != 5 {
+		t.Errorf("maxRepasses = %d, want 5", in.MaxRepasses)
+	}
+
+	// A bare tick with no item is a schedule fire.
+	if _, err := s.Dispatch(context.Background(), Event{WorkflowName: "flow", Reason: "schedule", DedupeKey: "fire-1"}); err != nil {
+		t.Fatalf("Dispatch(schedule): %v", err)
+	}
+	in = st.lastInput
+	if in.TriggerKind != string(journal.TriggerSchedule) || in.TriggerRef != "fire-1" {
+		t.Errorf("schedule trigger = %q %q, want %q %q", in.TriggerKind, in.TriggerRef, journal.TriggerSchedule, "fire-1")
 	}
 }
 

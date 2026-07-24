@@ -1,0 +1,60 @@
+# Daemon API + portal (k8s-infra-shape.md §2: /api/v1 read + authed mutation
+# surface, portal assets embedded in the goobers binary; SSE through ingress).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-api
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-api
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: goobers-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: goobers # rewritten by the kustomization images: transformer
+          # CHANGE-ME: today the daemon serves a loopback-only API; the
+          # in-cluster listener + asset-serving shape is #652 — until it
+          # lands this Deployment is a shape stub per #663.
+          args: ["up", "/var/lib/goobers/instance"]
+          ports:
+            - name: http
+              containerPort: 8080 # CHANGE-ME to the configured listener port
+          volumeMounts:
+            # Same journal layout as tiers 1-2 (§4); the API projects reads
+            # from it — run ownership lives with Temporal identity, not locks.
+            - name: journal
+              mountPath: /var/lib/goobers
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: journal
+          persistentVolumeClaim:
+            claimName: goobers-journal

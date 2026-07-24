@@ -182,6 +182,68 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	}
 }
 
+func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.Auth = &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "api://goobers",
+		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
+	}}
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// The refusal must name the cause up front — not probe a 401ing health
+	// endpoint until the attach timeout.
+	start := time.Now()
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err == nil || !strings.Contains(err.Error(), "bearer token") {
+		t.Fatalf("prepareDashboardAPI error = %v, want bearer-token refusal", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("authenticated-daemon refusal took %s, want fail-fast", elapsed)
+	}
+}
+
+func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	daemon := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "https://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.TLS = &instance.APITLSConfig{CertFile: "cert.pem", KeyFile: "key.pem"}
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	originalTimeout := dashboardAttachTimeout
+	dashboardAttachTimeout = 3 * time.Second
+	defer func() { dashboardAttachTimeout = originalTimeout }()
+
+	// The probe speaks HTTPS (a plain http:// probe against a TLS listener
+	// would report a protocol error, never a certificate one) and fails fast
+	// on the untrusted test certificate instead of spinning to the attach
+	// timeout, whose message says "unavailable" rather than "does not trust".
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err == nil || !strings.Contains(err.Error(), "does not trust") {
+		t.Fatalf("prepareDashboardAPI error = %v, want fail-fast certificate trust error", err)
+	}
+}
+
 func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)

@@ -606,6 +606,8 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleCICommand(r)
 	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
 	ix.checkGaggleBranchNamespace(r)
+	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
+	ix.checkGaggleCheckout(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -742,6 +744,30 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 		if bad != "" {
 			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
 				"spec.branchNamespace %q %s, which would produce an invalid git run-branch name at runtime", ns, bad)
+		}
+	}
+}
+
+// checkGaggleCheckout surfaces every declared repo checkout block as a VER003
+// compatibility notice (#649): checkout.sparse is accepted by the schema so a
+// definition can be authored ahead of the runner honoring it, but the local
+// runner still materializes full worktrees — the same accepted-but-inert
+// contract task.run.image carries ("run.image is not honored by the local
+// runner"). A warning, never an error: deleting the declaration would delete
+// the very cones a sparse-capable runner needs.
+func (ix *index) checkGaggleCheckout(r *Report) {
+	for name, g := range ix.gaggles {
+		file := ix.gaggleFile[name]
+		warn := func(field string, checkout *apiv1.CheckoutSpec) {
+			if checkout == nil {
+				return
+			}
+			r.addWarning(WarningCompatibility, file, "", "Gaggle", name,
+				"%s.sparse is not honored by the local runner", field)
+		}
+		warn("spec.project.checkout", g.Spec.Project.Checkout)
+		for i := range g.Spec.AdditionalRepos {
+			warn(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
 		}
 	}
 }

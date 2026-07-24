@@ -271,7 +271,7 @@ func mustWriteFile(t *testing.T, path, content string) {
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", bareRepoSafeArgs(args)...)
+	cmd := exec.Command("git", hardenedGitArgs(args)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_COUNT=2",
@@ -302,7 +302,7 @@ func newTestManager(t *testing.T) *Manager {
 // unlike runTestGit.
 func mirrorRefExists(t *testing.T, m *Manager, repo, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", bareRepoSafeArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd := exec.Command("git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = m.repoDirForKey(repoKey(repo))
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_COUNT=2",
@@ -1374,7 +1374,7 @@ printf 'worktree %s\nHEAD deadbeef\n\n' "$FAKE_WORKTREE_PATH"
 // hardened `git config safe.bareRepository=explicit` (an increasingly common
 // security default) makes git refuse cwd-based discovery of a bare repo,
 // which is exactly how every call here reaches a managed mirror (cmd.Dir set
-// to the mirror, no --git-dir/GIT_DIR). Without bareRepoSafeArgs's
+// to the mirror, no --git-dir/GIT_DIR). Without hardenedGitArgs's
 // `-c safe.bareRepository=all` override, WorkingCopy/Create/Remove would all
 // fail under this setting. GIT_CONFIG_GLOBAL simulates the hardened machine
 // without mutating the real user/global git config.
@@ -1501,6 +1501,14 @@ func TestIsTransientProvisionError(t *testing.T) {
 		{name: "remote reset", exitCode: 128, message: "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: the remote end hung up unexpectedly", want: true},
 		{name: "http 500", exitCode: 128, message: "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500", want: true},
 		{name: "http 503", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 503", want: true},
+		{name: "promisor blob fetch", exitCode: 128, message: "fatal: could not fetch ce013625030ba8dba906f756967f9e9ca394464a from promisor remote", want: true},
+		{name: "promisor backfill wrapper", exitCode: 128, message: "error: failed to fetch some objects from '/workcopies/abc/repo.git'", want: true},
+		// Deliberate asymmetry with the plain "authentication" case below: a
+		// promisor backfill only runs after this same remote was cloned or
+		// fetched successfully with the same credentials, so its wrapper
+		// classifies as transient even when the wrapped cause is not network
+		// text (see IsTransientProvisionError's doc).
+		{name: "promisor wrapping authentication", exitCode: 128, message: "fatal: Authentication failed for 'https://example.test/repo.git/'\nfatal: could not fetch ce01362 from promisor remote", want: true},
 		{name: "authentication", exitCode: 128, message: "remote: Invalid username or password.\nfatal: Authentication failed for 'https://example.test/repo.git/'"},
 		{name: "authorization", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 403"},
 		{name: "missing repository", exitCode: 128, message: "remote: Repository not found.\nfatal: repository 'https://example.test/missing.git/' not found"},

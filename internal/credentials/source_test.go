@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -76,8 +77,10 @@ func TestNewResolverRejectsMalformedRefs(t *testing.T) {
 		refs []TokenRef
 	}{
 		{"no name", []TokenRef{{Env: "X"}}},
-		{"neither env nor file", []TokenRef{{Name: "gh"}}},
+		{"no source", []TokenRef{{Name: "gh"}}},
 		{"both env and file", []TokenRef{{Name: "gh", Env: "X", File: "y"}}},
+		{"both env and store", []TokenRef{{Name: "gh", Env: "X", Store: "kv/gh"}}},
+		{"both file and store", []TokenRef{{Name: "gh", File: "y", Store: "kv/gh"}}},
 		{"duplicate name", []TokenRef{{Name: "gh", Env: "X"}, {Name: "gh", Env: "Y"}}},
 	}
 	for _, tc := range cases {
@@ -89,9 +92,170 @@ func TestNewResolverRejectsMalformedRefs(t *testing.T) {
 	}
 }
 
+// fakeStoreResolver is a StoreResolver test double recording the refs it was
+// asked for.
+type fakeStoreResolver struct {
+	secrets map[string]string
+	err     error
+	asked   []string
+}
+
+func (f *fakeStoreResolver) FetchSecret(_ context.Context, ref string) (string, error) {
+	f.asked = append(f.asked, ref)
+	if f.err != nil {
+		return "", f.err
+	}
+	value, ok := f.secrets[ref]
+	if !ok {
+		return "", errors.New("secretstore: not declared")
+	}
+	return value, nil
+}
+
+func TestResolverResolvesStoreRef(t *testing.T) {
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/github-token": "  kv-s3cr3t\n"}}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	got, err := r.Resolve(context.Background(), "gh")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != "kv-s3cr3t" {
+		t.Fatalf("Resolve = %q, want trimmed %q", got, "kv-s3cr3t")
+	}
+	if len(stores.asked) != 1 || stores.asked[0] != "prod-kv/github-token" {
+		t.Fatalf("store asked for %v, want the full ref exactly once", stores.asked)
+	}
+}
+
+func TestNewResolverFailsClosedOnStoreRefWithoutStores(t *testing.T) {
+	_, err := NewResolver([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}})
+	if err == nil {
+		t.Fatal("NewResolver: want error for store ref without a store resolver, got nil")
+	}
+	if !strings.Contains(err.Error(), "no secret store resolver is configured") {
+		t.Fatalf("NewResolver error = %v, want it to name the missing store resolver", err)
+	}
+}
+
+func TestResolverStoreErrorFailsClosed(t *testing.T) {
+	stores := &fakeStoreResolver{err: errors.New("boom")}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/github-token"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	if _, err := r.Resolve(context.Background(), "gh"); err == nil {
+		t.Fatal("Resolve: want store fetch error, got nil")
+	}
+}
+
+func TestResolverStoreEmptyValueFailsClosed(t *testing.T) {
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/blank": "   "}}
+	r, err := NewResolverWithStores([]TokenRef{{Name: "gh", Store: "prod-kv/blank"}}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	_, err = r.Resolve(context.Background(), "gh")
+	if !errors.Is(err, ErrTokenRefEmpty) {
+		t.Fatalf("Resolve error = %v, want ErrTokenRefEmpty", err)
+	}
+}
+
+func TestResolverWithStoresStillResolvesEnvRefs(t *testing.T) {
+	t.Setenv("GH_TOKEN_MIXED_TEST", "env-value")
+	stores := &fakeStoreResolver{secrets: map[string]string{"prod-kv/github-token": "kv-value"}}
+	r, err := NewResolverWithStores([]TokenRef{
+		{Name: "gh-env", Env: "GH_TOKEN_MIXED_TEST"},
+		{Name: "gh-store", Store: "prod-kv/github-token"},
+	}, stores)
+	if err != nil {
+		t.Fatalf("NewResolverWithStores: %v", err)
+	}
+	if got, err := r.Resolve(context.Background(), "gh-env"); err != nil || got != "env-value" {
+		t.Fatalf("Resolve(gh-env) = %q, %v; want env-value", got, err)
+	}
+	if got, err := r.Resolve(context.Background(), "gh-store"); err != nil || got != "kv-value" {
+		t.Fatalf("Resolve(gh-store) = %q, %v; want kv-value", got, err)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+func TestResolverWithSourcesRoutesDynamicNames(t *testing.T) {
+	t.Setenv("GH_TOKEN_STATIC_TEST", "static-token")
+	minted := 0
+	r, err := NewResolverWithSources(
+		[]TokenRef{{Name: "static", Env: "GH_TOKEN_STATIC_TEST"}},
+		map[string]ResolveFunc{"acme/web": func(context.Context) (string, error) {
+			minted++
+			return "minted-token", nil
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewResolverWithSources: %v", err)
+	}
+	got, err := r.Resolve(context.Background(), "acme/web")
+	if err != nil {
+		t.Fatalf("Resolve dynamic: %v", err)
+	}
+	if got != "minted-token" || minted != 1 {
+		t.Fatalf("Resolve = %q (minted %d), want minted-token via the source", got, minted)
+	}
+	// A second resolve consults the source again — its own cache decides.
+	if _, err := r.Resolve(context.Background(), "acme/web"); err != nil || minted != 2 {
+		t.Fatalf("second Resolve minted %d (err %v), want per-resolve consultation", minted, err)
+	}
+	if got, err := r.Resolve(context.Background(), "static"); err != nil || got != "static-token" {
+		t.Fatalf("static ref = %q, %v — dynamic sources must not shadow refs", got, err)
+	}
+}
+
+func TestResolverWithSourcesFailsClosed(t *testing.T) {
+	r, err := NewResolverWithSources(nil, map[string]ResolveFunc{
+		"minty": func(context.Context) (string, error) {
+			return "", errors.New("mint refused")
+		},
+		"empty": func(context.Context) (string, error) {
+			return "   ", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResolverWithSources: %v", err)
+	}
+	if _, err := r.Resolve(context.Background(), "minty"); err == nil {
+		t.Fatal("Resolve: want mint error surfaced, got nil")
+	}
+	if _, err := r.Resolve(context.Background(), "empty"); !errors.Is(err, ErrTokenRefEmpty) {
+		t.Fatalf("Resolve empty mint = %v, want ErrTokenRefEmpty", err)
+	}
+	if _, err := r.Resolve(context.Background(), "unknown"); !errors.Is(err, ErrTokenRefNotFound) {
+		t.Fatalf("Resolve unknown = %v, want ErrTokenRefNotFound", err)
+	}
+}
+
+func TestNewResolverWithSourcesRejectsMalformedSources(t *testing.T) {
+	noop := func(context.Context) (string, error) { return "x", nil }
+	cases := []struct {
+		name    string
+		refs    []TokenRef
+		sources map[string]ResolveFunc
+	}{
+		{"nil func", nil, map[string]ResolveFunc{"a": nil}},
+		{"empty name", nil, map[string]ResolveFunc{"": noop}},
+		{"collides with ref", []TokenRef{{Name: "a", Env: "X"}}, map[string]ResolveFunc{"a": noop}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewResolverWithSources(tc.refs, tc.sources); err == nil {
+				t.Fatal("NewResolverWithSources: want error, got nil")
+			}
+		})
 	}
 }

@@ -222,7 +222,7 @@ func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 		Owner:    "organization",
 		Project:  "project name",
 		Name:     "repository",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
 	got, ok := adoRepoForOrigin(cfg, "https://dev.azure.com/organization/project%20name/_git/repository")

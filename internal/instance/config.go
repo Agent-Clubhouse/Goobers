@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
@@ -81,6 +83,41 @@ type Config struct {
 	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
 	// a Go-only instance that declares no requirements is unaffected.
 	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+	// SecretStores declares named external secret stores token refs can resolve
+	// through (config half of #683, SEC-010). A token ref opts in per ref with
+	// store: "<storeName>/<secretName>"; an instance that declares no stores and
+	// uses only env/file refs behaves byte-identically to before this field
+	// existed.
+	SecretStores []SecretStoreConfig `json:"secretStores,omitempty" yaml:"secretStores,omitempty"`
+	// Sandbox declares the instance-wide isolation posture (#1305). Absent or
+	// zero-valued it is "disabled" — sandboxing is strictly opt-in, so an
+	// unconfigured instance runs exactly as before. A gaggle may override it
+	// through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
+	Sandbox *SandboxConfig `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+	// Workcopies tunes managed working-copy provisioning (docs/design/
+	// v2-cloud-scale.md §3). Nil keeps every default — a pointer, unlike the
+	// sibling sections, so an unconfigured instance's written instance.yaml
+	// stays byte-identical.
+	Workcopies *WorkcopiesConfig `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
+}
+
+// WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
+type WorkcopiesConfig struct {
+	// PartialClone opts newly created mirrors into blobless partial clones
+	// with a heads+tags-narrowed refresh refspec (#646, design §3 B1): blobs
+	// are fetched on demand when a stage worktree first materializes them,
+	// which makes worktree provisioning network-dependent (and, on private
+	// repos, credential-dependent — see worktree.WithPartialClone). False —
+	// the default — keeps mirrors full clones with git invocations
+	// byte-identical to previous releases; existing mirrors are never
+	// migrated in either direction.
+	PartialClone bool `json:"partialClone,omitempty" yaml:"partialClone,omitempty"`
+}
+
+// PartialCloneEnabled reports whether newly created mirrors should be
+// blobless partial clones (workcopies.partialClone, defaults to false).
+func (c *Config) PartialCloneEnabled() bool {
+	return c.Workcopies != nil && c.Workcopies.PartialClone
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -132,8 +169,67 @@ type RunnerConfig struct {
 
 // APIConfig configures the daemon's read-only HTTP API.
 type APIConfig struct {
-	// Listen is a host:port address. Only loopback hosts are accepted.
+	// Listen is a host:port address. A loopback host keeps the tier-1
+	// local-trust posture (SEC-040). A non-loopback host is refused at load
+	// time unless both TLS and Auth are configured — fail closed, with no
+	// insecure override (#640).
 	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	// TLS serves the API over HTTPS from an on-disk certificate/key pair.
+	// Required for a non-loopback listen address.
+	TLS *APITLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
+	// Auth replaces the tier-1 null authenticator (SEC-043). Required for a
+	// non-loopback listen address.
+	Auth *APIAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// APITLSConfig points at the API server's TLS certificate and private key.
+// Paths only — key material never appears in instance.yaml (CFG-009).
+type APITLSConfig struct {
+	CertFile string `json:"certFile" yaml:"certFile"`
+	KeyFile  string `json:"keyFile" yaml:"keyFile"`
+}
+
+// APIAuthConfig selects the daemon API authenticator behind the
+// httpapi.Authenticator seam. OIDC bearer-token validation is the only
+// implementation; Entra ID is a configured issuer, not a code path.
+type APIAuthConfig struct {
+	OIDC *OIDCAuthConfig `json:"oidc,omitempty" yaml:"oidc,omitempty"`
+}
+
+// DefaultOIDCRolesClaim is the token claim consulted for role values when
+// api.auth.oidc.rolesClaim is not set.
+const DefaultOIDCRolesClaim = "roles"
+
+// OIDCAuthConfig validates bearer JWTs against one configured issuer and maps
+// issuer claims onto the instance roles (view/operate/admin, #644).
+type OIDCAuthConfig struct {
+	// Issuer is the OIDC issuer URL, exactly as tokens state it in iss.
+	// Discovery uses <issuer>/.well-known/openid-configuration.
+	Issuer string `json:"issuer" yaml:"issuer"`
+	// Audience is the aud claim value tokens must carry.
+	Audience string `json:"audience" yaml:"audience"`
+	// RolesClaim names the claim carrying role/group values (e.g. "roles",
+	// "groups"). Empty defaults to DefaultOIDCRolesClaim.
+	RolesClaim string `json:"rolesClaim,omitempty" yaml:"rolesClaim,omitempty"`
+	// Roles maps claim values onto instance roles. Deny by default: an
+	// authenticated principal whose claim values match nothing gets no role.
+	Roles OIDCRoleMapping `json:"roles" yaml:"roles"`
+}
+
+// OIDCRoleMapping lists the issuer claim values granted each instance role.
+// Roles are ordered: admin implies operate, operate implies view.
+type OIDCRoleMapping struct {
+	View    []string `json:"view,omitempty" yaml:"view,omitempty"`
+	Operate []string `json:"operate,omitempty" yaml:"operate,omitempty"`
+	Admin   []string `json:"admin,omitempty" yaml:"admin,omitempty"`
+}
+
+// RolesClaimName returns the configured roles claim, defaulting to "roles".
+func (c OIDCAuthConfig) RolesClaimName() string {
+	if c.RolesClaim == "" {
+		return DefaultOIDCRolesClaim
+	}
+	return c.RolesClaim
 }
 
 // WebhookConfig configures the optional GitHub webhook receiver. The daemon
@@ -158,11 +254,20 @@ type RepoRef struct {
 	Name string `json:"name" yaml:"name"`
 	// Token is a reference to this repo's credential. Never an inline value
 	// (CFG-009, SEC-010). GitHub and ADO PAT auth require exactly one of Env
-	// or File. Entra-backed ADO auth does not use this field.
+	// or File. Entra-backed ADO auth and GitHub App auth do not use this
+	// field — exactly one identity mechanism per repo.
 	Token TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
-	// Auth selects Azure DevOps authentication. Nil preserves legacy PAT
-	// behavior when Token is configured.
-	Auth *ADOAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// Auth selects a non-default credential source for this repo: an Azure
+	// DevOps identity kind, or GitHub App installation-token minting (#686).
+	// Nil preserves PAT behavior with Token configured.
+	Auth *RepoAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// GitHubAppAuth reports whether this repo authenticates through GitHub App
+// installation-token minting (auth kind github-app, #686) rather than a
+// static token ref.
+func (r RepoRef) GitHubAppAuth() bool {
+	return r.Provider == "github" && r.Auth != nil && r.Auth.Kind == GitHubAuthApp
 }
 
 const (
@@ -176,24 +281,156 @@ const (
 	ADOAuthManagedIdentity = "managed-identity"
 )
 
-// ADOAuthConfig selects an Azure DevOps credential source without embedding
-// credential material in configuration.
-type ADOAuthConfig struct {
+const (
+	// GitHubAuthPAT selects the env/file/store-backed static token — the
+	// default when auth is absent, byte-identical to before GitHub repos
+	// accepted an auth block at all.
+	GitHubAuthPAT = "pat"
+	// GitHubAuthApp selects GitHub App installation-token minting (#686):
+	// short-lived, installation-scoped tokens exchanged for a signed App JWT
+	// per resolve, replacing a static PAT with no rotation machinery.
+	GitHubAuthApp = "github-app"
+)
+
+// RepoAuthConfig selects a repository credential source without embedding
+// credential material in configuration. Kind values are provider-specific:
+// ADO accepts pat/azure-cli/workload-identity/managed-identity, GitHub
+// accepts pat/github-app; fields beyond Kind belong to one provider's kinds
+// and are rejected elsewhere at load.
+type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
-	// Tenant optionally pins Azure CLI authentication to one tenant.
+	// Tenant optionally pins Azure CLI authentication to one tenant (ADO).
 	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
-	// ClientID optionally selects a user-assigned managed identity.
+	// ClientID optionally selects a user-assigned managed identity (ADO).
+	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
+	// AppID identifies the GitHub App for kind github-app: the numeric App
+	// ID or the app's client ID string — GitHub accepts either as the App
+	// JWT issuer.
+	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
+	// InstallationID is the numeric ID of the App's installation on the
+	// target repo's owner (kind github-app).
+	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// PrivateKey references the App's PEM-encoded private key for kind
+	// github-app — env, file, or store, exactly like a token ref; never an
+	// inline value (CFG-009). The key only ever signs short-lived App JWTs
+	// in-process; stages receive minted installation tokens, never the key.
+	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+}
+
+// hasGitHubAppFields reports whether any github-app-only field is set, for
+// fail-closed rejection on kinds that must not carry them.
+func (a *RepoAuthConfig) hasGitHubAppFields() bool {
+	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil
+}
+
+// GitHubID is a GitHub identifier config field YAML authors may write as a
+// number (`appId: 123456`) or a string (`appId: "Iv1.…"`); both parse,
+// normalized to the string form the GitHub API consumes.
+type GitHubID string
+
+// UnmarshalJSON accepts a JSON string or number. sigs.k8s.io/yaml routes
+// YAML values through JSON, so this is the single decode path.
+func (id *GitHubID) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*id = GitHubID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("must be a string or a number, got %s", data)
+	}
+	*id = GitHubID(n.String())
+	return nil
+}
+
+const (
+	// SecretStoreKindAzureKeyVault is the only supported secret store kind
+	// today (SEC-010); the seam is vendor-neutral by name+kind indirection.
+	SecretStoreKindAzureKeyVault = "azure-key-vault"
+	// SecretStoreAuthWorkloadIdentity selects federated Azure workload identity.
+	SecretStoreAuthWorkloadIdentity = "workload-identity"
+	// SecretStoreAuthManagedIdentity selects an Azure managed identity.
+	SecretStoreAuthManagedIdentity = "managed-identity"
+	// SecretStoreAuthAzureCLI selects the current local Azure CLI login.
+	SecretStoreAuthAzureCLI = "azure-cli"
+)
+
+// SecretStoreConfig declares one named external secret store (#683). Token
+// refs opt in per ref via store: "<name>/<secretName>"; declaring a store a
+// ref never uses is harmless. Auth to the store itself always uses an ambient
+// identity chain — never a token ref, which would be circular.
+type SecretStoreConfig struct {
+	// Name is the handle store-backed token refs address this store by.
+	// DNS-label shaped so it can never be confused with the "/"-separated
+	// secret name that follows it in a ref.
+	Name string `json:"name" yaml:"name"`
+	// Kind is the store vendor; only "azure-key-vault" is supported.
+	Kind string `json:"kind" yaml:"kind"`
+	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
+	VaultURI string `json:"vaultURI" yaml:"vaultURI"`
+	// Auth selects how this process authenticates to the store.
+	Auth *SecretStoreAuthConfig `json:"auth" yaml:"auth"`
+	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
+	// rotation in the store is picked up without hammering it per resolve.
+	// Zero/omitted leaves the resolver's default in effect.
+	CacheTTLSeconds int `json:"cacheTTLSeconds,omitempty" yaml:"cacheTTLSeconds,omitempty"`
+}
+
+// SecretStoreAuthConfig selects the ambient identity used to reach a secret
+// store, mirroring ADOAuthConfig: a source selector, never credential material.
+type SecretStoreAuthConfig struct {
+	Kind string `json:"kind" yaml:"kind"`
+	// ClientID optionally pins a user-assigned identity. Valid for
+	// workload-identity and managed-identity; azure-cli has no client to pin.
 	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 }
 
 // TokenRef points at a credential without storing its value: an environment
-// variable name, or a path to a file containing it (SEC-*, "Env vars / token
-// file" at tiers 1-2, ARCHITECTURE.md §9).
+// variable name, a path to a file containing it (SEC-*, "Env vars / token
+// file" at tiers 1-2, ARCHITECTURE.md §9), or a secret in a declared external
+// secret store (#683). Exactly one source per ref.
 type TokenRef struct {
 	// Env is the name of an environment variable holding the token.
 	Env string `json:"env,omitempty" yaml:"env,omitempty"`
 	// File is a path to a file whose contents are the token.
 	File string `json:"file,omitempty" yaml:"file,omitempty"`
+	// Store references a secret in a declared secretStores entry as
+	// "<storeName>/<secretName>". The store name must match a secretStores
+	// entry; the secret name is interpreted by that store's resolver.
+	Store string `json:"store,omitempty" yaml:"store,omitempty"`
+}
+
+// sourceCount reports how many of the ref's mutually-exclusive sources are set.
+func (r TokenRef) sourceCount() int {
+	n := 0
+	if r.Env != "" {
+		n++
+	}
+	if r.File != "" {
+		n++
+	}
+	if r.Store != "" {
+		n++
+	}
+	return n
+}
+
+// Configured reports whether any token source is set.
+func (r TokenRef) Configured() bool {
+	return r.sourceCount() > 0
+}
+
+// CredentialTokenRef converts this ref into the credentials package's source
+// shape under the given resolver ref name, carrying whichever single source
+// (env, file, or store) is configured. A store-backed ref resolves only
+// through a resolver built with the instance's secret-store registry
+// (credentials.NewResolverWithStores); plain credentials.NewResolver fails
+// closed on it at construction, so a composition site that was never wired
+// for stores rejects the ref with a diagnostic instead of silently reading
+// it as unconfigured.
+func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
+	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Store: r.Store}
 }
 
 // CredentialGrant sources one stage capability from its own token ref (#287).
@@ -424,10 +661,8 @@ func (c OTLPConfig) Validate() error {
 			return fmt.Errorf("headers: header name %q is configured more than once", name)
 		}
 		seenHeaders[canonicalName] = true
-		hasEnv := ref.Env != ""
-		hasFile := ref.File != ""
-		if hasEnv == hasFile {
-			return fmt.Errorf("headers[%q] must reference exactly one of env or file; inline values are not permitted", name)
+		if ref.sourceCount() != 1 {
+			return fmt.Errorf("headers[%q] must reference exactly one of env, file, or store; inline values are not permitted", name)
 		}
 	}
 	return nil
@@ -451,10 +686,10 @@ func (c *Config) WebhookListenAddress() string {
 	return c.Webhook.Listen
 }
 
-// WebhookSecretConfigured reports whether either supported secret source is
-// present. Validate rejects a ref that sets both.
+// WebhookSecretConfigured reports whether any supported secret source is
+// present. Validate rejects a ref that sets more than one.
 func (c *Config) WebhookSecretConfigured() bool {
-	return c.Webhook.Secret.Env != "" || c.Webhook.Secret.File != ""
+	return c.Webhook.Secret.Configured()
 }
 
 // Location resolves Timezone to a *time.Location, defaulting to UTC when
@@ -491,7 +726,7 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w (instance.yaml accepts only known fields; token refs must be "+
-			"token.env or token.file — inline secret values are not permitted, CFG-009/SEC-010)", path, err)
+			"token.env, token.file, or token.store — inline secret values are not permitted, CFG-009/SEC-010)", path, err)
 	}
 	resolvedOTLP, err := cfg.ResolveOTLPConfig(os.LookupEnv)
 	if err != nil {
@@ -511,8 +746,8 @@ func LoadConfig(path string) (*Config, error) {
 // IANA timezone — fail closed at load time rather than at the first cron
 // tick that tries to use it.
 func (c *Config) Validate() error {
-	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
-		return fmt.Errorf("api.listen: %w", err)
+	if err := c.validateAPIConfig(); err != nil {
+		return err
 	}
 	if c.WorkflowSource != nil {
 		if err := c.WorkflowSource.Validate(); err != nil {
@@ -522,8 +757,17 @@ func (c *Config) Validate() error {
 	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
 		return fmt.Errorf("webhook.listen: %w", err)
 	}
-	if c.Webhook.Secret.Env != "" && c.Webhook.Secret.File != "" {
-		return fmt.Errorf("webhook.secret must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+	// Secret stores validate before any token ref so a store-backed ref can be
+	// checked against the declared store names below.
+	stores, err := c.validateSecretStores()
+	if err != nil {
+		return err
+	}
+	if c.Webhook.Secret.sourceCount() > 1 {
+		return fmt.Errorf("webhook.secret must reference exactly one of env, file, or store — inline secret values are never permitted (CFG-009, SEC-010)")
+	}
+	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
+		return err
 	}
 	if c.Timezone != "" {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
@@ -536,6 +780,16 @@ func (c *Config) Validate() error {
 		}
 		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
 			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
+		}
+		names := make([]string, 0, len(c.Telemetry.OTLP.Headers))
+		for name := range c.Telemetry.OTLP.Headers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err := validateStoreRef(fmt.Sprintf("telemetry.otlp.headers[%q]", name), c.Telemetry.OTLP.Headers[name], stores); err != nil {
+				return err
+			}
 		}
 	}
 	if c.Telemetry.Retention != nil {
@@ -565,27 +819,77 @@ func (c *Config) Validate() error {
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
 		}
-		hasEnv := r.Token.Env != ""
-		hasFile := r.Token.File != ""
-		if hasEnv && hasFile {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env or file — "+
+		if r.Token.sourceCount() > 1 {
+			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+		}
+		if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores); err != nil {
+			return err
 		}
 		switch r.Provider {
 		case "github":
 			if r.Project != "" {
 				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
 			}
+			kind := GitHubAuthPAT
 			if r.Auth != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): auth is only valid for provider \"ado\"", i, r.Owner, r.Name)
+				kind = r.Auth.Kind
 			}
-			if !hasEnv && !hasFile {
-				return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env or file — "+
-					"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+			switch kind {
+			case GitHubAuthPAT:
+				if r.Auth != nil && r.Auth.hasGitHubAppFields() {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if !r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
+						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+				}
+			case GitHubAuthApp:
+				// Exactly one identity mechanism per repo: the minted
+				// installation token replaces the static token entirely — a
+				// token configured alongside it could only ever act as a
+				// silent fallback, which the minting design forbids (#686,
+				// no implicit PAT fallback).
+				if r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.tenant and auth.clientId are only valid for ADO auth kinds", i, r.Owner, r.Name)
+				}
+				if r.Auth.AppID == "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.appId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if r.Auth.InstallationID == "" {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
+				}
+				if _, err := strconv.ParseUint(string(r.Auth.InstallationID), 10, 64); err != nil {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId %q must be the numeric installation ID", i, r.Owner, r.Name, r.Auth.InstallationID)
+				}
+				if r.Auth.PrivateKey == nil || r.Auth.PrivateKey.sourceCount() != 1 {
+					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, or store — "+
+						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+				}
+				if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): auth.privateKey", i, r.Owner, r.Name), *r.Auth.PrivateKey, stores); err != nil {
+					return err
+				}
+				// The App key can mint tokens for every repo the installation
+				// covers — never allow the stage environment to carry it, the
+				// same fail-closed posture workflowSource.token.env gets below.
+				if r.Auth.PrivateKey.Env != "" && stageEnvironmentAllows(r.Auth.PrivateKey.Env, c.Runner.EnvPassthrough) {
+					return fmt.Errorf(
+						"repos[%d] (%s/%s): auth.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+						i, r.Owner, r.Name, r.Auth.PrivateKey.Env,
+					)
+				}
+			default:
+				return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
 			}
 		case "ado":
 			if r.Project == "" {
 				return fmt.Errorf("repos[%d] (%s/%s): project is required for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if r.Auth != nil && r.Auth.hasGitHubAppFields() {
+				return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for provider \"github\"", i, r.Owner, r.Name)
 			}
 			kind := ADOAuthPAT
 			if r.Auth != nil {
@@ -593,12 +897,12 @@ func (c *Config) Validate() error {
 			}
 			switch kind {
 			case ADOAuthPAT:
-				if !hasEnv && !hasFile {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env or token.file", i, r.Owner, r.Name)
+				if !r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env, token.file, or token.store", i, r.Owner, r.Name)
 				}
 			case ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity:
-				if hasEnv || hasFile {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env or token.file", i, r.Owner, r.Name, kind)
+				if r.Token.Configured() {
+					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env, token.file, or token.store", i, r.Owner, r.Name, kind)
 				}
 			default:
 				return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
@@ -628,11 +932,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("credentials[%d]: capability %q is sourced more than once", i, cg.Capability)
 		}
 		seen[cg.Capability] = true
-		hasEnv := cg.Token.Env != ""
-		hasFile := cg.Token.File != ""
-		if hasEnv == hasFile {
-			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env or file — "+
+		if cg.Token.sourceCount() != 1 {
+			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, or store — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
+		}
+		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, cg.Capability), cg.Token, stores); err != nil {
+			return err
 		}
 	}
 	// Fail closed at load on a malformed runner capability claim (RRQ-1): a
@@ -657,6 +962,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
+	if c.WorkflowSource != nil && c.WorkflowSource.Token != nil {
+		if err := validateStoreRef("workflowSource.token", *c.WorkflowSource.Token, stores); err != nil {
+			return err
+		}
+	}
 	if c.WorkflowSource != nil &&
 		c.WorkflowSource.Token != nil &&
 		c.WorkflowSource.Token.Env != "" &&
@@ -665,6 +975,121 @@ func (c *Config) Validate() error {
 			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
 			c.WorkflowSource.Token.Env,
 		)
+	}
+	if c.Sandbox != nil {
+		if err := c.Sandbox.Validate(); err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateSecretStores checks every secretStores entry fail-closed at load
+// (#683): a malformed store is a typo nothing later could resolve, and the
+// scheduler-time alternative is an opaque credential failure mid-run. Returns
+// the set of declared store names for store-ref checks.
+func (c *Config) validateSecretStores() (map[string]bool, error) {
+	if len(c.SecretStores) == 0 {
+		return nil, nil
+	}
+	stores := make(map[string]bool, len(c.SecretStores))
+	for i, s := range c.SecretStores {
+		if s.Name == "" {
+			return nil, fmt.Errorf("secretStores[%d]: name is required", i)
+		}
+		if !validSecretStoreName(s.Name) {
+			return nil, fmt.Errorf("secretStores[%d]: name %q must be a lowercase DNS label (letters, digits, and interior hyphens, at most 63 characters)", i, s.Name)
+		}
+		if stores[s.Name] {
+			return nil, fmt.Errorf("secretStores[%d]: name %q is declared more than once", i, s.Name)
+		}
+		stores[s.Name] = true
+		if s.Kind != SecretStoreKindAzureKeyVault {
+			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q)", i, s.Name, s.Kind, SecretStoreKindAzureKeyVault)
+		}
+		if err := validateVaultURI(s.VaultURI); err != nil {
+			return nil, fmt.Errorf("secretStores[%d] (%s): vaultURI: %w", i, s.Name, err)
+		}
+		if s.Auth == nil {
+			return nil, fmt.Errorf("secretStores[%d] (%s): auth is required (kind: one of %q, %q, %q) — store access always authenticates through an ambient identity, never a token ref",
+				i, s.Name, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
+		}
+		switch s.Auth.Kind {
+		case SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity:
+		case SecretStoreAuthAzureCLI:
+			if s.Auth.ClientID != "" {
+				return nil, fmt.Errorf("secretStores[%d] (%s): auth.clientId is not valid for auth kind %q", i, s.Name, s.Auth.Kind)
+			}
+		default:
+			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported auth kind %q (supported: %q, %q, %q)",
+				i, s.Name, s.Auth.Kind, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
+		}
+		if s.CacheTTLSeconds < 0 {
+			return nil, fmt.Errorf("secretStores[%d] (%s): cacheTTLSeconds must not be negative", i, s.Name)
+		}
+	}
+	return stores, nil
+}
+
+// validateStoreRef checks a store-backed token ref's "<storeName>/<secretName>"
+// format and that it names a declared secretStores entry. A ref with no store
+// half passes untouched; scope names the field for the error message.
+func validateStoreRef(scope string, ref TokenRef, stores map[string]bool) error {
+	if ref.Store == "" {
+		return nil
+	}
+	name, secret, ok := strings.Cut(ref.Store, "/")
+	if !ok || name == "" || secret == "" || strings.Contains(secret, "/") {
+		return fmt.Errorf("%s: store ref %q must have the form \"<storeName>/<secretName>\"", scope, ref.Store)
+	}
+	if !stores[name] {
+		return fmt.Errorf("%s: store ref %q names secret store %q, which is not declared under secretStores", scope, ref.Store, name)
+	}
+	return nil
+}
+
+// validSecretStoreName reports whether name is a lowercase DNS label: it can
+// never carry the "/" separator or shell/URL metacharacters, so a store ref
+// always splits unambiguously.
+func validSecretStoreName(name string) bool {
+	if len(name) > 63 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+			if i == 0 || i == len(name)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return len(name) > 0
+}
+
+// validateVaultURI checks an Azure Key Vault endpoint: https, host only.
+func validateVaultURI(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("is required for kind %q", SecretStoreKindAzureKeyVault)
+	}
+	if strings.TrimSpace(raw) != raw {
+		return fmt.Errorf("must not contain leading or trailing whitespace")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("must be a valid URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("scheme must be https")
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("host is required")
+	}
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("userinfo, paths, queries, and fragments are not supported")
 	}
 	return nil
 }
@@ -691,13 +1116,8 @@ func (s WorkflowSource) Validate() error {
 			if err := validateRemoteGitURL(s.URL); err != nil {
 				return err
 			}
-			if s.Token == nil {
-				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
-			}
-			hasTokenEnv := s.Token.Env != ""
-			hasTokenFile := s.Token.File != ""
-			if hasTokenEnv == hasTokenFile {
-				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+			if s.Token == nil || s.Token.sourceCount() != 1 {
+				return fmt.Errorf("remote git token must reference exactly one of env, file, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
 		} else if s.Token != nil {
 			return fmt.Errorf("token is only valid for a remote git url")
@@ -829,8 +1249,97 @@ func validHeaderName(name string) bool {
 	return true
 }
 
-func validateAPIListenAddress(address string) error {
-	return validateLoopbackListenAddress(address)
+// validateAPIConfig checks the API listener posture. A loopback bind keeps
+// the tier-1 local-trust default. A non-loopback bind is refused unless BOTH
+// TLS and an authenticator are configured (#640, SEC-043): the daemon must
+// never expose an unauthenticated or plaintext API off-box by accident, and
+// there is deliberately no insecure override.
+func (c *Config) validateAPIConfig() error {
+	address := c.APIListenAddress()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("api.listen: must be a host:port address: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("api.listen: host is required; wildcard listeners are not allowed")
+	}
+	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
+		return fmt.Errorf("api.listen: port %q must be a number from 0 through 65535", port)
+	}
+	if c.API.TLS != nil {
+		if c.API.TLS.CertFile == "" || c.API.TLS.KeyFile == "" {
+			return fmt.Errorf("api.tls: certFile and keyFile are both required")
+		}
+	}
+	if c.API.Auth != nil {
+		if c.API.Auth.OIDC == nil {
+			return fmt.Errorf("api.auth: oidc is required — it is the only supported authenticator (SEC-043)")
+		}
+		if err := c.API.Auth.OIDC.Validate(); err != nil {
+			return fmt.Errorf("api.auth.oidc: %w", err)
+		}
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	if c.API.TLS == nil || c.API.Auth == nil {
+		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
+			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
+			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
+	}
+	return nil
+}
+
+// Validate checks the OIDC issuer/audience/role-mapping shape without
+// contacting the issuer.
+func (c OIDCAuthConfig) Validate() error {
+	if c.Issuer == "" {
+		return fmt.Errorf("issuer is required")
+	}
+	issuer, err := url.Parse(c.Issuer)
+	if err != nil || !issuer.IsAbs() || issuer.Host == "" {
+		return fmt.Errorf("issuer must be an absolute http(s) URL")
+	}
+	switch strings.ToLower(issuer.Scheme) {
+	case "https":
+	case "http":
+		if !isLoopbackHost(issuer.Hostname()) {
+			return fmt.Errorf("issuer %q must use https; http is allowed only for a loopback development issuer", c.Issuer)
+		}
+	default:
+		return fmt.Errorf("issuer must be an absolute http(s) URL")
+	}
+	if issuer.RawQuery != "" || issuer.Fragment != "" {
+		return fmt.Errorf("issuer must not carry a query or fragment")
+	}
+	if c.Audience == "" {
+		return fmt.Errorf("audience is required")
+	}
+	mapped := 0
+	seen := make(map[string]string)
+	for _, group := range []struct {
+		role   string
+		values []string
+	}{
+		{role: "view", values: c.Roles.View},
+		{role: "operate", values: c.Roles.Operate},
+		{role: "admin", values: c.Roles.Admin},
+	} {
+		for _, value := range group.values {
+			if value == "" {
+				return fmt.Errorf("roles.%s must not contain empty claim values", group.role)
+			}
+			if prior, duplicate := seen[value]; duplicate {
+				return fmt.Errorf("claim value %q is mapped to both %s and %s; roles are ordered (admin ⊇ operate ⊇ view), map each value once", value, prior, group.role)
+			}
+			seen[value] = group.role
+			mapped++
+		}
+	}
+	if mapped == 0 {
+		return fmt.Errorf("roles must map at least one claim value to view, operate, or admin — an empty mapping denies every principal")
+	}
+	return nil
 }
 
 func validateLoopbackListenAddress(address string) error {

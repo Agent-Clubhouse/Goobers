@@ -1,0 +1,71 @@
+# Goobers task-queue worker (k8s-infra-shape.md §2: Deployment(s) per
+# task-queue, HPA-scalable; one Deployment per queue — copy this file per
+# queue, or per gaggle for the G2 dedicated mode, #656).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-worker
+    app.kubernetes.io/component: worker
+    goobers.dev/role: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-worker
+        app.kubernetes.io/component: worker
+        goobers.dev/role: worker
+    spec:
+      serviceAccountName: goobers-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Journal volume group ownership so the nonroot worker can append (§4).
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: goobers # rewritten by the kustomization images: transformer
+          # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
+          # (#632): it serves the named task queue(s) until SIGTERM, then
+          # drains. One task queue per Deployment — set the queue to the one
+          # this gaggle/workflow dispatches to (default "goobers-engine").
+          args: ["worker", "--task-queue", "goobers-engine"]
+          env:
+            # Temporal frontend (§2); reachable from workers and operator only
+            # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
+            # reads GOOBERS_TEMPORAL_HOSTPORT (falls back to 127.0.0.1:7233).
+            - name: GOOBERS_TEMPORAL_HOSTPORT
+              value: temporal-frontend.goobers-temporal:7233
+          volumeMounts:
+            # Journal & artifacts: same on-disk layout as tiers 1-2 (§4);
+            # single-writer is enforced by Temporal workflow identity, not
+            # file locks — this mount is a projection target.
+            - name: journal
+              mountPath: /var/lib/goobers
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # §7: agentic stages are memory/IO-lean but long-running; workers
+          # bin-pack on a general pool.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: journal
+          persistentVolumeClaim:
+            claimName: goobers-journal

@@ -49,6 +49,14 @@
           "description": "refs/heads/ root this gaggle's run branches live under (providers.BranchName). Empty defaults to 'goobers/'. A trailing slash is optional. Must be a valid ref-path segment sequence (#965/#1010).",
           "type": "string",
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
+        },
+        "sandbox": {
+          "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agentic": { "type": "string", "enum": ["disabled", "enforced"] }
+          }
         }
       }
     }
@@ -77,7 +85,19 @@
         "project": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
         "branch": { "type": "string" },
-        "connectionRef": { "type": "string" }
+        "connectionRef": { "type": "string" },
+        "checkout": {
+          "description": "Partial-checkout declaration (B2, #649). Accepted but not honored by the local runner yet — inert, surfaced as a VER003 compatibility warning at validate time.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sparse": {
+              "description": "Repo-relative path cones a sparse checkout materializes. Empty means a full checkout.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     },
     "runnerCapability": {

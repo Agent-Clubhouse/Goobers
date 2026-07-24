@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/credentials"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -90,6 +92,74 @@ notifications: true
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+// TestLoadConfigGitHubAppAuth: appId/installationId accept both the YAML
+// number and string spellings GitHub surfaces (numeric IDs vs client-ID
+// strings), normalized to strings; the loaded repo reports GitHubAppAuth.
+func TestLoadConfigGitHubAppAuth(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    auth:
+      kind: github-app
+      appId: 123456
+      installationId: "42"
+      privateKey:
+        file: /run/secrets/goobers-app.pem
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	repo := cfg.Repos[0]
+	if !repo.GitHubAppAuth() {
+		t.Fatalf("GitHubAppAuth() = false for %+v", repo.Auth)
+	}
+	if repo.Auth.AppID != "123456" {
+		t.Fatalf("appId = %q, want numeric YAML normalized to \"123456\"", repo.Auth.AppID)
+	}
+	if repo.Auth.InstallationID != "42" {
+		t.Fatalf("installationId = %q, want \"42\"", repo.Auth.InstallationID)
+	}
+	if repo.Auth.PrivateKey == nil || repo.Auth.PrivateKey.File != "/run/secrets/goobers-app.pem" {
+		t.Fatalf("privateKey = %+v, want file ref", repo.Auth.PrivateKey)
+	}
+}
+
+func TestLoadConfigWorkcopies(t *testing.T) {
+	base := `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+`
+	cfg, err := LoadConfig(writeInstanceYAML(t, base))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone must default to false")
+	}
+
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
+workcopies:
+  partialClone: true
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies: %v", err)
+	}
+	if !cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone: true was not honored")
 	}
 }
 
@@ -765,20 +835,20 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid ado Azure CLI",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
 			}},
 		},
 		{
 			name: "ado missing project",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Name: "web", Auth: &ADOAuthConfig{Kind: ADOAuthAzureCLI}},
+				{Provider: "ado", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
 			}},
 			wantErr: "project is required",
 		},
 		{
 			name: "ado identity auth rejects PAT",
 			cfg: Config{Repos: []RepoRef{
-				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &ADOAuthConfig{Kind: ADOAuthWorkloadIdentity}},
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthWorkloadIdentity}},
 			}},
 			wantErr: "must not configure token",
 		},
@@ -794,20 +864,162 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web"},
 			}},
-			wantErr: "exactly one of env or file",
+			wantErr: "exactly one of env, file, or store",
 		},
 		{
 			name: "both env and file",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T", File: "/f"}},
 			}},
-			wantErr: "exactly one of env or file",
+			wantErr: "exactly one of env, file, or store",
 		},
 		{
 			name: "valid",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
 			}},
+		},
+		{
+			name: "valid github-app",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+		},
+		{
+			name: "valid github-app store-backed key",
+			cfg: Config{
+				SecretStores: []SecretStoreConfig{{
+					Name: "prod-kv", Kind: SecretStoreKindAzureKeyVault,
+					VaultURI: "https://acme.vault.azure.net",
+					Auth:     &SecretStoreAuthConfig{Kind: SecretStoreAuthWorkloadIdentity},
+				}},
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "Iv1.abcdef", InstallationID: "42",
+						PrivateKey: &TokenRef{Store: "prod-kv/app-key"},
+					}},
+				},
+			},
+		},
+		{
+			name: "github-app rejects token alongside minting",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "must not configure token",
+		},
+		{
+			name: "github-app missing appId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.appId is required",
+		},
+		{
+			name: "github-app missing installationId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.installationId is required",
+		},
+		{
+			name: "github-app non-numeric installationId",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "acme-corp",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "must be the numeric installation ID",
+		},
+		{
+			name: "github-app missing privateKey",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				}},
+			}},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey with two sources",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Env: "K", File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey undeclared store",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Store: "missing-kv/app-key"},
+				}},
+			}},
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "github-app rejects ADO fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+					Kind: GitHubAuthApp, Tenant: "contoso", AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{File: "/run/secrets/app.pem"},
+				}},
+			}},
+			wantErr: "only valid for ADO auth kinds",
+		},
+		{
+			name: "github pat kind rejects app fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{
+					Kind: GitHubAuthPAT, AppID: "123456",
+				}},
+			}},
+			wantErr: "only valid for auth kind \"github-app\"",
+		},
+		{
+			name: "github unsupported auth kind",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{Kind: "workload-identity"}},
+			}},
+			wantErr: "unsupported GitHub auth kind",
+		},
+		{
+			name: "ado rejects github-app fields",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{
+					Kind: ADOAuthAzureCLI, AppID: "123456",
+				}},
+			}},
+			wantErr: "only valid for provider \"github\"",
+		},
+		{
+			name: "github-app privateKey env exposed via passthrough",
+			cfg: Config{
+				Runner: RunnerConfig{EnvPassthrough: []string{"GOOBERS_APP_KEY"}},
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+						PrivateKey: &TokenRef{Env: "GOOBERS_APP_KEY"},
+					}},
+				},
+			},
+			wantErr: "must not be exposed to stages",
 		},
 		{
 			name:    "unresolvable timezone",
@@ -889,14 +1101,14 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "agent:model"},
 			}},
-			wantErr: "exactly one of env or file",
+			wantErr: "exactly one of env, file, or store",
 		},
 		{
 			name: "credentials both env and file",
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "agent:model", Token: TokenRef{Env: "T", File: "/f"}},
 			}},
-			wantErr: "exactly one of env or file",
+			wantErr: "exactly one of env, file, or store",
 		},
 		{
 			name: "credentials valid agent:model",
@@ -988,7 +1200,7 @@ func TestConfigValidate(t *testing.T) {
 				Endpoint: "https://collector.example.com:4317",
 				Headers:  map[string]TokenRef{"authorization": {}},
 			}}},
-			wantErr: "must reference exactly one of env or file",
+			wantErr: "must reference exactly one of env, file, or store",
 		},
 		{
 			name: "OTLP ambiguous header source",
@@ -998,7 +1210,7 @@ func TestConfigValidate(t *testing.T) {
 					"authorization": {Env: "AUTH", File: "/run/secrets/auth"},
 				},
 			}}},
-			wantErr: "must reference exactly one of env or file",
+			wantErr: "must reference exactly one of env, file, or store",
 		},
 		{
 			name: "OTLP settings without endpoint",
@@ -1096,5 +1308,320 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	}
 	if got.RunConditions.StalledRunTimeout != "20m" {
 		t.Fatalf("stalledRunTimeout = %q, want 20m", got.RunConditions.StalledRunTimeout)
+	}
+}
+
+// validSecretStore returns a well-formed secretStores entry tests mutate.
+func validSecretStore() SecretStoreConfig {
+	return SecretStoreConfig{
+		Name:     "prod-kv",
+		Kind:     SecretStoreKindAzureKeyVault,
+		VaultURI: "https://acme.vault.azure.net",
+		Auth:     &SecretStoreAuthConfig{Kind: SecretStoreAuthWorkloadIdentity},
+	}
+}
+
+func TestLoadConfigSecretStores(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+secretStores:
+  - name: prod-kv
+    kind: azure-key-vault
+    vaultURI: https://acme.vault.azure.net
+    auth:
+      kind: managed-identity
+      clientId: 00000000-0000-0000-0000-000000000000
+    cacheTTLSeconds: 300
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      store: prod-kv/github-token
+credentials:
+  - capability: agent:model
+    token:
+      store: prod-kv/copilot-token
+webhook:
+  secret:
+    store: prod-kv/webhook-secret
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.SecretStores) != 1 || cfg.SecretStores[0].Name != "prod-kv" {
+		t.Fatalf("unexpected secretStores: %+v", cfg.SecretStores)
+	}
+	if cfg.SecretStores[0].CacheTTLSeconds != 300 {
+		t.Fatalf("cacheTTLSeconds = %d, want 300", cfg.SecretStores[0].CacheTTLSeconds)
+	}
+	if cfg.Repos[0].Token.Store != "prod-kv/github-token" {
+		t.Fatalf("repo token store = %q", cfg.Repos[0].Token.Store)
+	}
+	if !cfg.WebhookSecretConfigured() {
+		t.Fatal("store-backed webhook secret must count as configured")
+	}
+}
+
+func TestConfigValidateSecretStores(t *testing.T) {
+	// storeConfig builds a Config carrying one secret store entry mutated by
+	// each case, plus a store-free repo so store errors are isolated.
+	storeConfig := func(mutate func(*SecretStoreConfig)) Config {
+		store := validSecretStore()
+		mutate(&store)
+		return Config{SecretStores: []SecretStoreConfig{store}}
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "valid store",
+			cfg:  storeConfig(func(*SecretStoreConfig) {}),
+		},
+		{
+			name: "valid azure-cli auth",
+			cfg: storeConfig(func(s *SecretStoreConfig) {
+				s.Auth = &SecretStoreAuthConfig{Kind: SecretStoreAuthAzureCLI}
+			}),
+		},
+		{
+			name:    "missing name",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.Name = "" }),
+			wantErr: "secretStores[0]: name is required",
+		},
+		{
+			name:    "uppercase name rejected",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.Name = "Prod-KV" }),
+			wantErr: "must be a lowercase DNS label",
+		},
+		{
+			name:    "name with slash rejected",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.Name = "prod/kv" }),
+			wantErr: "must be a lowercase DNS label",
+		},
+		{
+			name: "duplicate name",
+			cfg: Config{SecretStores: []SecretStoreConfig{
+				validSecretStore(), validSecretStore(),
+			}},
+			wantErr: "declared more than once",
+		},
+		{
+			name:    "unsupported kind",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.Kind = "hashicorp-vault" }),
+			wantErr: `unsupported kind "hashicorp-vault"`,
+		},
+		{
+			name:    "missing vaultURI",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.VaultURI = "" }),
+			wantErr: "vaultURI: is required",
+		},
+		{
+			name:    "http vaultURI rejected",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.VaultURI = "http://acme.vault.azure.net" }),
+			wantErr: "scheme must be https",
+		},
+		{
+			name:    "vaultURI with path rejected",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.VaultURI = "https://acme.vault.azure.net/secrets" }),
+			wantErr: "paths, queries, and fragments are not supported",
+		},
+		{
+			name:    "missing auth",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.Auth = nil }),
+			wantErr: "auth is required",
+		},
+		{
+			name: "unsupported auth kind",
+			cfg: storeConfig(func(s *SecretStoreConfig) {
+				s.Auth = &SecretStoreAuthConfig{Kind: "pat"}
+			}),
+			wantErr: `unsupported auth kind "pat"`,
+		},
+		{
+			name: "azure-cli auth rejects clientId",
+			cfg: storeConfig(func(s *SecretStoreConfig) {
+				s.Auth = &SecretStoreAuthConfig{Kind: SecretStoreAuthAzureCLI, ClientID: "abc"}
+			}),
+			wantErr: "auth.clientId is not valid",
+		},
+		{
+			name:    "negative cache TTL",
+			cfg:     storeConfig(func(s *SecretStoreConfig) { s.CacheTTLSeconds = -1 }),
+			wantErr: "cacheTTLSeconds must not be negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateStoreRefs(t *testing.T) {
+	withStore := func(mutate func(*Config)) Config {
+		cfg := Config{SecretStores: []SecretStoreConfig{validSecretStore()}}
+		mutate(&cfg)
+		return cfg
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "repo token store ref valid",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "prod-kv/github-token"}}}
+			}),
+		},
+		{
+			name: "repo token env and store rejected",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T", Store: "prod-kv/github-token"}}}
+			}),
+			wantErr: "exactly one of env, file, or store",
+		},
+		{
+			name: "store ref without separator rejected",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "github-token"}}}
+			}),
+			wantErr: `must have the form "<storeName>/<secretName>"`,
+		},
+		{
+			name: "store ref with extra separator rejected",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "prod-kv/a/b"}}}
+			}),
+			wantErr: `must have the form "<storeName>/<secretName>"`,
+		},
+		{
+			name: "store ref with empty secret rejected",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "prod-kv/"}}}
+			}),
+			wantErr: `must have the form "<storeName>/<secretName>"`,
+		},
+		{
+			name: "undeclared store rejected",
+			cfg: withStore(func(c *Config) {
+				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "staging-kv/github-token"}}}
+			}),
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "store ref without any declared stores rejected",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Store: "prod-kv/github-token"}},
+			}},
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "credentials store ref valid",
+			cfg: withStore(func(c *Config) {
+				c.Credentials = []CredentialGrant{{Capability: "agent:model", Token: TokenRef{Store: "prod-kv/copilot"}}}
+			}),
+		},
+		{
+			name: "credentials undeclared store rejected",
+			cfg: withStore(func(c *Config) {
+				c.Credentials = []CredentialGrant{{Capability: "agent:model", Token: TokenRef{Store: "other/copilot"}}}
+			}),
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "webhook undeclared store rejected",
+			cfg: withStore(func(c *Config) {
+				c.Webhook = WebhookConfig{Secret: TokenRef{Store: "other/webhook"}}
+			}),
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "otlp header store ref valid",
+			cfg: withStore(func(c *Config) {
+				c.Telemetry = TelemetryConfig{OTLP: &OTLPConfig{
+					Endpoint: "https://collector.example.com:4317",
+					Headers:  map[string]TokenRef{"authorization": {Store: "prod-kv/otlp-auth"}},
+				}}
+			}),
+		},
+		{
+			name: "otlp header undeclared store rejected",
+			cfg: withStore(func(c *Config) {
+				c.Telemetry = TelemetryConfig{OTLP: &OTLPConfig{
+					Endpoint: "https://collector.example.com:4317",
+					Headers:  map[string]TokenRef{"authorization": {Store: "other/otlp-auth"}},
+				}}
+			}),
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name: "workflow source store ref valid",
+			cfg: withStore(func(c *Config) {
+				c.WorkflowSource = &WorkflowSource{
+					Kind:  WorkflowSourceKindGit,
+					URL:   "https://github.com/acme/config.git",
+					Token: &TokenRef{Store: "prod-kv/config-token"},
+				}
+			}),
+		},
+		{
+			name: "workflow source undeclared store rejected",
+			cfg: withStore(func(c *Config) {
+				c.WorkflowSource = &WorkflowSource{
+					Kind:  WorkflowSourceKindGit,
+					URL:   "https://github.com/acme/config.git",
+					Token: &TokenRef{Store: "other/config-token"},
+				}
+			}),
+			wantErr: "not declared under secretStores",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestTokenRefCredentialTokenRef pins the conversion every consumer feeds
+// credentials.NewResolverWithStores (#683): all three sources carry through
+// under the caller's ref name, so a store-backed ref reaches the resolver
+// intact (and a resolver built without store support still rejects it at
+// construction — see the credentials package's own fail-closed tests).
+func TestTokenRefCredentialTokenRef(t *testing.T) {
+	got := TokenRef{Env: "T"}.CredentialTokenRef("repo")
+	if got.Name != "repo" || got.Env != "T" || got.File != "" || got.Store != "" {
+		t.Fatalf("env ref = %+v", got)
+	}
+	got = TokenRef{Store: "prod-kv/github-token"}.CredentialTokenRef("repo")
+	if got.Name != "repo" || got.Store != "prod-kv/github-token" || got.Env != "" || got.File != "" {
+		t.Fatalf("store ref = %+v", got)
+	}
+	if _, err := credentials.NewResolver([]credentials.TokenRef{got}); err == nil {
+		t.Fatal("a store-backed ref must fail closed in a resolver built without store support")
 	}
 }

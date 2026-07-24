@@ -47,11 +47,9 @@ func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *local
 	if !hasWebhookTriggers(setup.Definitions) || !setup.Config.WebhookSecretConfigured() {
 		return nil, nil
 	}
-	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
-		Name: webhookSecretRefName,
-		Env:  setup.Config.Webhook.Secret.Env,
-		File: setup.Config.Webhook.Secret.File,
-	}})
+	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
+		setup.Config.Webhook.Secret.CredentialTokenRef(webhookSecretRefName),
+	}, setup.SecretStores)
 	if err != nil {
 		return nil, fmt.Errorf("build webhook credential resolver: %w", err)
 	}
