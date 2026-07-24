@@ -331,12 +331,16 @@ func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
 		var token string
 		var err error
 		if repoUsesToken(repo) {
+			var env, file string
+			env, file, err = repo.Token.EnvFileSources()
 			var resolver credentials.Resolver
-			resolver, err = credentials.NewResolver([]credentials.TokenRef{{
-				Name: refName,
-				Env:  repo.Token.Env,
-				File: repo.Token.File,
-			}})
+			if err == nil {
+				resolver, err = credentials.NewResolver([]credentials.TokenRef{{
+					Name: refName,
+					Env:  env,
+					File: file,
+				}})
+			}
 			if err == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 				token, err = resolver.Resolve(ctx, refName)

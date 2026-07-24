@@ -23,10 +23,14 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner) (providers.AD
 	switch kind {
 	case instance.ADOAuthPAT:
 		const refName = "ado-repository"
+		env, file, err := repo.Token.EnvFileSources()
+		if err != nil {
+			return nil, fmt.Errorf("configure ADO PAT source: %w", err)
+		}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
 			Name: refName,
-			Env:  repo.Token.Env,
-			File: repo.Token.File,
+			Env:  env,
+			File: file,
 		}})
 		if err != nil {
 			return nil, fmt.Errorf("configure ADO PAT source: %w", err)

@@ -82,3 +82,20 @@ runConditions:
 # runner:
 #   capabilities: [dotnet@8]
 #   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
+# Optional external secret stores (#683). A store declares WHERE a secret
+# lives, never a value; any token ref can then opt in with
+# `store: <storeName>/<secretName>` in place of `env`/`file` (still exactly
+# one source per ref). Auth to the store itself always uses an ambient
+# identity (workload-identity, managed-identity, or azure-cli) — never a
+# token ref, which would be circular. Instances that declare no stores and
+# use only env/file refs behave exactly as before.
+# secretStores:
+#   - name: prod-kv
+#     kind: azure-key-vault
+#     vaultURI: https://acme.vault.azure.net
+#     auth:
+#       kind: workload-identity
+#     cacheTTLSeconds: 300
+# Example store-backed ref, anywhere a token ref is accepted:
+#     token:
+#       store: prod-kv/github-token

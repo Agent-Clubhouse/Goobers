@@ -79,11 +79,14 @@ func resolveOTLPHeaders(
 
 	refs := make([]credentials.TokenRef, 0, len(names))
 	for _, name := range names {
-		ref := headerRefs[name]
+		env, file, err := headerRefs[name].EnvFileSources()
+		if err != nil {
+			return nil, fmt.Errorf("configure telemetry OTLP header %q: %w", name, err)
+		}
 		refs = append(refs, credentials.TokenRef{
 			Name: "telemetry.otlp.headers." + strings.ToLower(name),
-			Env:  ref.Env,
-			File: ref.File,
+			Env:  env,
+			File: file,
 		})
 	}
 	resolver, err := credentials.NewResolver(refs)
@@ -307,10 +310,17 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 			owner += "/" + r.Project
 		}
 		ref := owner + "/" + r.Name
+		// Fail closed on a store-backed ref (#683): only the config surface has
+		// landed; this local composition root resolves env/file sources only,
+		// and a store ref must never degrade into an unconfigured repo token.
+		env, file, err := r.Token.EnvFileSources()
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
+		}
 		tokenRef := ""
-		if r.Token.Env != "" || r.Token.File != "" {
+		if env != "" || file != "" {
 			tokenRef = ref
-			refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
+			refs = append(refs, credentials.TokenRef{Name: ref, Env: env, File: file})
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
@@ -320,10 +330,14 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		if !capability.StageDeclarable(cg.Capability) {
 			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
 		}
+		env, file, err := cg.Token.EnvFileSources()
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: capability %s: %w", cg.Capability, err)
+		}
 		refs = append(refs, credentials.TokenRef{
 			Name: credentialRefName(cg.Capability),
-			Env:  cg.Token.Env,
-			File: cg.Token.File,
+			Env:  env,
+			File: file,
 		})
 	}
 	resolver, err := credentials.NewResolver(refs)
