@@ -27,6 +27,14 @@ const (
 	maxRunLimit     = 200
 )
 
+// reconcileInterval throttles the index-completeness backfill scan. Reconcile
+// is a backstop for runs present on disk but absent from the index
+// (imported/migrated); the daemon already ingests every run it executes, so a
+// short staleness window can never hide an actively-running or freshly-finished
+// run. Throttling collapses the Overview's per-phase ListRuns fan-out (and any
+// rapid refresh burst) into a single directory scan.
+const reconcileInterval = 2 * time.Second
+
 var (
 	// ErrNotFound means the requested read-model object does not exist.
 	ErrNotFound = errors.New("read service: not found")
@@ -498,6 +506,18 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 // directory names (never parses a journal). An individual run that fails to
 // ingest simply stays out of this pass rather than failing the whole list.
 func (s *Local) reconcileIndex(ctx context.Context) error {
+	// Serialize reconciliation and throttle it: concurrent callers block here,
+	// and once the first completes the rest observe a fresh lastReconcile and
+	// return without re-scanning. lastReconcile advances only on success, so a
+	// canceled or failed scan is retried by the next caller.
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	if !s.lastReconcile.IsZero() && s.now().Sub(s.lastReconcile) < reconcileInterval {
+		return nil
+	}
+	if reconcileScanObserver != nil {
+		reconcileScanObserver()
+	}
 	indexed, err := s.sources.Telemetry.IndexedRunIDs()
 	if err != nil {
 		return err
@@ -527,8 +547,15 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
 		}
 	}
+	s.lastReconcile = s.now()
 	return nil
 }
+
+// reconcileScanObserver, when non-nil, is invoked once per reconcileIndex scan
+// that actually runs (i.e. is not throttled). It is a test seam used to assert
+// that a burst of concurrent/rapid ListRuns collapses to a single scan. Always
+// nil in production.
+var reconcileScanObserver func()
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
 	return s.runSummariesForStage(ctx, skipUnreadable, "")
