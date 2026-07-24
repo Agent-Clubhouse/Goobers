@@ -93,6 +93,65 @@ func initNonConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 	return origin
 }
 
+func initAdjacentAdditionPRBranch(t *testing.T, prBranch string) (origin string) {
+	t.Helper()
+	return initAttributedAdjacentAdditionPRBranch(t, prBranch, "")
+}
+
+func initAttributedAdjacentAdditionPRBranch(t *testing.T, prBranch, attributes string) (origin string) {
+	t.Helper()
+	return initAdjacentConflictPRBranch(
+		t,
+		prBranch,
+		"items.yaml",
+		"items:\n  - existing\n",
+		"items:\n  - existing\n  - from-pr\n",
+		"items:\n  - existing\n  - from-base\n",
+		attributes,
+	)
+}
+
+func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incoming, upstream, attributes string) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, name), []byte(ancestor), 0o644); err != nil {
+		t.Fatalf("write seed conflict file: %v", err)
+	}
+	if attributes != "" {
+		if err := os.WriteFile(filepath.Join(work, ".gitattributes"), []byte(attributes), 0o644); err != nil {
+			t.Fatalf("write attributes: %v", err)
+		}
+		runGitT(t, work, "--literal-pathspecs", "add", "--", name, ".gitattributes")
+	} else {
+		runGitT(t, work, "--literal-pathspecs", "add", "--", name)
+	}
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, name), []byte(incoming), 0o644); err != nil {
+		t.Fatalf("write PR conflict addition: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "add PR item")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(work, name), []byte(upstream), 0o644); err != nil {
+		t.Fatalf("write base conflict addition: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "add base item")
+	runGitT(t, work, "push", "origin", "main")
+
+	return origin
+}
+
 // initConflictingPRBranch builds a bare origin where the PR branch and main
 // both modify the SAME line of the SAME file after branching — a real
 // rebase conflict, not a synthetic flag.
@@ -332,6 +391,198 @@ func TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRebasePRResolvesDistinctAdjacentAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-adjacent"
+	origin := initAdjacentAdditionPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 60)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "60",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "clean rebase") {
+		t.Fatalf("stdout = %q, want automatic resolution to continue through the clean path", stdout)
+	}
+
+	const want = "items:\n  - existing\n  - from-base\n  - from-pr\n"
+	got, err := os.ReadFile(filepath.Join(wt.Path, "items.yaml"))
+	if err != nil {
+		t.Fatalf("read resolved list: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("resolved list = %q, want %q", got, want)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err = os.ReadFile(filepath.Join(verify, "items.yaml"))
+	if err != nil {
+		t.Fatalf("read pushed list: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("pushed list = %q, want %q", got, want)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want remediation label cleared", labels)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"false"`) || !strings.Contains(string(data), `"conflict":"false"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=false conflict=false", data)
+	}
+}
+
+func TestRebasePRResolvesLiteralPathspecFilename(t *testing.T) {
+	const prBranch = "goobers/impl/run-pathspec"
+	const name = "[id].tsx"
+	origin := initAdjacentConflictPRBranch(
+		t,
+		prBranch,
+		name,
+		"const items = [\n  \"existing\",\n]\n",
+		"const items = [\n  \"existing\",\n  \"from-pr\",\n]\n",
+		"const items = [\n  \"existing\",\n  \"from-base\",\n]\n",
+		"",
+	)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 62)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "62",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "clean rebase") {
+		t.Fatalf("stdout = %q, want literal path resolution to continue through the clean path", stdout)
+	}
+
+	const want = "const items = [\n  \"existing\",\n  \"from-base\",\n  \"from-pr\",\n]\n"
+	got, err := os.ReadFile(filepath.Join(wt.Path, name))
+	if err != nil {
+		t.Fatalf("read resolved pathspec filename: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("resolved pathspec filename = %q, want %q", got, want)
+	}
+}
+
+func TestRebasePRRejectsStructuralMarkerAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-structural"
+	const ancestor = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t)\n}\n"
+	const incoming = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t\t- fromPR()\n\t)\n}\n"
+	const upstream = "func calculate() int {\n\treturn (\n\t\t- existing()\n\t\t- fromBase()\n\t)\n}\n"
+	origin := initAdjacentConflictPRBranch(t, prBranch, "logic.txt", ancestor, incoming, upstream, "")
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 63)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "63",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "needs agentic remediation") {
+		t.Fatalf("stdout = %q, want structural additions routed to agentic remediation", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want none after the aborted structural conflict", unmerged)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, "logic.txt"))
+	if err != nil {
+		t.Fatalf("read original PR structural file: %v", err)
+	}
+	if string(got) != incoming {
+		t.Fatalf("origin structural file = %q, want PR branch left untouched", got)
+	}
+}
+
+func TestRebasePRRejectsPythonFunctionMarkerAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-python-structural"
+	const ancestor = "def f():\n    - existing\n"
+	const incoming = "def f():\n    - existing\n    - from_pr\n"
+	const upstream = "def f():\n    - existing\n    - from_base\n"
+	origin := initAdjacentConflictPRBranch(t, prBranch, "logic.py", ancestor, incoming, upstream, "")
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 64)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "64",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "needs agentic remediation") {
+		t.Fatalf("stdout = %q, want Python structural additions routed to agentic remediation", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want none after the aborted Python conflict", unmerged)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, "logic.py"))
+	if err != nil {
+		t.Fatalf("read original PR Python file: %v", err)
+	}
+	if string(got) != incoming {
+		t.Fatalf("origin Python file = %q, want PR branch left untouched", got)
+	}
+}
+
 // TestRebasePRConflictDefersAndLeavesCleanWorktree proves a rebase conflict
 // is itself treated as substantive (routes to needsAgent) AND that the
 // worktree is left in a clean, non-mid-rebase state — never a broken
@@ -391,6 +642,187 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
 	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err == nil {
 		t.Fatal("origin's branch was rebased/pushed, want it untouched on the conflict path")
+	}
+}
+
+func TestRebasePRRejectsBinaryAttributedAdjacentAdditions(t *testing.T) {
+	const prBranch = "goobers/impl/run-binary-adjacent"
+	origin := initAttributedAdjacentAdditionPRBranch(t, prBranch, "*.yaml binary\n")
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 61)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "61",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"true"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=true", data)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 1 || labels[0] != needsRemediationLabel {
+		t.Fatalf("labels = %v, want %s unchanged", labels, needsRemediationLabel)
+	}
+}
+
+func TestMergeAdjacentLineInsertionsPreservesDistinctQuotedEntries(t *testing.T) {
+	ancestor := "items = [\n  \"existing\",\n]\n"
+	upstream := "items = [\n  \"existing\",\n  \"from-base\",\n]\n"
+	incoming := "items = [\n  \"existing\",\n  \"from-pr\",\n]\n"
+
+	merged, ok := mergeAdjacentLineInsertions("items.go", []byte(ancestor), []byte(upstream), []byte(incoming))
+	if !ok {
+		t.Fatal("mergeAdjacentLineInsertions() rejected comma-terminated quoted entries")
+	}
+	want := "items = [\n  \"existing\",\n  \"from-base\",\n  \"from-pr\",\n]\n"
+	if string(merged) != want {
+		t.Fatalf("mergeAdjacentLineInsertions() = %q, want %q", merged, want)
+	}
+}
+
+func TestMergeAdjacentLineInsertionsRejectsUnsafeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		ancestor string
+		upstream string
+		incoming string
+	}{
+		{
+			name:     "same addition is ambiguous",
+			ancestor: "items:\n  - existing\n",
+			upstream: "items:\n  - existing\n  - duplicate\n",
+			incoming: "items:\n  - existing\n  - duplicate\n",
+		},
+		{
+			name:     "replacement is overlapping",
+			ancestor: "value: old\n",
+			upstream: "value: base\n",
+			incoming: "value: pr\n",
+		},
+		{
+			name:     "multiple lines are not trivial",
+			ancestor: "items:\n  - existing\n",
+			upstream: "items:\n  - existing\n  - base-one\n  - base-two\n",
+			incoming: "items:\n  - existing\n  - from-pr\n",
+		},
+		{
+			name:     "different indentation is structural",
+			ancestor: "items:\n  - existing\n",
+			upstream: "items:\n  - existing\n  - base\n",
+			incoming: "items:\n  - existing\n    - nested\n",
+		},
+		{
+			name:     "repeated context has no unique insertion point",
+			ancestor: "  - item\n",
+			upstream: "  - item\n  - item\n",
+			incoming: "  - item\n  - other\n",
+		},
+		{
+			name:     "unterminated additions would concatenate",
+			ancestor: "items:\n  - existing\n",
+			upstream: "items:\n  - existing\n  - base",
+			incoming: "items:\n  - existing\n  - pr",
+		},
+		{
+			name:     "python function body is structural",
+			path:     "logic.py",
+			ancestor: "def f():\n    - existing\n",
+			upstream: "def f():\n    - existing\n    - from_base\n",
+			incoming: "def f():\n    - existing\n    - from_pr\n",
+		},
+		{
+			name:     "malformed YAML is not a verified list",
+			ancestor: "items:\n  - existing\nbroken: [\n",
+			upstream: "items:\n  - existing\n  - from-base\nbroken: [\n",
+			incoming: "items:\n  - existing\n  - from-pr\nbroken: [\n",
+		},
+		{
+			name:     "executable block is structural",
+			ancestor: "func run() {\n\talreadyRunning()\n}\n",
+			upstream: "func run() {\n\talreadyRunning()\n\tfromBase()\n}\n",
+			incoming: "func run() {\n\talreadyRunning()\n\tfromPR()\n}\n",
+		},
+		{
+			name:     "comma terminated calls are structural",
+			ancestor: "run(\n\texisting(),\n)\n",
+			upstream: "run(\n\texisting(),\n\tfromBase(),\n)\n",
+			incoming: "run(\n\texisting(),\n\tfromPR(),\n)\n",
+		},
+		{
+			name:     "quoted function arguments are structural",
+			ancestor: "run(\n  \"existing\",\n)\n",
+			upstream: "run(\n  \"existing\",\n  \"from-base\",\n)\n",
+			incoming: "run(\n  \"existing\",\n  \"from-pr\",\n)\n",
+		},
+		{
+			name:     "quoted entries without separators are ambiguous",
+			ancestor: "items = [\n  \"existing\",\n]\n",
+			upstream: "items = [\n  \"existing\",\n  \"from-base\"\n]\n",
+			incoming: "items = [\n  \"existing\",\n  \"from-pr\"\n]\n",
+		},
+		{
+			name:     "quoted map entries are structural",
+			ancestor: "items = {\n  \"existing\": \"value\",\n}\n",
+			upstream: "items = {\n  \"existing\": \"value\",\n  \"shared\": \"base\",\n}\n",
+			incoming: "items = {\n  \"existing\": \"value\",\n  \"shared\": \"pr\",\n}\n",
+		},
+		{
+			name:     "isolated list-shaped lines are ambiguous",
+			ancestor: "heading\nfooter\n",
+			upstream: "heading\n- from-base\nfooter\n",
+			incoming: "heading\n- from-pr\nfooter\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.path
+			if path == "" {
+				path = "items.yaml"
+			}
+			if merged, ok := mergeAdjacentLineInsertions(path, []byte(tt.ancestor), []byte(tt.upstream), []byte(tt.incoming)); ok {
+				t.Fatalf("mergeAdjacentLineInsertions() = %q, true; want rejection", merged)
+			}
+		})
+	}
+}
+
+func TestHasStandardTextMergeAttributesRejectsContentTransforms(t *testing.T) {
+	for _, attributes := range []string{
+		"items.yaml filter=custom\n",
+		"items.yaml ident\n",
+		"items.yaml working-tree-encoding=UTF-16LE\n",
+	} {
+		t.Run(strings.Fields(attributes)[1], func(t *testing.T) {
+			dir := t.TempDir()
+			runGitT(t, dir, "init")
+			if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte(attributes), 0o644); err != nil {
+				t.Fatalf("write attributes: %v", err)
+			}
+			standard, err := hasStandardTextMergeAttributes(dir, "items.yaml")
+			if err != nil {
+				t.Fatalf("hasStandardTextMergeAttributes: %v", err)
+			}
+			if standard {
+				t.Fatalf("attributes %q accepted, want content transform rejected", attributes)
+			}
+		})
 	}
 }
 
