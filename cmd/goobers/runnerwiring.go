@@ -1248,7 +1248,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1454,6 +1454,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// fallback that applies when a stage sets none.
 			if spec.TimeoutSeconds > 0 {
 				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
+			}
+			// Opt-in agentic sandbox enforcement (S3/#166, #1305): this
+			// gaggle's effective posture, resolved once at the composition
+			// root (instance.EffectiveAgenticSandbox). The default posture,
+			// disabled, adds no option — the executor and adapter behave
+			// byte-identically to an instance with no sandbox config at all.
+			if sandboxPosture == instance.SandboxEnforced {
+				opts = append(opts, harness.WithSandboxEnforcement())
 			}
 			return harness.NewExecutor(
 				adapter,
@@ -1715,6 +1723,21 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 		refs[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = g.Spec.Project
 	}
 	return refs, nil
+}
+
+// sandboxPosturesByGaggle resolves each configured gaggle's effective agentic
+// isolation posture (#1305): the gaggle's own sandbox override when declared,
+// else the instance-wide sandbox.agentic posture, else disabled. Resolved once
+// here, at the composition root, so the per-gaggle runner wiring and anything
+// else that needs the posture agree on one resolution (the same shape as
+// branchNamespacesByGaggle above).
+func sandboxPosturesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]instance.SandboxPosture {
+	out := make(map[string]instance.SandboxPosture, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = instance.EffectiveAgenticSandbox(cfg, g)
+	}
+	return out
 }
 
 // branchNamespacesByGaggle maps each configured gaggle to its run-branch

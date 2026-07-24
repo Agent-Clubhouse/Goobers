@@ -319,6 +319,22 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, err
 	}
+	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
+	// into the workspace so the sandbox policy needs no writable root beyond
+	// the worktree (plus its narrowed linked git directories) — the exact recipe the
+	// sandbox package's live Copilot probe codified (ADR-0001). The overrides
+	// happen before the session-id block below so the native transcript path
+	// derives from the confined COPILOT_HOME.
+	var confinement *copilotConfinement
+	if req.Sandbox != nil {
+		confinement, err = prepareCopilotConfinement(req.Workspace)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
+		}
+		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
+		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
+		argv = append(argv, "--log-dir", confinement.logDir)
+	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
 		captureID, err := newCopilotCaptureID()
@@ -331,6 +347,18 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if copilotHome, ok := copilotConfigHome(env); ok {
 			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
 		}
+	}
+
+	if req.Sandbox != nil {
+		// Wrap last, once argv is final (session id included), so the whole
+		// invocation runs inside the sandbox. promptArg shifts by the wrapper
+		// prefix so the contract-recovery turn below still swaps the prompt.
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
+		}
+		argv = wrapped
+		promptArg += shift
 	}
 
 	runner := c.runner()

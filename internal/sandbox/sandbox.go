@@ -25,6 +25,9 @@ var (
 // environment, stdio, timeout, and process-group configuration.
 type Sandbox interface {
 	Wrap(command *exec.Cmd, policy Policy) error
+	// Mechanism names the confinement implementation ("seatbelt", "bwrap")
+	// for diagnostics and the runner's isolation-posture journal record.
+	Mechanism() string
 }
 
 // Policy declares the stage workspace and any isolated per-run runtime-state

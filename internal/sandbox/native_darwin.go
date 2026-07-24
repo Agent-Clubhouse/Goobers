@@ -30,6 +30,8 @@ func newNative() (Sandbox, error) {
 	return nativeSandbox{}, nil
 }
 
+func (nativeSandbox) Mechanism() string { return "seatbelt" }
+
 func (nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	validated, err := validate(command, policy)
 	if err != nil {
