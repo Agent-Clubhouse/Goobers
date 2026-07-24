@@ -121,11 +121,17 @@ func (p *GitHubProvider) ListPullRequestReviewThreads(ctx context.Context, repo 
 	if err != nil {
 		return PullRequestReviewThreads{}, err
 	}
+	// Snapshot comments first so comments created between the REST and GraphQL
+	// reads are present in the later thread-state snapshot.
+	rawComments, err := p.listInlinePullRequestComments(ctx, repo, pullID)
+	if err != nil {
+		return PullRequestReviewThreads{}, err
+	}
 	threadStates, err := p.pullRequestReviewThreadStates(ctx, repo, number)
 	if err != nil {
 		return PullRequestReviewThreads{}, err
 	}
-	comments, err := p.listInlinePullRequestComments(ctx, repo, pullID, threadStates)
+	comments, err := pullRequestInlineComments(rawComments, threadStates)
 	if err != nil {
 		return PullRequestReviewThreads{}, err
 	}
@@ -161,75 +167,81 @@ func (p *GitHubProvider) listNativePullRequestReviews(ctx context.Context, repo 
 	return reviews, nil
 }
 
-func (p *GitHubProvider) listInlinePullRequestComments(ctx context.Context, repo RepositoryRef, pullID string, states map[int64]githubReviewThreadState) ([]PullRequestInlineComment, error) {
+func (p *GitHubProvider) listInlinePullRequestComments(ctx context.Context, repo RepositoryRef, pullID string) ([]githubInlineReviewComment, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "comments")
 	if err != nil {
 		return nil, err
 	}
-	comments := make([]PullRequestInlineComment, 0)
+	comments := make([]githubInlineReviewComment, 0)
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var raw []githubInlineReviewComment
-		if err := json.Unmarshal(page, &raw); err != nil {
+		var pageComments []githubInlineReviewComment
+		if err := json.Unmarshal(page, &pageComments); err != nil {
 			return fmt.Errorf("decode inline review comments page: %w", err)
 		}
-		for _, comment := range raw {
-			state, ok := states[comment.ID]
-			if !ok && comment.InReplyTo != 0 {
-				state, ok = states[comment.InReplyTo]
-			}
-			if !ok {
-				return fmt.Errorf("inline review comment %d has no review-thread state", comment.ID)
-			}
-			path := comment.Path
-			if path == "" {
-				path = state.Path
-			}
-			line := state.Line
-			if comment.Line != nil {
-				line = *comment.Line
-			}
-			originalLine := state.OriginalLine
-			if comment.OriginalLine != nil {
-				originalLine = *comment.OriginalLine
-			}
-			side := comment.Side
-			if side == "" {
-				side = state.Side
-			}
-			startLine := state.StartLine
-			if comment.StartLine != nil {
-				startLine = *comment.StartLine
-			}
-			originalStartLine := state.OriginalStartLine
-			if comment.OriginalStartLine != nil {
-				originalStartLine = *comment.OriginalStartLine
-			}
-			startSide := comment.StartSide
-			if startSide == "" {
-				startSide = state.StartSide
-			}
-			comments = append(comments, PullRequestInlineComment{
-				ID:                comment.ID,
-				Author:            comment.User.Login,
-				Body:              comment.Body,
-				Path:              path,
-				Line:              line,
-				OriginalLine:      originalLine,
-				Side:              side,
-				StartLine:         startLine,
-				OriginalStartLine: originalStartLine,
-				StartSide:         startSide,
-				DiffHunk:          comment.DiffHunk,
-				InReplyTo:         comment.InReplyTo,
-				IsResolved:        state.IsResolved,
-				IsOutdated:        state.IsOutdated,
-				CreatedAt:         comment.CreatedAt,
-				URL:               comment.HTMLURL,
-			})
-		}
+		comments = append(comments, pageComments...)
 		return nil
 	}); err != nil {
 		return nil, err
+	}
+	return comments, nil
+}
+
+func pullRequestInlineComments(rawComments []githubInlineReviewComment, states map[int64]githubReviewThreadState) ([]PullRequestInlineComment, error) {
+	comments := make([]PullRequestInlineComment, 0, len(rawComments))
+	for _, comment := range rawComments {
+		state, ok := states[comment.ID]
+		if !ok && comment.InReplyTo != 0 {
+			state, ok = states[comment.InReplyTo]
+		}
+		if !ok {
+			return nil, fmt.Errorf("inline review comment %d has no review-thread state", comment.ID)
+		}
+		path := comment.Path
+		if path == "" {
+			path = state.Path
+		}
+		line := state.Line
+		if comment.Line != nil {
+			line = *comment.Line
+		}
+		originalLine := state.OriginalLine
+		if comment.OriginalLine != nil {
+			originalLine = *comment.OriginalLine
+		}
+		side := comment.Side
+		if side == "" {
+			side = state.Side
+		}
+		startLine := state.StartLine
+		if comment.StartLine != nil {
+			startLine = *comment.StartLine
+		}
+		originalStartLine := state.OriginalStartLine
+		if comment.OriginalStartLine != nil {
+			originalStartLine = *comment.OriginalStartLine
+		}
+		startSide := comment.StartSide
+		if startSide == "" {
+			startSide = state.StartSide
+		}
+		comments = append(comments, PullRequestInlineComment{
+			ID:                comment.ID,
+			Author:            comment.User.Login,
+			Body:              comment.Body,
+			Path:              path,
+			Line:              line,
+			OriginalLine:      originalLine,
+			Side:              side,
+			StartLine:         startLine,
+			OriginalStartLine: originalStartLine,
+			StartSide:         startSide,
+			DiffHunk:          comment.DiffHunk,
+			InReplyTo:         comment.InReplyTo,
+			IsResolved:        state.IsResolved,
+			IsOutdated:        state.IsOutdated,
+			CreatedAt:         comment.CreatedAt,
+			URL:               comment.HTMLURL,
+		})
 	}
 	return comments, nil
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -128,5 +129,42 @@ func TestGitHubListPullRequestReviewThreadsFailsWhenThreadStateIsMissing(t *test
 	)
 	if err == nil || !strings.Contains(err.Error(), "no review-thread state") {
 		t.Fatalf("error = %v, want missing thread state failure", err)
+	}
+}
+
+func TestGitHubListPullRequestReviewThreadsSnapshotsCommentsBeforeThreadState(t *testing.T) {
+	var commentsListed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/web/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[]`))
+		case "/repos/acme/web/pulls/42/comments":
+			commentsListed.Store(true)
+			_, _ = w.Write([]byte(`[{"id":101,"body":"new comment","path":"worker.go","line":42}]`))
+		case "/graphql":
+			if !commentsListed.Load() {
+				_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+				{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"comments":{"nodes":[{"databaseId":101}]}}
+			],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	got, err := provider.ListPullRequestReviewThreads(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "web"},
+		"42",
+	)
+	if err != nil {
+		t.Fatalf("ListPullRequestReviewThreads: %v", err)
+	}
+	if len(got.InlineComments) != 1 || got.InlineComments[0].ID != 101 {
+		t.Fatalf("inline comments = %+v, want newly listed comment with thread state", got.InlineComments)
 	}
 }
