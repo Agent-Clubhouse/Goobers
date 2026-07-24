@@ -1,0 +1,20 @@
+# Journal & artifact storage (k8s-infra-shape.md §4): same on-disk layout as
+# tiers 1-2 (runs/, scheduler/) on a cluster volume. Requires a
+# ReadWriteMany-capable StorageClass or a blob-backed CSI class — append-only
+# usage, digested artifacts; shared storage is a projection target, never a
+# coordination mechanism (run ownership = Temporal workflow identity).
+# `goobers doctor --k8s` verifies an RWX-capable class exists.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-journal
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-journal
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: CHANGE-ME # e.g. an azurefile-csi / blob-csi / NFS class
+  resources:
+    requests:
+      storage: 50Gi

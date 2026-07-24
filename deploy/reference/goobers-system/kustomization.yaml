@@ -1,0 +1,31 @@
+# goobers-system control plane base (k8s-infra-shape.md §2/§3): operator,
+# task-queue worker, daemon API + portal, least-privilege RBAC, and journal
+# storage. Reference — the customer applies/adapts (see ../README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goobers-system
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: goobers
+
+resources:
+  - namespace.yaml
+  - operator-rbac.yaml
+  - operator-deployment.yaml
+  - worker-rbac.yaml
+  - worker-deployment.yaml
+  - api-rbac.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - api-ingress-example.yaml
+  - journal-pvc.yaml
+
+# Image parameterization (§1: a registry the cluster can pull from). Containers
+# reference the bare name `goobers`; point this at your registry — no real
+# registry is hardcoded anywhere in this tree.
+images:
+  - name: goobers
+    newName: registry.example.com/CHANGE-ME/goobers # CHANGE-ME
+    newTag: CHANGE-ME

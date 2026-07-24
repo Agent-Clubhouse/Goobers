@@ -1,0 +1,33 @@
+# Temporal isolation (k8s-infra-shape.md §5: "Temporal reachable only from
+# workers and operator"). Apply alongside the Helm release in the
+# goobers-temporal namespace; the egress half for dedicated per-gaggle workers
+# lives in ../gaggle-namespace/base/networkpolicies.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: temporal-frontend-ingress
+  namespace: goobers-temporal
+spec:
+  # The chart labels the frontend pods app.kubernetes.io/name=temporal; scope
+  # further with app.kubernetes.io/component=frontend if your chart version
+  # sets it.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: temporal
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Workers + operator in the control plane (§2/§3).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: goobers-system
+        # Dedicated per-gaggle workers (G2 mode, #656): gaggle namespaces
+        # carry the goobers.dev/gaggle label stamped by the template.
+        - namespaceSelector:
+            matchExpressions:
+              - key: goobers.dev/gaggle
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 7233

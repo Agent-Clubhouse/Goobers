@@ -1,0 +1,13 @@
+# Second example gaggle stamp — proves the template builds for multiple
+# gaggles side by side (issue #663 acceptance). See gaggle-a for the pattern.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gaggle-b
+
+resources:
+  - ../../base
+
+labels:
+  - pairs:
+      goobers.dev/gaggle: gaggle-b
