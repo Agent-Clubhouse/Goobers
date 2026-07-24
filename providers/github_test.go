@@ -1284,9 +1284,10 @@ func TestGitHubProviderListRecentlyClosedPullRequests(t *testing.T) {
 			{
 				"number": 20, "state": "closed", "merged_at": now.Format(time.RFC3339),
 				"closed_at": now.Format(time.RFC3339), "updated_at": now.Format(time.RFC3339),
-				"html_url": "https://github.com/acme/app/pull/20",
-				"head":     map[string]interface{}{"ref": "goobers/implementation/run-20", "sha": "head20"},
-				"base":     map[string]interface{}{"ref": "main", "sha": "base20"},
+				"html_url":         "https://github.com/acme/app/pull/20",
+				"merge_commit_sha": "merge20",
+				"head":             map[string]interface{}{"ref": "goobers/implementation/run-20", "sha": "head20"},
+				"base":             map[string]interface{}{"ref": "main", "sha": "base20"},
 			},
 			{
 				"number": 19, "state": "closed", "closed_at": old.Format(time.RFC3339),
@@ -1312,7 +1313,7 @@ func TestGitHubProviderListRecentlyClosedPullRequests(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("out = %+v, want only the recently merged PR", out)
 	}
-	if out[0].Number != 20 || out[0].State != "closed" || !out[0].Merged {
+	if out[0].Number != 20 || out[0].State != "closed" || !out[0].Merged || out[0].MergeSHA != "merge20" {
 		t.Fatalf("out[0] = %+v, want PR #20 with merged current state", out[0])
 	}
 }
@@ -1352,7 +1353,10 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, []map[string]interface{}{
 			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3},
-			{"filename": "cmd/goobers/new.go", "status": "added", "additions": 40, "deletions": 0},
+			{
+				"filename": "cmd/goobers/new.go", "previous_filename": "cmd/goobers/old.go",
+				"status": "renamed", "additions": 40, "deletions": 0,
+			},
 		})
 	})
 	server := httptest.NewServer(mux)
@@ -1368,6 +1372,9 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	}
 	if files[0].Path != "internal/runner/run.go" || files[0].Status != "modified" || files[0].Additions != 12 || files[0].Deletions != 3 {
 		t.Fatalf("unexpected file[0]: %+v", files[0])
+	}
+	if files[1].PreviousPath != "cmd/goobers/old.go" {
+		t.Fatalf("file[1] = %+v, want previous rename path", files[1])
 	}
 }
 
@@ -1414,6 +1421,37 @@ func TestGitHubProviderPullRequestMergeableNullIsUnknown(t *testing.T) {
 	}
 	if mergeable != nil {
 		t.Fatalf("mergeable = %v, want nil (still computing)", *mergeable)
+	}
+}
+
+func TestGitHubProviderRepositoryFileContentReadsRef(t *testing.T) {
+	want := strings.Repeat("first\nsecond\n", 100_000)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/contents/portal/src/App.tsx", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("ref"); got != "head-sha" {
+			t.Fatalf("ref = %q, want head-sha", got)
+		}
+		if got := r.Header.Get("Accept"); got != "application/vnd.github.raw+json" {
+			t.Fatalf("Accept = %q, want raw GitHub content media type", got)
+		}
+		_, _ = w.Write([]byte(want))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	content, err := provider.RepositoryFileContent(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		"portal/src/App.tsx",
+		"head-sha",
+	)
+	if err != nil {
+		t.Fatalf("RepositoryFileContent: %v", err)
+	}
+	if got := string(content); got != want {
+		t.Fatalf("content length = %d, want %d", len(got), len(want))
 	}
 }
 

@@ -144,6 +144,29 @@ func TestBlockedOnSiblingStillBlocks(t *testing.T) {
 			t.Fatal("blocked = false, want true — one of two named blockers (#703) is still open")
 		}
 	})
+
+	t.Run("actively demoted blocker no longer blocks", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(6, "pr 6")
+		server.addIssue(704, "demoted blocker", mergeDemotedLabel)
+		server.addOpenPR(704, "goobers/implementation/704", "main", "h704", "base", false, []string{mergeDemotedLabel}, nil)
+		demotion, err := mergeDemotionComment(mergeDemotionState{Demoted: true, HeadSHA: "h704"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.addComment(704, demotion)
+		server.addComment(6, blockedOnSiblingCommentFor(t, 704))
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 6, Labels: []string{blockedOnSiblingLabel}}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — snapshot-valid demotion lets successors drain")
+		}
+	})
 }
 
 // TestUnparkResolvedSiblings is #748's post-merge push-half acceptance: after a

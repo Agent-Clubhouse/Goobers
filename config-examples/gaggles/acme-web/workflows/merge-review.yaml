@@ -51,6 +51,8 @@ spec:
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
+      policyActions:
+        - flag-foundation-coupling
       expectedOutputs:
         - number
         - head
