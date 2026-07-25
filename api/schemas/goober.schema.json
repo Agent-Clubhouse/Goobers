@@ -19,7 +19,7 @@
         "role": { "type": "string", "minLength": 1 },
         "displayName": { "type": "string" },
         "instructions": { "type": "string", "minLength": 1 },
-        "harness": { "type": "string", "enum": ["copilot"] },
+        "harness": { "type": "string", "enum": ["copilot", "claude-code"] },
         "model": { "type": "string" },
         "harnessOptions": { "type": "object", "additionalProperties": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
