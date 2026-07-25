@@ -105,6 +105,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 	}{
 		{name: "selfhost", path: filepath.Join(root, "selfhost")},
 		{name: "config-examples", path: filepath.Join(root, "config-examples")},
+		{name: "ios-simulator", path: filepath.Join(root, "examples", "ios-simulator")},
 	}
 	for _, config := range configs {
 		config := config

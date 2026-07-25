@@ -10,7 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-const iosSimulatorGaggleDir = "../../config-examples/gaggles/ios-simulator"
+const iosSimulatorGaggleDir = "../../examples/ios-simulator/gaggles/ios-simulator"
 
 func TestIOSSimulatorWorkflowDeclaresFailClosedHostRequirements(t *testing.T) {
 	gaggle := loadYAML[apiv1.Gaggle](t, filepath.Join(iosSimulatorGaggleDir, "gaggle.yaml"))
