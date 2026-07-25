@@ -727,6 +727,31 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         },
       ],
       models: [],
+      curation: {
+        runs: 3,
+        reportedRuns: 3,
+        ready: 8,
+        needsHuman: 2,
+        closed: 1,
+        deduped: 1,
+        split: 1,
+        stale: 2,
+        reconciled: 4,
+        milestoned: 3,
+        bounced: 1,
+      },
+      readyPool: {
+        observedAt: "2026-07-15T10:00:00Z",
+        depth: 5,
+        averageAgeSeconds: 43_200,
+        oldestAgeSeconds: 172_800,
+        starved: false,
+        claimAgeSamples: 4,
+        averageClaimAgeSeconds: 64_800,
+        bounceRate: 1 / 9,
+        forwardCurationThroughput: 8,
+        implementationDemand: 6,
+      },
     },
     telemetryErrorSignatures: {
       items: [
@@ -849,8 +874,40 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runs: { runs: [] },
     runDetails: {},
     runEvents: {},
-    telemetryStats: { gaggles: [], runs: [], stages: [], usage: [], models: [] },
+    telemetryStats: {
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [],
+      curation: emptyCurationStats(),
+      readyPool: emptyReadyPool(),
+    },
     telemetryErrorSignatures: { items: [] },
     telemetryErrors: { items: [] },
+  };
+}
+
+function emptyCurationStats() {
+  return {
+    runs: 0,
+    reportedRuns: 0,
+    ready: 0,
+    needsHuman: 0,
+    closed: 0,
+    deduped: 0,
+    split: 0,
+    stale: 0,
+    reconciled: 0,
+    milestoned: 0,
+    bounced: 0,
+  };
+}
+
+function emptyReadyPool() {
+  return {
+    claimAgeSamples: 0,
+    forwardCurationThroughput: 0,
+    implementationDemand: 0,
   };
 }

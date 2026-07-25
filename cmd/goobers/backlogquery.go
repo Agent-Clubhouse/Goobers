@@ -56,7 +56,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with both\n" +
 	"trustLabel (SEC-047: required on public repos, since backlog content is\n" +
 	"untrusted input otherwise) and requireLabels. With --claim, claims\n" +
@@ -72,7 +72,10 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --release] [pa
 	"require github:issues:write so the label mirror stays symmetric with the\n" +
 	"ledger. Idempotent: releasing claims this run does not hold (already\n" +
 	"released, e.g. re-run after a crash) is a no-op success, not an error.\n" +
-	"--claim and --release are mutually exclusive.\n\n" +
+	"With --reconcile, repairs drifted backlog labels against the claim ledger\n" +
+	"and live issue/child state, then writes the actual correction count to the\n" +
+	"declared result file. --claim, --reconcile, and --release are mutually\n" +
+	"exclusive.\n\n" +
 	"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n" +
 	"claiming an issue whose referenced files are already contested by\n" +
 	"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n" +
@@ -91,6 +94,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
+	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
 	fs.Usage = helpUsage(stderr, "backlog-query")
 	if err := fs.Parse(args); err != nil {
@@ -100,7 +104,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		fs.Usage()
 		return 2
 	}
-	if *claim && *release {
+	if boolCount(*claim, *reconcile, *release) > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -131,8 +135,9 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
+	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
-	if curationRun {
+	if reconcileBeforeClaim || *reconcile {
 		stalenessPolicy, err = readBacklogStalenessPolicy()
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -178,8 +183,8 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// input, and claiming is the mutating, consequential action (it starts
 	// implementation work). A read-only list (no --claim) is informational,
 	// so it's not gated the same way.
-	if *claim && trustLabel == "" {
-		pln(stderr, "error: trustLabel is required to claim (SEC-047: backlog content is untrusted input on a public repo) — declare inputs.trustLabel")
+	if (*claim || *reconcile) && trustLabel == "" {
+		pln(stderr, "error: trustLabel is required to claim or reconcile (SEC-047: backlog content is untrusted input on a public repo) — declare inputs.trustLabel")
 		return 1
 	}
 
@@ -187,8 +192,8 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	defer cancel()
 	observedAt := time.Now().UTC()
 
-	if curationRun {
-		if err := reconcileBacklogMetadata(
+	if curationRun || *reconcile {
+		reconciled, reconcileErr := reconcileBacklogMetadata(
 			ctx,
 			l,
 			issueProvider,
@@ -196,8 +201,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			trustLabel,
 			stalenessPolicy,
 			func() time.Time { return observedAt },
-		); err != nil {
-			return failProviderStage(stderr, "reconcile backlog metadata", err, "claimed-items.json")
+		)
+		if reconcileErr != nil {
+			resultFile := "claimed-items.json"
+			if *reconcile {
+				resultFile = "backlog-reconciliation.json"
+			}
+			return failProviderStage(stderr, "reconcile backlog metadata", reconcileErr, resultFile)
+		}
+		if *reconcile {
+			return writeBacklogReconciliationResult(reconciled, stdout, stderr)
 		}
 	}
 
@@ -417,7 +430,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
-
 	runID, workflow, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -539,6 +551,20 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if len(claimed) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
+	if hasAnyLabel(requireLabels, []string{providers.LabelReady}) {
+		for i := range claimed {
+			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
+				ctx, repo, claimed[i].ID, providers.LabelReady,
+			)
+			if transitionErr != nil {
+				return failProviderStage(stderr, "read ready-label transitions", transitionErr, "claimed-item.json")
+			}
+			if transitionErr := annotateReadyTimes(claimed[i:i+1], providers.LabelReady, transitions); transitionErr != nil {
+				pf(stderr, "error: measure ready age: %v\n", transitionErr)
+				return 1
+			}
+		}
+	}
 
 	var curationItems []curationClaimedItem
 	if curationRun {
@@ -590,6 +616,31 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	} else {
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
+	return 0
+}
+
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
+}
+
+func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
+	data, err := json.Marshal(map[string]int{"reconciled": reconciled})
+	if err != nil {
+		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
+		return 1
+	}
+	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
 	return 0
 }
 

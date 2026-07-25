@@ -50,7 +50,7 @@ func reconcileBacklogMetadata(
 	trustLabel string,
 	stalenessPolicy backlogStalenessPolicy,
 	now func() time.Time,
-) error {
+) (int, error) {
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository:  repo,
 		Labels:      []string{trustLabel},
@@ -58,11 +58,12 @@ func reconcileBacklogMetadata(
 		OldestFirst: true,
 	})
 	if err != nil {
-		return fmt.Errorf("list trusted backlog items: %w", err)
+		return 0, fmt.Errorf("list trusted backlog items: %w", err)
 	}
 
 	observedAt := now()
 	botLogin := ""
+	reconciled := 0
 	inspected := make([]inspectedBacklogItem, 0, len(items))
 	for _, item := range items {
 		if !hasReconciledMetadataLabel(item) {
@@ -70,11 +71,11 @@ func reconcileBacklogMetadata(
 		}
 		current, err := provider.GetWorkItem(ctx, repo, item.ID)
 		if err != nil {
-			return fmt.Errorf("refresh issue #%s: %w", item.ID, err)
+			return reconciled, fmt.Errorf("refresh issue #%s: %w", item.ID, err)
 		}
 		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy)
 		if err != nil {
-			return fmt.Errorf("inspect issue #%s: %w", item.ID, err)
+			return reconciled, fmt.Errorf("inspect issue #%s: %w", item.ID, err)
 		}
 		botLogin = login
 		if !correction.checkClaim && len(correction.removeLabels) == 0 {
@@ -91,7 +92,7 @@ func reconcileBacklogMetadata(
 			var acquired bool
 			reservation, acquired, err = reserveBacklogClaimReconciliation(l, repo, current.ID, now)
 			if err != nil {
-				return fmt.Errorf("reserve claim reconciliation for issue #%s: %w", current.ID, err)
+				return reconciled, fmt.Errorf("reserve claim reconciliation for issue #%s: %w", current.ID, err)
 			}
 			if acquired {
 				correction.orphanedClaim = true
@@ -124,16 +125,19 @@ func reconcileBacklogMetadata(
 				Comment:      comment,
 			})
 		}
+		if correctionErr == nil {
+			reconciled++
+		}
 		if reservation != nil {
 			if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
 				correctionErr = errors.Join(correctionErr, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
 			}
 		}
 		if correctionErr != nil {
-			return fmt.Errorf("reconcile issue #%s: %w", current.ID, correctionErr)
+			return reconciled, fmt.Errorf("reconcile issue #%s: %w", current.ID, correctionErr)
 		}
 	}
-	return nil
+	return reconciled, nil
 }
 
 func reserveBacklogClaimReconciliation(
