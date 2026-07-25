@@ -148,6 +148,21 @@ describe("run stage inspector", () => {
     expect(client.listStageAttempts).toHaveBeenCalledWith("run-1", "review", expect.anything());
   });
 
+  it("shows the requested model when the telemetry rollup has indexed it (#1550)", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success", model: "auto" })]);
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("model: auto")).toBeInTheDocument();
+  });
+
+  it("omits the model line when telemetry has not indexed one", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),

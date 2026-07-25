@@ -177,6 +177,12 @@ func runTraceWithFactories(
 		// telemetry-disabled, missing, or unreadable rollups.
 		spans = []rollup.SpanSummary{}
 	}
+	telemetryAttempts, err := reads.RunTelemetryStageAttempts(ctx, runID)
+	if err != nil {
+		// Same best-effort contract as spans: the requested model is
+		// informational enrichment, never a reason to fail the trace.
+		telemetryAttempts = []rollup.StageAttempt{}
+	}
 	traceEscalationDetail, err := reads.RunEscalation(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: escalation summary: %v\n", err)
@@ -195,7 +201,7 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
-	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, now)
+	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
