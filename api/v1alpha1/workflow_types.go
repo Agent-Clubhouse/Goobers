@@ -249,11 +249,18 @@ type RetryPolicy struct {
 }
 
 // DeterministicRun describes the code a deterministic task runs.
+// +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
-	// +kubebuilder:validation:Required
-	Command []string `json:"command" yaml:"command"`
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	Command []string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Script is an inline POSIX shell script compiled to command: ["sh", "-c", script].
+	// It is mutually exclusive with Command.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Script string `json:"script,omitempty" yaml:"script,omitempty"`
 	// Env is the explicit environment supplied to the command in addition to
 	// the runner's minimal base environment and capability-scoped credentials.
 	// +optional

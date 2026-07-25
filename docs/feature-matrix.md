@@ -162,6 +162,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.run.command` | 2.0 | ga | supported | dev |
 | `stage.run.env` | 2.0 | ga | supported | dev |
 | `stage.run.network.none` | 2.0 | ga | supported | dev |
+| `stage.run.script` | 2.0 | ga | supported | dev |
 | `stage.run.syncBase` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.scratch` | 2.0 | ga | supported | dev |
@@ -213,6 +214,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: none
+- Added: `stage.run.script`
 - Removed: none
 - Level changes: none
