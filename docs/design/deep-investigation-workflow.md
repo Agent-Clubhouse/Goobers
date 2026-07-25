@@ -33,7 +33,10 @@ Unit and regression tests remain useful supplementary evidence, but cannot repla
 that reproduction-gated end-to-end check.
 
 This document defines the workflow contract. It does not add the workflow, labels,
-runtime artifact types, or automatic routing.
+runtime artifact types, or automatic routing. #1482 has a hard implementation
+dependency on #1484: the workflow definition and its gates cannot land until
+the manifest lifting, normalized index, pointer projection, and artifact-aware
+resolver described in sections 3.1-3.2 are shipped as runtime contracts.
 
 ## 2. Manual triage and admission
 
@@ -118,10 +121,11 @@ to mint their own paths or digests, and the current runner does not create
 semantic context names such as `reproduction.bundle`. That single-file surface
 is insufficient for a harness plus a variable set of dumps, traces, or profiles.
 
-Therefore #1484 must add **manifest-driven agentic artifact-set lifting** before
-#1482 implements this workflow. Each artifact-producing deep-investigation task
-declares `artifactManifestFile` instead of the legacy `artifactFile`; declaring
-both is invalid:
+Therefore this design assigns **manifest-driven agentic artifact-set lifting** to
+#1484 as a prerequisite for #1482, rather than letting #1482 create a
+workflow-local transport. Each artifact-producing deep-investigation task declares
+`artifactManifestFile` instead of the legacy `artifactFile`; declaring both is
+invalid:
 
 ```yaml
 inputs:
