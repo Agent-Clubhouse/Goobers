@@ -28,6 +28,20 @@ const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
 
 const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
 
+const findingSetHistoryLimit = 10
+
+type findingSetHistory struct {
+	Hashes []string `json:"hashes"`
+}
+
+type canonicalFinding struct {
+	Severity    apiv1.Severity     `json:"severity"`
+	Class       apiv1.FindingClass `json:"class,omitempty"`
+	Message     string             `json:"message"`
+	Location    string             `json:"location,omitempty"`
+	BlockingPRs []int              `json:"blockingPrs,omitempty"`
+}
+
 // verdictLabel maps a #358 Verdict's Decision to the design doc's label
 // contract (§3): pass -> eligible to merge, needs-changes -> selected by
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
@@ -479,7 +493,44 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.Rationale = rationale
 	}
 
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
+	statusComments, err := provider.ListComments(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("load finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	priorHistory, err := findingSetHistoryFromComments(statusComments, verdictAuthor)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("read finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	history, findingHash, revisited, err := advanceFindingSetHistory(priorHistory, posted.Findings)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("hash finding set for PR #%d", selectedNumber), err, resultFile)
+	}
+	oscillated := revisited &&
+		posted.Decision == apiv1.VerdictNeedsChanges &&
+		verdictLabel(posted.Decision, effective.Findings) == needsRemediationLabel
+	if oscillated {
+		reason := fmt.Sprintf(
+			"Finding-set oscillation detected: `%s` matches an earlier merge-review state. Remediation returned to a prior unresolved finding set, so this PR is escalated instead of spending the remaining repass budget.",
+			findingHash,
+		)
+		posted.Decision = apiv1.VerdictFail
+		if posted.Rationale == "" {
+			posted.Rationale = reason
+		} else {
+			posted.Rationale += "\n\n" + reason
+		}
+	}
+
 	comment := renderVerdictComment(posted)
+	historyPayload, err := findingSetHistoryComment(history)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	comment += "\n\n" + historyPayload
 	label := verdictLabel(posted.Decision, effective.Findings)
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
@@ -534,10 +585,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
-	}
 	if posted.Decision == apiv1.VerdictPass {
 		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
@@ -549,11 +596,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// Publish the native review first. If the legacy handoff below fails, the
 	// absence of an exclusion label leaves the PR eligible for a later
 	// merge-review run instead of stranding it without a platform verdict.
-	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+	update := providers.UpdateWorkItemRequest{
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
 		AddLabels:  []string{label},
-	}); err != nil {
+	}
+	if oscillated {
+		update.RemoveLabels = []string{needsRemediationLabel}
+	}
+	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
 	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
@@ -1103,6 +1154,113 @@ func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
 		return apiv1.Verdict{}, false
 	}
 	return v, true
+}
+
+var findingSetHistoryPattern = regexp.MustCompile(`(?s)<!-- finding-set-history: (.*?) -->`)
+
+func findingSetHistoryComment(history findingSetHistory) (string, error) {
+	data, err := json.Marshal(history)
+	if err != nil {
+		return "", fmt.Errorf("marshal finding-set history: %w", err)
+	}
+	return fmt.Sprintf("<!-- finding-set-history: %s -->", data), nil
+}
+
+func parseFindingSetHistoryComment(body string) (findingSetHistory, bool) {
+	m := findingSetHistoryPattern.FindStringSubmatch(body)
+	if m == nil {
+		return findingSetHistory{}, false
+	}
+	var history findingSetHistory
+	if err := json.Unmarshal([]byte(m[1]), &history); err != nil {
+		return findingSetHistory{}, false
+	}
+	if len(history.Hashes) > findingSetHistoryLimit {
+		history.Hashes = append([]string(nil), history.Hashes[len(history.Hashes)-findingSetHistoryLimit:]...)
+	}
+	return history, true
+}
+
+func findingSetHistoryFromComments(comments []providers.Comment, author string) (findingSetHistory, error) {
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return findingSetHistory{}, nil
+	}
+	if history, ok := parseFindingSetHistoryComment(marked[0].Body); ok && len(history.Hashes) > 0 {
+		return history, nil
+	}
+	priorVerdict, ok := parseVerdictComment(marked[0].Body)
+	if !ok {
+		return findingSetHistory{}, nil
+	}
+	digest, err := findingSetDigest(priorVerdict.Findings)
+	if err != nil {
+		return findingSetHistory{}, err
+	}
+	return findingSetHistory{Hashes: []string{digest}}, nil
+}
+
+func advanceFindingSetHistory(prior findingSetHistory, findings []apiv1.Finding) (findingSetHistory, string, bool, error) {
+	digest, err := findingSetDigest(findings)
+	if err != nil {
+		return findingSetHistory{}, "", false, err
+	}
+	revisited := false
+	for _, previous := range prior.Hashes {
+		if previous == digest {
+			revisited = true
+			break
+		}
+	}
+	hashes := append(append([]string(nil), prior.Hashes...), digest)
+	if len(hashes) > findingSetHistoryLimit {
+		hashes = hashes[len(hashes)-findingSetHistoryLimit:]
+	}
+	return findingSetHistory{Hashes: hashes}, digest, revisited, nil
+}
+
+func findingSetDigest(findings []apiv1.Finding) (string, error) {
+	encoded := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		blockers := append([]int(nil), finding.BlockingPRs...)
+		sort.Ints(blockers)
+		if len(blockers) > 1 {
+			unique := blockers[:1]
+			for _, blocker := range blockers[1:] {
+				if blocker != unique[len(unique)-1] {
+					unique = append(unique, blocker)
+				}
+			}
+			blockers = unique
+		}
+		data, err := json.Marshal(canonicalFinding{
+			Severity:    finding.Severity,
+			Class:       finding.Class,
+			Message:     finding.Message,
+			Location:    finding.Location,
+			BlockingPRs: blockers,
+		})
+		if err != nil {
+			return "", fmt.Errorf("marshal canonical finding: %w", err)
+		}
+		encoded = append(encoded, string(data))
+	}
+	sort.Strings(encoded)
+	if len(encoded) > 1 {
+		unique := encoded[:1]
+		for _, finding := range encoded[1:] {
+			if finding != unique[len(unique)-1] {
+				unique = append(unique, finding)
+			}
+		}
+		encoded = unique
+	}
+	data, err := json.Marshal(encoded)
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical finding set: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func isTrustedMergeReviewStatusComment(commentAuthor, body, authenticatedAuthor string) bool {

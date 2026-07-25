@@ -307,6 +307,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   while advancing the base is progress, not a stall (#832). Escalation
   applies `goobers:merge-escalated`, clears `needs-remediation`, and records
   the reason plus a head/live-base-tip snapshot on the sticky state comment.
+  At merge-review altitude, `apply-verdict` MUST content-hash each canonical
+  finding set (independent of finding and blocker ordering), retain a bounded
+  history on the trusted sticky status comment, and escalate immediately when
+  remediation revisits a prior state (for example A→B→A), rather than waiting
+  for the cycle budget to expire (#367).
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against
