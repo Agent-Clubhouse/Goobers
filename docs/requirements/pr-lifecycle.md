@@ -307,6 +307,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   while advancing the base is progress, not a stall (#832). Escalation
   applies `goobers:merge-escalated`, clears `needs-remediation`, and records
   the reason plus a head/live-base-tip snapshot on the sticky state comment.
+  At merge-review altitude, `apply-verdict` MUST content-hash each canonical
+  finding set (independent of finding and blocker ordering), retain a bounded
+  history on the trusted sticky status comment, and escalate immediately when
+  remediation revisits a prior state (for example A→B→A), rather than waiting
+  for the cycle budget to expire (#367).
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against
@@ -320,7 +325,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-057 (MUST, Shipped):** A cross-PR-blocked (parked) PR is **excluded
   from remediation** — parking means wait, not rework; the drain path is the
   sibling landing (PRL-064), not a rewrite of a diff that would be fine once
-  the sibling lands.
+  the sibling lands. The generic behind-base fallback is **lazy**: it may
+  select only an eligible crowned lander with at least one live parked
+  dependent. Parked siblings retain their blocker markers and do not rebase
+  until their blocker set clears, bounding a K-PR overlap wave to at most K
+  rebases.
 
 ### Escalation ladder & drainage
 

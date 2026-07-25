@@ -52,9 +52,12 @@ spec:
     # Cheap API-only lane (#720): this scratch stage selects by the same
     # priority rules as gather-pr-context and uses GitHub's update-branch
     # endpoint when the candidate is behind, mergeable, CI-clean, and carries
-    # no substantive finding. It terminates after that provider mutation, so no
-    # repository worktree or rebase stage is provisioned for the dominant
-    # mechanical-update case. Anything non-trivial falls through unchanged.
+    # no substantive finding. The behind-base fallback is lazy: only a crowned
+    # lander with live parked dependents is eligible, so siblings retain their
+    # blocker markers until their predecessor lands. It terminates after the
+    # provider mutation, so no repository worktree or rebase stage is
+    # provisioned for the mechanical-update case. Anything non-trivial falls
+    # through unchanged.
     - name: update-behind-pr
       type: deterministic
       goal: Update a clean behind-base PR through the provider API, or route it to full remediation.

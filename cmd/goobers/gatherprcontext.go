@@ -57,12 +57,12 @@ const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 // pr-remediation's entrypoint, replacing implementation's query-backlog head
 // (design doc §5 — "the one genuinely new executor entrypoint"). Selects one
 // open, goober-authored PR labeled needs-remediation, reporting failing CI, or
-// behind its base, checks out ITS branch into this stage's worktree (replacing
-// whatever branch the runner's worktree provisioning defaulted to —
-// pr-remediation re-enters on an EXISTING PR, it does not open a new one), and
-// loads the merge-review Verdict + PR-thread comments + whether the base has
-// advanced since this PR branched, as context for the stages that follow
-// (#363's rebase + finding-driven routing).
+// crowned by live parked dependents and behind its base. It checks out ITS
+// branch into this stage's worktree (replacing whatever branch the runner's
+// worktree provisioning defaulted to — pr-remediation re-enters on an EXISTING
+// PR, it does not open a new one), and loads the merge-review Verdict +
+// PR-thread comments + whether the base has advanced since this PR branched, as
+// context for the stages that follow (#363's rebase + finding-driven routing).
 func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-pr-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -159,7 +159,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// local git query, no provider call) and reused across the candidate loop.
 	heldBranches := worktreeHeldBranches(".")
 
-	nonBlocked, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
+	nonBlocked, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
 	}
@@ -170,7 +170,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	candidates := nonBlocked
 	if !hasExistingClaim {
 		fetchedBases := make(map[string]bool)
-		candidates, _, err = selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
+		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
 				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
 					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
@@ -345,9 +345,12 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 // filterRemediationPullRequests applies the shared exclusion rules before
 // either the API fast lane or the full worktree-backed remediation path selects
 // a candidate. heldBranches is nil for the API-only lane, which can safely
-// update a branch even while another local worktree has it checked out.
-func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, error) {
+// update a branch even while another local worktree has it checked out. The
+// returned counts identify eligible crowned landers from their live parked
+// dependents without a second provider scan.
+func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 	var eligible []providers.PullRequestSummary
+	blockedDependents := make(map[int]int)
 	for _, pr := range prs {
 		if heldBranches[pr.Head] {
 			continue
@@ -357,21 +360,24 @@ func filterRemediationPullRequests(ctx context.Context, provider *providers.GitH
 		}
 		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 		if err != nil {
-			return nil, fmt.Errorf("check escalation state for PR #%d: %w", pr.Number, err)
+			return nil, nil, fmt.Errorf("check escalation state for PR #%d: %w", pr.Number, err)
 		}
 		if blocked {
 			continue
 		}
-		blocked, err = blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		liveBlockers, err := liveBlockedOnSiblingBlockers(ctx, provider, repo, pr)
 		if err != nil {
-			return nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
+			return nil, nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
 		}
-		if blocked {
+		for _, blocker := range liveBlockers {
+			blockedDependents[blocker]++
+		}
+		if len(liveBlockers) > 0 {
 			continue
 		}
 		eligible = append(eligible, pr)
 	}
-	return eligible, nil
+	return eligible, blockedDependents, nil
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,
@@ -403,13 +409,14 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 // every other eligible PR for a full cycle, regressing the pre-#596-fallback
 // contract of offering the WHOLE eligible set to the claim ledger.
 //
-// Only when nothing clears either tier does a PR merely behind its base
-// become eligible at all (#596's fix — previously such a PR was only
-// rebased as a side effect of something else flagging it first). Checking
-// "behind base" requires fetching each candidate's branches, so behindBase
-// is only invoked when nothing stronger exists — the priority tiers above
-// are decidable from the PR summary alone, no fetch required.
-func selectRemediationCandidates(prs []providers.PullRequestSummary, behindBase func(providers.PullRequestSummary) (bool, error)) ([]providers.PullRequestSummary, remediationPriority, error) {
+// Only when nothing clears either tier does a crowned lander merely behind its
+// base become eligible. A crown is materialized by at least one live parked
+// dependent naming the PR as a blocker. This keeps the rest of an overlapping
+// wave parked until its predecessor lands instead of eagerly rebasing every
+// behind-base sibling after each merge. Checking "behind base" requires
+// fetching candidate branches, so behindBase is invoked only for crowns when
+// nothing stronger exists.
+func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDependents map[int]int, behindBase func(providers.PullRequestSummary) (bool, error)) ([]providers.PullRequestSummary, remediationPriority, error) {
 	var candidates []providers.PullRequestSummary
 	best := remediationPriorityNone
 	for _, pr := range prs {
@@ -430,6 +437,9 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, behindBase 
 	for _, pr := range prs {
 		// Same rationale as remediationPriorityFor: escalation exclusion
 		// already happened upstream (self-heal-aware), so no re-check here.
+		if blockedDependents[pr.Number] == 0 {
+			continue
+		}
 		behind, err := behindBase(pr)
 		if err != nil {
 			return nil, remediationPriorityNone, err

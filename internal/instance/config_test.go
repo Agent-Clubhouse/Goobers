@@ -53,6 +53,7 @@ notifications: true
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
+
 	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "acme" {
 		t.Fatalf("unexpected repos: %+v", cfg.Repos)
 	}
@@ -92,6 +93,30 @@ notifications: true
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestLoadConfigKeychainTokenRef(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      keychain: goobers/acme-web
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.Repos[0].Token
+	if got.Keychain != "goobers/acme-web" || got.sourceCount() != 1 {
+		t.Fatalf("token = %+v, want one Keychain source", got)
+	}
+	if converted := got.CredentialTokenRef("repo"); converted.Keychain != got.Keychain {
+		t.Fatalf("CredentialTokenRef = %+v, want Keychain service preserved", converted)
 	}
 }
 
@@ -967,14 +992,14 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web"},
 			}},
-			wantErr: "exactly one of env, file, or store",
+			wantErr: "exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "both env and file",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T", File: "/f"}},
 			}},
-			wantErr: "exactly one of env, file, or store",
+			wantErr: "exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "valid",
@@ -1204,14 +1229,14 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "agent:model"},
 			}},
-			wantErr: "exactly one of env, file, or store",
+			wantErr: "exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "credentials both env and file",
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "agent:model", Token: TokenRef{Env: "T", File: "/f"}},
 			}},
-			wantErr: "exactly one of env, file, or store",
+			wantErr: "exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "credentials valid agent:model",
@@ -1303,7 +1328,7 @@ func TestConfigValidate(t *testing.T) {
 				Endpoint: "https://collector.example.com:4317",
 				Headers:  map[string]TokenRef{"authorization": {}},
 			}}},
-			wantErr: "must reference exactly one of env, file, or store",
+			wantErr: "must reference exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "OTLP ambiguous header source",
@@ -1313,7 +1338,7 @@ func TestConfigValidate(t *testing.T) {
 					"authorization": {Env: "AUTH", File: "/run/secrets/auth"},
 				},
 			}}},
-			wantErr: "must reference exactly one of env, file, or store",
+			wantErr: "must reference exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "OTLP settings without endpoint",
@@ -1596,7 +1621,7 @@ func TestConfigValidateStoreRefs(t *testing.T) {
 			cfg: withStore(func(c *Config) {
 				c.Repos = []RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T", Store: "prod-kv/github-token"}}}
 			}),
-			wantErr: "exactly one of env, file, or store",
+			wantErr: "exactly one of env, file, keychain, or store",
 		},
 		{
 			name: "store ref without separator rejected",

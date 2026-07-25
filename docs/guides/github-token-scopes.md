@@ -114,7 +114,8 @@ Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
 Omit overrides for capabilities no selected workflow declares. Values are never
-inline — `token.env` or `token.file` only (`CFG-009`/`SEC-010`).
+inline — use a supported token reference such as `token.env`, `token.file`,
+`token.keychain`, or `token.store` (`CFG-009`/`SEC-010`).
 
 Omitting only the `agent:model` entry opts into stored Copilot CLI
 authentication. Missing grants for repository capabilities remain errors.
@@ -219,15 +220,52 @@ The nominator goober definition must also list `github:issues:approve` as an
 allowed capability. Omitting it from the workflow stage preserves the default:
 nominated issues carry no trust label and wait for maintainer approval.
 
+## Token storage options
+
+Every token-bearing configuration surface uses the same `TokenRef` shape.
+Choose exactly one source:
+
+| Source | Best fit | Tradeoffs |
+|---|---|---|
+| `env: NAME` | Ephemeral local runs and CI secret injection | Most portable and simple, but the token is present in the daemon's process environment and changing an external shell or service definition does not update an already-running process. |
+| `file: /path/to/token` | Headless services with a mounted secret file | Portable and easy to rotate in place. The token exists on disk; Goobers fails closed unless the file is private to its owner (Unix mode `0600`, or an owner-only Windows DACL). |
+| `keychain: SERVICE` | Interactive or launchd-managed macOS runners | The token is encrypted at rest by macOS and is read for each resolution rather than retained by Goobers. It is macOS-only, and the daemon's user session must be able to unlock the login keychain and access the item without an interactive prompt. |
+| `store: STORE/SECRET` | Team and cloud deployments using a declared external secret store | Keeps secret material out of local configuration and disk, with rotation and access policy managed centrally. It requires store identity/network configuration and uses the resolver's bounded cache rather than fetching on every use. |
+
+### macOS Keychain
+
+Create one generic-password item per capability, using a unique service name:
+
+```console
+security add-generic-password -U -a "$USER" \
+  -s "goobers/github-issues" -w
+```
+
+Then reference only the service name in `instance.yaml`:
+
+```yaml
+credentials:
+  - capability: github:issues:write
+    token:
+      keychain: goobers/github-issues
+```
+
+Goobers resolves the item with `/usr/bin/security find-generic-password` and
+passes the value through the same pluggable `credentials.Resolver` seam used by
+environment, file, and external-store sources. A missing item, locked keychain,
+denied access, empty value, or use on a non-macOS host fails closed. For a
+background launchd service, create the item while logged in as the same macOS
+user that runs Goobers and verify that account can read it without a prompt.
+
 ## Token lifecycle
 
-- Store the PAT value in an env var or a file referenced by `instance.yaml`
-  (`SEC-046`) — never in `config/` or committed anywhere.
+- Store the PAT value in one of the sources above and reference it from
+  `instance.yaml` (`SEC-046`) — never put the value in `config/` or commit it.
 - Fine-grained PATs support a mandatory expiration; set the shortest
   expiration your operational cadence tolerates and rotate before it lapses.
-  `internal/credentials.Resolver` re-reads the env var/file on every
-  resolution, so rotating the underlying value takes effect without
-  restarting `goobers up`.
+  `internal/credentials.Resolver` re-reads file and Keychain sources on every
+  resolution; external stores use their configured bounded cache. Rotation is
+  therefore observed without changing TokenRef consumers.
 - If a token leaks (committed by accident, printed in a log a scrubber
   pattern missed), revoke it in GitHub first, then run
   `goobers journal redact` to remediate any journal blob that captured it
