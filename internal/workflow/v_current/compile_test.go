@@ -538,6 +538,45 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	}
 }
 
+func TestCompileRequiresTaskMCPCredentialCapabilities(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Capabilities: []string{"contents:read"},
+			MCPServers: []apiv1.MCPServer{{
+				Name: "context",
+				URL:  "https://mcp.example.test",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Header:     "Authorization",
+				}},
+			}},
+		},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "mcp-capability", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	if err == nil || !strings.Contains(err.Error(), `task "implement" must declare MCP credential capability "contents:read" required by goober "coder"`) {
+		t.Fatalf("Compile error = %v, want missing MCP credential capability", err)
+	}
+
+	spec.Tasks[0].Capabilities = []string{"contents:read"}
+	if _, err := compileAcknowledged(
+		Definition{Name: "mcp-capability", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("declared MCP credential capability should compile: %v", err)
+	}
+}
+
 func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0].Capabilities = []string{string(capability.ConfigRepoRead)}

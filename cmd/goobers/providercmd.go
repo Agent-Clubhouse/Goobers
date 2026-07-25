@@ -72,6 +72,7 @@ const (
 	claimLockOperationBacklogRelease       = "backlog-query.release"
 	claimLockOperationPRLookup             = "pr-claim.lookup"
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
+	claimLockOperationPRCount              = "pr-claim.count"
 	claimLockOperationRunLookup            = "run-claims.lookup"
 	claimLockOperationBlockedUpdate        = "blocked-records.update"
 	claimLockOperationRecovery             = "claim-recovery"

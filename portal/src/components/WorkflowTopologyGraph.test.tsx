@@ -121,6 +121,8 @@ describe("workflow topology graph", () => {
 
     expect(screen.getByRole("group", { name: "Graph view controls" })).toBeInTheDocument();
     expect(viewport).toHaveAttribute("data-responsive-layout", "scroll-under-820");
+    expect(viewport).toHaveAttribute("data-zoom", "1.000");
+    expect(screen.getByText("100%")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pan (left|right|up|down)/ })).not.toBeInTheDocument();
 
     viewport.focus();
@@ -172,6 +174,7 @@ describe("workflow topology graph", () => {
       y: 50,
       toJSON: () => ({}),
     });
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
     viewport.scrollLeft = 100;
     viewport.scrollTop = 40;
     const initialZoom = Number(viewport.getAttribute("data-zoom"));
@@ -272,6 +275,7 @@ describe("workflow topology graph", () => {
       clientWidth: { configurable: true, get: () => width },
     });
     const selected = screen.getByRole("button", { name: /^stage-1,/ });
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
     const initialZoom = Number(viewport.getAttribute("data-zoom"));
 
     fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
