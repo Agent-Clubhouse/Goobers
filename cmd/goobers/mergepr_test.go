@@ -429,6 +429,51 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	}
 }
 
+func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *testing.T) {
+	compareFiles := make([]fakePRFile, 300)
+	for i := range compareFiles {
+		compareFiles[i] = fakePRFile{
+			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
+			status: "modified",
+		}
+	}
+	pullFiles := append([]fakePRFile(nil), compareFiles...)
+	pullFiles = append(pullFiles, fakePRFile{
+		path: "selfhost/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
+	})
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		headBranch: "goobers/tutor/run-1",
+		files:      pullFiles,
+		baseMovement: map[string][]fakePRFile{
+			"base456...head123": compareFiles,
+		},
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+	t.Setenv(executor.RepoProviderEnvVar, "github")
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times, want 0", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
+	}
+	reason, _ := result["reason"].(string)
+	if !strings.Contains(reason, "explicit human sign-off") || !strings.Contains(reason, "never auto-merged") {
+		t.Fatalf("reason = %q, want the high-risk Tutor policy", reason)
+	}
+}
+
 func TestMergePRRequiresVerdictAuthorForDefaultMessage(t *testing.T) {
 	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
 	server := newMergePRServer(t, "your-org", "your-repo", st)

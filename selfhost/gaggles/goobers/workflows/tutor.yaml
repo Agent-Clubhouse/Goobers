@@ -141,10 +141,10 @@ spec:
       expectedOutputs:
         - pull-request-url
         - prNumber
-      # Terminal: no `next`. Same governance model as every other
-      # config-affecting change on this instance — a human reviews and
-      # merges behind branch protection / CODEOWNERS; there is no
-      # in-product gate (TUT-006, design doc OQ-3).
+      # Terminal in this workflow: no `next`. The separate merge-review
+      # workflow classifies the opened Tutor PR. Persona/gate-tune changes may
+      # follow its normal path; structure/skill/validation changes remain
+      # CODEOWNER/manual-only and are independently refused by merge-pr.
 
   gates:
     # A non-zero validate exit becomes a failure ResultEnvelope. Abort rather
