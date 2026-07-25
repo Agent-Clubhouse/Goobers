@@ -4,12 +4,16 @@ package secfile
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // Well-known SID strings used to set deterministic, owner-independent DACLs via
@@ -35,6 +39,40 @@ func writeTemp(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func setDACLFromSDDL(t *testing.T, path, dacl string) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(dacl)
+	if err != nil {
+		t.Fatalf("parse SDDL %q: %v", dacl, err)
+	}
+	acl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatalf("read DACL from SDDL %q: %v", dacl, err)
+	}
+	err = windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		acl,
+		nil,
+	)
+	runtime.KeepAlive(sd)
+	if err != nil {
+		t.Fatalf("set DACL from SDDL %q: %v", dacl, err)
+	}
+}
+
+func currentUserSID(t *testing.T) string {
+	t.Helper()
+	current, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatalf("get current user SID: %v", err)
+	}
+	return current.User.Sid.String()
 }
 
 // TestVerifyPrivate_ToleratesSystemAndAdministrators pins the documented
@@ -81,6 +119,69 @@ func TestVerifyPrivate_RejectsEveryone(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "chmod") {
 		t.Errorf("VerifyPrivate = %q, must not suggest chmod on Windows", err)
+	}
+}
+
+func TestVerifyPrivate_AcceptsSimpleDenyACE(t *testing.T) {
+	path := writeTemp(t)
+	setDACLFromSDDL(t, path, fmt.Sprintf(
+		"D:P(D;;0x1;;;WD)(A;;FA;;;%s)",
+		currentUserSID(t),
+	))
+	if err := VerifyPrivate(path); err != nil {
+		t.Errorf("VerifyPrivate(simple deny ACE) = %v, want nil", err)
+	}
+}
+
+func TestVerifyPrivate_RejectsNonSimpleAllowACEs(t *testing.T) {
+	const objectGUID = "00112233-4455-6677-8899-aabbccddeeff"
+	tests := []struct {
+		name    string
+		aceType byte
+		ace     string
+	}{
+		{
+			name:    "object",
+			aceType: 5,
+			ace:     "(OA;;FR;" + objectGUID + ";;WD)",
+		},
+		{
+			name:    "callback",
+			aceType: 9,
+			ace:     `(XA;;FR;;;WD;(@User.Title=="PM"))`,
+		},
+		{
+			name:    "callback object",
+			aceType: 11,
+			ace:     `(ZA;;FR;` + objectGUID + `;;WD;(@User.Title=="PM"))`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t)
+			setDACLFromSDDL(t, path, fmt.Sprintf(
+				"D:P(A;;FA;;;%s)%s",
+				currentUserSID(t),
+				tt.ace,
+			))
+
+			err := VerifyPrivate(path)
+			if err == nil {
+				t.Fatalf("VerifyPrivate(ACE type %d) = nil, want fail-closed rejection", tt.aceType)
+			}
+			if !errors.Is(err, ErrNotPrivate) {
+				t.Errorf("error not wrapping ErrNotPrivate: %v", err)
+			}
+			if want := fmt.Sprintf("unsupported ACE type %d", tt.aceType); !strings.Contains(err.Error(), want) {
+				t.Errorf("VerifyPrivate = %q, want it to contain %q", err, want)
+			}
+			if !strings.Contains(err.Error(), "cannot verify privacy") {
+				t.Errorf("VerifyPrivate = %q, want fail-closed explanation", err)
+			}
+			if !strings.Contains(err.Error(), "icacls") {
+				t.Errorf("VerifyPrivate = %q, want it to contain the icacls remediation", err)
+			}
+		})
 	}
 }
 
