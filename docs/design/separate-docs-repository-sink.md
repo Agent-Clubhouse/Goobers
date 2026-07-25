@@ -89,6 +89,60 @@ repos:
       privateKey: {env: PRODUCT_DOCS_APP_KEY}
 ```
 
+Manifest-backed deployments use an additive `v1alpha1 Connection.auth` shape
+that mirrors the local GitHub App identity:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: acme
+spec:
+  connections:
+    - name: product-docs-pr
+      type: repo
+      provider: github
+      auth:
+        kind: github-app
+        appId: 123456
+        installationId: 987654
+      secretRef:
+        name: product-docs-app-private-key
+```
+
+For `provider: github`, omitting `auth` preserves the existing static-token
+connection: `secretRef` resolves to the token. `auth.kind: github-app` changes
+that meaning unambiguously: `secretRef` is the App's PEM-encoded private-key
+reference, and no PAT exists on that connection. The `v1alpha1` `auth` object
+has exactly `kind`, `appId`, and `installationId`. `appId` is the non-empty
+numeric App ID or client ID string accepted by the existing local
+`GitHubID` contract; `installationId` is a non-zero base-10 unsigned integer.
+`secretRef` must resolve to a PKCS#1 or PKCS#8 RSA private key. Missing fields,
+an unknown auth kind, GitHub App fields on another provider, malformed IDs or
+key material, and an inline private key are validation errors. Existing
+non-App connections remain byte-for-byte compatible.
+
+`repository.connectionRef` is a direct, case-sensitive lookup by
+`Connection.name`; provider matching or list order never selects a connection.
+The name must resolve exactly once to `type: repo`, `provider: github`, and the
+`github-app` shape above. The runner then synthesizes the target's existing
+credential route as follows:
+
+| `RepoBinding` input | Value |
+|---|---|
+| `Owner`, `Name` | The normalized owner and name from `docsSink.repository` |
+| `TokenRef` | An opaque, collision-free resolver ref for this connection and normalized target identity |
+| Resolver behind `TokenRef` | GitHub App source configured with the connection's `appId`, `installationId`, and `secretRef`, with `repositories: [repository.name]` |
+
+The opaque ref's spelling is internal; its identity is the tuple
+`(connection name, provider, owner, repository)`, so reusing one connection for
+another repository creates a different down-scoped token source. The resulting
+binding enters the same `RepoScopedCapability` and grant lookup used by
+`AdditionalRepos`; it is not a parallel resolver. The exact target identity
+supplies `RepoBinding.Owner` and `RepoBinding.Name`—the connection cannot
+redirect them—and the mint plus target probe confirms that the declared
+installation reaches that repository.
+
 There is no token, credential alias, source override, or `autoMerge` field in
 `docsSink`. At local tiers, the exact repository identity selects one
 `instance.yaml repos[]` binding. At connection-backed tiers, the exact identity
@@ -141,12 +195,14 @@ identity. Validation uses the following rules:
 4. The target must have exactly one deployment credential binding. Missing and
    duplicate matches are errors; list order is never a selection rule.
 5. The source read binding and target GitHub App write binding must use
-   distinct credential identities. Structurally identical GitHub App
-   installation or connection references are rejected, as is reusing the
-   target App installation for the source.
+   distinct credential identities. The target connection name and
+   `secretRef` must differ from the source connection's, and the normalized
+   `(appId, installationId)` tuple must differ when the source also uses a
+   GitHub App. The equivalent local App tuple and private-key reference must
+   differ. Reusing the target App installation for the source is rejected.
 6. When `connectionRef` is used, it must resolve, name a GitHub connection,
-   identify a GitHub App installation, match the repository's provider, and
-   differ from the source connection.
+   satisfy the Manifest GitHub App connection contract above, match the
+   repository's provider, and differ from the source connection.
 7. `docsRoots` and `docsSink.writeRoots` must each pass the existing lexical
    containment checks. Source roots are checked in the source tree; write
    roots are checked in the target tree.
@@ -218,11 +274,12 @@ Foreign-sink admission completes before either repository is checked out and
 before any branch, commit, push, pull request, comment, or label mutation:
 
 1. Compile and cross-validate the source, sink, source `docsRoots`, target
-   `writeRoots`, exact deployment bindings, `github-app` target auth, and
-   distinct credential identities.
-2. Resolve the source credential and target App private-key source. A missing
-   env var, unreadable file, failed store lookup, or invalid App configuration
-   aborts admission.
+   `writeRoots`, exact deployment bindings, local or Manifest `github-app`
+   target auth, and distinct credential identities.
+2. Resolve the source credential and target App private-key source. For a
+   Manifest connection, validate its `auth` fields and parse the PEM returned
+   by `secretRef`. A missing env var, unreadable file, failed store lookup,
+   malformed key, or invalid App configuration aborts admission.
 3. Probe the exact source repository with the source credential and require
    read access to the source revision.
 4. Mint the target installation token with `repositories: [target.name]` and
@@ -296,11 +353,12 @@ target review.
 
 ## Implementation boundary
 
-#1495 owns the additive `docsSink` API/schema/deep-copy surface, validation,
+#1495 owns the additive `docsSink` and `Connection.auth` API/schema/deep-copy
+surfaces, validation, Manifest-connection-to-`RepoBinding` adaptation,
 repo-qualified write-grant routing, GitHub App permission-scoped minting and
 preflight probes, dual checkout, target write-root validation, target branch
-push, and target PR creation described above. Existing in-repo workflows
-remain byte-for-byte compatible when `docsSink` is omitted.
+push, and target PR creation described above. Existing in-repo workflows and
+non-App Manifest connections remain byte-for-byte compatible.
 
 This decision does not provision a repository or credential, change
 `AdditionalRepos` into writable repositories, add merge authority, or define
