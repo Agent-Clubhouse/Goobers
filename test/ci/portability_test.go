@@ -236,7 +236,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		t.Fatal("required-ci aggregate has no needs list referencing the conformance gate")
 	}
 	for _, gate := range []string{
-		"checks", "lint", "unit", "unit-macos", "shipped",
+		"checks", "lint", "darwin-build", "unit", "unit-macos", "shipped",
 		"deadcode", "windows-smoke", "vulnerability-scan", "conformance",
 	} {
 		if !strings.Contains(needsLine, gate) {

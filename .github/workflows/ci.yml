@@ -74,14 +74,13 @@ jobs:
 
   # Fast fan-in: formatting, module hygiene, vet, the command builds, config
   # validation, and the portal build/test/contract chain. The only slice that
-  # needs Node.
+  # needs Node. Runs on Linux only — its work is either OS-agnostic (fmt, tidy,
+  # portal) or covered for other platforms by cross-compilation (darwin-build,
+  # windows-smoke). Keeping static analysis off the scarce macOS runners lets
+  # the macOS *runtime* jobs run without queueing behind each other.
   checks:
-    name: checks (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: checks
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -105,16 +104,17 @@ jobs:
       - name: fmt · tidy · vet · build · portal
         run: go run ./test/ci group checks
 
-  # golangci-lint on its own runner. Runs per-OS so darwin/linux build-tagged
-  # files are both linted (staticcheck/revive see only the current platform's
-  # tagged sources). This is the only slice that installs golangci-lint.
+  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, both on cheap
+  # Linux runners. golangci-lint honours GOOS, so it sees each platform's
+  # build-tagged sources (the darwin-only files internal/{sandbox,executor}) are
+  # linted under GOOS=darwin from Linux — no macOS runner required.
   lint:
-    name: lint (${{ matrix.os }})
+    name: lint (${{ matrix.goos }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        goos: [linux, darwin]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -134,8 +134,43 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: golangci-lint
+      - name: golangci-lint (GOOS=${{ matrix.goos }})
+        env:
+          GOOS: ${{ matrix.goos }}
         run: go run ./test/ci group lint
+
+  # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).
+  # Compiles and vets the whole tree — including the //go:build darwin files
+  # (internal/{sandbox,executor}) — for macOS, so a darwin-specific build or vet
+  # regression is caught without spending a macOS runner. The behavioural macOS
+  # runtime is exercised by the unit/shipped/sandbox macOS jobs.
+  darwin-build:
+    name: darwin gate (build · vet)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go build (darwin/arm64)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go build ./...
+
+      - name: go vet (darwin/arm64)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go vet ./...
 
   # The long pole: the -race unit suite. Split into shards across Linux runners
   # (test/ci group unit + GOOBERS_CI_SHARD; the hermetic runner partitions
@@ -410,13 +445,14 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [checks, lint, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
+    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
           UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
           SHIPPED_RESULT: ${{ needs.shipped.result }}
@@ -433,7 +469,8 @@ jobs:
             fi
           }
           check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
-          check "lint (golangci-lint)"               "$LINT_RESULT"
+          check "lint (golangci-lint, linux+darwin)" "$LINT_RESULT"
+          check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit behavioral suite (macos)"      "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
