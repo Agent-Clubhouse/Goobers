@@ -32,6 +32,19 @@ const (
 	BranchEscalate = model.BranchEscalate
 )
 
+// IsReservedTarget reports whether target is a reserved TERMINAL action
+// ("@abort"/"@escalate") — it ends the run. It deliberately excludes "@join",
+// which ends a BRANCH and continues the run at the join state.
+//
+// Callers asking "must this resolve to a declared state?" want
+// IsReservedAnyTarget instead. This narrower form exists for the shipped-
+// workflow contract assertions, which check that a failing outcome routes
+// through a park stage rather than straight at a terminal (#929) — a question
+// only the terminal/branch distinction can answer.
+func IsReservedTarget(target string) bool {
+	return model.IsReservedTarget(target)
+}
+
 // IsReservedAnyTarget reports whether target is reserved in any sense —
 // a terminal action ("@abort"/"@escalate") or a branch action ("@join").
 // Use it where the question is "is this a state name?", which is what every
