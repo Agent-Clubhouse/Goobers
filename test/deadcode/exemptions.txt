@@ -63,8 +63,6 @@ github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery se
 github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
 github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
 github.com/goobers/goobers/cmd/goobers.runtimeCommand # Runtime-capability registry seam retained for parity tests.
-github.com/goobers/goobers/cmd/goobers.runtimeSubcommand # Runtime-capability registry seam retained for parity tests.
-github.com/goobers/goobers/cmd/goobers.withRuntimeCapability # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
