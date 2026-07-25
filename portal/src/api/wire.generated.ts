@@ -457,6 +457,8 @@ export const goWireFixtures = {
         "branch": 0,
         "time": "2026-07-18T12:36:56Z",
         "knownSchema": true,
+        "category": "transition",
+        "replayChapter": true,
         "stage": "implement",
         "attempt": 2,
         "attemptClass": "policy",

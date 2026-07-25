@@ -1,17 +1,18 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TELEMETRY" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers telemetry \- query, export, or prune run telemetry
+goobers telemetry \- query, export, prune, or compact run telemetry
 .SH SYNOPSIS
 \fBgoobers telemetry\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers telemetry <stats|errors|export|prune> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]
 
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
-prune:  remove terminal runs outside the configured retention bounds
+prune:   remove terminal runs outside the configured retention bounds
+compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 .fi
 .SH EXAMPLES
 .nf
