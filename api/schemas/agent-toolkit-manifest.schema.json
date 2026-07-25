@@ -108,7 +108,12 @@
         "path": {
           "type": "string",
           "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
-          "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+          "not": {
+            "anyOf": [
+              { "pattern": "(^|/)\\.\\.(/|$)" },
+              { "const": "payload/.goobers/agent-toolkit/manifest.json" }
+            ]
+          }
         },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "size": { "type": "integer", "minimum": 0 }

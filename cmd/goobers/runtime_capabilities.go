@@ -109,6 +109,22 @@ func init() {
 			withSynopsis(synopsisByID["scaffold"]).
 			withHelp("scaffold a goober or workflow in a gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow"),
+		groupCommand(
+			"agent-kit",
+			runAgentKit,
+			subcommand("agent-kit install", "install", apicontract.ActionConfigTime, runAgentKitInstall).
+				withHelp("install the release-matched agent toolkit", agentKitInstallHelp).
+				withExamples("goobers agent-kit install --harness copilot ./config-repo"),
+			subcommand("agent-kit check", "check", apicontract.ActionReadOnlyNavigation, runAgentKitCheck).
+				withHelp("report agent toolkit version and drift", agentKitCheckHelp).
+				withExamples("goobers agent-kit check ./config-repo"),
+			subcommand("agent-kit update", "update", apicontract.ActionConfigTime, runAgentKitUpdate).
+				withHelp("review or explicitly apply an agent toolkit update", agentKitUpdateHelp).
+				withExamples("goobers agent-kit update ./config-repo", "goobers agent-kit update --write ./config-repo"),
+		).
+			withSynopsis(synopsisByID["agent-kit"]).
+			withHelp("install, inspect, or update the release-matched agent toolkit", agentKitHelp).
+			withExamples("goobers agent-kit install --harness generic ./config-repo", "goobers agent-kit check ./config-repo"),
 		command("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).

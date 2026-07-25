@@ -8,6 +8,10 @@
 
 | Command | Description |
 | --- | --- |
+| [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
+| [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
+| [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
+| [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
@@ -92,6 +96,99 @@
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+
+## `goobers agent-kit`
+
+install, inspect, or update the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit <subcommand> [flags] [path]
+
+Install, inspect, or explicitly update the release-matched Goobers agent
+toolkit in a checked-in configuration repository.
+
+Subcommands:
+  install  install product-owned assets and a minimal harness reference
+  check    report installed version, drift, missing files, and updates
+  update   show a reviewable diff, then write only with --write
+
+Default path is ".". Targets must be repository roots and may not traverse
+symbolic links or parent path segments.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness generic ./config-repo
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit check`
+
+report agent toolkit version and drift
+
+~~~text
+Usage: goobers agent-kit check [path]
+
+Compare the installed manifest and product-owned file digests with the toolkit
+bundled in this binary. Report the exact bundle and binary release identities,
+modified or missing owned files, and whether an explicit update is available.
+
+Exit codes: 0 = current, 1 = drift, missing manifest, available update, or
+inspection error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit install`
+
+install the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]
+
+Install the toolkit bundled with this Goobers binary beneath the product-owned
+`.goobers/agent-toolkit/` boundary. If the selected harness instruction file
+does not exist, create a minimal reference to the installed adapter. Existing
+AGENTS.md, CLAUDE.md, Copilot instructions, skills, and repository content are
+never overwritten.
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or
+write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness copilot ./config-repo
+~~~
+
+## `goobers agent-kit update`
+
+review or explicitly apply an agent toolkit update
+
+~~~text
+Usage: goobers agent-kit update [--dry-run | --write [--replace-modified]] [path]
+
+Show a reviewable diff from the repository's current files to the toolkit
+bundled in this binary. The default and --dry-run never write. --write applies
+only manifest-owned changes and preserves user-created files. If a product-owned
+file differs from its installed digest, --replace-modified is also required.
+
+Exit codes: 0 = diff shown or update written, 1 = unsafe target, ownership
+collision, unacknowledged modification, or write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit update ./config-repo
+$ goobers agent-kit update --write ./config-repo
+~~~
 
 ## `goobers apply-verdict`
 

@@ -37,6 +37,13 @@ release and commit, the release's DSL support matrix, compatible harness
 adapters, required and optional CLI commands, and every product-owned payload
 file with its size and SHA-256 digest.
 
+`goobers agent-kit install` copies the payload into a selected configuration
+repository and retains that metadata as
+`.goobers/agent-toolkit/manifest.json`. `goobers agent-kit check` uses the
+checked-in manifest to report drift, and `goobers agent-kit update` shows a diff
+by default. An update writes only with `--write`; replacing a locally modified
+owned file additionally requires `--replace-modified`.
+
 Required commands provide release resolution, validation, and the core
 read-only operator path. Optional commands, when exposed by the matching
 binary, improve diagnostics or automate an upgrade but are not needed to
@@ -48,10 +55,12 @@ are copied from the same source revision as the producing binary.
 
 ## Ownership and updates
 
-Only paths listed in `manifest.json` are product-owned. They all live beneath
-`payload/.goobers/agent-toolkit/`, the bundle's overwrite boundary. Copy the
-contents of `payload/` into a config repository to place that versioned
-boundary at `.goobers/agent-toolkit/`.
+Only paths listed in `manifest.json` are product-owned assets. They all live
+beneath `payload/.goobers/agent-toolkit/`, the bundle's overwrite boundary.
+Copy the contents of `payload/` into a config repository to place that
+versioned boundary at `.goobers/agent-toolkit/`. The CLI-managed installed
+manifest is ownership metadata, not permission to replace unlisted files below
+that boundary.
 
 Repository-root `AGENTS.md`, `CLAUDE.md`, and
 `.github/copilot-instructions.md` remain user-owned and are never payload

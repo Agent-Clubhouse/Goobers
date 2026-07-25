@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS AGENT KIT INSTALL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers agent-kit install \- install the release-matched agent toolkit
+.SH SYNOPSIS
+\fBgoobers agent-kit install\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]
+
+Install the toolkit bundled with this Goobers binary beneath the product-owned
+`.goobers/agent-toolkit/` boundary. If the selected harness instruction file
+does not exist, create a minimal reference to the installed adapter. Existing
+AGENTS.md, CLAUDE.md, Copilot instructions, skills, and repository content are
+never overwritten.
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or
+write error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers agent-kit install --harness copilot ./config-repo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

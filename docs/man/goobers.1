@@ -27,6 +27,18 @@ first-pass review and hot-file evidence.
 .fi
 .SH COMMANDS
 .TP
+\fBgoobers agent-kit\fR
+install, inspect, or update the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit check\fR
+report agent toolkit version and drift
+.TP
+\fBgoobers agent-kit install\fR
+install the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit update\fR
+review or explicitly apply an agent toolkit update
+.TP
 \fBgoobers apply-verdict\fR
 publish a merge-review verdict as a native review (a workflow stage)
 .TP
@@ -279,6 +291,10 @@ inspect workflows
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .SH SEE ALSO
+\fBgoobers-agent-kit\fR(1),
+\fBgoobers-agent-kit-check\fR(1),
+\fBgoobers-agent-kit-install\fR(1),
+\fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply-verdict\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
