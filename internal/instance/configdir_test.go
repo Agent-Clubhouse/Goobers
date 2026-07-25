@@ -31,15 +31,16 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(set.Gaggles) != 2 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships seven goobers (acme-web: coder, curator,
+	// config-examples ships eight goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and seven workflows (acme-web's six + the dotnet-service
-	// reference's dotnet-implementation, #1093); check membership, not order.
+	// dotnet-reviewer) and eight workflows (acme-web's seven + the
+	// dotnet-service reference's dotnet-implementation, #1093); check
+	// membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer"}
+	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer"}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -52,7 +53,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
 	}
-	wantWorkflows := []string{"default-implement", "backlog-curation", "implementation", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-curation", "docs-updater", "implementation", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
@@ -124,7 +125,7 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 7 {
+	if len(set.Goobers) != 8 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }

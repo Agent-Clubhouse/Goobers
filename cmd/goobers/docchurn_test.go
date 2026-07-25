@@ -209,7 +209,7 @@ func TestDocsChurnEmptyChurnReportsNoWork(t *testing.T) {
 	unsetRunContext(t)
 	now := time.Now().UTC()
 	r := newChurnRepo(t)
-	r.commit(now.Add(-48*time.Hour), "only old work", map[string]string{"README.md": "base\n"})
+	head := r.commit(now.Add(-48*time.Hour), "only old work", map[string]string{"README.md": "base\n"})
 
 	instanceRoot := t.TempDir()
 	resultFile := filepath.Join(t.TempDir(), "docs-churn.json")
@@ -234,6 +234,13 @@ func TestDocsChurnEmptyChurnReportsNoWork(t *testing.T) {
 	}
 	if len(out["changedFiles"].([]any)) != 0 {
 		t.Errorf("changedFiles = %v; want empty", out["changedFiles"])
+	}
+	wm, have, err := readDocsWatermark(watermarkPath(instanceRoot))
+	if err != nil || !have {
+		t.Fatalf("read no-work watermark: have=%v err=%v", have, err)
+	}
+	if wm.SHA != head {
+		t.Errorf("no-work watermark sha = %q, want current HEAD %q", wm.SHA, head)
 	}
 }
 

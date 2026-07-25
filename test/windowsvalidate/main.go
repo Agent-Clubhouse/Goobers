@@ -32,8 +32,7 @@ const (
 
 var (
 	kernel32              = windows.NewLazySystemDLL("kernel32.dll")
-	attachConsole         = kernel32.NewProc("AttachConsole")
-	freeConsole           = kernel32.NewProc("FreeConsole")
+	allocConsole          = kernel32.NewProc("AllocConsole")
 	setConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
 	ignoreConsoleCtrl     = syscall.NewCallback(func(uint32) uintptr { return 1 })
 )
@@ -42,6 +41,8 @@ func main() {
 	bin := flag.String("bin", filepath.Join("bin", "goobers.exe"), "path to the goobers binary to validate")
 	outDir := flag.String("out", "windows-validation-evidence", "directory to write captured evidence into")
 	flag.Parse()
+
+	prepareConsole()
 
 	if err := run(*bin, *outDir); err != nil {
 		_ = os.MkdirAll(*outDir, 0o755)
@@ -197,8 +198,10 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 	cmd := exec.Command(bin, "up", "--quiet", instanceRoot)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// The daemon shares this process's console but leads its own process group,
+	// so Ctrl+Break can be addressed to it alone. See sendCtrlBreak.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_CONSOLE,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP,
 	}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -278,26 +281,34 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 		"`daemon.clean_shutdown`.\n\n", nil
 }
 
-func sendCtrlBreak(consoleProcessID uint32) error {
-	// The Actions runner is a Windows service and may not have a console. Give
-	// the daemon a dedicated console, attach here only long enough to target
-	// every process in that console, and ignore the event in this sender.
-	_, _, _ = freeConsole.Call()
-	attached, _, attachErr := attachConsole.Call(uintptr(consoleProcessID))
-	if attached == 0 {
-		return fmt.Errorf("attach to daemon console: %w", attachErr)
-	}
-	defer func() {
-		_, _, _ = freeConsole.Call()
-	}()
-	ignored, _, handlerErr := setConsoleCtrlHandler.Call(ignoreConsoleCtrl, 1)
-	if ignored == 0 {
-		return fmt.Errorf("ignore Ctrl events in validation process: %w", handlerErr)
-	}
-	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, 0); err != nil {
-		return err
-	}
-	return nil
+// prepareConsole makes this process a safe sender of console control events.
+//
+// GenerateConsoleCtrlEvent requires the sender to share a console with the
+// target group, and the Actions runner is a Windows service that may have none.
+// AllocConsole supplies one; it fails with ERROR_ACCESS_DENIED when a console
+// already exists, which is equally fine. It cannot disturb this process's
+// output because Go binds os.Stdout/os.Stderr at startup, before any console of
+// ours exists.
+//
+// The ignore handler is defence in depth. sendCtrlBreak addresses the daemon's
+// own process group, so this process is never a recipient; the handler only
+// ensures a stray event cannot terminate the validation run.
+func prepareConsole() {
+	_, _, _ = allocConsole.Call()
+	_, _, _ = setConsoleCtrlHandler.Call(ignoreConsoleCtrl, 1)
+}
+
+// sendCtrlBreak asks the daemon's process group -- and only that group -- to
+// shut down.
+//
+// The daemon is started with CREATE_NEW_PROCESS_GROUP, so its process ID is
+// also its process group ID and Ctrl+Break can be addressed to it precisely.
+// Passing group 0 instead would target every process sharing the console,
+// including this one: console control events are delivered asynchronously, so
+// a sender that targets itself races its own suppression and is killed with
+// STATUS_CONTROL_C_EXIT (0xc000013a) roughly half the time.
+func sendCtrlBreak(processGroupID uint32) error {
+	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, processGroupID)
 }
 
 func configureEphemeralAPI(root string) error {

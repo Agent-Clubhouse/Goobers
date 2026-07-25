@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["status"],
   "properties": {
-    "status": { "type": "string", "enum": ["success", "failure", "blocked"] },
+    "status": { "type": "string", "enum": ["success", "failure", "blocked", "no-work"] },
     "outputs": {
       "type": "object",
       "description": "Small declared scalar values only. Anything larger is an artifact, referenced by pointer — state does not travel through outputs.",
