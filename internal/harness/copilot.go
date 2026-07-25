@@ -489,6 +489,27 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 			executor.RepoNameEnvVar+"="+repo.Name,
 		)
 	}
+	// Read-only reference-repo checkouts (MGV-11 #1286): the agent may read them
+	// for cross-repo context. Sorted for a deterministic env.
+	if refs := req.Envelope.AdditionalWorkspaces; len(refs) > 0 {
+		type refWorkspace struct{ name, path string }
+		items := make([]refWorkspace, 0, len(refs))
+		for _, w := range refs {
+			if w.Name == "" || w.Path == "" {
+				continue
+			}
+			items = append(items, refWorkspace{w.Name, w.Path})
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
+		names := make([]string, 0, len(items))
+		for _, it := range items {
+			env = append(env, executor.AdditionalRepoEnvVar(it.name)+"="+it.path)
+			names = append(names, it.name)
+		}
+		if len(names) > 0 {
+			env = append(env, executor.AdditionalReposEnvVar+"="+strings.Join(names, ","))
+		}
+	}
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := c.EnvCapabilities[capability]
 		if !ok {

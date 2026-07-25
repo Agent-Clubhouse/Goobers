@@ -33,6 +33,11 @@
     },
     "item": { "$ref": "#/$defs/backlogItem" },
     "repoRef": { "$ref": "#/$defs/repoRef" },
+    "additionalWorkspaces": {
+      "type": "array",
+      "description": "Read-only checkouts of the gaggle's reference repos (GaggleSpec.AdditionalRepos, MGV-11 #1286). The stage may read them; no push credential is provisioned, so they are read-only by construction. Surfaced as GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<path>.",
+      "items": { "$ref": "#/$defs/additionalWorkspace" }
+    },
     "contextPointers": {
       "type": "array",
       "description": "Read-only inputs: journal artifact pointers and external refs. Pointers only.",
@@ -61,6 +66,15 @@
         "body": { "type": "string" },
         "url": { "type": "string" },
         "labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "additionalWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 }
       }
     },
     "repoRef": {

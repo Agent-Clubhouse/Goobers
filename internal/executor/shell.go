@@ -250,6 +250,23 @@ func ProviderStageResultFile(command string) (string, bool) {
 	return resultFile, ok
 }
 
+// additionalRepoPaths projects the invocation envelope's read-only reference
+// checkouts (MGV-11 #1286) into the name->path map buildStageEnv injects as
+// GOOBERS_ADDITIONAL_REPO_* vars. Returns nil for a stage with none.
+func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]string {
+	if len(workspaces) == 0 {
+		return nil
+	}
+	paths := make(map[string]string, len(workspaces))
+	for _, w := range workspaces {
+		if w.Name == "" || w.Path == "" {
+			continue
+		}
+		paths[w.Name] = w.Path
+	}
+	return paths
+}
+
 // Run implements invoke.Deterministic. It executes run.Command in
 // env.Workspace with a capability-scoped, non-ambient environment, enforces a
 // timeout by killing the whole process group, captures size-bounded and
@@ -298,7 +315,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(run.Command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist)
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
