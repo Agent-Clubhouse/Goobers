@@ -317,7 +317,7 @@ func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 		{Gaggle: "acme-web", Limit: 4},                               // gaggle filter
 		{Workflow: machine.Def.Name, Limit: 6},                       // workflow filter
 		{Trigger: journal.TriggerSchedule, Limit: 3},                 // trigger filter (index-pushed)
-		{Phase: journal.PhaseFailed, Limit: 3},                       // phase filter (journal-applied)
+		{Phase: journal.PhaseFailed, Limit: 3},                       // phase filter (index-pushed + journal-verified)
 		{Phase: journal.PhaseCompleted, Gaggle: "goobers", Limit: 2}, // mixed
 		{Stage: "implement", Outcome: OutcomeSuccess, Limit: 3},      // stage/outcome (journal-applied)
 		{Since: time.Date(2026, 7, 1, 12, 5, 0, 0, time.UTC), Limit: 4},
@@ -330,6 +330,65 @@ func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 				t.Fatalf("indexed vs scanning diverge for %+v:\n indexed=%v\nscanning=%v", opts, gotIndexed, gotScanning)
 			}
 		})
+	}
+}
+
+// TestListRunsIndexedPhaseFilterIsBoundedNotScanned proves the #1197
+// dashboard-timeout fix: on an instance with a large terminal run history and
+// only a handful of still-running runs, filtering by Phase=running must not
+// open every terminal journal to find them. Before the runs.status pushdown,
+// listRunsIndexed paged newest-first through the entire history opening every
+// candidate's journal just to discard it via runMatches — indistinguishable
+// from a full scan once the matching runs are sparse and old, which is
+// exactly why the Overview page (which asks for active runs first) timed out
+// on an instance with tens of thousands of accumulated runs.
+func TestListRunsIndexedPhaseFilterIsBoundedNotScanned(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	const terminalCount = 300
+	const runningCount = 3
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	// The running runs are seeded oldest (they sort last in the newest-first
+	// list), followed by a large block of newer terminal runs a scanning walk
+	// would have to open first.
+	for i := 0; i < runningCount; i++ {
+		started := base.Add(time.Duration(i) * time.Minute)
+		run, _ := createFixtureRun(
+			t, layout, machine,
+			fmt.Sprintf("run-running-%04d", i), machine.Def.Name, "goobers",
+			started, journal.Trigger{Kind: journal.TriggerManual}, false,
+		)
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < terminalCount; i++ {
+		started := base.Add(time.Duration(runningCount+i) * time.Minute)
+		run, clock := createFixtureRun(
+			t, layout, machine,
+			fmt.Sprintf("run-terminal-%04d", i), machine.Def.Name, "goobers",
+			started, journal.Trigger{Kind: journal.TriggerManual}, false,
+		)
+		finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+	}
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+
+	var opened int
+	openRunObserver = func(string) { opened++ }
+	t.Cleanup(func() { openRunObserver = nil })
+
+	page, err := indexed.ListRuns(context.Background(), RunListOptions{Phase: journal.PhaseRunning, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != runningCount {
+		t.Fatalf("got %d running runs, want %d", len(page.Runs), runningCount)
+	}
+	// A scanning walk would open all terminalCount+runningCount journals to
+	// reach the matches at the tail of the newest-first order. The
+	// index-pushed path should open only the matching candidates.
+	if opened > runningCount*2 {
+		t.Fatalf("phase=running opened %d journals across a %d-run instance; expected bounded by the matching candidates, not O(total)",
+			opened, terminalCount+runningCount)
 	}
 }
 
