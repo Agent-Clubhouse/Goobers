@@ -117,6 +117,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `gate.evaluator.agentic.retry.backoff` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.retry.maxAttempts` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.timeoutSeconds` | 2.0 | ga | supported | dev |
+| `gate.evaluator.agentic.workspace` | 2.0 | preview | supported | dev |
 | `gate.evaluator.automated` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 2.0 | ga | supported | dev |
@@ -166,6 +167,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.scratch` | 2.0 | ga | supported | dev |
 | `stage.shell` | 2.0 | ga | supported | dev |
+| `stage.workspace` | 2.0 | preview | supported | dev |
+| `stage.workspace.repo-readonly` | 2.0 | preview | supported | dev |
 | `task.agentic` | 2.0 | ga | supported | dev |
 | `task.capabilities` | 2.0 | ga | supported | dev |
 | `task.continueOnError` | 2.0 | ga | supported | dev |
@@ -213,6 +216,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: none
+- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`
 - Removed: none
 - Level changes: none

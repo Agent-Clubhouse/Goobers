@@ -2291,10 +2291,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
 func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
-	workspaceMode := apiv1.WorkspaceRepo
-	if t.Run != nil && t.Run.Workspace != "" {
-		workspaceMode = t.Run.Workspace
-	}
+	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
@@ -2694,7 +2691,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, apiv1.WorkspaceRepo, false, workspaceBranch)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, gateWorkspaceMode(g), false, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -3019,6 +3016,45 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create scratch workspace: %w", err)
 		}
 		return &stageWorkspace{path: path}, nil
+	case apiv1.WorkspaceRepoReadOnly:
+		// A detached checkout at the pinned base revision: no branch name, so
+		// two of these can coexist for one run. That is the whole point —
+		// every writable repo workspace is created on ONE run branch and git
+		// refuses to check one branch out in two worktrees, so concurrent
+		// repo-backed branch stages would otherwise collide outright
+		// (docs/design/static-fan-out-fan-in.md §6.5).
+		if syncBase {
+			return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
+		}
+		if workspaceBranch != "" {
+			return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+		}
+		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+		if err != nil {
+			return nil, err
+		}
+		baseRef := in.RepoRef.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
+			RepoURL:    repoURL,
+			RunID:      in.RunID + "-" + stageName,
+			OwnerRunID: in.RunID,
+			BaseRef:    baseRef,
+			// Branch deliberately empty — a detached checkout, the same shape
+			// provisionAdditionalCheckouts already uses for reference repos.
+			Branch: "",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create read-only worktree: %w", err)
+		}
+		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	case "", apiv1.WorkspaceRepo:
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
