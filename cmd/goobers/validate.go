@@ -57,8 +57,9 @@ const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] 
 	"--check-harness additionally preflights every agent harness\n" +
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
-	"token and verifies authenticated git access. Exit codes: 0 = valid,\n" +
-	"1 = validation errors, 2 = usage/IO error.\n"
+	"token, verifies authenticated git access, and (GitHub only) warns when\n" +
+	"a repository is larger than the checkout-size threshold. Exit codes:\n" +
+	"0 = valid, 1 = validation errors, 2 = usage/IO error.\n"
 
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	return runValidateAs("validate", args, stdout, stderr)
@@ -325,7 +326,28 @@ const (
 	repositoryKillWaitDelay    = time.Second
 )
 
+// oversizedRepoThresholdKB is the target-repo size (GitHub's repo API "size"
+// field, in KB) above which `--check-repos` warns at validate time (#1547).
+// 1 GiB is large enough that a full clone/checkout of the repo measurably
+// slows down provisioning; sparse/partial checkout (AdditionalRepos, or
+// project.checkout.sparse once #649 ships) is the recommended remediation.
+const oversizedRepoThresholdKB = 1 << 20
+
 var targetRepositoryReachable = gitRepositoryReachable
+
+// targetRepositorySize resolves a GitHub repo's size in KB for the
+// oversized-repo warning (#1547). Overridable in tests. ADO has no
+// equivalent check yet — callers only invoke this for repo.Provider ==
+// "github".
+var targetRepositorySize = gitHubRepositorySize
+
+func gitHubRepositorySize(ctx context.Context, repo instance.RepoRef, token string) (int64, error) {
+	return providers.NewGitHubProvider(token).RepositorySizeKB(ctx, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    repo.Owner,
+		Name:     repo.Name,
+	})
+}
 
 func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer) bool {
 	if len(repos) == 0 {
@@ -374,8 +396,35 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 			continue
 		}
 		pf(stdout, "REPOSITORY %s: reachable\n", label)
+		if repo.Provider == "github" {
+			warnOnOversizedRepository(label, repo, token, stdout)
+		}
 	}
 	return ok
+}
+
+// warnOnOversizedRepository checks a GitHub target repo's size against
+// oversizedRepoThresholdKB and prints an advisory (non-failing) warning
+// suggesting the AdditionalRepos partial-checkout remediation (#1547). A
+// failure to resolve size (rate limit, transient network error) is not itself
+// a validation failure — reachability above already confirmed the repo is
+// accessible — so it is reported informationally and does not affect the
+// --check-repos exit status.
+func warnOnOversizedRepository(label string, repo instance.RepoRef, token string, stdout io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+	defer cancel()
+	sizeKB, err := targetRepositorySize(ctx, repo, token)
+	if err != nil {
+		pf(stdout, "REPOSITORY %s: could not determine repository size: %s\n", label, scrubRepositoryError(err, token))
+		return
+	}
+	if sizeKB <= oversizedRepoThresholdKB {
+		return
+	}
+	pf(stdout, "REPOSITORY %s: WARNING: repository is %d MB, larger than the %d MB checkout-size threshold\n",
+		label, sizeKB/1024, oversizedRepoThresholdKB/1024)
+	pf(stdout, "  Checking out this repo in full may be slow. Consider a read-only, partial\n"+
+		"  AdditionalRepos reference (MGV-10/MGV-11) instead of a full target checkout.\n")
 }
 
 func repoUsesToken(repo instance.RepoRef) bool {

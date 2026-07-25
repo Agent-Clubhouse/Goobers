@@ -1913,8 +1913,9 @@ path "."). --source-tree validates a checked-in config source tree
 using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
-token and verifies authenticated git access. Exit codes: 0 = valid,
-1 = validation errors, 2 = usage/IO error.
+token, verifies authenticated git access, and (GitHub only) warns when
+a repository is larger than the checkout-size threshold. Exit codes:
+0 = valid, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
 **Examples**
