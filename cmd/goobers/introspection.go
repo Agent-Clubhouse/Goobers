@@ -46,6 +46,10 @@ type diagnosticCollector struct {
 }
 
 func (c *diagnosticCollector) add(file, path, code, severity, message string) {
+	c.addLocated(file, path, code, severity, message, 0, 0)
+}
+
+func (c *diagnosticCollector) addLocated(file, path, code, severity, message string, line, col int) {
 	if c == nil {
 		return
 	}
@@ -62,7 +66,10 @@ func (c *diagnosticCollector) add(file, path, code, severity, message string) {
 		Severity: severity,
 		Message:  message,
 	}
-	finding.Line, finding.Col = diagnosticLineCol(message)
+	finding.Line, finding.Col = line, col
+	if finding.Line == 0 {
+		finding.Line, finding.Col = diagnosticLineCol(message)
+	}
 	if finding.Line > 0 && finding.Col == 0 {
 		finding.Col = 1
 	}
@@ -78,7 +85,7 @@ func (c *diagnosticCollector) addReport(report *validate.Report, configBase stri
 		if issue.File != "" {
 			file = joinDiagnosticPath(configBase, issue.File)
 		}
-		c.add(file, "", string(issue.Code), string(issue.Severity), issue.Message)
+		c.addLocated(file, "", string(issue.Code), string(issue.Severity), issue.Message, issue.Line, issue.Col)
 	}
 }
 

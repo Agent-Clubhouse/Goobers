@@ -108,6 +108,8 @@ type Issue struct {
 	Code     WarningCode `json:"code,omitempty"`
 	Severity Severity    `json:"severity"`
 	File     string      `json:"file,omitempty"`
+	Line     int         `json:"-"`
+	Col      int         `json:"-"`
 	Kind     string      `json:"kind,omitempty"`
 	Name     string      `json:"name,omitempty"`
 	Gaggle   string      `json:"gaggle,omitempty"`
@@ -258,10 +260,23 @@ func (r *Report) add(code WarningCode, sev Severity, file, kind, name, format st
 }
 
 func (r *Report) addCoded(code WarningCode, sev Severity, file, kind, name, format string, args ...interface{}) {
+	r.addLocated(code, sev, file, 0, 0, kind, name, format, args...)
+}
+
+func (r *Report) addLocated(
+	code WarningCode,
+	sev Severity,
+	file string,
+	line, col int,
+	kind, name, format string,
+	args ...interface{},
+) {
 	r.Issues = append(r.Issues, Issue{
 		Code:     code,
 		Severity: sev,
 		File:     file,
+		Line:     line,
+		Col:      col,
 		Kind:     kind,
 		Name:     name,
 		Message:  fmt.Sprintf(format, args...),
@@ -394,17 +409,16 @@ func splitYAMLDocuments(raw string) []yamlDocument {
 	})
 }
 
-func offsetYAMLLineNumbers(message string, lineOffset int) string {
-	if lineOffset == 0 {
-		return message
+func yamlErrorLine(message string, lineOffset int) int {
+	match := yamlLinePattern.FindStringSubmatch(message)
+	if len(match) != 2 {
+		return 0
 	}
-	return yamlLinePattern.ReplaceAllStringFunc(message, func(match string) string {
-		line, err := strconv.Atoi(strings.TrimPrefix(match, "line "))
-		if err != nil {
-			return match
-		}
-		return fmt.Sprintf("line %d", line+lineOffset)
-	})
+	line, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0
+	}
+	return line + lineOffset
 }
 
 // typeMeta is the minimal shape needed to dispatch a document to its schema.
@@ -467,8 +481,9 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			}
 			jb, err := yaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
-				r.add(errorInvalidYAML, Error, rel, "", "", "invalid YAML: %s",
-					offsetYAMLLineNumbers(err.Error(), document.lineOffset))
+				r.addLocated(errorInvalidYAML, Error, rel,
+					yamlErrorLine(err.Error(), document.lineOffset), 1,
+					"", "", "invalid YAML: %s", err)
 				continue
 			}
 			var tm typeMeta

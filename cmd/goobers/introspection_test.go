@@ -156,17 +156,34 @@ func TestValidateJSONMultiDocumentYAMLLocation(t *testing.T) {
 	envelope := decodeDiagnosticsEnvelope(t, stdout)
 	wantFile := filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml"))
 	wantLine := strings.Count(string(valid), "\n") + 4
+	const wantMessage = "invalid YAML: yaml: line 4: found a tab character that violates indentation"
+	found := false
 	for _, finding := range envelope.Findings {
 		if finding.Code != "YAML001" {
 			continue
 		}
-		if finding.File != wantFile || finding.Line != wantLine || finding.Col != 1 {
-			t.Fatalf("invalid-YAML source = %q:%d:%d, want %q:%d:1; finding=%+v",
-				finding.File, finding.Line, finding.Col, wantFile, wantLine, finding)
+		if finding.File != wantFile || finding.Line != wantLine || finding.Col != 1 || finding.Message != wantMessage {
+			t.Fatalf("invalid-YAML finding = %+v, want file=%q line=%d col=1 message=%q",
+				finding, wantFile, wantLine, wantMessage)
 		}
-		return
+		found = true
+		break
 	}
-	t.Fatalf("YAML001 finding not found in %+v", envelope.Findings)
+	if !found {
+		t.Fatalf("YAML001 finding not found in %+v", envelope.Findings)
+	}
+
+	humanCode, humanStdout, humanStderr := runArgs(t, "validate", root)
+	if humanCode != code || humanStderr != "" {
+		t.Fatalf("human validate multi-document YAML: code=%d stderr=%q stdout=%q",
+			humanCode, humanStderr, humanStdout)
+	}
+	wantHuman := "ERROR   " +
+		filepath.ToSlash(filepath.Join("gaggles", "example", "workflows", "default-implement.yaml")) +
+		": " + wantMessage + "\n\nconfig directory failed validation\n"
+	if humanStdout != wantHuman {
+		t.Fatalf("human output = %q, want byte-for-byte %q", humanStdout, wantHuman)
+	}
 }
 
 func TestFeaturesJSONContract(t *testing.T) {
