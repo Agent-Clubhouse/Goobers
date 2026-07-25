@@ -3,6 +3,7 @@ package agentkit
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -18,6 +19,16 @@ import (
 // Repository is a validated configuration repository root.
 type Repository struct {
 	root string
+}
+
+const (
+	updateTransactionPath    = ".goobers/.agent-toolkit-update.json"
+	updateTransactionVersion = 1
+)
+
+type updateTransaction struct {
+	Version int      `json:"version"`
+	Changes []Change `json:"changes"`
 }
 
 // InstallResult describes toolkit and harness-reference changes.
@@ -113,6 +124,9 @@ func OpenRepository(target string) (*Repository, error) {
 
 // Install places a bundle and adds a harness reference without replacing user files.
 func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, error) {
+	if err := r.recoverUpdate(); err != nil {
+		return InstallResult{}, err
+	}
 	adapter, ok := bundle.Adapter(harness)
 	if !ok {
 		return InstallResult{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
@@ -181,6 +195,9 @@ func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, erro
 
 // Check compares installed assets and identity with the supplied bundle.
 func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
+	if err := r.recoverUpdate(); err != nil {
+		return CheckReport{}, err
+	}
 	manifest, manifestData, err := r.readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		return CheckReport{
@@ -202,7 +219,7 @@ func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
 	if err != nil {
 		return CheckReport{}, err
 	}
-	if !bytes.Equal(manifestData, canonical) {
+	if report.UpdateAvailable || !bytes.Equal(manifestData, canonical) {
 		report.Modified = append(report.Modified, InstalledManifestPath)
 		sort.Strings(report.Modified)
 		if report.State == "current" {
@@ -214,6 +231,9 @@ func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
 
 // PlanUpdate computes product-owned changes without mutating the repository.
 func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
+	if err := r.recoverUpdate(); err != nil {
+		return UpdatePlan{}, err
+	}
 	installed, manifestData, err := r.readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		return UpdatePlan{}, fmt.Errorf("agent toolkit manifest is missing; install into an empty target or restore the manifest before updating")
@@ -222,6 +242,7 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		return UpdatePlan{}, err
 	}
 
+	semanticManifestDrift := !manifestsMatch(installed, bundle.Manifest)
 	oldAssets := make(map[string]Asset, len(installed.Assets))
 	for _, asset := range installed.Assets {
 		installedPath, err := InstalledAssetPath(asset.Path)
@@ -277,24 +298,26 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		oldPaths = append(oldPaths, installedPath)
 	}
 	sort.Strings(oldPaths)
-	for _, installedPath := range oldPaths {
-		if _, stillOwned := bundle.Files[installedPath]; stillOwned {
-			continue
-		}
-		actual, exists, err := r.readFile(installedPath)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		if !exists {
-			continue
-		}
-		plan.Changes = append(plan.Changes, Change{
-			Path: installedPath,
-			Kind: ChangeDelete,
-			Old:  actual,
-		})
-		if digest(actual) != oldAssets[installedPath].SHA256 {
-			plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
+	if !semanticManifestDrift {
+		for _, installedPath := range oldPaths {
+			if _, stillOwned := bundle.Files[installedPath]; stillOwned {
+				continue
+			}
+			actual, exists, err := r.readFile(installedPath)
+			if err != nil {
+				return UpdatePlan{}, err
+			}
+			if !exists {
+				continue
+			}
+			plan.Changes = append(plan.Changes, Change{
+				Path: installedPath,
+				Kind: ChangeDelete,
+				Old:  actual,
+			})
+			if digest(actual) != oldAssets[installedPath].SHA256 {
+				plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
+			}
 		}
 	}
 
@@ -303,7 +326,7 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		if err != nil {
 			return UpdatePlan{}, err
 		}
-		if !bytes.Equal(manifestData, canonical) {
+		if semanticManifestDrift || !bytes.Equal(manifestData, canonical) {
 			plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
 		}
 		plan.Changes = append(plan.Changes, Change{
@@ -321,16 +344,43 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 
 // ApplyUpdate writes a plan after enforcing its ownership acknowledgements.
 func (r *Repository) ApplyUpdate(plan UpdatePlan, replaceModified bool) error {
+	if err := r.recoverUpdate(); err != nil {
+		return err
+	}
 	if len(plan.UserCollisions) > 0 {
 		return fmt.Errorf("update would overwrite user-owned files: %s", strings.Join(plan.UserCollisions, ", "))
 	}
 	if len(plan.ModifiedOwned) > 0 && !replaceModified {
 		return fmt.Errorf("locally modified product-owned files require --replace-modified: %s", strings.Join(plan.ModifiedOwned, ", "))
 	}
+	if len(plan.Changes) == 0 {
+		return nil
+	}
+	if err := r.validateUpdatePlan(plan); err != nil {
+		return err
+	}
+	if err := r.writeUpdateTransaction(plan.Changes); err != nil {
+		return err
+	}
+	return r.resumeUpdate(plan.Changes)
+}
 
-	for _, change := range plan.Changes {
-		if change.Path == InstalledManifestPath {
-			continue
+func (r *Repository) validateUpdatePlan(plan UpdatePlan) error {
+	return r.validateUpdateChanges(plan.Changes, false)
+}
+
+func (r *Repository) validateUpdateChanges(changes []Change, recovering bool) error {
+	seen := make(map[string]struct{}, len(changes))
+	for _, change := range changes {
+		if change.Path != InstalledRoot && !strings.HasPrefix(change.Path, InstalledRoot+"/") {
+			return fmt.Errorf("update path %q is outside the agent toolkit root", change.Path)
+		}
+		if _, duplicate := seen[change.Path]; duplicate {
+			return fmt.Errorf("update contains duplicate change for %s", change.Path)
+		}
+		seen[change.Path] = struct{}{}
+		if change.Path == InstalledManifestPath && change.Kind != ChangeModify {
+			return fmt.Errorf("agent toolkit manifest update must be a modification")
 		}
 		actual, exists, err := r.readFile(change.Path)
 		if err != nil {
@@ -338,57 +388,146 @@ func (r *Repository) ApplyUpdate(plan UpdatePlan, replaceModified bool) error {
 		}
 		switch change.Kind {
 		case ChangeAdd:
-			if exists {
-				return fmt.Errorf("%s appeared after update planning; refusing to overwrite it", change.Path)
-			}
-			created, err := r.createFile(change.Path, change.New, change.Mode)
-			if err != nil {
-				return err
-			}
-			if !created {
+			if exists && (!recovering || !bytes.Equal(actual, change.New)) {
 				return fmt.Errorf("%s appeared after update planning; refusing to overwrite it", change.Path)
 			}
 		case ChangeModify:
-			if !exists || !bytes.Equal(actual, change.Old) {
+			if !exists || (!bytes.Equal(actual, change.Old) && (!recovering || !bytes.Equal(actual, change.New))) {
 				return fmt.Errorf("%s changed after update planning; refusing to overwrite it", change.Path)
 			}
-			if err := r.writeFile(change.Path, change.New, change.Mode); err != nil {
-				return err
+			if change.Path == InstalledManifestPath {
+				if _, err := DecodeManifest(change.New); err != nil {
+					return fmt.Errorf("validate updated agent toolkit manifest: %w", err)
+				}
 			}
 		case ChangeDelete:
-			if !exists || !bytes.Equal(actual, change.Old) {
+			if exists && !bytes.Equal(actual, change.Old) {
 				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
 			}
-			fullPath, err := r.securePath(change.Path)
-			if err != nil {
-				return err
+			if !recovering && !exists {
+				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
 			}
-			if err := os.Remove(fullPath); err != nil {
-				return fmt.Errorf("remove obsolete agent toolkit asset %s: %w", change.Path, err)
-			}
-			r.removeEmptyParents(filepath.Dir(fullPath))
 		default:
 			return fmt.Errorf("unsupported agent toolkit update change %q", change.Kind)
 		}
 	}
+	return nil
+}
 
-	for _, change := range plan.Changes {
-		if change.Path != InstalledManifestPath {
-			continue
+func (r *Repository) recoverUpdate() error {
+	data, exists, err := r.readFile(updateTransactionPath)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	var transaction updateTransaction
+	if err := json.Unmarshal(data, &transaction); err != nil {
+		return fmt.Errorf("decode interrupted agent toolkit update: %w", err)
+	}
+	if transaction.Version != updateTransactionVersion || len(transaction.Changes) == 0 {
+		return fmt.Errorf("interrupted agent toolkit update has an unsupported transaction")
+	}
+	if err := r.validateUpdateChanges(transaction.Changes, true); err != nil {
+		return fmt.Errorf("validate interrupted agent toolkit update: %w", err)
+	}
+	return r.resumeUpdate(transaction.Changes)
+}
+
+func (r *Repository) writeUpdateTransaction(changes []Change) error {
+	data, err := json.Marshal(updateTransaction{
+		Version: updateTransactionVersion,
+		Changes: changes,
+	})
+	if err != nil {
+		return fmt.Errorf("encode agent toolkit update transaction: %w", err)
+	}
+	data = append(data, '\n')
+	created, err := r.createFile(updateTransactionPath, data, 0o644)
+	if err != nil {
+		return fmt.Errorf("write agent toolkit update transaction: %w", err)
+	}
+	if !created {
+		return fmt.Errorf("agent toolkit update transaction appeared during planning")
+	}
+	return nil
+}
+
+func (r *Repository) resumeUpdate(changes []Change) error {
+	for _, manifest := range []bool{false, true} {
+		for _, change := range changes {
+			if (change.Path == InstalledManifestPath) != manifest {
+				continue
+			}
+			if err := r.applyUpdateChange(change); err != nil {
+				return err
+			}
 		}
-		if change.Kind != ChangeModify {
-			return fmt.Errorf("agent toolkit manifest update must be a modification")
+	}
+	transactionPath, err := r.securePath(updateTransactionPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(transactionPath); err != nil {
+		return fmt.Errorf("remove completed agent toolkit update transaction: %w", err)
+	}
+	if err := durability.SyncDir(filepath.Dir(transactionPath)); err != nil {
+		return fmt.Errorf("sync completed agent toolkit update transaction: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) applyUpdateChange(change Change) error {
+	actual, exists, err := r.readFile(change.Path)
+	if err != nil {
+		return err
+	}
+	switch change.Kind {
+	case ChangeAdd:
+		if exists {
+			if bytes.Equal(actual, change.New) {
+				return nil
+			}
+			return fmt.Errorf("%s changed during update recovery; refusing to overwrite it", change.Path)
 		}
-		actual, exists, err := r.readFile(change.Path)
+		created, err := r.createFile(change.Path, change.New, change.Mode)
 		if err != nil {
 			return err
 		}
+		if !created {
+			return fmt.Errorf("%s appeared during update recovery; refusing to overwrite it", change.Path)
+		}
+	case ChangeModify:
+		if exists && bytes.Equal(actual, change.New) {
+			return nil
+		}
 		if !exists || !bytes.Equal(actual, change.Old) {
-			return fmt.Errorf("%s changed after update planning; refusing to overwrite it", change.Path)
+			return fmt.Errorf("%s changed during update recovery; refusing to overwrite it", change.Path)
 		}
 		if err := r.writeFile(change.Path, change.New, change.Mode); err != nil {
 			return err
 		}
+	case ChangeDelete:
+		if !exists {
+			return nil
+		}
+		if !bytes.Equal(actual, change.Old) {
+			return fmt.Errorf("%s changed during update recovery; refusing to delete it", change.Path)
+		}
+		fullPath, err := r.securePath(change.Path)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(fullPath); err != nil {
+			return fmt.Errorf("remove obsolete agent toolkit asset %s: %w", change.Path, err)
+		}
+		if err := durability.SyncDir(filepath.Dir(fullPath)); err != nil {
+			return fmt.Errorf("sync removal of obsolete agent toolkit asset %s: %w", change.Path, err)
+		}
+		r.removeEmptyParents(filepath.Dir(fullPath))
+	default:
+		return fmt.Errorf("unsupported agent toolkit update change %q", change.Kind)
 	}
 	return nil
 }

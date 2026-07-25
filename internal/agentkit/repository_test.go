@@ -287,6 +287,123 @@ func TestModifiedManifestRequiresAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSemanticManifestDriftCannotClaimUserSkill(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	bundle := testBundle(t, "v1.2.3", "abc123")
+	if _, err := repository.Install(bundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+
+	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
+	customContent := []byte("# My skill\n")
+	writeTestFile(t, root, customSkill, customContent)
+	manifest := bundle.Manifest
+	manifest.Assets = append(manifest.Assets, Asset{
+		Path:   "payload/" + customSkill,
+		SHA256: digest(customContent),
+		Size:   int64(len(customContent)),
+	})
+	manifestData, err := marshalManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, InstalledManifestPath, manifestData)
+
+	report, err := repository.Check(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(report.Modified, InstalledManifestPath) {
+		t.Fatalf("semantic manifest drift not reported as modified: %+v", report)
+	}
+	plan, err := repository.PlanUpdate(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(plan.ModifiedOwned, InstalledManifestPath) {
+		t.Fatalf("semantic manifest drift not acknowledged: %v", plan.ModifiedOwned)
+	}
+	for _, change := range plan.Changes {
+		if change.Path == customSkill {
+			t.Fatalf("user-created skill was treated as an owned change: %+v", change)
+		}
+	}
+	if err := repository.ApplyUpdate(plan, false); err == nil {
+		t.Fatal("semantic manifest drift was replaced without acknowledgement")
+	}
+	if err := repository.ApplyUpdate(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
+		t.Fatalf("user-created skill changed to %q", got)
+	}
+}
+
+func TestInterruptedUpdateRecoversWithoutUserCollision(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	oldBundle := testBundle(t, "v1.2.3", "abc123")
+	newBundle := testBundle(t, "v2.0.0", "def456")
+	addedPath := InstalledRoot + "/future.md"
+	addedFile := File{Path: addedPath, Data: []byte("new product asset\n"), Mode: 0o644}
+	newBundle.Files[addedPath] = addedFile
+	newBundle.Manifest.Assets = append(newBundle.Manifest.Assets, Asset{
+		Path:   "payload/" + addedPath,
+		SHA256: digest(addedFile.Data),
+		Size:   int64(len(addedFile.Data)),
+	})
+	var err error
+	newBundle.ManifestJSON, err = marshalManifest(newBundle.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Install(oldBundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
+	writeTestFile(t, root, customSkill, []byte("# My skill\n"))
+
+	plan, err := repository.PlanUpdate(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.writeUpdateTransaction(plan.Changes); err != nil {
+		t.Fatal(err)
+	}
+	appliedAdd := false
+	for _, change := range plan.Changes {
+		if change.Path == addedPath {
+			if err := repository.applyUpdateChange(change); err != nil {
+				t.Fatal(err)
+			}
+			appliedAdd = true
+			break
+		}
+	}
+	if !appliedAdd {
+		t.Fatal("update plan did not add the recovery fixture")
+	}
+
+	retry, err := repository.PlanUpdate(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retry.Changes) != 0 || len(retry.UserCollisions) != 0 {
+		t.Fatalf("recovered update was not idempotent: %+v", retry)
+	}
+	if got := string(readTestFile(t, root, customSkill)); got != "# My skill\n" {
+		t.Fatalf("recovered update changed user skill to %q", got)
+	}
+	report, err := repository.Check(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "current" {
+		t.Fatalf("recovered update check = %+v", report)
+	}
+}
+
 func TestRepositoryRejectsTraversalAndSymlinkEscapes(t *testing.T) {
 	root := newTestRepository(t)
 	traversal := root + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(root)

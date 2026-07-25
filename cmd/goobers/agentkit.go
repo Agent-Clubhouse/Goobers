@@ -41,8 +41,9 @@ const agentKitCheckHelp = "Usage: goobers agent-kit check [path]\n\n" +
 const agentKitUpdateHelp = "Usage: goobers agent-kit update [--dry-run | --write [--replace-modified]] [path]\n\n" +
 	"Show a reviewable diff from the repository's current files to the toolkit\n" +
 	"bundled in this binary. The default and --dry-run never write. --write applies\n" +
-	"only manifest-owned changes and preserves user-created files. If a product-owned\n" +
-	"file differs from its installed digest, --replace-modified is also required.\n\n" +
+	"only manifest-owned changes and preserves user-created files. If the installed\n" +
+	"manifest has semantic drift or an owned file differs from its installed digest,\n" +
+	"--replace-modified is also required.\n\n" +
 	"Exit codes: 0 = diff shown or update written, 1 = unsafe target, ownership\n" +
 	"collision, unacknowledged modification, or write error, 2 = usage error.\n"
 
