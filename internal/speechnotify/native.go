@@ -282,7 +282,7 @@ func parseVoices(engine, output string) []voiceInfo {
 				}
 			}
 		case EngineESpeak:
-			if len(fields) < 4 {
+			if len(fields) < 5 {
 				continue
 			}
 			if _, err := strconv.ParseUint(fields[0], 10, 8); err != nil {
@@ -290,7 +290,8 @@ func parseVoices(engine, output string) []voiceInfo {
 			}
 			language := normalizeLanguage(fields[1])
 			name := strings.TrimSpace(fields[3])
-			if languagePattern.MatchString(language) && name != "" {
+			file := strings.TrimSpace(fields[4])
+			if languagePattern.MatchString(language) && name != "" && file != "" {
 				voices = append(voices, voiceInfo{name: name, language: language})
 			}
 		}
