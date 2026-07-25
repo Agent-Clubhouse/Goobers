@@ -168,3 +168,59 @@ func TestElectedLanderPassAgreesWithElectLander(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewerPassOverlapReason pins #1071: a genuine reviewer `pass` skips
+// elect-lander entirely (the review gate's pass branch routes straight to
+// apply-verdict), so — unlike a needs-changes verdict — it was never subject
+// to any cluster-winner check at all. gather-sibling-context's deterministic
+// overlap set is independent of what the reviewer saw, so a pass must still
+// be parked when this PR does not win the election over a live overlap.
+func TestReviewerPassOverlapReason(t *testing.T) {
+	policy, _ := resolveElectionPolicy(defaultElectionPolicy)
+
+	t.Run("no overlapping siblings never parks a pass", func(t *testing.T) {
+		reason, blockers := reviewerPassOverlapReason(10, nil, policy, nil, defaultElectionPolicy)
+		if reason != "" || blockers != nil {
+			t.Fatalf("reason = %q, blockers = %v, want no downgrade", reason, blockers)
+		}
+	})
+
+	t.Run("lowest number in the overlap set wins outright, pass stands", func(t *testing.T) {
+		reason, _ := reviewerPassOverlapReason(10, []int{11, 12}, policy, nil, defaultElectionPolicy)
+		if reason != "" {
+			t.Fatalf("reason = %q, want no downgrade (PR is the elected winner)", reason)
+		}
+	})
+
+	t.Run("a higher-numbered sibling overlap parks the pass", func(t *testing.T) {
+		reason, blockers := reviewerPassOverlapReason(12, []int{10, 11}, policy, nil, defaultElectionPolicy)
+		if reason == "" {
+			t.Fatal("want a non-empty parking reason: PR #12 is not the elected winner over #10/#11")
+		}
+		if !strings.Contains(reason, "#1071") {
+			t.Errorf("reason = %q, want it to cite #1071", reason)
+		}
+		if len(blockers) != 2 || blockers[0] != 10 || blockers[1] != 11 {
+			t.Errorf("blockers = %v, want [10 11]", blockers)
+		}
+	})
+
+	t.Run("a demoted blocking sibling is dropped from candidacy", func(t *testing.T) {
+		demoted := map[int]bool{10: true}
+		reason, blockers := reviewerPassOverlapReason(12, []int{10, 11}, policy, demoted, defaultElectionPolicy)
+		if reason == "" {
+			t.Fatal("want a non-empty parking reason: PR #12 still loses to #11 even with #10 demoted")
+		}
+		if len(blockers) != 1 || blockers[0] != 11 {
+			t.Errorf("blockers = %v, want [11] (demoted #10 dropped)", blockers)
+		}
+	})
+
+	t.Run("every blocker demoted trivially wins, pass stands", func(t *testing.T) {
+		demoted := map[int]bool{10: true, 11: true}
+		reason, _ := reviewerPassOverlapReason(12, []int{10, 11}, policy, demoted, defaultElectionPolicy)
+		if reason != "" {
+			t.Fatalf("reason = %q, want no downgrade (every blocker demoted)", reason)
+		}
+	})
+}

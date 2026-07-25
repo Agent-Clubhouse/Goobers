@@ -452,6 +452,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if posted.SourceRunID == "" {
 		posted.SourceRunID = runID
 	}
+	// #1071: a genuine reviewer pass never goes through elect-lander at all
+	// (the review gate's pass branch routes straight here) — captured before
+	// anything below can turn a needs-changes verdict into a derived pass, so
+	// the sibling-overlap check further down applies only to a pass the
+	// reviewer itself produced, never to one election already vetted.
+	reviewerPassedOutright := posted.Decision == apiv1.VerdictPass
 
 	// Fold the deterministic file-overlap set (#990) into the findings used for
 	// sequencing ROUTING only — not into the published verdict, whose findings
@@ -491,6 +497,26 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted, clusterPolicy, resolvedPolicyName); elected {
 		posted.Decision = apiv1.VerdictPass
 		posted.Rationale = rationale
+	}
+
+	// #1071: published-verdict's decision==pass gate is the only thing
+	// standing between this verdict and merge-pr enqueuing the PR into the
+	// native merge queue — so a reviewer pass that skipped elect-lander
+	// entirely still needs the same cluster-winner check applied here,
+	// failing closed (parked, not merged) when it is not the elected winner
+	// over a live overlap set. A verdict election already vetted
+	// (electedLanderPass above) is left untouched.
+	if reviewerPassedOutright {
+		if reason, blockers := reviewerPassOverlapReason(selectedNumber, overlappingSiblings, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
+			posted.Decision = apiv1.VerdictNeedsChanges
+			posted.Rationale = reason
+			effective.Findings = []apiv1.Finding{{
+				Severity:    apiv1.SeverityWarning,
+				Class:       apiv1.FindingCrossPRBlocked,
+				Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", blockers),
+				BlockingPRs: blockers,
+			}}
+		}
 	}
 
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)

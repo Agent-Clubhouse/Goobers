@@ -132,6 +132,33 @@ func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.F
 		policyName, selectedNumber, strings.Join(siblings, ", "))
 }
 
+// reviewerPassOverlapReason guards #1071: a genuine reviewer `pass` never
+// goes through elect-lander at all (the review gate's pass branch routes
+// straight to apply-verdict), so it is never subjected to
+// electedLanderPass's cluster-winner check — that check only ever fires on a
+// needs-changes verdict. But gather-sibling-context's deterministic overlap
+// set is independent of what the reviewer saw; a reviewer that simply didn't
+// notice a live file collision with an open sibling PR must not let that
+// pass stand as permission to land past it. Returns a non-empty rationale
+// (and the resolved blocker set with demoted siblings dropped) when this PR
+// is not the elected winner over overlappingSiblings and so must be parked
+// instead of published as pass; returns "" when there is nothing to
+// overlap-check (no overlapping siblings) or this PR already wins the
+// election over them.
+func reviewerPassOverlapReason(selectedNumber int, overlappingSiblings []int, policy electionPolicyFunc, demoted map[int]bool, policyName string) (string, []int) {
+	if len(overlappingSiblings) == 0 {
+		return "", nil
+	}
+	blockers := withoutDemoted(overlappingSiblings, demoted)
+	if policy(selectedNumber, blockers) {
+		return "", nil
+	}
+	return fmt.Sprintf(
+		"PR #%d passed review, but gather-sibling-context found a live file overlap with sibling PR(s) %v that must land first under election policy %q. A review pass does not clear that ordering constraint (#1071) — parking until it is this PR's turn.",
+		selectedNumber, blockers, policyName,
+	), blockers
+}
+
 const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
 	"Read the holistic review gate's Verdict from this run's journal and, when\n" +
 	"it is entirely cross-PR-ordering asks and the selected PR is the elected\n" +
