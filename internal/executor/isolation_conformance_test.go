@@ -36,6 +36,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -189,6 +190,95 @@ func TestIsolationConformance_NoCrossGaggleTokenInEnv(t *testing.T) {
 		if !reg.sawToken(tok) {
 			t.Errorf("materialized token %q was never registered with the scrubber", tok)
 		}
+	}
+}
+
+// TestIsolationConformance_ReadOnlyRepoHasNoWriteToken asserts the MGV-10
+// (#1285) read-only invariant for a gaggle that reads a reference repo: the
+// reference repo's contents:read token is materializable by the RUNNER (which
+// authenticates the read-only checkout at provision time), while a STAGE can
+// never obtain a WRITE token for that repo — no write grant exists for it, so
+// every write capability against it fails closed. The gaggle's own project
+// write token is unaffected.
+func TestIsolationConformance_ReadOnlyRepoHasNoWriteToken(t *testing.T) {
+	const (
+		siteWriteToken = "site-write-token-xyz-000"
+		refReadToken   = "ref-read-token-abc-999"
+	)
+	t.Setenv("GOOBERS_TEST_SITE_TOKEN", siteWriteToken)
+	t.Setenv("GOOBERS_TEST_REF_TOKEN", refReadToken)
+	refs := []credentials.TokenRef{
+		{Name: "example/site", Env: "GOOBERS_TEST_SITE_TOKEN"},
+		{Name: "example/goobers", Env: "GOOBERS_TEST_REF_TOKEN"},
+	}
+	resolver, err := credentials.NewResolver(refs)
+	if err != nil {
+		t.Fatalf("build resolver: %v", err)
+	}
+	ctx := context.Background()
+
+	readCap := credentials.RepoScopedCapability(string(capability.ContentsRead), "example", "goobers")
+	writeCapOnRef := credentials.RepoScopedCapability(string(capability.GitHubPRWrite), "example", "goobers")
+
+	// (a) The runner-owned grants exactly as buildCredentials computes them: the
+	// project's write token (unqualified, single-repo) + the reference repo's
+	// repo-qualified read token. The runner injector materializes the read token
+	// — this is what authenticates the read-only checkout at provision time.
+	reg := &recordingRegistrar{}
+	runnerGrants := []credentials.Grant{
+		{Capability: string(capability.GitHubPRWrite), Ref: "example/site"},
+		{Capability: readCap, Ref: "example/goobers"},
+	}
+	runnerInj, err := credentials.NewInjector(resolver, runnerGrants, reg)
+	if err != nil {
+		t.Fatalf("build runner injector: %v", err)
+	}
+	runnerSet, err := runnerInj.Materialize(ctx, []string{readCap})
+	if err != nil {
+		t.Fatalf("runner materialize reference read cap: %v", err)
+	}
+	readTok, err := runnerSet.Token(ctx, readCap)
+	if err != nil || readTok != refReadToken {
+		t.Fatalf("runner reference read token = %q, err %v; want the reference repo's read token", readTok, err)
+	}
+
+	// (b) A stage's goober injector holds only the project write grant. Even
+	// when the stage declares a WRITE capability against the reference repo (or
+	// the reference read cap itself), no such grant exists for it, so it fails
+	// closed — never silently substituting the project token or the read token.
+	gooberGrants := []credentials.Grant{
+		{Goober: "site-author", Capability: string(capability.GitHubPRWrite), Ref: "example/site"},
+	}
+	gooberInj, err := credentials.NewGooberInjector(resolver, "site-author", gooberGrants, reg)
+	if err != nil {
+		t.Fatalf("build goober injector: %v", err)
+	}
+	stageSet, err := gooberInj.Materialize(ctx, []string{string(capability.GitHubPRWrite), writeCapOnRef, readCap})
+	if err != nil {
+		t.Fatalf("stage materialize: %v", err)
+	}
+	for _, cap := range []string{writeCapOnRef, readCap} {
+		tok, err := stageSet.Token(ctx, cap)
+		if err == nil {
+			t.Fatalf("stage obtained a token for reference-repo capability %q -> %q; expected fail-closed", cap, tok)
+		}
+		if tok != "" {
+			t.Fatalf("fail-closed resolution for %q must return an empty token, got %q", cap, tok)
+		}
+		if tok == siteWriteToken || tok == refReadToken {
+			t.Fatalf("stage silently substituted a real token for reference-repo capability %q", cap)
+		}
+	}
+	// The gaggle's own project write capability still resolves normally.
+	own, err := stageSet.Token(ctx, string(capability.GitHubPRWrite))
+	if err != nil || own != siteWriteToken {
+		t.Fatalf("stage project write token = %q, err %v; want the project's own write token", own, err)
+	}
+
+	// (c) The reference read token was registered with the scrubber when the
+	// runner materialized it — nothing reaches use without reaching the scrubber.
+	if !reg.sawToken(refReadToken) {
+		t.Errorf("reference read token was never registered with the scrubber")
 	}
 }
 

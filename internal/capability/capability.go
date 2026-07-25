@@ -70,6 +70,17 @@ const (
 	// (docs/design/v0/pr-lifecycle-loop.md §7, "capability isolation, the
 	// clinching reason" a decider and an executor stay separate workflows).
 	GitHubPRMerge Capability = "github:pr:merge"
+	// ContentsRead grants read-only clone/fetch of a repository's contents — the
+	// token that authenticates a reference-repo checkout, distinct from the
+	// write capabilities above. A gaggle's read-only AdditionalRepos are backed
+	// by this and nothing else (MGV-10, #1285): the credential is used only at
+	// clone/provision time to materialize a read-only checkout, never handed a
+	// push path. Unlike RepoRead (which grants a stage a read-only worktree of
+	// its OWN target repo for the nomination workflow), ContentsRead is the
+	// provider-auth capability behind fetching a SEPARATE reference repo, and is
+	// routed per repo via a repo-qualified grant key (contents:read@owner/name)
+	// so each reference repo carries its own scoped read token.
+	ContentsRead Capability = "contents:read"
 	// ADOCodeRead grants read-only Azure Repos and pull-request inspection.
 	ADOCodeRead Capability = "ado:code:read"
 	// ADOPRComment grants posting Azure Repos pull-request threads without vote,
@@ -107,7 +118,7 @@ const (
 func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
-		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge,
+		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		ADOCodeRead, ADOPRComment, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}

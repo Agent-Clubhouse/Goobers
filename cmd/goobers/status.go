@@ -104,12 +104,13 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	// store registry (#683); the surrounding label-count cache already bounds
 	// how often this path re-resolves. nil registrar: status is a read-only
 	// display path that writes no journal — the same preflight posture as
-	// validate's reachability check.
+	// validate's reachability check. nil additionalRepos: this instance-level
+	// display path resolves only the primary repo's labels.
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}
-	resolver, _, err := buildCredentials(cfg, stores, "", "", nil)
+	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, nil)
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}

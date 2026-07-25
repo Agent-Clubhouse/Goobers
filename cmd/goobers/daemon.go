@@ -378,8 +378,10 @@ func buildSchedulerDefinitions(
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
+	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
+		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
@@ -387,7 +389,7 @@ func buildSchedulerDefinitions(
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle],
 		)
 		if err != nil {
@@ -405,7 +407,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg, stores, "", "", sharedReg)
+	credResolver, _, err := buildCredentials(cfg, stores, "", "", nil, sharedReg)
 	if err != nil {
 		return nil, err
 	}
@@ -541,7 +543,7 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo, stores,
+		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
@@ -577,12 +579,13 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	additionalRepos []apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
 	sandboxPosture instance.SandboxPosture,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo, stores, sandboxPosture,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture,
 	)
 	if err != nil {
 		return nil, nil, err

@@ -420,7 +420,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
 			Token: &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 		Capability: string(capability.ConfigRepoRead),
 		Token:      instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 	}}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil); err == nil ||
+	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
 	}
@@ -492,7 +492,7 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Store: "prod-kv/github-token"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, wiringFakeStoreResolver{"prod-kv/github-token": "kv-repo-token"}, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, wiringFakeStoreResolver{"prod-kv/github-token": "kv-repo-token"}, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 		t.Fatalf("scrubber registrations = %q, want exactly the store-resolved token", registrar.registered)
 	}
 
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil); err == nil {
+	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil {
 		t.Fatal("buildCredentials: want fail-closed error for store ref without a store registry, got nil")
 	}
 }
@@ -530,7 +530,7 @@ func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
 			Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 		},
 	}}
-	_, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil)
+	_, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,13 +548,50 @@ func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
 		Name:     "web",
 		Token:    instance.TokenRef{Env: "ADO_PAT"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := resolveGrants(t, resolver, grants)
 	if got[string(capability.RepoPush)] != "ado-token" {
 		t.Fatalf("repo:push = %q", got[string(capability.RepoPush)])
+	}
+}
+
+// TestBuildCredentialsGrantsReadOnlyAdditionalRepos proves the MGV-10 (#1285)
+// end-to-end wiring: a gaggle whose Project is example/site (read-write) and
+// whose AdditionalRepos include example/goobers (read-only) is granted the
+// project's own write token plus a repo-qualified contents:read token for the
+// reference repo — and no write capability against the reference repo.
+func TestBuildCredentialsGrantsReadOnlyAdditionalRepos(t *testing.T) {
+	t.Setenv("SITE_TOKEN", "site-write")
+	t.Setenv("REF_TOKEN", "ref-read")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "example", Name: "site", Token: instance.TokenRef{Env: "SITE_TOKEN"}},
+		{Provider: "github", Owner: "example", Name: "goobers", Token: instance.TokenRef{Env: "REF_TOKEN"}},
+	}}
+	additional := []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"}}
+
+	resolver, grants, err := buildCredentials(cfg, nil, "example", "site", additional, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolveGrants(t, resolver, grants)
+
+	// The project's write capabilities resolve to the site (write) token.
+	if got[string(capability.RepoPush)] != "site-write" {
+		t.Errorf("repo:push = %q, want site-write", got[string(capability.RepoPush)])
+	}
+	// The reference repo's read capability resolves to its own read token.
+	readCap := credentials.RepoScopedCapability(string(capability.ContentsRead), "example", "goobers")
+	if got[readCap] != "ref-read" {
+		t.Errorf("%s = %q, want ref-read", readCap, got[readCap])
+	}
+	// No capability targeting the reference repo is anything but read.
+	for cap := range got {
+		if strings.HasSuffix(cap, "@example/goobers") && !strings.HasPrefix(cap, string(capability.ContentsRead)+"@") {
+			t.Errorf("reference repo example/goobers got a non-read grant %q", cap)
+		}
 	}
 }
 
@@ -763,7 +800,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 			PrivateKey: &instance.TokenRef{File: "/run/secrets/app.pem"},
 		},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -798,7 +835,7 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 			PrivateKey: &instance.TokenRef{Store: "kv/app-key"},
 		},
 	}}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil); err == nil ||
+	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "repo acme/web") {
 		t.Fatalf("buildCredentials error = %v, want fail-closed repo diagnosis", err)
 	}
@@ -825,7 +862,7 @@ func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 		}
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{appRepo(), appRepo()}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil); err == nil ||
+	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "duplicate repository reference") {
 		t.Fatalf("buildCredentials error = %v, want duplicate-repo fail-closed", err)
 	}
@@ -1128,7 +1165,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1157,7 +1194,7 @@ func TestBuildCredentialsOverride(t *testing.T) {
 			{Capability: "repo:push", Token: instance.TokenRef{Env: "PUSH_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1182,7 +1219,7 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1305,7 +1342,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil)
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}

@@ -602,6 +602,9 @@ func (ix *index) crossCheck(r *Report) {
 	// a gaggle legitimately binds its repo token per-repo in instance.yaml
 	// rather than through a Manifest Connection.
 	ix.checkGaggleConnections(r)
+	// Read-only reference-repo coherence (MGV-10, #1285): an AdditionalRepos
+	// entry must not also be the gaggle's read-write Project.
+	ix.checkGaggleAdditionalRepos(r)
 	// Gaggle CI-command coherence (MGV-4) over #1009's ciCommand surface.
 	ix.checkGaggleCICommand(r)
 	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
@@ -796,6 +799,40 @@ func (ix *index) checkGaggleConnections(r *Report) {
 			check(repo.ConnectionRef, fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i))
 		}
 	}
+}
+
+// checkGaggleAdditionalRepos enforces read-only reference-repo coherence
+// (MGV-10, #1285): a gaggle's AdditionalRepos are read-only reference sources,
+// so an entry must not name the same repository as the gaggle's read-write
+// Project — a repo cannot be both the write sink and a read-only reference. It
+// also flags a reference repo listed twice, which is a redundant config.
+func (ix *index) checkGaggleAdditionalRepos(r *Report) {
+	for name, g := range ix.gaggles {
+		file := ix.gaggleFile[name]
+		seen := map[string]bool{}
+		for i, repo := range g.Spec.AdditionalRepos {
+			id := repoIdentity(repo)
+			if id == repoIdentity(g.Spec.Project) {
+				r.add(Error, file, "Gaggle", name,
+					"spec.additionalRepos[%d] names the same repository as spec.project (%s); a read-only reference repo must not be the gaggle's read-write project", i, id)
+				continue
+			}
+			if seen[id] {
+				r.add(Error, file, "Gaggle", name,
+					"spec.additionalRepos[%d] repeats repository %s already listed in spec.additionalRepos", i, id)
+				continue
+			}
+			seen[id] = true
+		}
+	}
+}
+
+// repoIdentity is the provider-qualified identity of a repo reference, used to
+// compare a gaggle's Project against its AdditionalRepos. Branch and
+// connectionRef are deliberately excluded — the same repo on a different branch
+// or connection is still the same repo for read-only-vs-write-sink purposes.
+func repoIdentity(ref apiv1.RepoRef) string {
+	return strings.Join([]string{string(ref.Provider), ref.Owner, ref.Project, ref.Name}, "/")
 }
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
