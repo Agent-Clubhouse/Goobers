@@ -31,9 +31,18 @@ esac
 `
 
 // askpassScriptWindows is a secret-free helper for Windows cmd.exe-based
-// GIT_ASKPASS execution.
+// GIT_ASKPASS execution. It mirrors the POSIX askpassScript contract exactly:
+// a "Username" prompt is answered from GOOBERS_GIT_USERNAME (defaulting to
+// x-access-token), every other prompt from GOOBERS_GIT_TOKEN. Answering the
+// Username prompt with the raw token (as an earlier version did) diverges from
+// that contract and leaks the token into git's username field.
 const askpassScriptWindows = `@echo off
-echo %GOOBERS_GIT_TOKEN%
+echo(%~1| findstr /B /I /C:"Username" >nul
+if not errorlevel 1 (
+  if defined GOOBERS_GIT_USERNAME (echo(%GOOBERS_GIT_USERNAME%) else (echo x-access-token)
+) else (
+  echo(%GOOBERS_GIT_TOKEN%
+)
 `
 
 // WriteAskpassScript writes the (secret-free) askpass helper into dir,

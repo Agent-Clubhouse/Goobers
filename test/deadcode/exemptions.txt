@@ -7,6 +7,7 @@ github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API h
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
 github.com/goobers/goobers/internal/credentials.WriteAskpassScript # Credential helper retained for isolated Git consumers.
+github.com/goobers/goobers/internal/credentials.writeAskpassFile # Askpass file writer reached only via WriteAskpassScript (isolated Git-consumer seam).
 github.com/goobers/goobers/internal/credentials.GitEnv # Credential environment helper retained for isolated Git consumers.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
