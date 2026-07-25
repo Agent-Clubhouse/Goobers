@@ -97,6 +97,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
@@ -168,6 +174,38 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
     expect(replaySignal?.aborted).toBe(true);
     expect(firstSignal?.aborted).toBe(false);
     client.release(1);
+  });
+
+  it("keeps replacement-client work out of a detached operation", async () => {
+    const firstClient = new GatedRunsClient(populatedDaemonFixtures());
+    const replacementClient = new GatedRunsClient(populatedDaemonFixtures());
+    const { result, rerender, unmount } = renderHook(
+      ({ client }) => useOperationalSnapshot(client),
+      {
+        initialProps: { client: firstClient },
+        wrapper: wrapper(firstClient),
+      },
+    );
+
+    await waitFor(() => expect(firstClient.signals).toHaveLength(1));
+    const detachedSignal = firstClient.signals[0];
+
+    rerender({ client: replacementClient });
+    expect(detachedSignal?.aborted).toBe(true);
+    act(() => {
+      result.current.retry();
+      result.current.retry();
+    });
+    await waitFor(() => expect(replacementClient.signals).toHaveLength(1));
+
+    act(() => firstClient.release(1));
+    await settle();
+    expect(replacementClient.signals).toHaveLength(1);
+
+    act(() => replacementClient.release(1));
+    await waitFor(() => expect(replacementClient.signals).toHaveLength(2));
+    unmount();
+    replacementClient.release(1);
   });
 });
 

@@ -72,6 +72,7 @@ function useCoalescedOperationalRefresh(
   const pendingAll = useRef(false);
   const pendingModels = useRef(new Set<UpdateModel>());
   const enabled = useRef(true);
+  const lifecycle = useRef(0);
 
   const refresh = useCallback((models?: ReadonlySet<UpdateModel>) => {
     if (!enabled.current) {
@@ -94,18 +95,24 @@ function useCoalescedOperationalRefresh(
 
     const operation = {
       controller: new AbortController(),
+      lifecycle: lifecycle.current,
       promise: Promise.resolve(false),
+      task: taskRef.current,
     };
     const promise = (async () => {
       let refreshed = false;
-      while (enabled.current && pending.current) {
+      while (
+        enabled.current &&
+        lifecycle.current === operation.lifecycle &&
+        pending.current
+      ) {
         const controller = new AbortController();
         operation.controller = controller;
         const models = pendingAll.current ? undefined : new Set(pendingModels.current);
         pending.current = false;
         pendingAll.current = false;
         pendingModels.current.clear();
-        refreshed = await taskRef.current(models, controller.signal);
+        refreshed = await operation.task(models, controller.signal);
       }
       return refreshed;
     })().finally(() => {
@@ -122,6 +129,7 @@ function useCoalescedOperationalRefresh(
     enabled.current = true;
     return () => {
       enabled.current = false;
+      lifecycle.current += 1;
       pending.current = false;
       pendingAll.current = false;
       pendingModels.current.clear();

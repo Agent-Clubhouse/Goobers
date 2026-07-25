@@ -459,6 +459,9 @@ export class LiveDataController {
     const flush = this.drainInvalidations().finally(() => {
       if (this.invalidationFlush === flush) {
         this.invalidationFlush = undefined;
+        if (this.pendingModels.size > 0 && this.invalidationTimer === undefined) {
+          void this.flushInvalidations();
+        }
       }
     });
     this.invalidationFlush = flush;
