@@ -161,6 +161,11 @@ func groupChecksOnly(all []check, group string) []check {
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
 	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
+	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
+	// Linux runner. It sets GOOS for the golangci-lint *subprocess* only — never
+	// as an ambient GOOS, which would make `go run ./test/ci` build this tool
+	// for the target OS and then fail to exec it on the host.
+	lintGOOS := strings.TrimSpace(getenv("GOOBERS_LINT_GOOS"))
 	result := make([]check, 0, len(checks))
 	for _, current := range checks {
 		if !raceEnabled {
@@ -168,6 +173,9 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		}
 		if shard != "" && current.label == "test" {
 			current.args = shardUnitArgs(current.args, shard)
+		}
+		if lintGOOS != "" && current.label == "lint" {
+			current.env = append(append([]string(nil), current.env...), "GOOS="+lintGOOS)
 		}
 		result = append(result, current)
 	}

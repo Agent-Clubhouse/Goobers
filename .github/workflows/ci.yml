@@ -135,8 +135,11 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: golangci-lint (GOOS=${{ matrix.goos }})
+        # GOOBERS_LINT_GOOS sets GOOS for the golangci-lint subprocess only.
+        # Setting ambient GOOS here would cross-build the `go run ./test/ci`
+        # launcher for the target and fail to exec it on the Linux host.
         env:
-          GOOS: ${{ matrix.goos }}
+          GOOBERS_LINT_GOOS: ${{ matrix.goos }}
         run: go run ./test/ci group lint
 
   # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).

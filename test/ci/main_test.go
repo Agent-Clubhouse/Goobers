@@ -787,6 +787,31 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeTogglesCrossLintsViaSubprocessEnv(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_LINT_GOOS" {
+			return "darwin"
+		}
+		return ""
+	}
+	lint := applyRuntimeToggles(groupChecksOnly(all, groupLint), env)
+	var lintCheck check
+	for _, current := range lint {
+		if current.label == "lint" {
+			lintCheck = current
+		}
+	}
+	// GOOS goes into the golangci-lint subprocess env, not the launcher's args.
+	if !slices.Contains(lintCheck.env, "GOOS=darwin") {
+		t.Errorf("lint check env = %q, want it to contain GOOS=darwin", lintCheck.env)
+	}
+	if slices.Contains(lintCheck.args, "GOOS=darwin") {
+		t.Errorf("GOOS must not leak into lint args (would cross-build the launcher): %q", lintCheck.args)
+	}
+}
+
 func TestRunRejectsUnknownGroup(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
