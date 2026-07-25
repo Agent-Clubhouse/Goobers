@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/mcpconfig"
@@ -133,9 +134,9 @@ func copyCopilotConfig(sourceHome, targetHome string) error {
 
 func removeEnvironment(env []string, name string) []string {
 	out := env[:0]
-	prefix := name + "="
 	for _, entry := range env {
-		if len(entry) >= len(prefix) && entry[:len(prefix)] == prefix {
+		entryName, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(entryName, name) {
 			continue
 		}
 		out = append(out, entry)
