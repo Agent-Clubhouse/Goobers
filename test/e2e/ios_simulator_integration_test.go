@@ -24,6 +24,9 @@ import (
 )
 
 func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_IOS_SIMULATOR_E2E")
+	testdep.Require(t, "xcodebuild", "xcrun")
+
 	result, events := runIOSSimulatorWorkflow(t, "run-ios-simulator-green", false)
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q (%s: %s), want completed", result.Phase, result.FailureStage, result.FailureMessage)
@@ -56,6 +59,9 @@ func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
 }
 
 func TestIntegrationIOSSimulatorWorkflowFailsGateWithXCResultDiagnostics(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_IOS_SIMULATOR_E2E")
+	testdep.Require(t, "xcodebuild", "xcrun")
+
 	result, events := runIOSSimulatorWorkflow(t, "run-ios-simulator-failing", true)
 	if result.Phase != journal.PhaseAborted {
 		t.Fatalf("phase = %q (%s: %s), want aborted by failed gate", result.Phase, result.FailureStage, result.FailureMessage)
@@ -87,9 +93,6 @@ func TestIntegrationIOSSimulatorWorkflowFailsGateWithXCResultDiagnostics(t *test
 
 func runIOSSimulatorWorkflow(t *testing.T, runID string, failingTest bool) (runner.Result, []journal.Event) {
 	t.Helper()
-	testdep.RequireEnv(t, "GOOBERS_IOS_SIMULATOR_E2E")
-	testdep.Require(t, "xcodebuild")
-	testdep.Require(t, "xcrun")
 
 	gaggle := loadYAML[apiv1.Gaggle](t, filepath.Join(iosSimulatorGaggleDir, "gaggle.yaml"))
 	wf := loadYAML[apiv1.Workflow](t, filepath.Join(iosSimulatorGaggleDir, "workflows", "ios-simulator-test.yaml"))
