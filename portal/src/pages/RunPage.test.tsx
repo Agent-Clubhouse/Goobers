@@ -131,6 +131,8 @@ describe("run detail", () => {
         stage: "review",
         attempts: [
           {
+            id: "sta-review-1",
+            visit: 1,
             number: 1,
             class: "initial",
             status: "running",
