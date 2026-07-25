@@ -873,6 +873,35 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 	}
 
+	// Tutor topology (TUT-A4, Tutor v2 design doc §4.3): a per-workflow
+	// tutor's target must be explicit and must name a real workflow in the
+	// SAME gaggle — a tutor confined to another gaggle's workflow would defeat
+	// the hard silo Gaggle already establishes for this definition itself. A
+	// per-gaggle tutor has no target (the whole gaggle is already its scope).
+	if ts := w.Spec.TutorScope; ts != nil {
+		switch ts.Tier {
+		case apiv1.TutorScopePerWorkflow:
+			switch ts.Target {
+			case "":
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target is required when spec.tutorScope.tier is %q", ts.Tier)
+			case w.Name:
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target %q must not name this workflow itself", ts.Target)
+			default:
+				if _, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: ts.Target}]; !ok {
+					r.add(Error, file, "Workflow", w.Name,
+						"spec.tutorScope.target names %q, but no Workflow/%s definition was found in gaggle %q",
+						ts.Target, ts.Target, w.Spec.Gaggle)
+				}
+			}
+		case apiv1.TutorScopePerGaggle:
+			if ts.Target != "" {
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target must be empty when spec.tutorScope.tier is %q, got %q", ts.Tier, ts.Target)
+			}
+		default:
+			r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.tier %q is not one of per-workflow, per-gaggle", ts.Tier)
+		}
+	}
+
 	for _, t := range w.Spec.Tasks {
 		if t.Type == apiv1.TaskAgentic && t.Goober != "" {
 			goober, ok := ix.goobers[t.Goober]
