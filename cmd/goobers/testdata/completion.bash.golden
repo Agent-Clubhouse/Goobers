@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version versions init scaffold validate lint doctor config up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        candidates="version versions init scaffold agent-kit validate lint doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -23,13 +23,28 @@ _goobers_completion()
                 workflow) flags+=" --force" ;;
             esac
             ;;
+        agent-kit)
+            case "${COMP_WORDS[2]:-}" in
+                install) flags+=" --harness" ;;
+                update) flags+=" --dry-run --write --replace-modified" ;;
+            esac
+            ;;
         validate)
-            flags+=" --check-harness --check-repos --source-tree"
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            ;;
+        lint)
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
                 diff) flags+=" --against" ;;
                 show) flags+=" --json" ;;
+            esac
+            ;;
+        speech)
+            case "${COMP_WORDS[2]:-}" in
+                preflight) flags+=" --json" ;;
+                test) flags+=" --json" ;;
             esac
             ;;
         up)
@@ -57,6 +72,9 @@ _goobers_completion()
             ;;
         stats)
             flags+=" --since --json"
+            ;;
+        features)
+            flags+=" --json --dsl-version --used"
             ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in
@@ -124,9 +142,19 @@ _goobers_completion()
                 candidates="goober workflow"
             fi
             ;;
+        agent-kit)
+            if (( COMP_CWORD == 2 )); then
+                candidates="install check update"
+            fi
+            ;;
         config)
             if (( COMP_CWORD == 2 )); then
                 candidates="diff materialize show"
+            fi
+            ;;
+        speech)
+            if (( COMP_CWORD == 2 )); then
+                candidates="preflight test"
             fi
             ;;
         service)
