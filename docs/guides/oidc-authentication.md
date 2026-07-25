@@ -134,7 +134,8 @@ loopback-only and use a client that sends a bearer token in the
 ## Verify authentication and authorization
 
 Use a short-lived access token from the configured issuer. Never put it in
-shell history or a configuration file.
+shell history or a configuration file. Curl's `--oauth2-bearer` option sends
+the token with the required RFC 6750 `Bearer` authorization scheme.
 
 ```sh
 curl --cacert /etc/goobers/tls/ca.crt \
@@ -142,7 +143,7 @@ curl --cacert /etc/goobers/tls/ca.crt \
   https://goobers.example.com:8443/api/v1/health
 
 curl --cacert /etc/goobers/tls/ca.crt \
-  -H "Authorization: Bearer $GOOBERS_ACCESS_TOKEN" \
+  --oauth2-bearer "$GOOBERS_ACCESS_TOKEN" \
   https://goobers.example.com:8443/api/v1/health
 ```
 
