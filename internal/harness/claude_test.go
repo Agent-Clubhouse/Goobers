@@ -178,6 +178,43 @@ func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T)
 	}
 }
 
+func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing.T) {
+	workspace := t.TempDir()
+	raw := []byte(strings.Join([]string{
+		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` + strings.Repeat("x", int(maxClaudeStreamEventBytes)) + `"}]}}`,
+		`{"type":"result","subtype":"success","result":"terminal output","total_cost_usd":0.25,"usage":{"input_tokens":120,"output_tokens":30}}`,
+	}, "\n"))
+	runner := &claudeSequenceRunner{
+		rawOutputs: [][]byte{raw},
+		acts: []func(ProcessRequest) error{
+			func(req ProcessRequest) error {
+				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:           testEnvelope(workspace),
+		Workspace:          workspace,
+		CompletionPath:     DefaultResultPath,
+		MaxTranscriptBytes: maxClaudeStreamEventBytes + 1024,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 120 {
+		t.Fatalf("input token metric = %v, want 120", got)
+	}
+	if !bytes.Contains(out.Transcript, []byte("terminal output")) {
+		t.Fatalf("transcript lost terminal output:\n%s", out.Transcript)
+	}
+	if !out.TranscriptTruncated || out.TranscriptDroppedBytes <= maxClaudeStreamEventBytes {
+		t.Fatalf("truncation = %v, dropped = %d; want oversized event discarded", out.TranscriptTruncated, out.TranscriptDroppedBytes)
+	}
+}
+
 func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
 	const limit = 512
 	workspace := t.TempDir()

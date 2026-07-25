@@ -173,12 +173,45 @@ func claudeStreamWithTerminalResults(result ProcessResult, captures ...*claudeTe
 	return bytes.NewReader(stream.Bytes())
 }
 
+func readClaudeStreamLine(reader *bufio.Reader) ([]byte, int64, error) {
+	var line []byte
+	var dropped int64
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 && fragment[len(fragment)-1] == '\n' {
+			fragment = fragment[:len(fragment)-1]
+		}
+		if dropped > 0 {
+			dropped += int64(len(fragment))
+		} else if int64(len(line))+int64(len(fragment)) > maxClaudeStreamEventBytes {
+			dropped = int64(len(line)) + int64(len(fragment))
+			line = nil
+		} else {
+			line = append(line, fragment...)
+		}
+
+		switch err {
+		case nil:
+			return line, dropped, nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) == 0 && dropped == 0 {
+				return nil, 0, io.EOF
+			}
+			return line, dropped, nil
+		default:
+			return nil, dropped, err
+		}
+	}
+}
+
 func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), int(maxClaudeStreamEventBytes))
+	reader := bufio.NewReaderSize(r, 64*1024)
 	buf := newTranscriptBuffer(limit)
 	converted := false
 	promptIndex := 0
+	var streamDropped int64
 	var finalOutput *transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
@@ -206,8 +239,16 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 		return ok
 	}
 
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	for {
+		line, dropped, err := readClaudeStreamLine(reader)
+		streamDropped += dropped
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return transcriptCapture{}, false
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -246,9 +287,10 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 		}
 		converted = true
 	}
-	if scanner.Err() != nil || !converted {
+	if !converted {
 		return transcriptCapture{}, false
 	}
+	alreadyDropped += streamDropped
 
 	for promptIndex < len(prompts) {
 		if !writePrompt() {
