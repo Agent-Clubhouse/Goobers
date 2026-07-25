@@ -1,0 +1,46 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: ios-simulator-test
+spec:
+  gaggle: ios-simulator
+  displayName: iOS Simulator XCUITest
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 8
+  start: run-xcuitest
+  tasks:
+    - name: run-xcuitest
+      type: deterministic
+      goal: Run the representative XCUITest target and publish xcresult diagnostics.
+      run:
+        command:
+          - goobers
+          - ios-simulator-test
+          - --project
+          - GoobersIOS.xcodeproj
+          - --scheme
+          - GoobersIOS
+          - --only-testing
+          - GoobersIOSUITests
+      inputs:
+        resultFile: ios-simulator-result.json
+        maxOutputBytes: "1048576"
+      requiredCapabilities:
+        - os=darwin
+        - xcode
+      timeoutSeconds: 900
+      retry:
+        maxAttempts: 1
+      continueOnError: true
+      next: xcuitest-gate
+  gates:
+    - name: xcuitest-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: "@abort"

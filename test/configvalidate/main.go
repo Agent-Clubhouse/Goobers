@@ -38,6 +38,7 @@ var checkedInTrees = []checkedInTree{
 		allowedWarnings: []string{docsUpdaterInertWarning},
 	},
 	{path: "config-examples"},
+	{path: "examples/ios-simulator"},
 	{path: "internal/instance/starter"},
 	{path: "internal/instance/demo"},
 	{path: "test/fixtures/e2e/walking-skeleton"},
