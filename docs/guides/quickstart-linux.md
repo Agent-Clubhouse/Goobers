@@ -136,7 +136,7 @@ those changes are expected.
 |---|---|
 | Linux | Prefer the validated Ubuntu 24.04 LTS, linux/amd64 baseline. On another distribution, record the distribution and kernel and ensure unprivileged user namespaces are available for `network: none` stages. |
 | Git | Git 2.17 or newer, with `git worktree add` and `git worktree remove`. |
-| Go | The version pinned in [`go.mod`](../../go.mod) (currently 1.26.5), on the PATH inherited by Goobers. The target repository's build/test tools, including `golangci-lint` for the Goobers self-host workflow, must be on that PATH too. |
+| Go | Go 1.26.5 (the repository's currently pinned version), on the PATH inherited by Goobers. The target repository's complete build/test toolchain must be on that PATH too. |
 | Copilot CLI | A current stable GitHub Copilot CLI on the same user's PATH, an active Copilot entitlement, and an organization policy that permits Copilot CLI. Record `copilot --version`. |
 | Goobers instance | A validated instance containing the `implementation` workflow, repository capability credentials, working local and hosted CI, and exactly one dedicated issue eligible under that workflow's trust/readiness labels. The shipped workflow expects `goobers:approved` and `goobers:ready`; open-PR caps and run budgets must also admit the run. |
 
@@ -151,8 +151,8 @@ copilot --version
 
 See GitHub's
 [Copilot CLI installation](https://docs.github.com/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
-instructions for other supported methods. For an interactive host, authenticate
-as the same OS user that runs Goobers:
+instructions for other supported methods. Authenticate as the same OS user that
+runs Goobers, including when that user runs a headless service:
 
 ```sh
 copilot login
@@ -160,10 +160,16 @@ copilot login
 
 On Linux, the stored OAuth session uses libsecret when a keyring is available
 and otherwise may use `~/.copilot/config.json`; a systemd service must run with
-the same home/profile or it will not see that session. For a headless service,
-configure a separate personal fine-grained PAT with **Copilot Requests:
-Read-only** as the instance's `agent:model` credential instead of relying on a
-stored login. Keep it separate from repository credentials as described in
+the same home/profile or it will not see that session. A stored Copilot CLI
+sign-in is currently required for this procedure: both
+`goobers validate --check-harness` and the automatic harness preflight in
+`goobers run` check that profile before capability credentials are resolved.
+For a headless service, bootstrap the stored sign-in as the service user. You
+may also configure a separate personal fine-grained PAT with **Copilot
+Requests: Read-only** as the instance's `agent:model` credential for live
+agentic stages, but that credential does not replace the stored sign-in or
+satisfy either preflight. Keep it separate from repository credentials as
+described in
 [GitHub token scopes](github-token-scopes.md#agentic-copilot-harness-stages-stored-login-or-agentmodel-token).
 Never put either token in this evidence bundle.
 
@@ -258,8 +264,10 @@ before sharing it.
   systemd user, not only the interactive shell.
 - Authentication that works interactively but fails under systemd usually
   means the service has a different `HOME`, cannot access the user's keyring,
-  or needs an explicit `agent:model` credential. A personal fine-grained PAT
-  needs **Copilot Requests: Read-only**; classic PATs are not supported.
+  or lacks a stored Copilot CLI sign-in for the service user. An `agent:model`
+  credential is injected only into live agentic stages and cannot satisfy the
+  preflight. If configured, a personal fine-grained PAT needs **Copilot
+  Requests: Read-only**; classic PATs are not supported.
 - `operation not permitted` while starting a deterministic `network: none`
   stage usually means the distribution disabled unprivileged user namespaces.
   Apply the host policy described in [Validated environment](#validated-environment)
