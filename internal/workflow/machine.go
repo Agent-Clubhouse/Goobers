@@ -32,20 +32,15 @@ const (
 	BranchEscalate = model.BranchEscalate
 )
 
-// IsReservedTarget reports whether target is a reserved terminal action.
-func IsReservedTarget(target string) bool {
-	return model.IsReservedTarget(target)
-}
-
-// IsReservedBranchTarget reports whether target is a reserved NON-terminal
-// branch action (today only "@join", which ends a parallel branch and
-// continues the run at the join state).
-func IsReservedBranchTarget(target string) bool {
-	return model.IsReservedBranchTarget(target)
-}
-
 // IsReservedAnyTarget reports whether target is reserved in any sense —
-// terminal or branch. Use it where the question is "is this a state name?".
+// a terminal action ("@abort"/"@escalate") or a branch action ("@join").
+// Use it where the question is "is this a state name?", which is what every
+// dangling-reference check outside the interpreters actually asks.
+//
+// The narrower model.IsReservedTarget / model.IsReservedBranchTarget are
+// deliberately NOT re-exported here: the distinction between "ends the run"
+// and "ends a branch" only matters inside an interpreter's reachability
+// analysis, and exposing it invites a caller to pick the wrong one.
 func IsReservedAnyTarget(target string) bool {
 	return model.IsReservedAnyTarget(target)
 }
