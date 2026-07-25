@@ -6,11 +6,12 @@
 // so it is portable across the release runners this milestone must support
 // (#655, milestone #12/#17).
 //
-// Windows (#655) is packaged as a .zip of goobers.exe; unix targets as
-// .tar.gz of goobers, both named goobers_<version>_<os>_<arch>.<ext>. Build
-// metadata (version/commit/date) is injected via the same -ldflags path the
-// Makefile uses (internal/version), so release binaries report identical
-// `goobers --version` output to a local `make build`.
+// Windows (#655) is packaged as a .zip; unix targets as .tar.gz, both named
+// goobers_<version>_<os>_<arch>.<ext>. Each archive carries the target binary
+// plus the release-pinned onboarding docs. Build metadata (version/commit/date)
+// is injected via the same -ldflags path the Makefile uses (internal/version),
+// so release binaries report identical `goobers --version` output to a local
+// `make build`.
 package main
 
 import (
@@ -20,6 +21,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,14 +77,31 @@ var DefaultTargets = []Target{
 	{OS: "windows", Arch: "amd64"},
 }
 
-// packageArchive writes one release archive at outDir/<archiveName> containing
-// the single binary at binPath under its target-appropriate name, and returns
-// the archive path. Zip on Windows, gzip'd tar elsewhere.
-func packageArchive(t Target, version, binPath, outDir string) (string, error) {
+type archiveEntry struct {
+	name string
+	mode int64
+	data []byte
+}
+
+// packageArchive writes one release archive at outDir/<archiveName>. The
+// optional release root is included beside the target binary; callers that omit
+// it retain the binary-only primitive used by focused packaging tests.
+func packageArchive(t Target, version, binPath, outDir string, releaseRoot ...string) (string, error) {
+	if len(releaseRoot) > 1 {
+		return "", fmt.Errorf("package archive accepts at most one release root")
+	}
 	archivePath := filepath.Join(outDir, t.archiveName(version))
 	data, err := os.ReadFile(binPath)
 	if err != nil {
 		return "", fmt.Errorf("read built binary %s: %w", binPath, err)
+	}
+	entries := []archiveEntry{{name: t.binaryName(), mode: 0o755, data: data}}
+	if len(releaseRoot) == 1 {
+		releaseEntries, err := collectArchiveEntries(releaseRoot[0])
+		if err != nil {
+			return "", err
+		}
+		entries = append(entries, releaseEntries...)
 	}
 	f, err := os.Create(archivePath)
 	if err != nil {
@@ -91,10 +110,10 @@ func packageArchive(t Target, version, binPath, outDir string) (string, error) {
 	defer func() { _ = f.Close() }()
 
 	if t.archiveExt() == "zip" {
-		if err := writeZip(f, t.binaryName(), data); err != nil {
+		if err := writeZip(f, entries); err != nil {
 			return "", fmt.Errorf("write zip %s: %w", archivePath, err)
 		}
-	} else if err := writeTarGz(f, t.binaryName(), data); err != nil {
+	} else if err := writeTarGz(f, entries); err != nil {
 		return "", fmt.Errorf("write tar.gz %s: %w", archivePath, err)
 	}
 	if err := f.Close(); err != nil {
@@ -103,36 +122,77 @@ func packageArchive(t Target, version, binPath, outDir string) (string, error) {
 	return archivePath, nil
 }
 
-// writeZip writes a single-entry zip (name -> data) with the executable bit set
-// — harmless on Windows, and correct if the zip is ever unpacked on a unix box.
-func writeZip(w io.Writer, name string, data []byte) error {
-	zw := zip.NewWriter(w)
-	hdr := &zip.FileHeader{Name: name, Method: zip.Deflate}
-	hdr.SetMode(0o755)
-	fw, err := zw.CreateHeader(hdr)
+func collectArchiveEntries(root string) ([]archiveEntry, error) {
+	var entries []archiveEntry
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("release archive root must not contain symlink %s", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect release archive entry %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("release archive root contains unsupported file %s", path)
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return fmt.Errorf("resolve release archive entry %s: %w", path, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read release archive entry %s: %w", path, err)
+		}
+		entries = append(entries, archiveEntry{
+			name: filepath.ToSlash(rel),
+			mode: 0o644,
+			data: data,
+		})
+		return nil
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := fw.Write(data); err != nil {
-		return err
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	return entries, nil
+}
+
+func writeZip(w io.Writer, entries []archiveEntry) error {
+	zw := zip.NewWriter(w)
+	for _, entry := range entries {
+		hdr := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
+		hdr.SetMode(fs.FileMode(entry.mode))
+		fw, err := zw.CreateHeader(hdr)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(entry.data); err != nil {
+			return err
+		}
 	}
 	return zw.Close()
 }
 
-// writeTarGz writes a single-entry gzip'd tar (name -> data) with the
-// executable bit set.
-func writeTarGz(w io.Writer, name string, data []byte) error {
+func writeTarGz(w io.Writer, entries []archiveEntry) error {
 	gw := gzip.NewWriter(w)
 	tw := tar.NewWriter(gw)
-	if err := tw.WriteHeader(&tar.Header{
-		Name: name,
-		Mode: 0o755,
-		Size: int64(len(data)),
-	}); err != nil {
-		return err
-	}
-	if _, err := tw.Write(data); err != nil {
-		return err
+	for _, entry := range entries {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: entry.name,
+			Mode: entry.mode,
+			Size: int64(len(entry.data)),
+		}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(entry.data); err != nil {
+			return err
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return err

@@ -73,8 +73,10 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	selectedNumber := providerInput("selectedNumber", "")
 	head := providerInput("head", "")
 	base := providerInput("base", "main")
+	attemptedHeadSHA := ""
+	rebaseBaseSHA := ""
 	if selectedNumber == "" || head == "" {
-		return failRebasePR(stderr, resultFile, selectedNumber, head,
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 			errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
 	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
@@ -82,33 +84,33 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 
 	repo, err := providerRepo(root)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 	}
 	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 	}
 
-	preRebaseSHA, err := checkoutExistingBranch(".", head, pushToken)
+	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head,
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 			fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
 	conflict, conflictLocations, rebaseBaseSHA, err := attemptRebase(".", base, pushToken)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head,
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
 
 	needsAgent := conflict || hasSubstantiveFindings || hasFailingCI
 
 	if !conflict && !hasSubstantiveFindings {
-		if err := forcePushWithLease(".", head, preRebaseSHA, pushToken); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head,
+		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
@@ -116,30 +118,30 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	if !needsAgent {
 		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 		if err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 		}
 		provider := newGitHubProvider(issuesToken)
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head,
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, preRebaseSHA, rebaseBaseSHA); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, preRebaseSHA, rebaseBaseSHA); err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, err)
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
 }
 
-func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head string, err error) int {
+func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string, err error) int {
 	pf(stderr, "error: %v\n", err)
 	code, retryable, extra := classifyProviderError(err)
 	payload := map[string]interface{}{
@@ -148,8 +150,8 @@ func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head string, err
 		"needsAgent":                  "true",
 		"conflict":                    "false",
 		"conflictLocations":           "[]",
-		"attemptedHeadSha":            "",
-		"rebaseBaseSha":               "",
+		"attemptedHeadSha":            attemptedHeadSHA,
+		"rebaseBaseSha":               rebaseBaseSHA,
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,

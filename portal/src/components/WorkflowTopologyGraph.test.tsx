@@ -1,8 +1,13 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowGraph } from "../api/types";
-import { MIN_GRAPH_ZOOM } from "../workflowGraph";
+import {
+  MAX_GRAPH_ZOOM,
+  MIN_GRAPH_ZOOM,
+  clampGraphZoom,
+  fitGraphZoom,
+} from "../workflowGraph";
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph";
 
 const cyclicGraph: WorkflowGraph = {
@@ -100,10 +105,14 @@ describe("workflow topology graph", () => {
     expect(scrollIntoView.mock.invocationCallOrder.at(-1)).toBeLessThan(
       focus.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY,
     );
+    const viewport = screen.getByRole("group", { name: "implementation execution graph" });
+    const initialZoom = Number(viewport.getAttribute("data-zoom"));
+    fireEvent.keyDown(second, { key: "-" });
+    expect(Number(viewport.getAttribute("data-zoom"))).toBeLessThan(initialZoom);
     focus.mockRestore();
   });
 
-  it("shows bounded fit, pan, and zoom controls only for long topology", () => {
+  it("offers concise bounded zoom, fit, and keyboard pan controls", () => {
     const graph = longGraph();
     render(<Harness graph={graph} />);
     const viewport = screen.getByRole("group", { name: "long execution graph" });
@@ -112,24 +121,250 @@ describe("workflow topology graph", () => {
 
     expect(screen.getByRole("group", { name: "Graph view controls" })).toBeInTheDocument();
     expect(viewport).toHaveAttribute("data-responsive-layout", "scroll-under-820");
-    expect(Number(viewport.getAttribute("data-zoom"))).toBeGreaterThanOrEqual(MIN_GRAPH_ZOOM);
+    expect(screen.queryByRole("button", { name: /Pan (left|right|up|down)/ })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Pan right" }));
+    viewport.focus();
+    fireEvent.keyDown(viewport, { key: "ArrowRight" });
     expect(scrollBy).toHaveBeenCalledWith({
       behavior: "auto",
       left: 120,
       top: 0,
     });
-    viewport.scrollLeft = 80;
 
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
-    expect(Number(viewport.getAttribute("data-zoom"))).toBeGreaterThan(MIN_GRAPH_ZOOM);
-    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    const zoomOut = screen.getByRole("button", { name: "Zoom out" });
+    fireEvent.keyDown(viewport, { key: "0" });
+    for (let index = 0; index < 20; index += 1) {
+      fireEvent.click(zoomOut);
+    }
     expect(Number(viewport.getAttribute("data-zoom"))).toBe(MIN_GRAPH_ZOOM);
+
+    const zoomIn = screen.getByRole("button", { name: "Zoom in" });
+    for (let index = 0; index < 20; index += 1) {
+      fireEvent.click(zoomIn);
+    }
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(MAX_GRAPH_ZOOM);
+
+    fireEvent.keyDown(viewport, { key: "0" });
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(1);
+    viewport.scrollLeft = 80;
+    fireEvent.keyDown(viewport, { key: "f" });
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(
+      fitGraphZoom(4492, 182, 720, 360),
+    );
     expect(viewport.scrollLeft).toBe(0);
   });
 
-  it("does not add navigation controls to a compact topology", () => {
+  it("zooms around the pointer only when wheel input has explicit graph intent", () => {
+    render(<Harness graph={longGraph()} />);
+    const viewport = screen.getByRole("group", { name: "long execution graph" });
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 360 },
+      clientWidth: { configurable: true, value: 720 },
+    });
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+      bottom: 410,
+      height: 360,
+      left: 100,
+      right: 820,
+      top: 50,
+      width: 720,
+      x: 100,
+      y: 50,
+      toJSON: () => ({}),
+    });
+    viewport.scrollLeft = 100;
+    viewport.scrollTop = 40;
+    const initialZoom = Number(viewport.getAttribute("data-zoom"));
+
+    const passiveWheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 300,
+      clientY: 150,
+      deltaY: -100,
+    });
+    expect(fireEvent(viewport, passiveWheel)).toBe(true);
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(initialZoom);
+
+    viewport.focus();
+    const boundedWheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 300,
+      clientY: 150,
+      deltaY: 100,
+    });
+    expect(fireEvent(viewport, boundedWheel)).toBe(true);
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(initialZoom);
+
+    const zoomWheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 300,
+      clientY: 150,
+      deltaY: -100,
+    });
+    expect(fireEvent(viewport, zoomWheel)).toBe(false);
+    const nextZoom = clampGraphZoom(initialZoom * Math.exp(0.2));
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(nextZoom);
+    expect(viewport.scrollLeft).toBeCloseTo(((100 + 200) / initialZoom) * nextZoom - 200);
+    expect(viewport.scrollTop).toBeCloseTo(((40 + 100) / initialZoom) * nextZoom - 100);
+  });
+
+  it("supports direct pointer pan and touch pinch zoom", () => {
+    render(<Harness graph={longGraph()} />);
+    const viewport = screen.getByRole("group", { name: "long execution graph" });
+    viewport.scrollLeft = 200;
+    viewport.scrollTop = 100;
+
+    fireEvent.pointerDown(viewport, {
+      button: 0,
+      clientX: 300,
+      clientY: 200,
+      pointerId: 1,
+      pointerType: "mouse",
+    });
+    fireEvent.pointerMove(viewport, {
+      clientX: 250,
+      clientY: 150,
+      pointerId: 1,
+      pointerType: "mouse",
+    });
+    expect(viewport.scrollLeft).toBe(250);
+    expect(viewport.scrollTop).toBe(150);
+    fireEvent.pointerUp(viewport, { pointerId: 1, pointerType: "mouse" });
+
+    const initialZoom = Number(viewport.getAttribute("data-zoom"));
+    fireEvent.pointerDown(viewport, {
+      clientX: 200,
+      clientY: 100,
+      pointerId: 2,
+      pointerType: "touch",
+    });
+    fireEvent.pointerDown(viewport, {
+      clientX: 300,
+      clientY: 100,
+      pointerId: 3,
+      pointerType: "touch",
+    });
+    fireEvent.pointerMove(viewport, {
+      clientX: 400,
+      clientY: 100,
+      pointerId: 3,
+      pointerType: "touch",
+    });
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(
+      clampGraphZoom(initialZoom * 2),
+    );
+  });
+
+  it("uses an in-page fullscreen fallback and refits after viewport changes", () => {
+    render(<Harness graph={longGraph()} />);
+    const viewport = screen.getByRole("group", { name: "long execution graph" });
+    const shell = viewport.closest(".workflow-graph-shell");
+    if (!(shell instanceof HTMLElement)) {
+      throw new Error("workflow graph shell was not rendered");
+    }
+    let width = 720;
+    let height = 360;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, get: () => height },
+      clientWidth: { configurable: true, get: () => width },
+    });
+    const selected = screen.getByRole("button", { name: /^stage-1,/ });
+    const initialZoom = Number(viewport.getAttribute("data-zoom"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
+    expect(shell).toHaveClass("workflow-graph-shell-expanded");
+    expect(shell).toHaveAttribute("data-fullscreen", "fallback");
+    expect(shell).toHaveAttribute("role", "dialog");
+    expect(shell).toHaveAttribute("aria-modal", "true");
+    expect(selected).toHaveAttribute("aria-pressed", "true");
+
+    const focusable = [
+      ...shell.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      ),
+    ];
+    focusable.at(-1)?.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(focusable[0]).toHaveFocus();
+
+    width = 1400;
+    height = 700;
+    fireEvent(window, new Event("resize"));
+    expect(Number(viewport.getAttribute("data-zoom"))).toBeGreaterThan(initialZoom);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(shell).not.toHaveClass("workflow-graph-shell-expanded");
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toHaveFocus();
+    width = 720;
+    height = 360;
+    fireEvent(window, new Event("resize"));
+    expect(Number(viewport.getAttribute("data-zoom"))).toBe(initialZoom);
+    expect(selected).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("enters and exits the native Fullscreen API when available", async () => {
+    render(<Harness graph={cyclicGraph} />);
+    const viewport = screen.getByRole("group", { name: "implementation execution graph" });
+    const shell = viewport.closest(".workflow-graph-shell");
+    if (!(shell instanceof HTMLElement)) {
+      throw new Error("workflow graph shell was not rendered");
+    }
+    const fullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const exitFullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    let fullscreenElement: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    const requestFullscreen = vi.fn(async () => {
+      fullscreenElement = shell;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(shell, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
+      await waitFor(() => expect(shell).toHaveAttribute("data-fullscreen", "native"));
+      expect(requestFullscreen).toHaveBeenCalledOnce();
+
+      fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      await waitFor(() => expect(shell).toHaveAttribute("data-fullscreen", "none"));
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    } finally {
+      if (fullscreenDescriptor) {
+        Object.defineProperty(document, "fullscreenElement", fullscreenDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "fullscreenElement");
+      }
+      if (exitFullscreenDescriptor) {
+        Object.defineProperty(document, "exitFullscreen", exitFullscreenDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "exitFullscreen");
+      }
+    }
+  });
+
+  it("keeps graph controls available for a compact topology", () => {
     render(
       <Harness
         graph={{
@@ -143,7 +378,8 @@ describe("workflow topology graph", () => {
       />,
     );
 
-    expect(screen.queryByRole("group", { name: "Graph view controls" })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Graph view controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeInTheDocument();
   });
 });
 
@@ -159,7 +395,7 @@ function Harness({ graph }: { graph: WorkflowGraph }) {
 }
 
 function longGraph(): WorkflowGraph {
-  const nodes = Array.from({ length: 8 }, (_, index) => ({
+  const nodes = Array.from({ length: 16 }, (_, index) => ({
     id: `stage-${index + 1}`,
     kind: "deterministic" as const,
   }));

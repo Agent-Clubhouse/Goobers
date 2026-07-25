@@ -69,7 +69,14 @@ esac
 archive="goobers_${version}_${os}_${arch}.tar.gz"
 release_url="https://github.com/${repository}/releases/download/${version}"
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/goobers-install.XXXXXX")
-trap 'rm -rf "$tmp_dir"' 0
+docs_stage=
+cleanup() {
+	rm -rf "$tmp_dir"
+	if [ -n "$docs_stage" ]; then
+		rm -rf "$docs_stage"
+	fi
+}
+trap cleanup 0
 trap 'exit 1' 1 2 15
 
 printf 'Downloading Goobers %s for %s/%s...\n' "$version" "$os" "$arch"
@@ -89,6 +96,8 @@ fi
 
 tar -xzf "${tmp_dir}/${archive}" -C "$tmp_dir"
 [ -f "${tmp_dir}/goobers" ] || fail "${archive} does not contain goobers"
+[ -f "${tmp_dir}/README.md" ] || fail "${archive} does not contain README.md"
+[ -f "${tmp_dir}/docs/RELEASE.md" ] || fail "${archive} does not contain release documentation"
 
 if [ -n "${GOOBERS_INSTALL_DIR:-}" ]; then
 	install_dir=$GOOBERS_INSTALL_DIR
@@ -97,15 +106,37 @@ elif [ -n "${HOME:-}" ]; then
 else
 	fail "HOME is unset; set GOOBERS_INSTALL_DIR to choose an install directory"
 fi
-mkdir -p "$install_dir"
+
+if [ -n "${GOOBERS_DOCS_DIR:-}" ]; then
+	docs_root=$GOOBERS_DOCS_DIR
+elif [ -n "${XDG_DATA_HOME:-}" ]; then
+	docs_root="${XDG_DATA_HOME}/goobers"
+elif [ -n "${HOME:-}" ]; then
+	docs_root="${HOME}/.local/share/goobers"
+else
+	docs_root="${install_dir}/docs"
+fi
+docs_dir="${docs_root}/${version}"
+
+installed_version=$("${tmp_dir}/goobers" --version | awk '{ print $2 }')
+[ "$installed_version" = "$version" ] ||
+	fail "archive binary did not report release ${version}"
+
+mkdir -p "$install_dir" "$docs_root"
+docs_stage="${docs_root}/.${version}.tmp.$$"
+rm -rf "$docs_stage"
+mkdir -p "${docs_stage}/docs"
+install -m 0644 "${tmp_dir}/README.md" "${docs_stage}/README.md"
+cp -R "${tmp_dir}/docs/." "${docs_stage}/docs/"
+rm -rf "$docs_dir"
+mv "$docs_stage" "$docs_dir"
+docs_stage=
+
 install -m 0755 "${tmp_dir}/goobers" "${install_dir}/goobers"
 binary="${install_dir}/goobers"
 
-installed_version=$("$binary" --version | awk '{ print $2 }')
-[ "$installed_version" = "$version" ] ||
-	fail "installed binary did not report release ${version}"
-
 printf 'Installed %s to %s\n' "$version" "$binary"
+printf 'Installed %s documentation to %s\n' "$version" "$docs_dir"
 case ":${PATH:-}:" in
 	*":${install_dir}:"*) ;;
 	*) printf 'Add %s to PATH before opening a new shell.\n' "$install_dir" ;;

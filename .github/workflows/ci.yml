@@ -1,18 +1,32 @@
 name: CI
 
 # Goobers control-plane and portal CI — the enforced merge gate.
-# Runs dead-code analysis plus the portable Go CI entrypoint (Go
-# fmt/vet/build/test/lint + portal build/test) on Ubuntu and macOS on every PR
-# to main, push to main, and merge-group build. See CONTRIBUTING.md's validation
-# tier contract, the Makefile's deadcode target, and test/ci for the
-# authoritative full-gate step list.
 #
-# Windows is gated too, as a required compile smoke (go build + go vet for
-# windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
-# gated on #630). The platform legs, the vulnerability scan, and the dedicated
-# journal-conformance job must all be green for the required `make ci` check to
-# pass; see the conformance, windows-smoke, vulnerability-scan, and required-ci
-# jobs below.
+# The merge tier documented as `make ci` (Go fmt/vet/build/test/lint + portal
+# build/test + shipped-workflow contracts) is defined once, in test/ci, and
+# fanned across independent runners here so the sequential gate runs in
+# parallel. Each parallel job runs one slice via `go run ./test/ci group <name>`:
+#
+#   checks   fmt · tidy · vet · command builds · config validation · portal
+#   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
+#   unit     the -race unit suite, split into shards (Linux) — the long pole
+#   shipped  shipped-workflow contract suite
+#
+# plus deadcode, and the dedicated conformance, windows-smoke, integration,
+# vulnerability-scan, sandbox, and linux-validation jobs. Coverage of the merge
+# tier is unchanged: the four groups are a disjoint, exhaustive partition of the
+# checks the monolith used to run serially (asserted by test/ci's group tests).
+#
+# Race posture: a data race is a source-level property, not OS behaviour, so the
+# full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
+# behavioural suite without -race (GOOBERS_CI_RACE=0), preserving macOS-specific
+# behaviour while dropping the ~3-5x race instrumentation cost — there is no
+# darwin-tagged concurrent code for a second -race platform to cover.
+#
+# Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633). The
+# platform slices, the Windows gate, the vulnerability scan, and the journal
+# conformance job must all be green for the required `make ci` check (the
+# required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
 
 on:
   push:
@@ -37,24 +51,40 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
-  ci:
-    name: platform gate (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  # Platform-independent unreachable-production-code report. Ran once (it was a
+  # per-OS step of the old monolith; nothing about it is OS-specific).
+  deadcode:
+    name: dead-code analysis
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          # The DSL compatibility tests execute lifecycle declarations from the
-          # latest reachable SemVer tag, so shallow history would erase their baseline.
-          fetch-depth: 0
 
-      # Track the toolchain declared in go.mod (currently go 1.26.5) rather than a
-      # hardcoded version, so CI can't drift from the module's `go` directive.
-      # setup-go scopes its module/build cache key by runner OS and architecture.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Dead-code analysis
+        run: make deadcode
+
+  # Fast fan-in: formatting, module hygiene, vet, the command builds, config
+  # validation, and the portal build/test/contract chain. The only slice that
+  # needs Node. Runs on Linux only — its work is either OS-agnostic (fmt, tidy,
+  # portal) or covered for other platforms by cross-compilation (darwin-build,
+  # windows-smoke). Keeping static analysis off the scarce macOS runners lets
+  # the macOS *runtime* jobs run without queueing behind each other.
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -71,11 +101,132 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: fmt · tidy · vet · build · portal
+        run: go run ./test/ci group checks
+
+  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, both on cheap
+  # Linux runners. golangci-lint honours GOOS, so it sees each platform's
+  # build-tagged sources (the darwin-only files internal/{sandbox,executor}) are
+  # linted under GOOS=darwin from Linux — no macOS runner required.
+  lint:
+    name: lint (${{ matrix.goos }})
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
         run: |
           curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: golangci-lint (GOOS=${{ matrix.goos }})
+        # GOOBERS_LINT_GOOS sets GOOS for the golangci-lint subprocess only.
+        # Setting ambient GOOS here would cross-build the `go run ./test/ci`
+        # launcher for the target and fail to exec it on the Linux host.
+        env:
+          GOOBERS_LINT_GOOS: ${{ matrix.goos }}
+        run: go run ./test/ci group lint
+
+  # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).
+  # Compiles and vets the whole tree — including the //go:build darwin files
+  # (internal/{sandbox,executor}) — for macOS, so a darwin-specific build or vet
+  # regression is caught without spending a macOS runner. The behavioural macOS
+  # runtime is exercised by the unit/shipped/sandbox macOS jobs.
+  darwin-build:
+    name: darwin gate (build · vet)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go build (darwin/arm64)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go build ./...
+
+      - name: go vet (darwin/arm64)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go vet ./...
+
+  # The long pole: the -race unit suite. Split into shards across Linux runners
+  # (test/ci group unit + GOOBERS_CI_SHARD; the hermetic runner partitions
+  # `go list ./...` deterministically, proven disjoint + exhaustive by
+  # TestSelectShardPartitionsExactly). Full git history is required — the DSL
+  # SemVer-compatibility tests read the latest reachable tag.
+  unit:
+    name: unit race shard ${{ matrix.shard }} (linux)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Unit suite (-race, shard ${{ matrix.shard }})
+        env:
+          GOOBERS_CI_SHARD: ${{ matrix.shard }}
+        run: go run ./test/ci group unit
+
+  # macOS runs the whole behavioural unit suite (no -race) in one process, so it
+  # owns the per-test timing budget artifact and the informational coverage
+  # profile. Race coverage is provided by the Linux shards above.
+  unit-macos:
+    name: unit behavioral suite (macos)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
 
       - name: Find previous main timing run
         id: previous-timing
@@ -107,16 +258,11 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
-      - name: Dead-code analysis
-        run: make deadcode
-
-      # Portable implementation of the documented `make ci` merge tier. The
-      # Make target composes the deadcode target above with this entrypoint.
-
-      - name: Portable CI
+      - name: Unit suite (behavioral, no -race)
         env:
+          GOOBERS_CI_RACE: "0"
           GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
-        run: go run ./test/ci
+        run: go run ./test/ci group unit
 
       - name: Report test timing budget
         if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
@@ -134,9 +280,6 @@ jobs:
           path: test-timings/unit-${{ runner.os }}.json
           if-no-files-found: warn
 
-      # Parity with the ADO pipeline's coverage publish (informational; the
-      # coverage *gate* is `make cover-check`, part of `verify-full` but
-      # intentionally separate from the merge-tier `ci` target).
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -144,6 +287,40 @@ jobs:
           name: coverage-${{ runner.os }}
           path: coverage.out
           if-no-files-found: ignore
+
+  # Shipped-workflow contract suite. Linux runs it with -race; macOS runs the
+  # same behavioural suite without -race. Replaces both the old in-gate
+  # shipped-workflows step and the separate non-race shipped-workflows job.
+  shipped:
+    name: shipped workflow contracts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            race: "1"
+          - os: macos-latest
+            race: "0"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Shipped-workflow contracts
+        env:
+          GOOBERS_CI_RACE: ${{ matrix.race }}
+        run: go run ./test/ci group shipped
 
   integration:
     name: declared-dependency integration
@@ -252,25 +429,6 @@ jobs:
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
 
-  shipped-workflows:
-    name: shipped workflow contracts
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        run: go mod download
-
-      - name: Exercise shipped workflows through the local runner
-        run: make test-shipped-workflows
-
   vulnerability-scan:
     name: Go vulnerability scan
     runs-on: ubuntu-latest
@@ -290,37 +448,40 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]
+    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
         env:
-          MATRIX_RESULT: ${{ needs.ci.result }}
-          VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
+          SHIPPED_RESULT: ${{ needs.shipped.result }}
+          DEADCODE_RESULT: ${{ needs.deadcode.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
-          SHIPPED_WORKFLOWS_RESULT: ${{ needs.shipped-workflows.result }}
+          VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
         run: |
-          if [ "$MATRIX_RESULT" != "success" ]; then
-            echo "A required platform gate (ubuntu/macos make ci) did not pass."
-            exit 1
-          fi
-          if [ "$WINDOWS_RESULT" != "success" ]; then
-            echo "The Windows build/vet/runtime gate did not pass."
-            exit 1
-          fi
-          if [ "$SHIPPED_WORKFLOWS_RESULT" != "success" ]; then
-            echo "The shipped workflow contract suite did not pass."
-            exit 1
-          fi
-          if [ "$VULNCHECK_RESULT" != "success" ]; then
-            echo "The Go vulnerability scan did not pass."
-            exit 1
-          fi
-          if [ "$CONFORMANCE_RESULT" != "success" ]; then
-            echo "The journal conformance gate did not pass."
-            exit 1
-          fi
+          fail=0
+          check() {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not pass (result: $2)"
+              fail=1
+            fi
+          }
+          check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
+          check "lint (golangci-lint, linux+darwin)" "$LINT_RESULT"
+          check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
+          check "unit -race suite (linux shards)"    "$UNIT_RESULT"
+          check "unit behavioral suite (macos)"      "$UNIT_MACOS_RESULT"
+          check "shipped-workflow contracts"         "$SHIPPED_RESULT"
+          check "dead-code analysis"                 "$DEADCODE_RESULT"
+          check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
+          check "Go vulnerability scan"              "$VULNCHECK_RESULT"
+          check "journal conformance"                "$CONFORMANCE_RESULT"
+          exit "$fail"
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
