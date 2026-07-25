@@ -206,7 +206,10 @@ describe("run stage inspector", () => {
       background: "#25242b",
     });
     expect(window.getComputedStyle(preview).whiteSpace).toBe("pre-wrap");
-    expect(window.getComputedStyle(preview).overflow).toBe("auto");
+    // #1457 makes the preview overflow visible (no inner scroll/clip) so the
+    // sticky stage inspector no longer traps expanded artifact content; the
+    // earlier auto value is superseded.
+    expect(window.getComputedStyle(preview).overflow).toBe("visible");
     expect(window.getComputedStyle(preview).wordBreak).toBe("break-word");
 
     document.documentElement.dataset.theme = "light";

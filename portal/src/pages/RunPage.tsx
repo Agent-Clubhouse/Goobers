@@ -97,10 +97,20 @@ function RunDetailWorkspace({
     eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
   );
   const [followingLatest, setFollowingLatest] = useState(true);
+  const inspectorRef = useRef<HTMLElement>(null);
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
+
+  const revealInspector = () => {
+    const inspector = inspectorRef.current;
+    if (!inspector) {
+      return;
+    }
+    inspector.scrollIntoView?.({ block: "start", inline: "nearest" });
+    inspector.focus({ preventScroll: true });
+  };
 
   useEffect(() => {
     if (!followingLatest) {
@@ -110,10 +120,20 @@ function RunDetailWorkspace({
     setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
   }, [events, followingLatest, initialSeq, run.currentStage]);
 
-  const selectEvent = (event: RunEvent) => {
+  const selectNode = (nodeId: string, shouldRevealInspector = false) => {
+    setSelectedNodeId(nodeId);
+    if (shouldRevealInspector) {
+      revealInspector();
+    }
+  };
+
+  const selectEvent = (event: RunEvent, shouldRevealInspector = false) => {
     setSelectedSeq(event.seq);
     setSelectedNodeId(eventNodeAtSequence(events, event.seq));
     setFollowingLatest(event.seq === initialSeq);
+    if (shouldRevealInspector) {
+      revealInspector();
+    }
   };
 
   const replaySeek = (seq: number) => {
@@ -199,6 +219,7 @@ function RunDetailWorkspace({
 
       <section
         className="run-detail-workspace"
+        data-scroll-owner="page"
         data-responsive-layout="stack-under-820"
       >
         <GraphFrame
@@ -214,7 +235,7 @@ function RunDetailWorkspace({
               causalNodeId={causalNodeId}
               graph={run.graph}
               nodeStates={nodeStates}
-              onSelectStage={setSelectedNodeId}
+              onSelectStage={selectNode}
               selectedStageId={selectedNodeId}
               stateSeq={selectedSeq}
             />
@@ -238,6 +259,7 @@ function RunDetailWorkspace({
         {run.graphStatus === "pinned" && run.graph && (
           <RunStageInspector
             client={client}
+            inspectorRef={inspectorRef}
             node={selectedNode}
             runId={runId}
             selectedSeq={selectedSeq}
@@ -262,7 +284,7 @@ function EventLedger({
   selectedSeq,
 }: {
   events: RunEvent[];
-  onSelect: (event: RunEvent) => void;
+  onSelect: (event: RunEvent, revealInspector?: boolean) => void;
   run: RunDetail;
   selectedSeq: number;
 }) {
@@ -302,7 +324,7 @@ function EventLedger({
                   aria-current={selected ? "true" : undefined}
                   aria-label={`Select sequence ${event.seq}: ${heading}. ${summary}`}
                   className="run-ledger-button"
-                  onClick={() => onSelect(event)}
+                  onClick={() => onSelect(event, true)}
                   onKeyDown={(keyboardEvent) => {
                     let targetIndex: number | undefined;
                     if (keyboardEvent.key === "ArrowDown" || keyboardEvent.key === "ArrowRight") {
@@ -349,4 +371,3 @@ function EventLedger({
     </section>
   );
 }
-

@@ -2901,6 +2901,7 @@ a.telemetry-error-row:hover {
 .run-detail-workspace {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .run-topology {
@@ -3128,8 +3129,14 @@ a.telemetry-error-row:hover {
 }
 
 .run-inspector {
-  position: sticky;
-  top: 81px;
+  min-width: 0;
+  position: static;
+  scroll-margin-top: 81px;
+}
+
+.run-inspector:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .not-reached {
@@ -3178,6 +3185,7 @@ a.telemetry-error-row:hover {
 
 .attempt-content {
   border-top: 1px solid var(--line);
+  min-width: 0;
   padding-top: 14px;
 }
 
@@ -3220,6 +3228,7 @@ a.telemetry-error-row:hover {
   display: grid;
   gap: 5px;
   margin-bottom: 16px;
+  min-width: 0;
   padding: 9px;
 }
 
@@ -3231,6 +3240,9 @@ a.telemetry-error-row:hover {
 
 .output-line code {
   font-size: 9px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .artifact-heading {
@@ -3240,11 +3252,13 @@ a.telemetry-error-row:hover {
 .artifact-list {
   border-bottom: 1px solid var(--line);
   border-top: 1px solid var(--line);
+  min-width: 0;
 }
 
 .artifact-row {
   display: grid;
   gap: 8px;
+  min-width: 0;
   padding: 10px 2px;
 }
 
@@ -3262,10 +3276,12 @@ a.telemetry-error-row:hover {
 .artifact-row-heading > span {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .artifact-row strong {
   font-size: 9px;
+  overflow-wrap: anywhere;
 }
 
 .artifact-row small,
@@ -3291,6 +3307,7 @@ a.telemetry-error-row:hover {
 .artifact-metadata dd {
   font-size: 8px;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .artifact-digest {
@@ -3436,8 +3453,9 @@ a.telemetry-error-row:hover {
   color: var(--code-ink);
   font-size: 9px;
   line-height: 1.5;
-  max-height: 360px;
-  overflow: auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
   padding: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -3595,6 +3613,10 @@ a.telemetry-error-row:hover {
   .topbar {
     padding: 0 18px;
     position: static;
+  }
+
+  .run-inspector {
+    scroll-margin-top: 16px;
   }
 
   .page-content {

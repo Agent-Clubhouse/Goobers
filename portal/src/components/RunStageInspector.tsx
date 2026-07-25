@@ -41,11 +41,13 @@ export function RunStageInspector({
   runId,
   node,
   selectedSeq,
+  inspectorRef,
 }: {
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
   selectedSeq: number;
+  inspectorRef?: React.Ref<HTMLElement>;
 }) {
   const [attempts, setAttempts] = useState<StageAttempt[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "error">("idle");
@@ -81,7 +83,7 @@ export function RunStageInspector({
 
   if (!node) {
     return (
-      <Inspector className="run-inspector" label="Stage inspector">
+      <Inspector className="run-inspector" label="Stage inspector" rootRef={inspectorRef}>
         <div className="not-reached">
           <span>Select a node</span>
           <small>Choose a stage in the graph to inspect its attempts.</small>
@@ -116,7 +118,11 @@ export function RunStageInspector({
   };
 
   return (
-    <Inspector className="run-inspector" label={`${node.id} attempt inspector`}>
+    <Inspector
+      className="run-inspector"
+      label={`${node.id} attempt inspector`}
+      rootRef={inspectorRef}
+    >
       <div className="inspector-heading">
         <span className={`primitive-icon primitive-${node.kind}`}>
           <Icon name={nodeIcon(node.kind)} size={17} />
