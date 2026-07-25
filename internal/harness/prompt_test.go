@@ -84,7 +84,7 @@ func TestRenderPromptAppendsOneOffInstructionAddendum(t *testing.T) {
 // shown field on a successful run would otherwise emit an empty error object,
 // which fails the schema's errorInfo minLength:1 check and journals a correct
 // run as a false-negative "failed". error must be described as conditional
-// (failure/blocked only), and success told to omit it.
+// (failure/blocked only), and success/no-work told to omit it.
 func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 	req := RunRequest{
 		Envelope:       apiv1.InvocationEnvelope{Goal: "do the thing"},
@@ -96,8 +96,11 @@ func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 	if strings.Contains(prompt, `"metrics": {...}, "error"`) {
 		t.Fatalf("result shape still presents error as an always-present field (#297): %q", prompt)
 	}
-	if !strings.Contains(prompt, `Omit "error" entirely on success`) {
+	if !strings.Contains(prompt, `Omit "error" entirely on success and no-work`) {
 		t.Fatalf("result hint missing the conditional-error note: %q", prompt)
+	}
+	if !strings.Contains(prompt, `"no-work"`) || !strings.Contains(prompt, "without running downstream stages") {
+		t.Fatalf("result hint missing the no-work contract: %q", prompt)
 	}
 	if !strings.Contains(prompt, "failure") || !strings.Contains(prompt, "blocked") {
 		t.Fatalf("result hint should scope error to failure/blocked: %q", prompt)
@@ -106,9 +109,9 @@ func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 
 // TestResultEnvelopeErrorContract pins the schema behavior the #297 prompt fix
 // aligns the model output to (Lead's ruling: fix the template, NOT the schema).
-// A success result omitting error validates; the #297 bug shape (success with an
-// empty error object) is rejected; and a failure without error is still rejected
-// — the load-bearing "a failure must carry error detail" contract stays intact.
+// Success and no-work results omitting error validate; the #297 bug shape
+// (success with an empty error object) is rejected; and a failure without error
+// is still rejected — the load-bearing error-detail contract stays intact.
 func TestResultEnvelopeErrorContract(t *testing.T) {
 	v, err := validate.New()
 	if err != nil {
@@ -120,6 +123,7 @@ func TestResultEnvelopeErrorContract(t *testing.T) {
 		wantErr bool
 	}{
 		{"success without error validates", `{"status":"success","summary":"did it"}`, false},
+		{"no-work without error validates", `{"status":"no-work","summary":"nothing to do"}`, false},
 		{"success with empty error rejected (the #297 false-negative)", `{"status":"success","error":{"code":"","message":""}}`, true},
 		{"failure without error rejected", `{"status":"failure","summary":"nope"}`, true},
 		{"failure with valid error validates", `{"status":"failure","error":{"code":"E_BOOM","message":"boom"}}`, false},

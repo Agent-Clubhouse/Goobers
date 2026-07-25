@@ -326,11 +326,12 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 6 goober(s), 6 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 7 goober(s), 7 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
-	if warnings, previewCount := withoutGeneratedPreviewWarnings(stdout); len(warnings) != 0 || previewCount != 0 {
-		t.Fatalf("validate warnings = %#v, preview count = %d; want a fully clean self-host validation with no preview notices — standard DSL fields are GA (#1196)", warnings, previewCount)
+	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `Workflow/docs-updater: workflow "docs-updater" has no schedule trigger`) || previewCount != 0 {
+		t.Fatalf("validate warnings = %#v, preview count = %d; want only the intentional inert docs-updater notice", warnings, previewCount)
 	}
 }
 

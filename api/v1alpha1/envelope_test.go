@@ -217,7 +217,7 @@ func TestFindingIsValid(t *testing.T) {
 }
 
 func TestStatusAndDecisionValidity(t *testing.T) {
-	for _, s := range []ResultStatus{ResultSuccess, ResultFailure, ResultBlocked} {
+	for _, s := range []ResultStatus{ResultSuccess, ResultFailure, ResultBlocked, ResultNoWork} {
 		if !s.IsValid() {
 			t.Errorf("expected %q to be valid", s)
 		}

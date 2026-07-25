@@ -19,9 +19,9 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-// v1alpha3 adds InvocationEnvelope.AdditionalWorkspaces (read-only reference-repo
-// checkouts, MGV-11 #1286).
-const StageContractVersion = "v1alpha3"
+// v1alpha4 admits ResultNoWork through the closed result schema so deterministic
+// and agentic stage producers share the same status vocabulary.
+const StageContractVersion = "v1alpha4"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -199,7 +199,7 @@ type ResultEnvelope struct {
 	// goobers.usage.copilot_premium_requests, and goobers.usage.cost_usd.
 	// Unavailable measures are omitted; observed zeroes remain present.
 	Metrics map[string]float64 `json:"metrics,omitempty"`
-	// Error carries failure detail; set when status != success.
+	// Error carries failure or blockage detail; omitted for success and no-work.
 	Error *ErrorInfo `json:"error,omitempty"`
 }
 
