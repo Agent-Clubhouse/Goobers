@@ -320,7 +320,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-057 (MUST, Shipped):** A cross-PR-blocked (parked) PR is **excluded
   from remediation** — parking means wait, not rework; the drain path is the
   sibling landing (PRL-064), not a rewrite of a diff that would be fine once
-  the sibling lands.
+  the sibling lands. The generic behind-base fallback is **lazy**: it may
+  select only an eligible crowned lander with at least one live parked
+  dependent. Parked siblings retain their blocker markers and do not rebase
+  until their blocker set clears, bounding a K-PR overlap wave to at most K
+  rebases.
 
 ### Escalation ladder & drainage
 

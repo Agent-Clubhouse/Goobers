@@ -285,7 +285,7 @@ func TestUpdateBehindPRRoutesNonTrivialCandidatesToFullRemediation(t *testing.T)
 }
 
 func TestUpdateBehindPRAttemptsAPIWhileMergeabilityIsUnknown(t *testing.T) {
-	state := &updateBehindServer{}
+	state := &updateBehindServer{labels: []string{needsRemediationLabel}}
 	_, _, result := runUpdateBehindPRTest(t, state)
 
 	if state.updateCalls != 1 {
@@ -293,6 +293,22 @@ func TestUpdateBehindPRAttemptsAPIWhileMergeabilityIsUnknown(t *testing.T) {
 	}
 	if result["needsFullRemediation"] != "false" {
 		t.Fatalf("result = %v, want API update to complete", result)
+	}
+}
+
+func TestUpdateBehindPRDoesNotEagerlyUpdateUnelectedBehindPR(t *testing.T) {
+	state := &updateBehindServer{}
+	root, _ := setupUpdateBehindPRTest(t, state)
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0 before merge-review elects the behind-base PR", state.updateCalls)
+	}
+	if !strings.Contains(stdout, "no work") || stderr != "" {
+		t.Fatalf("stdout = %q, stderr = %q, want clean no-work result", stdout, stderr)
 	}
 }
 

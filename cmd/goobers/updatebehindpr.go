@@ -76,7 +76,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
 	}
-	prs, err = filterRemediationPullRequests(ctx, provider, repo, prs, nil)
+	prs, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, nil)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
 	}
@@ -90,7 +90,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		}
 		return behind, err
 	}
-	candidates, _, err := selectRemediationCandidates(prs, behindBase)
+	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
 	if err != nil {
 		return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
 	}
