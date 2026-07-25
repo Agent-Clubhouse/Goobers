@@ -257,6 +257,22 @@ spec:
         - flag-scope-drift
       expectedOutputs:
         - selectedNumber
+      next: gather-review-threads
+
+    # PRR-3 / design doc D1: replace only the review-thread section of the
+    # versioned brief with native review bodies and anchored inline comments.
+    # Resolved and outdated state stay explicit so stale feedback does not burn
+    # another remediation cycle.
+    - name: gather-review-threads
+      type: deterministic
+      goal: Add native review bodies and anchored inline review threads to the remediation brief.
+      run:
+        command: ["goobers", "gather-review-threads"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-brief.json"
+      capabilities:
+        - github:pr:write
       next: gather-issue-context
 
     # PRR-4 / design doc D1: enrich the versioned brief with every resolvable
@@ -290,12 +306,14 @@ spec:
         the PR's own branch, rebased onto its base where that was possible.
         Read the enriched remediation-brief.json from the attached context —
         the gather-issue-context artifact, which supersedes the earlier
-        gather-pr-context and gather-ci-failures remediation-brief.json copies
-        (ignore those). It contains the full merge-review verdict, PR thread
-        comments, failing check summaries/annotations, and the originating
-        issue body and acceptance criteria. Also read the sibling PR
-        file/overlap context (sibling-context.json), plus any rebase conflict
-        left to resolve, and address EVERY
+        gather-pr-context, gather-review-threads, and gather-ci-failures
+        remediation-brief.json copies (ignore those). It contains the full
+        merge-review verdict, issue-level PR comments, failing check
+        summaries/annotations, the originating issue body and acceptance
+        criteria, native review bodies, and anchored inline review threads with
+        their resolved/outdated state. Also read the sibling PR file/overlap
+        context (sibling-context.json), plus any rebase conflict left to
+        resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. In every successful
@@ -382,6 +400,12 @@ spec:
       goal: Force-push (with lease) the remediated branch to the PR and clear the needs-remediation label.
       run:
         command: ["goobers", "push-remediated"]
+      # Typed transient failures use the runner's separate bounded
+      # infrastructure allowance; keep policy failures fail-fast and wait out
+      # a typical merge-queue ownership window before that retry.
+      retry:
+        maxAttempts: 1
+        backoffSeconds: 120
       inputs:
         resultFile: "push-remediated-result.json"
       capabilities:

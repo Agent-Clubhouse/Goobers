@@ -355,10 +355,14 @@ export interface EscalationSelector {
 
 export type KnownRunEventType =
   | "run.started"
+  | "run.resumed"
   | "run.finished"
   | "stage.started"
+  | "stage.heartbeat"
   | "stage.finished"
+  | "stage.rerun.requested"
   | "gate.started"
+  | "gate.paused"
   | "gate.evaluated"
   | "artifact.recorded"
   | "span.recorded"
@@ -370,14 +374,30 @@ export type KnownRunEventType =
   | "runner.annotation"
   | "trigger.fired"
   | "tick.skipped"
+  | "workflow.starved"
   | "provider.quota.reset"
   | "poll.shed"
   | "claim.acquired"
   | "claim.released"
+  | "claim.force_released"
+  | "claim_lock_slow"
+  | "claims_lock_timeout"
   | "config.reloaded"
-  | "config.reload.rejected";
+  | "config.reload.rejected"
+  | "daemon.started"
+  | "daemon.clean_shutdown"
+  | "daemon.dirty_restart";
 
 export type RunEventType = KnownRunEventType | (string & Record<never, never>);
+
+export type RunEventCategory =
+  | "transition"
+  | "decision"
+  | "result"
+  | "evidence"
+  | "liveness"
+  | "bookkeeping"
+  | "unknown";
 
 export interface EventList {
   runId: string;
@@ -391,6 +411,8 @@ export interface RunEvent {
   branch: number;
   time: string;
   knownSchema: boolean;
+  category?: RunEventCategory;
+  replayChapter?: boolean;
   stage?: string;
   attempt?: number;
   attemptClass?: AttemptClass;
@@ -484,6 +506,35 @@ export interface TelemetryStatsResult {
   stages: TelemetryStageStats[];
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
+  curation: TelemetryCurationStats;
+  readyPool: TelemetryReadyPool;
+}
+
+export interface TelemetryCurationStats {
+  runs: number;
+  reportedRuns: number;
+  ready: number;
+  needsHuman: number;
+  closed: number;
+  deduped: number;
+  split: number;
+  stale: number;
+  reconciled: number;
+  milestoned: number;
+  bounced: number;
+}
+
+export interface TelemetryReadyPool {
+  observedAt?: string;
+  depth?: number;
+  averageAgeSeconds?: number;
+  oldestAgeSeconds?: number;
+  starved?: boolean;
+  claimAgeSamples: number;
+  averageClaimAgeSeconds?: number;
+  bounceRate?: number;
+  forwardCurationThroughput: number;
+  implementationDemand: number;
 }
 
 export interface TelemetryGaggleStats {

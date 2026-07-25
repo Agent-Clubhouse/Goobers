@@ -174,8 +174,12 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := forcePushWithLease(".", current.Head, state.HeadSHA, pushToken); err != nil {
-		pf(stderr, "error: force-push remediated PR #%d branch %q: %v\n", selectedNumber, current.Head, err)
-		return 1
+		return failProviderStage(
+			stderr,
+			fmt.Sprintf("force-push remediated PR #%d branch %q", selectedNumber, current.Head),
+			err,
+			pushRemediatedResultName,
+		)
 	}
 
 	if _, err := issuesProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{

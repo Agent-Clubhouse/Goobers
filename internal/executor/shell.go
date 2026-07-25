@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,11 +217,13 @@ const (
 var providerStageResultFiles = map[string]string{
 	"apply-verdict":          "verdict-result.json",
 	"backlog-dedupe":         "dedupe-candidates.json",
+	"backlog-health":         "backlog-health.json",
 	"backlog-query":          "claimed-item.json",
 	"elect-lander":           "election.json",
 	"gather-issue-context":   "remediation-brief.json",
 	"gather-ci-failures":     "remediation-brief.json",
 	"gather-pr-context":      "remediation-brief.json",
+	"gather-review-threads":  "remediation-brief.json",
 	"gather-sibling-context": "sibling-context.json",
 	"issue-close-out":        "issue-close-out-result.json",
 	"merge-pr":               "merge-result.json",
@@ -964,45 +965,6 @@ var diagnosticsMaxSamples = 3
 // when the Go runtime can't stopTheWorld to dump goroutines. A var so tests can
 // stub it; the default is best-effort and skips any tool that isn't present.
 var diagnosticsCapture = defaultDiagnosticsCapture
-
-func defaultDiagnosticsCapture(pid int) []byte {
-	var b bytes.Buffer
-	spid := strconv.Itoa(pid)
-	if out, err := exec.Command("ps", "-eo", "pid,ppid,pgid,etime,stat,command").Output(); err == nil {
-		b.WriteString("--- process tree (make / go test / .test / git / sandbox / goobers) ---\n")
-		for _, line := range bytes.Split(out, []byte("\n")) {
-			for _, kw := range []string{"make", "go test", ".test", "git ", "sandbox", "goobers", "PID"} {
-				if bytes.Contains(line, []byte(kw)) {
-					b.Write(line)
-					b.WriteByte('\n')
-					break
-				}
-			}
-		}
-	}
-	if out, err := exec.Command("lsof", "-p", spid).Output(); err == nil {
-		b.WriteString("\n--- lsof (open fds — PIPE/FIFO reveal I/O-deadlock partners) ---\n")
-		for _, line := range bytes.Split(out, []byte("\n")) {
-			if bytes.Contains(line, []byte("PIPE")) || bytes.Contains(line, []byte("FIFO")) ||
-				bytes.Contains(line, []byte("REG")) || bytes.Contains(line, []byte("COMMAND")) {
-				b.Write(line)
-				b.WriteByte('\n')
-			}
-		}
-	}
-	if runtime.GOOS == "darwin" {
-		// `sample` uses the OS thread sampler (no runtime cooperation), so it
-		// captures native stacks of a stage wedged in a syscall that SIGQUIT
-		// can't dump. It briefly SIGSTOPs+SIGCONTs the target — harmless for a
-		// stage that is already hung, and the watchdog is bounded to finish
-		// before the timeout path ever signals the process.
-		if out, err := exec.Command("sample", spid, "3").Output(); err == nil {
-			b.WriteString("\n--- sample (native thread stacks) ---\n")
-			b.Write(out)
-		}
-	}
-	return b.Bytes()
-}
 
 // watchStageDiagnostics takes up to diagnosticsMaxSamples snapshots of a
 // long-running stage into dst, starting after diagnosticsSampleAfter. It stops

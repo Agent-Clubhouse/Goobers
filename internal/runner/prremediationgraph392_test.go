@@ -34,6 +34,7 @@ type remediationGoober struct {
 	invoked           int
 	reviewed          int
 	sawSiblingContext bool
+	sawReviewThreads  bool
 	sawIssueContext   bool
 	sawCIContext      bool
 	// visitMu/visited are the SHARED dispatch log the deterministic stub also
@@ -56,6 +57,9 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	for _, pointer := range env.ContextPointers {
 		if pointer.Name == "gather-sibling-context.artifact[0]" && pointer.Artifact != nil {
 			g.sawSiblingContext = true
+		}
+		if pointer.Name == "gather-review-threads.artifact[0]" && pointer.Artifact != nil {
+			g.sawReviewThreads = true
 		}
 		if pointer.Name == "gather-issue-context.artifact[0]" && pointer.Artifact != nil {
 			g.sawIssueContext = true
@@ -222,10 +226,16 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
 			artifactMediaType: "application/json",
 		},
+		runID + ":gather-review-threads": {
+			status:            apiv1.ResultSuccess,
+			artifactName:      "remediation-brief.json",
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]}}`),
+			artifactMediaType: "application/json",
+		},
 		runID + ":gather-issue-context": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
-			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherIssueContext":{"issues":[{"number":"945","body":"acceptance criteria"}]}}`),
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]},"gatherIssueContext":{"issues":[{"number":"945","body":"acceptance criteria"}]}}`),
 			artifactMediaType: "application/json",
 		},
 		runID + ":validate-finding-responses": {status: opts.validationStatus},
@@ -280,7 +290,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → gather-ci-failures → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → gather-sibling-context → gather-issue-context → implement → validate-finding-responses
+// [continue] → gather-sibling-context → gather-review-threads →
+// gather-issue-context → implement → validate-finding-responses
 // → [response validation pass] → [review pass] → local-ci → [ci pass] →
 // push-remediated → respond-to-findings, and complete. Before #392 this run
 // dead-ended at remediation-checkpoint.
@@ -298,6 +309,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"rebase-pr",
 		"remediation-checkpoint",
 		"gather-sibling-context",
+		"gather-review-threads",
 		"gather-issue-context",
 		"implement",
 		"validate-finding-responses",
@@ -313,6 +325,9 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if !goober.sawSiblingContext {
 		t.Error("implementer context is missing gather-sibling-context.artifact[0]")
+	}
+	if !goober.sawReviewThreads {
+		t.Error("implementer context is missing gather-review-threads.artifact[0]")
 	}
 	if !goober.sawIssueContext {
 		t.Error("implementer context is missing gather-issue-context.artifact[0]")
