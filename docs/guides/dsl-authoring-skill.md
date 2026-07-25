@@ -1,29 +1,43 @@
-# Author Goobers DSL with your own agent
+# Use the Goobers agent toolkit
 
-The portable [`goobers-dsl-author` skill](../../skills/goobers-dsl-author/SKILL.md)
-turns a plain-English process into Gaggle, Goober, and Workflow definitions,
-explains the platform's core terms, and points the authoring agent at the
-canonical docs and schemas. It runs in the user's agent harness; it does not
-invoke or require the Goobers daemon.
+The portable [Goobers agent toolkit](../../agent-toolkit/README.md) gives an
+external coding agent release-matched skills for environment resolution, DSL
+authoring, read-only run inspection, and workflow upgrades. It runs in the
+user's agent harness and is distinct from skills configured on workflow
+goobers.
 
-## Install the skill
+## Copy the release bundle
 
-The package follows the Agent Skills directory convention: one `SKILL.md` plus
-supporting files under `references/`. Copy the entire directory into the skill
-location used by your harness:
+Download `goobers-agent-toolkit_<version>.zip` from the same release as the
+installed Goobers binary and verify it with that release's `SHA256SUMS`. The
+archive has a machine-readable `manifest.json` and a copy-ready payload:
 
-```sh
-cp -R skills/goobers-dsl-author <your-agent-skills-directory>/
+```text
+payload/
+  .goobers/
+    agent-toolkit/
 ```
 
-Register or enable `goobers-dsl-author` using that harness's normal skill
-discovery mechanism. If the harness does not discover `SKILL.md` packages,
-attach `SKILL.md` and both reference files to a custom agent's instructions.
-Keep the package intact so its relative reference links continue to work.
+Copy the contents of `payload/` into the config repository. This is a one-way
+copy; there is no watcher or automatic update. The manifest inventories every
+product-owned payload file and digest. Product-owned files stay beneath
+`.goobers/agent-toolkit/`; repository-root `AGENTS.md`, `CLAUDE.md`, and
+`.github/copilot-instructions.md` remain user-owned.
 
-Use the skill version from the same Goobers release as the config you are
-authoring. The bundled quick reference is portable, while that release's JSON
-Schemas and `goobers validate` remain authoritative.
+Choose `.goobers/agent-toolkit/adapters/copilot.md`,
+`adapters/claude.md`, or `adapters/agents.md` and merge that short adapter into
+the harness's user-owned instruction file. Every adapter resolves the same
+canonical Agent Skills bodies; it does not duplicate them. The installed
+`release.json`, bundled docs, JSON Schemas, examples, and `goobers validate`
+from the matching release are authoritative. A source checkout is optional.
+
+## Author workflow DSL
+
+The canonical
+[`goobers-dsl-author` skill](../../skills/goobers-dsl-author/SKILL.md) turns a
+plain-English process into Gaggle, Goober, and Workflow definitions, explains
+the platform's core terms, and points the authoring agent at the matching docs
+and schemas. It does not require the Goobers daemon.
 
 ## Ask in plain English
 
@@ -70,7 +84,7 @@ You can also use the skill as a docs finder:
 
 Its bundled [terminology](../../skills/goobers-dsl-author/references/terminology.md)
 and [DSL reference](../../skills/goobers-dsl-author/references/dsl-reference.md)
-link to:
+link to release-matched copies of:
 
 - `docs/requirements/*.md` for semantics;
 - `docs/stage-contract.md` for stage data and completion;

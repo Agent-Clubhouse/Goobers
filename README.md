@@ -32,7 +32,8 @@ clustered orchestration over a large monorepo.
 | `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
-| `skills/` | Portable agent skills for authoring Goobers config | Active |
+| `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
+| `skills/` | Canonical portable skills used by the agent toolkit | Active |
 | `test/` | CI + e2e harness | Active |
 
 Quarantined paths stay in-tree, compiling, and status-bannered — they are the
@@ -113,13 +114,15 @@ verified for distribution: [Releases & packaging](docs/guides/releases.md).
 Azure DevOps instances can use
 [Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
 
-## Authoring workflow DSL with an agent
+## Repository assistance with an agent
 
-Use the portable
-[`goobers-dsl-author` skill](skills/goobers-dsl-author/SKILL.md) from your own
-agent harness to find the canonical DSL docs, learn the core terms, and turn a
-plain-English process into schema-valid gaggle, goober, and workflow YAML. It
-does not require a running Goobers daemon. See the
+Each release publishes a portable
+[Goobers agent toolkit](agent-toolkit/README.md) for an external coding agent
+working in a config repository. Its canonical Agent Skills cover environment
+resolution, [DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run
+inspection, and workflow upgrades. Release-matched docs, schemas, examples, and
+thin Copilot, Claude, and `AGENTS.md` adapters let it work without a source
+checkout or running daemon. See the
 [installation and usage guide](docs/guides/dsl-authoring-skill.md).
 
 ## Shell completion
