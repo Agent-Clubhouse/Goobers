@@ -259,6 +259,41 @@ func TestPreflightFailuresAreActionable(t *testing.T) {
 	})
 }
 
+func TestPreflightRejectsUnusableDefaultVoiceList(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		platform string
+		paths    map[string]string
+		output   string
+	}{
+		{name: "empty say", platform: "darwin", paths: map[string]string{"say": "/usr/bin/say"}},
+		{name: "malformed say", platform: "darwin", paths: map[string]string{"say": "/usr/bin/say"}, output: "# comment only\nAlex\n"},
+		{name: "empty espeak", platform: "linux", paths: map[string]string{"espeak": "/usr/bin/espeak"}},
+		{name: "malformed espeak", platform: "linux", paths: map[string]string{"espeak": "/usr/bin/espeak"}, output: "Pty Language Age/Gender VoiceName File Other Languages\nnot a voice\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sink, err := newNativeForPlatform(test.platform, Config{}, nil, &fakeNativeSystem{
+				paths:          test.paths,
+				output:         test.output,
+				audioAvailable: true,
+			})
+			if err != nil {
+				t.Fatalf("newNativeForPlatform: %v", err)
+			}
+			report, err := sink.Preflight(context.Background())
+			native := sink.synthesizer.(*nativeSynthesizer)
+			native.mu.RLock()
+			cachedExecutable := native.executable
+			native.mu.RUnlock()
+			if err == nil || !strings.Contains(err.Error(), "no usable voices") ||
+				!strings.Contains(err.Error(), "install at least one voice and retry") ||
+				report.Executable == "" || cachedExecutable != "" {
+				t.Fatalf("Preflight = (%+v, %v), cached executable = %q", report, err, cachedExecutable)
+			}
+		})
+	}
+}
+
 func TestPreflightRejectsUnavailableVoiceAndLanguageMismatch(t *testing.T) {
 	system := &fakeNativeSystem{
 		paths:          map[string]string{"say": "/usr/bin/say"},

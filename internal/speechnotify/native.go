@@ -200,6 +200,9 @@ type voiceInfo struct {
 
 func selectVoice(engine string, output []byte, requestedVoice, requestedLanguage string) (string, string, error) {
 	voices := parseVoices(engine, string(output))
+	if len(voices) == 0 {
+		return "", "", fmt.Errorf("no usable voices reported by %s; install at least one voice and retry", engine)
+	}
 	normalizedLanguage := normalizeLanguage(requestedLanguage)
 	if requestedVoice != "" {
 		for _, voice := range voices {
