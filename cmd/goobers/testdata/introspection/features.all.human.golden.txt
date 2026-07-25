@@ -41,6 +41,7 @@ goober.spec.harness.claude-code                    1.4          ga              
 goober.spec.harness.copilot                        1.4          ga               supported        dev
 goober.spec.harnessOptions                         1.4          ga               supported        dev
 goober.spec.instructions                           1.4          ga               supported        dev
+goober.spec.mcpServers                             1.4          ga               supported        dev
 goober.spec.model                                  1.4          ga               supported        dev
 goober.spec.role                                   1.4          ga               supported        dev
 goober.spec.scaleFactor                            1.4          ga               supported        dev
@@ -141,6 +142,7 @@ goober.spec.harness.claude-code                    2.0          ga              
 goober.spec.harness.copilot                        2.0          ga               supported        dev
 goober.spec.harnessOptions                         2.0          ga               supported        dev
 goober.spec.instructions                           2.0          ga               supported        dev
+goober.spec.mcpServers                             2.0          ga               supported        dev
 goober.spec.model                                  2.0          ga               supported        dev
 goober.spec.role                                   2.0          ga               supported        dev
 goober.spec.scaleFactor                            2.0          ga               supported        dev
@@ -200,4 +202,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-200 feature/version row(s)
+202 feature/version row(s)

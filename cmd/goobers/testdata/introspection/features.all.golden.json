@@ -215,6 +215,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "goober.spec.mcpServers",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "goober.spec.model",
       "stability": "ga",
       "sinceVersion": "dev"

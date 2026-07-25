@@ -84,6 +84,7 @@ const (
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
+	errorMCPConfig                WarningCode = "MCP001"
 	errorDuplicateState           WarningCode = "WF001"
 	errorStartState               WarningCode = "WF002"
 	errorTaskNextState            WarningCode = "WF003"
@@ -760,7 +761,7 @@ func (ix *index) crossCheck(r *Report) {
 			r.add(errorUnknownCapability, Error, file, "Goober", g.Name, "%s", message)
 		}
 		if err := mcpconfig.ValidateForHarness(g.Spec.Harness, g.Spec.MCPServers, g.Spec.Capabilities, g.Spec.Tools); err != nil {
-			r.add(Error, file, "Goober", g.Name, "spec.%v", err)
+			r.add(errorMCPConfig, Error, file, "Goober", g.Name, "spec.%v", err)
 		}
 		if g.Spec.Instructions != "" {
 			p := filepath.Join(ix.gooberDir[g.Name], g.Spec.Instructions)

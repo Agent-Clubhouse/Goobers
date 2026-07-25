@@ -297,6 +297,33 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 			"/spec/tasks/0/run/command")
 	})
 
+	t.Run("mcp config", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, []byte(`
+  mcpServers:
+    - name: context
+      command: context-server
+    - name: context
+      command: other-context-server
+`)...)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate MCP diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "MCP001",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "goobers", "coder", "goober.yaml")),
+			"/spec/mcpServers/1/name")
+	})
+
 	t.Run("harness", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
