@@ -123,6 +123,19 @@ type RepositoryRef struct {
 	URL      string       `json:"url,omitempty"`
 }
 
+// CreateRepositoryRequest describes a new provider repository.
+type CreateRepositoryRequest struct {
+	Owner      string `json:"owner"`
+	Name       string `json:"name"`
+	Visibility string `json:"visibility"`
+}
+
+// CreateRepositoryResult identifies a newly created repository.
+type CreateRepositoryResult struct {
+	Repository RepositoryRef `json:"repository"`
+	Visibility string        `json:"visibility"`
+}
+
 // CloneRequest describes a repository clone operation.
 type CloneRequest struct {
 	Repository  RepositoryRef `json:"repository"`

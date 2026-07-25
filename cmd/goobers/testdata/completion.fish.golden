@@ -17,7 +17,7 @@ complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow'
-complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff show'
+complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
 complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall status'
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'

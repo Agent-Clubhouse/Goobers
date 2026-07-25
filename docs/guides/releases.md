@@ -58,10 +58,11 @@ archive's `README.md` and `docs/` tree to the versioned
 `${XDG_DATA_HOME:-$HOME/.local/share}/goobers/<version>` directory (override the
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
 earlier documentation. It then runs the release binary's
-`goobers init --guided` flow, which prompts for the repository, work tracking,
-credential references, and canonical workflows and finishes by validating the
-generated instance. Use an empty instance path; guided setup refuses to
-overwrite existing configuration.
+`goobers init --guided` flow, which separately selects a checked-in config
+source and target application repository, prompts for credential references and
+canonical workflows, and validates both source and instance. Use a fresh
+instance path; a new source path must also be empty, while an adopted source is
+validated and left unchanged.
 
 The helper intentionally delegates all config generation and validation to the
 installed binary. The canonical workflow templates are embedded in that tagged

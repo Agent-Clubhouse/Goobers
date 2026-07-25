@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // TestConfigShowYAML renders a scaffolded instance's config as YAML and checks
@@ -98,5 +101,45 @@ func TestConfigBareUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "config show") {
 		t.Fatalf("stderr = %q, want the show subcommand listed", stderr)
+	}
+}
+
+func TestConfigMaterializeUsesRecordedSource(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	opts := instance.GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{instance.GuidedWorkflowWorkNomination},
+	}
+	if err := instance.InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(base, "instance")
+	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+	instructionsRel := filepath.Join("gaggles", "widget", "goobers", "nominator", "instructions.md")
+	if err := os.WriteFile(filepath.Join(sourceRoot, instructionsRel), []byte("materialized by command\n"), 0o644); err != nil {
+		t.Fatalf("write source instructions: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "config", "materialize", instanceRoot)
+	if code != 0 {
+		t.Fatalf("config materialize code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "materialized config source "+sourceRoot) {
+		t.Fatalf("config materialize stdout = %q", stdout)
+	}
+	runtimeInstructions, err := os.ReadFile(filepath.Join(instanceRoot, "config", instructionsRel))
+	if err != nil || string(runtimeInstructions) != "materialized by command\n" {
+		t.Fatalf("runtime instructions = %q, err %v", runtimeInstructions, err)
 	}
 }

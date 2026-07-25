@@ -285,3 +285,238 @@ func TestInitGuidedTokenValidationDoesNotEchoSecret(t *testing.T) {
 		t.Fatalf("validation error exposed token value: %v", err)
 	}
 }
+
+func TestInitGuidedSourceMaterializesSeparateRuntimeState(t *testing.T) {
+	sourceRoot := filepath.Join(t.TempDir(), "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(sourceRoot, GuidedSourceInstanceFile),
+		filepath.Join(sourceRoot, "manifest.yaml"),
+		filepath.Join(sourceRoot, "gaggles", "widget", "gaggle.yaml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("source path %s: %v", path, err)
+		}
+	}
+	for _, name := range []string{ConfigFileName, ConfigDirName, SchedulerDirName, TelemetryDBName} {
+		if _, err := os.Stat(filepath.Join(sourceRoot, name)); !os.IsNotExist(err) {
+			t.Errorf("runtime state %s exists in source tree: %v", name, err)
+		}
+	}
+
+	cfg, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(t.TempDir(), "instance")
+	if _, err := InitGuidedFromSource(instanceRoot, sourceRoot, cfg); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+	runtimeConfig, err := LoadConfig(NewLayout(instanceRoot).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig runtime: %v", err)
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeConfig.WorkflowSource == nil ||
+		runtimeConfig.WorkflowSource.Kind != WorkflowSourceKindLocalDir ||
+		runtimeConfig.WorkflowSource.Path != sourceAbs {
+		t.Fatalf("runtime workflow source = %+v", runtimeConfig.WorkflowSource)
+	}
+	if _, report, err := LoadConfigDir(NewLayout(instanceRoot).ConfigDir()); err != nil {
+		t.Fatalf("LoadConfigDir runtime: %v (report: %+v)", err, report)
+	}
+}
+
+func TestMaterializeWorkflowSourceAppliesLaterSourceEdits(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(base, "instance")
+	if _, err := InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+
+	sourceConfig.RunConditions.MaxParallelRuns = 7
+	if err := WriteConfig(filepath.Join(sourceRoot, GuidedSourceInstanceFile), sourceConfig); err != nil {
+		t.Fatalf("WriteConfig source: %v", err)
+	}
+	instructionsRel := filepath.Join("gaggles", "widget", "goobers", "nominator", "instructions.md")
+	if err := os.WriteFile(filepath.Join(sourceRoot, instructionsRel), []byte("source revision\n"), 0o644); err != nil {
+		t.Fatalf("write source instructions: %v", err)
+	}
+	layout := NewLayout(instanceRoot)
+	staleRuntimeFile := filepath.Join(layout.ConfigDir(), "stale.yaml")
+	if err := os.WriteFile(staleRuntimeFile, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("write stale runtime definition: %v", err)
+	}
+	runtimeState := filepath.Join(layout.SchedulerDir(), "sentinel")
+	if err := os.WriteFile(runtimeState, []byte("runtime state\n"), 0o644); err != nil {
+		t.Fatalf("write runtime state: %v", err)
+	}
+
+	materializedSource, err := MaterializeWorkflowSource(instanceRoot)
+	if err != nil {
+		t.Fatalf("MaterializeWorkflowSource: %v", err)
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if materializedSource != sourceAbs {
+		t.Fatalf("materialized source = %q, want %q", materializedSource, sourceAbs)
+	}
+	runtimeConfig, err := LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig runtime: %v", err)
+	}
+	if runtimeConfig.RunConditions.MaxParallelRuns != 7 {
+		t.Fatalf("runtime maxParallelRuns = %d, want 7", runtimeConfig.RunConditions.MaxParallelRuns)
+	}
+	if runtimeConfig.WorkflowSource == nil || runtimeConfig.WorkflowSource.Path != sourceAbs {
+		t.Fatalf("runtime workflow source = %+v, want %s", runtimeConfig.WorkflowSource, sourceAbs)
+	}
+	instructions, err := os.ReadFile(filepath.Join(layout.ConfigDir(), instructionsRel))
+	if err != nil || string(instructions) != "source revision\n" {
+		t.Fatalf("runtime instructions = %q, err %v", instructions, err)
+	}
+	if _, err := os.Stat(staleRuntimeFile); !os.IsNotExist(err) {
+		t.Fatalf("stale runtime definition survived materialization: %v", err)
+	}
+	state, err := os.ReadFile(runtimeState)
+	if err != nil || string(state) != "runtime state\n" {
+		t.Fatalf("runtime state changed: %q, err %v", state, err)
+	}
+}
+
+func TestMaterializeWorkflowSourceRejectsInvalidSourceWithoutChangingRuntime(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(base, "instance")
+	if _, err := InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+	layout := NewLayout(instanceRoot)
+	runtimeManifest, err := os.ReadFile(filepath.Join(layout.ConfigDir(), "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("read runtime manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "manifest.yaml"), []byte("not: valid: yaml\n"), 0o644); err != nil {
+		t.Fatalf("write invalid source manifest: %v", err)
+	}
+
+	if _, err := MaterializeWorkflowSource(instanceRoot); err == nil {
+		t.Fatal("MaterializeWorkflowSource succeeded with invalid source")
+	}
+	after, err := os.ReadFile(filepath.Join(layout.ConfigDir(), "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("read runtime manifest after failure: %v", err)
+	}
+	if string(after) != string(runtimeManifest) {
+		t.Fatal("failed materialization changed the runtime manifest")
+	}
+}
+
+func TestInitGuidedSourceRefusesToOverwriteExistingTree(t *testing.T) {
+	sourceRoot := t.TempDir()
+	sentinel := filepath.Join(sourceRoot, "manifest.yaml")
+	if err := os.WriteFile(sentinel, []byte("sentinel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := InitGuidedSource(sourceRoot, GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("InitGuidedSource error = %v", err)
+	}
+	data, readErr := os.ReadFile(sentinel)
+	if readErr != nil || string(data) != "sentinel\n" {
+		t.Fatalf("existing source changed: data=%q err=%v", data, readErr)
+	}
+}
+
+func TestInitGuidedFromSourceRejectsOverlappingRuntimePath(t *testing.T) {
+	sourceRoot := filepath.Join(t.TempDir(), "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	cfg, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitGuidedFromSource(filepath.Join(sourceRoot, "runtime"), sourceRoot, cfg); err == nil ||
+		!strings.Contains(err.Error(), "must be separate paths") {
+		t.Fatalf("InitGuidedFromSource overlapping error = %v", err)
+	}
+}
+
+func TestCheckGuidedSourceInstancePathsRejectsSymlinkedOverlap(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	if err := os.Mkdir(sourceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceLink := filepath.Join(base, "source-link")
+	if err := os.Symlink(sourceRoot, sourceLink); err != nil {
+		t.Fatal(err)
+	}
+
+	err := CheckGuidedSourceInstancePaths(filepath.Join(sourceLink, "runtime"), sourceRoot)
+	if err == nil || !strings.Contains(err.Error(), "must be separate paths") {
+		t.Fatalf("CheckGuidedSourceInstancePaths symlinked overlap error = %v", err)
+	}
+}

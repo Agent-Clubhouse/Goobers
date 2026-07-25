@@ -125,7 +125,7 @@ _goobers_completion()
             ;;
         config)
             if (( COMP_CWORD == 2 )); then
-                candidates="diff show"
+                candidates="diff materialize show"
             fi
             ;;
         service)
