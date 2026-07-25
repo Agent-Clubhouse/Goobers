@@ -24,6 +24,17 @@ const FALLBACK_VIEWPORT_HEIGHT = 360;
 const PAN_DISTANCE = 120;
 const ZOOM_STEP = 0.1;
 const WHEEL_ZOOM_SENSITIVITY = 0.002;
+const FALLBACK_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "area[href]",
+  "button",
+  'input:not([type="hidden"])',
+  "select",
+  "textarea",
+  "summary",
+  '[contenteditable="true"]',
+  "[tabindex]",
+].join(", ");
 
 export type WorkflowGraphFullscreenMode = "none" | "native" | "fallback";
 
@@ -233,23 +244,32 @@ export function WorkflowTopologyGraph({
         return;
       }
       const focusable = [
-        ...target.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
-        ),
-      ];
+        ...target.querySelectorAll<HTMLElement>(FALLBACK_FOCUSABLE_SELECTOR),
+      ]
+        .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled"))
+        .sort((left, right) => {
+          if (left === right) {
+            return 0;
+          }
+          return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING
+            ? -1
+            : 1;
+        });
       const first = focusable[0];
       const last = focusable.at(-1);
       if (!first || !last) {
         return;
       }
-      if (
-        event.shiftKey &&
-        (document.activeElement === first ||
-          !target.contains(document.activeElement))
-      ) {
+      const activeIndex = focusable.findIndex(
+        (element) => element === document.activeElement,
+      );
+      if (activeIndex < 0) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && activeIndex === 0) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && activeIndex === focusable.length - 1) {
         event.preventDefault();
         first.focus();
       }

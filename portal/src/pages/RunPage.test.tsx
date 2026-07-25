@@ -181,6 +181,7 @@ describe("run detail", () => {
   });
 
   it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
+    const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
     const graph = await screen.findByRole("group", {
@@ -191,22 +192,36 @@ describe("run detail", () => {
       throw new Error("Expected run graph fullscreen root.");
     }
 
-    fireEvent.click(within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }));
+    await user.click(within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }));
 
     expect(fullscreenRoot).toHaveClass("workflow-graph-shell-expanded");
     expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
     expect(fullscreenRoot).toHaveAttribute("role", "dialog");
-    expect(
-      within(fullscreenRoot).getByRole("group", { name: "Replay controls" }),
-    ).toBeInTheDocument();
-    expect(
-      within(fullscreenRoot).getByRole("complementary", {
-        name: /attempt inspector/,
-      }),
-    ).toBeInTheDocument();
+    const replayControls = within(fullscreenRoot).getByRole("group", {
+      name: "Replay controls",
+    });
+    const scrubber = within(replayControls).getByRole("slider", {
+      name: "Scrub to event",
+    });
+    const inspector = within(fullscreenRoot).getByRole("complementary", {
+      name: /attempt inspector/,
+    });
+    expect(replayControls).toBeInTheDocument();
+    expect(inspector).toBeInTheDocument();
     expect(
       within(fullscreenRoot).queryByRole("heading", { name: "Event ledger" }),
     ).not.toBeInTheDocument();
+
+    inspector.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(
+      within(fullscreenRoot).getByRole("button", { name: "Zoom out" }),
+    ).toHaveFocus();
+
+    inspector.focus();
+    expect(inspector).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(scrubber).toHaveFocus();
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(fullscreenRoot).not.toHaveClass("workflow-graph-shell-expanded");

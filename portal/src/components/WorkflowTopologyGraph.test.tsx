@@ -281,14 +281,10 @@ describe("workflow topology graph", () => {
     expect(shell).toHaveAttribute("aria-modal", "true");
     expect(selected).toHaveAttribute("aria-pressed", "true");
 
-    const focusable = [
-      ...shell.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
-      ),
-    ];
-    focusable.at(-1)?.focus();
+    const firstFocusable = screen.getByRole("button", { name: "Zoom in" });
+    screen.getByRole("button", { name: /^stage-16,/ }).focus();
     fireEvent.keyDown(window, { key: "Tab" });
-    expect(focusable[0]).toHaveFocus();
+    expect(firstFocusable).toHaveFocus();
 
     width = 1400;
     height = 700;
