@@ -62,6 +62,7 @@ Usage:
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
+  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
@@ -176,6 +177,7 @@ Usage:
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
+  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
@@ -328,6 +330,19 @@ under claims.lock. A single-repository ledger uses #N (or PR #N); when
 multiple repositories are present, refs use owner/repo#N. --json emits a
 stable ordered array with ref, kind (issue or pull_request), and blockedBy.
 Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
+
+### check-fail-first
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
 
 ### claims
 Usage: goobers claims <command> [flags] [path]

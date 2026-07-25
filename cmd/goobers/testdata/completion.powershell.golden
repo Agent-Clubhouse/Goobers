@@ -35,6 +35,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'backlog-query'
         'reconcile-branches'
         'push-branch'
+        'check-fail-first'
         'open-pr'
         'issue-close-out'
         'set-milestone'

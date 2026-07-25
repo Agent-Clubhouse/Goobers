@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CHECK FAIL FIRST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers check-fail-first \- enforce fail-first evidence for a new workflow gate (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers check-fail-first\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers check-fail-first
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
