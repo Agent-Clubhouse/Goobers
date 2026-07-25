@@ -325,6 +325,7 @@ spec:
                           description: Command is the command + args to execute.
                           items:
                             type: string
+                          minItems: 1
                           type: array
                         env:
                           additionalProperties:
@@ -340,6 +341,12 @@ spec:
                           enum:
                           - none
                           type: string
+                        script:
+                          description: |-
+                            Script is an inline POSIX shell script compiled to command: ["sh", "-c", script].
+                            It is mutually exclusive with Command.
+                          minLength: 1
+                          type: string
                         syncBase:
                           description: |-
                             SyncBase merges the freshly fetched base ref into an existing run branch
@@ -354,10 +361,10 @@ spec:
                           - repo
                           - scratch
                           type: string
-                      required:
-                      - command
                       type: object
                       x-kubernetes-validations:
+                      - message: exactly one of command or script is required
+                        rule: has(self.command) != has(self.script)
                       - message: syncBase requires a repo workspace
                         rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
                           || self.workspace != ''scratch'''

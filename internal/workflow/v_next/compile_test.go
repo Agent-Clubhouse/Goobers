@@ -2,6 +2,7 @@ package vnext
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,6 +54,82 @@ func TestCompileValid(t *testing.T) {
 	}
 	if _, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
 		t.Fatalf("gated: %v", err)
+	}
+}
+
+func TestCompileExpandsRunScriptToShellCommand(t *testing.T) {
+	script := "set -eu\nprintf 'ok\\n'"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Script:    script,
+				Env:       map[string]string{"LC_ALL": "C"},
+				Workspace: apiv1.WorkspaceScratch,
+			},
+		}},
+	}
+
+	machine, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	task, ok := machine.Task("check")
+	if !ok {
+		t.Fatal("compiled machine has no check task")
+	}
+	if want := []string{"sh", "-c", script}; !reflect.DeepEqual(task.Run.Command, want) {
+		t.Fatalf("compiled command = %#v, want %#v", task.Run.Command, want)
+	}
+	if task.Run.Script != "" {
+		t.Fatalf("compiled script = %q, want canonical command only", task.Run.Script)
+	}
+	if task.Run.Env["LC_ALL"] != "C" || task.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Fatalf("compiled run lost options: %+v", task.Run)
+	}
+
+	commandSpec := spec
+	commandSpec.Tasks = append([]apiv1.Task(nil), spec.Tasks...)
+	commandTask := commandSpec.Tasks[0]
+	commandTask.Run = &apiv1.DeterministicRun{
+		Command:   []string{"sh", "-c", script},
+		Env:       map[string]string{"LC_ALL": "C"},
+		Workspace: apiv1.WorkspaceScratch,
+	}
+	commandSpec.Tasks[0] = commandTask
+	commandMachine, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: commandSpec})
+	if err != nil {
+		t.Fatalf("Compile command form: %v", err)
+	}
+	if machine.Digest() != commandMachine.Digest() {
+		t.Fatalf("script digest = %q, command digest = %q; sugar must compile identically", machine.Digest(), commandMachine.Digest())
+	}
+}
+
+func TestCompileRejectsRunCommandAndScript(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Command: []string{"true"},
+				Script:  "printf 'ok\n'",
+			},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "run.command and run.script are mutually exclusive") {
+		t.Fatalf("Compile error = %v, want mutual-exclusion rejection", err)
 	}
 }
 
