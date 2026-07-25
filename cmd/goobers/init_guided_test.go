@@ -28,6 +28,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"",
 		"",
+		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 
@@ -120,6 +121,43 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(sourceRoot, runtimePath)); !os.IsNotExist(err) {
 			t.Errorf("runtime path %s leaked into config source: %v", runtimePath, err)
 		}
+	}
+}
+
+func TestGuidedInitDefaultPathCreatesSiblingConfigSource(t *testing.T) {
+	base := t.TempDir()
+	instanceRoot := filepath.Join(base, "goobers")
+	if err := os.Mkdir(instanceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(instanceRoot)
+	input := strings.NewReader(strings.Join([]string{
+		"",
+		"",
+		"acme/widget",
+		"",
+		"work-nomination",
+		"",
+		"",
+		"",
+		"",
+		"yes",
+	}, "\n") + "\n")
+	var stdout, stderr bytes.Buffer
+
+	code := runInitWithInput([]string{"--guided"}, input, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	sourceRoot := filepath.Join(base, "goobers-config")
+	if _, err := os.Stat(filepath.Join(sourceRoot, instance.GuidedSourceInstanceFile)); err != nil {
+		t.Fatalf("default config source was not created as an instance sibling: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(instanceRoot, instance.ConfigFileName)); err != nil {
+		t.Fatalf("default instance was not created: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "config-source: "+sourceRoot) {
+		t.Fatalf("guided output does not show sibling source %q:\n%s", sourceRoot, stdout.String())
 	}
 }
 

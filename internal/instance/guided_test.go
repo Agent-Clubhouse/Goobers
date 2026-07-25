@@ -385,3 +385,20 @@ func TestInitGuidedFromSourceRejectsOverlappingRuntimePath(t *testing.T) {
 		t.Fatalf("InitGuidedFromSource overlapping error = %v", err)
 	}
 }
+
+func TestCheckGuidedSourceInstancePathsRejectsSymlinkedOverlap(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	if err := os.Mkdir(sourceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceLink := filepath.Join(base, "source-link")
+	if err := os.Symlink(sourceRoot, sourceLink); err != nil {
+		t.Fatal(err)
+	}
+
+	err := CheckGuidedSourceInstancePaths(filepath.Join(sourceLink, "runtime"), sourceRoot)
+	if err == nil || !strings.Contains(err.Error(), "must be separate paths") {
+		t.Fatalf("CheckGuidedSourceInstancePaths symlinked overlap error = %v", err)
+	}
+}

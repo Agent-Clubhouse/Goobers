@@ -45,6 +45,7 @@ func TestGuidedInitUsesExistingLocalSourceNonDestructively(t *testing.T) {
 		guidedSourceExistingLocal,
 		sourceRoot,
 		"",
+		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 
@@ -83,6 +84,7 @@ func TestGuidedInitClonesExistingGitHubSourceDistinctFromTarget(t *testing.T) {
 		"config-org/fleet-config",
 		checkout,
 		"",
+		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 
@@ -110,6 +112,7 @@ func TestGuidedInitClonesExistingGitHubSourceDistinctFromTarget(t *testing.T) {
 		"config-org/fleet-config",
 		checkout,
 		"",
+		"yes",
 	}, "\n") + "\n")
 	if _, _, code, err := runGuidedInit(
 		filepath.Join(t.TempDir(), "second-instance"),
@@ -142,6 +145,7 @@ func TestGuidedInitDeclinedRemoteCreateKeepsLocalSource(t *testing.T) {
 		"public",
 		"",
 		"no",
+		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 
@@ -193,6 +197,7 @@ func TestGuidedInitCreatesConfirmedEmptyGitHubRepository(t *testing.T) {
 		"config-org/fleet-config",
 		"private",
 		"",
+		"yes",
 		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
@@ -269,6 +274,52 @@ func TestGuidedInitRequiresConfiguredTokenBeforeRemoteCreate(t *testing.T) {
 	}
 	if _, err := os.Stat(sourceRoot); !os.IsNotExist(err) {
 		t.Fatalf("missing remote credential wrote source tree: %v", err)
+	}
+}
+
+func TestGuidedInitDeclinedMappingWritesNothing(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	instanceRoot := filepath.Join(base, "instance")
+	input := strings.NewReader(strings.Join([]string{
+		guidedSourceNewLocal,
+		sourceRoot,
+		"app-org/widget-service",
+		"",
+		"work-nomination",
+		"",
+		"",
+		"",
+		"",
+		"no",
+	}, "\n") + "\n")
+	var stdout, stderr bytes.Buffer
+
+	res, _, code, err := runGuidedInit(
+		instanceRoot,
+		input,
+		&stdout,
+		&stderr,
+		&fakeGuidedGitHubOperations{},
+	)
+	if err == nil || code != 2 || res != nil || !strings.Contains(err.Error(), "cancelled before writing") {
+		t.Fatalf("runGuidedInit = res %+v code %d err %v, stdout=%q stderr=%q", res, code, err, stdout.String(), stderr.String())
+	}
+	for _, path := range []string{sourceRoot, instanceRoot} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Errorf("declined mapping wrote %s: %v", path, statErr)
+		}
+	}
+	for _, want := range []string{
+		"Onboarding mapping to create:",
+		"config-source: " + sourceRoot,
+		"instance-root: " + instanceRoot,
+		"target-repo:   https://github.com/app-org/widget-service",
+		"backlog:       https://github.com/app-org/widget-service/issues",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

@@ -166,11 +166,11 @@ func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, er
 // CheckGuidedSourceInstancePaths requires the desired-state source and runtime
 // instance to be disjoint directory trees.
 func CheckGuidedSourceInstancePaths(root, sourceRoot string) error {
-	sourceAbs, err := filepath.Abs(sourceRoot)
+	sourceAbs, err := canonicalGuidedPath(sourceRoot)
 	if err != nil {
 		return fmt.Errorf("resolve config source: %w", err)
 	}
-	rootAbs, err := filepath.Abs(root)
+	rootAbs, err := canonicalGuidedPath(root)
 	if err != nil {
 		return fmt.Errorf("resolve instance root: %w", err)
 	}
@@ -178,6 +178,33 @@ func CheckGuidedSourceInstancePaths(root, sourceRoot string) error {
 		return fmt.Errorf("config source %s and instance root %s must be separate paths", sourceAbs, rootAbs)
 	}
 	return nil
+}
+
+func canonicalGuidedPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 func pathsOverlap(first, second string) bool {

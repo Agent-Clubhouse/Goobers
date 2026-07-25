@@ -89,9 +89,6 @@ func runGuidedInit(
 	if err := instance.CheckGuidedSourceInstancePaths(root, source.Root); err != nil {
 		return nil, guidedInitResult{}, 2, err
 	}
-	if err := prepareGuidedSource(source, stdout, github); err != nil {
-		return nil, guidedInitResult{}, 2, err
-	}
 
 	var (
 		cfg          *instance.Config
@@ -105,6 +102,13 @@ func runGuidedInit(
 		}
 		remoteCreate, err = promptGuidedRemoteCreate(p, opts)
 		if err != nil {
+			return nil, guidedInitResult{}, 2, err
+		}
+		if remoteCreate != nil {
+			source.ConfigRepo = "https://github.com/" + remoteCreate.Owner + "/" + remoteCreate.Name
+		}
+		result = guidedResultForOptions(source, opts, remoteCreate != nil)
+		if err := confirmGuidedMapping(p, root, result); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
 		if err := instance.InitGuidedSource(source.Root, opts); err != nil {
@@ -129,10 +133,11 @@ func runGuidedInit(
 			); err != nil {
 				return nil, guidedInitResult{}, 2, fmt.Errorf("create GitHub config repository: %w", err)
 			}
-			source.ConfigRepo = "https://github.com/" + remoteCreate.Owner + "/" + remoteCreate.Name
 		}
-		result = guidedResultForOptions(source, opts, remoteCreate != nil)
 	} else {
+		if err := prepareGuidedSource(source, stdout, github); err != nil {
+			return nil, guidedInitResult{}, 2, err
+		}
 		if code := validateGuidedSource(source.Root, stdout, stderr); code != 0 {
 			return nil, guidedInitResult{}, code, fmt.Errorf("existing config source failed validation")
 		}
@@ -142,6 +147,9 @@ func runGuidedInit(
 		}
 		result, err = promptExistingSourceTarget(p, source, cfg)
 		if err != nil {
+			return nil, guidedInitResult{}, 2, err
+		}
+		if err := confirmGuidedMapping(p, root, result); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
 	}
@@ -166,9 +174,13 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 
 	switch mode {
 	case guidedSourceNewLocal:
+		defaultPath, err := defaultGuidedSourcePath(instanceRoot)
+		if err != nil {
+			return guidedSourceSelection{}, err
+		}
 		sourceRoot, err := p.ask(
 			"New config source path",
-			defaultGuidedSourcePath(instanceRoot),
+			defaultPath,
 			validNonEmptyPath,
 		)
 		if err != nil {
@@ -205,9 +217,13 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 		if err != nil {
 			return guidedSourceSelection{}, err
 		}
+		defaultPath, err := defaultGuidedCheckoutPath(instanceRoot, name)
+		if err != nil {
+			return guidedSourceSelection{}, err
+		}
 		sourceRoot, err := p.ask(
 			"Local checkout path",
-			filepath.Join(filepath.Dir(filepath.Clean(instanceRoot)), name+"-config"),
+			defaultPath,
 			validNonEmptyPath,
 		)
 		if err != nil {
@@ -384,13 +400,52 @@ func validateGuidedSource(root string, stdout, stderr io.Writer) int {
 	return runValidate([]string{"--source-tree", root}, stdout, stderr)
 }
 
-func defaultGuidedSourcePath(instanceRoot string) string {
-	clean := filepath.Clean(instanceRoot)
+func confirmGuidedMapping(p guidedPrompter, instanceRoot string, result guidedInitResult) error {
+	instanceAbs := absolutePath(instanceRoot)
+	pf(p.out, `
+Onboarding mapping to create:
+  config-repo:  %s
+  config-source: %s
+  instance-root: %s
+  instance/gaggle: %s
+  target-repo:   %s
+  backlog:       %s
+`,
+		result.ConfigRepo,
+		result.SourceRoot,
+		instanceAbs,
+		filepath.Join(instanceAbs, instance.GagglesDirName, result.Gaggle),
+		result.TargetRepo,
+		result.Backlog,
+	)
+	confirmed, err := p.ask("Create this onboarding mapping? (yes/no)", "no", validYesNo)
+	if err != nil {
+		return err
+	}
+	if !isYes(confirmed) {
+		return fmt.Errorf("guided setup cancelled before writing config source or instance")
+	}
+	return nil
+}
+
+func defaultGuidedSourcePath(instanceRoot string) (string, error) {
+	clean, err := filepath.Abs(instanceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve instance root for config source default: %w", err)
+	}
 	base := filepath.Base(clean)
-	if base == "." || base == string(filepath.Separator) {
+	if base == string(filepath.Separator) {
 		base = "goobers"
 	}
-	return filepath.Join(filepath.Dir(clean), base+"-config")
+	return filepath.Join(filepath.Dir(clean), base+"-config"), nil
+}
+
+func defaultGuidedCheckoutPath(instanceRoot, repositoryName string) (string, error) {
+	clean, err := filepath.Abs(instanceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve instance root for config checkout default: %w", err)
+	}
+	return filepath.Join(filepath.Dir(clean), repositoryName+"-config"), nil
 }
 
 func validGuidedSourceMode(value string) bool {
