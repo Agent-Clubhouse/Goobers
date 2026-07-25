@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 )
 
+// Supported speech engines and bounded configuration defaults.
 const (
 	EngineAuto     = "auto"
 	EngineSay      = "say"
@@ -148,6 +149,7 @@ type Preflight struct {
 // Status is a delivery receipt state.
 type Status string
 
+// Speech delivery receipt statuses.
 const (
 	StatusStarted   Status = "started"
 	StatusDelivered Status = "delivered"
