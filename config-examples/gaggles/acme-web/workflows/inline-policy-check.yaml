@@ -32,6 +32,7 @@ spec:
         requiredLabel: "security-reviewed"
         resultFile: "policy-result.json"
       capabilities: []
+      requiredCapabilities: ["os=linux"]
       expectedOutputs:
         - allowed
       next: label-policy
@@ -43,6 +44,7 @@ spec:
           printf '%s\n' 'Required review label is present.'
         workspace: scratch
       capabilities: []
+      requiredCapabilities: ["os=linux"]
     - name: report-blocked
       type: deterministic
       goal: Report that the label policy failed.
@@ -51,6 +53,7 @@ spec:
           printf '%s\n' 'Required review label is missing.'
         workspace: scratch
       capabilities: []
+      requiredCapabilities: ["os=linux"]
   gates:
     - name: label-policy
       evaluator: automated

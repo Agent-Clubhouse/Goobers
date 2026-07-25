@@ -267,12 +267,12 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 	return paths
 }
 
-// Run implements invoke.Deterministic. It executes run.Command in
-// env.Workspace with a capability-scoped, non-ambient environment, enforces a
-// timeout by killing the whole process group, captures size-bounded and
-// secret-scrubbed stdout/stderr as artifacts, and — if InputResultFile is
-// declared — lifts that file into an artifact and requires its presence for
-// success.
+// Run implements invoke.Deterministic. It executes run.Command, or run.Script
+// through the host's native command interpreter, in env.Workspace with a
+// capability-scoped, non-ambient environment. It enforces a timeout by killing
+// the whole process group, captures size-bounded and secret-scrubbed
+// stdout/stderr as artifacts, and — if InputResultFile is declared — lifts that
+// file into an artifact and requires its presence for success.
 //
 // A non-nil error means the executor itself could not produce a result
 // (misconfiguration, credential resolution failure, a journal write failure,
@@ -280,15 +280,17 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // closed rather than degrade. Other declared-command failures are normal
 // ResultFailure envelopes.
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	if len(run.Command) == 0 {
-		return apiv1.ResultEnvelope{}, errors.New("executor: DeterministicRun declares no command")
-	}
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
 		// directory" — a silent, surprising fallback (#122) rather than the
 		// fail-closed misconfiguration error an unset workspace should be.
 		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
 	}
+	command, commandEnv, cleanup, err := deterministicCommand(run)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer cleanup()
 	timeout, err := e.timeoutFor(env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -299,8 +301,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	resultFile := stringInput(env, InputResultFile)
 	implicitResultFile := ""
-	if resultFile == "" && stageInvokesGoobersCLI(run.Command) && len(run.Command) > 1 {
-		if defaultResultFile, ok := ProviderStageResultFile(run.Command[1]); ok {
+	if resultFile == "" && stageInvokesGoobersCLI(command) && len(command) > 1 {
+		if defaultResultFile, ok := ProviderStageResultFile(command[1]); ok {
 			resultFile = defaultResultFile
 			implicitResultFile = defaultResultFile
 		}
@@ -314,11 +316,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// run env leaks into its own test suite (#322). This is the same
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
-	injectRunContext := stageInvokesGoobersCLI(run.Command)
+	injectRunContext := stageInvokesGoobersCLI(command)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
+	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
@@ -359,11 +362,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// binary, and a bare name would PATH-resolve against the daemon's PATH, not
 	// the worktree — so it fails at exec (#229). SelfBin is byte-identical to the
 	// running daemon, avoiding version skew.
-	name := run.Command[0]
-	if e.SelfBin != "" && stageInvokesGoobersCLI(run.Command) {
+	name := command[0]
+	if e.SelfBin != "" && stageInvokesGoobersCLI(command) {
 		name = e.SelfBin
 	}
-	cmd := exec.Command(name, run.Command[1:]...)
+	cmd := exec.Command(name, command[1:]...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	// Configure tree ownership before the network isolation below layers its
@@ -388,7 +391,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
-			Summary: fmt.Sprintf("failed to start %q", run.Command[0]),
+			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
 
@@ -508,10 +511,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if timedOut {
-		if stageInvokesProviderBuiltin(run.Command) {
+		if stageInvokesProviderBuiltin(command) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
-				run.Command[1], timeout, context.DeadlineExceeded,
+				command[1], timeout, context.DeadlineExceeded,
 			))
 		}
 		result.Status = apiv1.ResultFailure
@@ -552,9 +555,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			if message == "" {
 				message = fmt.Sprintf("command exited %d", exitCode)
 			}
-			stageName := run.Command[0]
-			if len(run.Command) > 1 {
-				stageName = run.Command[1]
+			stageName := command[0]
+			if len(command) > 1 {
+				stageName = command[1]
 			}
 			if report.Retryable {
 				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
@@ -568,7 +571,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	if exitCode != 0 && stageInvokesProviderBuiltin(run.Command) {
+	if exitCode != 0 && stageInvokesProviderBuiltin(command) {
 		// #control precedence ruling (2026-07-17, the #613/#711/#712
 		// chokepoint): a provider-builtin stage that got far enough to
 		// self-report structurally via its declared result file
@@ -597,7 +600,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						}
 						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
 							return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
-								"executor: provider stage %q reported %s: %s", run.Command[1], code, message,
+								"executor: provider stage %q reported %s: %s", command[1], code, message,
 							))
 						}
 						result.Status = apiv1.ResultFailure
@@ -625,7 +628,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		providerErr := errors.New(message)
 		if providers.IsTransientError(providerErr) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
-				"executor: provider stage %q failed: %w", run.Command[1], providerErr,
+				"executor: provider stage %q failed: %w", command[1], providerErr,
 			))
 		}
 		result.Status = apiv1.ResultFailure
@@ -634,7 +637,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Message:   providerErr.Error(),
 			Retryable: false,
 		}
-		result.Summary = fmt.Sprintf("provider stage %q failed", run.Command[1])
+		result.Summary = fmt.Sprintf("provider stage %q failed", command[1])
 		return result, nil
 	}
 
