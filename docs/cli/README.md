@@ -845,7 +845,7 @@ $ goobers gather-sibling-context
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo | --template=quickstart] [path]
+Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -858,7 +858,11 @@ GitHub, or optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding
 workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
-demo is supported on Linux and macOS, where network isolation is enforced.
+demo is supported on Linux and macOS, where network isolation is enforced; it is
+fail-closed on Windows (no enforced network:none equivalent exists there) unless
+--insecure is also given, which scaffolds the demo anyway and reports the
+isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
+the general Windows sandbox policy (#651). --insecure requires --demo.
 ~~~
 
 **Examples**
