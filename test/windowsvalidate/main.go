@@ -35,7 +35,16 @@ var (
 	attachConsole         = kernel32.NewProc("AttachConsole")
 	freeConsole           = kernel32.NewProc("FreeConsole")
 	setConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
-	ignoreConsoleCtrl     = syscall.NewCallback(func(uint32) uintptr { return 1 })
+	ctrlBreakHandled      = make(chan struct{}, 1)
+	ignoreConsoleCtrl     = syscall.NewCallback(func(ctrlType uint32) uintptr {
+		if ctrlType == windows.CTRL_BREAK_EVENT {
+			select {
+			case ctrlBreakHandled <- struct{}{}:
+			default:
+			}
+		}
+		return 1
+	})
 )
 
 func main() {
@@ -282,6 +291,10 @@ func sendCtrlBreak(consoleProcessID uint32) error {
 	// The Actions runner is a Windows service and may not have a console. Give
 	// the daemon a dedicated console, attach here only long enough to target
 	// every process in that console, and ignore the event in this sender.
+	select {
+	case <-ctrlBreakHandled:
+	default:
+	}
 	_, _, _ = freeConsole.Call()
 	attached, _, attachErr := attachConsole.Call(uintptr(consoleProcessID))
 	if attached == 0 {
@@ -297,7 +310,14 @@ func sendCtrlBreak(consoleProcessID uint32) error {
 	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, 0); err != nil {
 		return err
 	}
-	return nil
+	// GenerateConsoleCtrlEvent returns before handlers necessarily run. Detaching
+	// sooner resets this process's handler table and can terminate the validator.
+	select {
+	case <-ctrlBreakHandled:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("validation process did not handle Ctrl+Break within %s", 5*time.Second)
+	}
 }
 
 func configureEphemeralAPI(root string) error {

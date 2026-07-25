@@ -49,7 +49,7 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities []string) error {
 			if parsed.User != nil {
 				return fmt.Errorf("%s.url must not contain inline credentials; use credentialRefs", scope)
 			}
-			if parsed.RawQuery != "" || parsed.Fragment != "" {
+			if parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(server.URL, "#") {
 				return fmt.Errorf("%s.url must not contain a query or fragment; use credentialRefs for credentials", scope)
 			}
 			if parsed.Scheme == "http" && len(server.CredentialRefs) > 0 && !isLoopbackHost(parsed.Hostname()) {

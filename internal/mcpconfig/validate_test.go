@@ -71,6 +71,16 @@ func TestValidate(t *testing.T) {
 			want:    "must not contain a query or fragment",
 		},
 		{
+			name:    "empty query",
+			servers: []apiv1.MCPServer{{Name: "remote", URL: "https://example.test/mcp?"}},
+			want:    "must not contain a query or fragment",
+		},
+		{
+			name:    "empty fragment",
+			servers: []apiv1.MCPServer{{Name: "remote", URL: "https://example.test/mcp#"}},
+			want:    "must not contain a query or fragment",
+		},
+		{
 			name: "plaintext remote credential",
 			servers: []apiv1.MCPServer{{
 				Name: "remote", URL: "http://mcp.example.test",
