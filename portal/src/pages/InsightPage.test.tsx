@@ -1,12 +1,25 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
   window.location.hash = "#/insight";
+  // populatedDaemonFixtures() is anchored to 2026-07-18, but the Insight page
+  // filters telemetry by a window relative to the current time. Pin the clock to
+  // the fixtures' "now" (their observedAt) so those windows include the fixture
+  // data deterministically. Faking only Date leaves setTimeout/microtasks real,
+  // so userEvent and findBy* still resolve. Without this the suite is a time
+  // bomb: it passes at authoring time, then fails once wall-clock drifts past
+  // the window (it began failing ~24h after landing).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-18T20:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Insight page", () => {
