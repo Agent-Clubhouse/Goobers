@@ -313,10 +313,7 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    "implement",
-		Tasks: []apiv1.Task{
-			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement", Next: "approve"},
-		},
+		Start:    "approve",
 		Gates: []apiv1.Gate{
 			{
 				Name:      "approve",
@@ -331,9 +328,8 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	env.ExecuteWorkflow(Run, runInput("human", spec))
 
 	err := env.GetWorkflowError()
-	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("workflow error = %v, want actionable human-gate rejection", err)
+	if err == nil || !strings.Contains(err.Error(), temporalHumanGateUnsupported) {
+		t.Fatalf("workflow error = %v, want occurrence-bound signal rejection", err)
 	}
 }
 

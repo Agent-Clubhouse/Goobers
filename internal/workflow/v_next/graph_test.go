@@ -53,12 +53,10 @@ func graphDefinition() Definition {
 			},
 			Gates: []apiv1.Gate{
 				{
-					// #706: human gates are rejected at compile time until
-					// durable pause/resume ships — this fixture only needs a
-					// multi-branch gate to exercise graph projection, not
-					// human-gate semantics specifically, so it uses the same
-					// agentic-gate shape the compiler tests already
-					// does. escalate's terminal-edge projection shape (the
+					// This fixture only needs a closed-vocabulary multi-branch
+					// gate to exercise graph projection, so it uses the same
+					// agentic-gate shape the compiler tests already do.
+					// escalate's terminal-edge projection shape (the
 					// same TargetEscalate handling graphTerminal switches on)
 					// no longer has a dedicated case here since agentic gates
 					// only produce pass/fail/needs-changes outcomes.
