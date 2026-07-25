@@ -31,10 +31,14 @@ type Trigger struct {
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
 	// Selector configures backlog-item filtering. Keys are required labels and
-	// values are ignored; full k8s-style selector matching remains V1
-	// (WF-040, SCH-010).
+	// values are ignored.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// LabelPredicate is a CEL expression over the item's label set. The only
+	// supported operations are string membership in `labels` and boolean
+	// composition with &&, ||, and !. It is ANDed with Selector.
+	// +optional
+	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
 	// Priority orders provider-backed polling when a quota window cannot cover
 	// every due poll. Higher values are preserved first; equal values use the
 	// scheduler's deterministic workflow ordering.

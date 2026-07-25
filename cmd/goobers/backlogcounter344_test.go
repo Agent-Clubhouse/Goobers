@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
@@ -35,7 +36,11 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers": "true"}}},
 		}}
-		if c := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, "", nil); c != nil {
+		c, err := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, "", nil)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		if c != nil {
 			t.Fatalf("expected nil for no repos, got %+v", c)
 		}
 	})
@@ -48,24 +53,35 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		}}
-		if c := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); c != nil {
+		c, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		if c != nil {
 			t.Fatalf("expected nil for a schedule-only workflow, got %+v", c)
 		}
 	})
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
-			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{
-				"goobers:ready":    "true",
-				"goobers:approved": "true",
-			}}},
+			Triggers: []apiv1.Trigger{{
+				Type: apiv1.TriggerBacklogItem,
+				Selector: map[string]string{
+					"goobers:ready":    "true",
+					"goobers:approved": "true",
+				},
+				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+			}},
 		}}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 		if err != nil {
 			t.Fatalf("NewResolver: %v", err)
 		}
 		quota := localscheduler.NewProviderQuotaState()
-		c := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
+		c, err := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
 		if c == nil {
 			t.Fatal("expected a non-nil counter for a backlog-item-triggered, repo-backed workflow")
 		}
@@ -85,7 +101,64 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.quota == nil {
 			t.Fatal("provider quota observer was not wired")
 		}
+		matched, err := bc.labelPredicate.Matches([]string{"goobers:ready", "goobers:approved", "size:m"})
+		if err != nil || !matched {
+			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
+		}
 	})
+
+	t.Run("invalid predicate fails closed", func(t *testing.T) {
+		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+			Triggers: []apiv1.Trigger{{
+				Type:           apiv1.TriggerBacklogItem,
+				LabelPredicate: `labels.size() > 0`,
+			}},
+		}}
+		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
+			t.Fatal("buildBacklogCounter succeeded with an unsupported predicate")
+		}
+	})
+}
+
+func TestBacklogCounterAppliesExactLabelPredicate(t *testing.T) {
+	t.Setenv("BACKLOG_TOK", "backlog-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	predicate, err := labelpredicate.Compile(
+		`("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+		[]string{"area:runner"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "acme", "web")
+	server.addIssue(1, "Small runner item", "area:runner", "size:s")
+	server.addIssue(2, "Windows medium item", "area:runner", "size:m", "platform:windows")
+	server.addIssue(3, "Large runner item", "area:runner", "size:l")
+	server.addIssue(4, "Small docs item", "area:docs", "size:s")
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	counter := &backlogCounter{
+		ref:            "acme/web",
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:         predicate.RequiredLabels(),
+		labelPredicate: predicate,
+		resolver:       resolver,
+		reg:            &backlogTestRegistrar{},
+	}
+	count, err := counter.EligibleCount(context.Background())
+	if err != nil {
+		t.Fatalf("EligibleCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want only the non-Windows small runner item", count)
+	}
 }
 
 // TestBacklogCounterResolvesTokenPerCallAndQueriesProvider mirrors

@@ -113,6 +113,11 @@
         "provider": { "type": "string", "enum": ["github", "ado"] },
         "project": { "type": "string", "minLength": 1 },
         "labels": { "type": "array", "items": { "type": "string" } },
+        "labelPredicate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL label-set predicate using only string membership in `labels` and boolean &&, ||, and !. ANDed with labels."
+        },
         "query": { "type": "string" },
         "connectionRef": { "type": "string" }
       }

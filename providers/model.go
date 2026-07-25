@@ -3,6 +3,8 @@ package providers
 import (
 	"fmt"
 	"time"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 // ProviderKind identifies a concrete provider backend.
@@ -742,10 +744,11 @@ type CompareResult struct {
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.
 type ListWorkItemsRequest struct {
-	Repository RepositoryRef `json:"repository"`
-	Labels     []string      `json:"labels,omitempty"`
-	State      string        `json:"state,omitempty"`
-	Assignee   string        `json:"assignee,omitempty"`
+	Repository     RepositoryRef             `json:"repository"`
+	Labels         []string                  `json:"labels,omitempty"`
+	LabelPredicate *labelpredicate.Predicate `json:"-"`
+	State          string                    `json:"state,omitempty"`
+	Assignee       string                    `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
 	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
 	Limit        int        `json:"limit,omitempty"`
@@ -758,6 +761,11 @@ type ListWorkItemsRequest struct {
 	// once older ones drain — not the oldest, which GitHub's undocumented
 	// newest-first default would otherwise starve forever.
 	OldestFirst bool `json:"oldestFirst,omitempty"`
+}
+
+// MatchesLabelPredicate applies the request's exact client-side label filter.
+func (r ListWorkItemsRequest) MatchesLabelPredicate(labels []string) (bool, error) {
+	return r.LabelPredicate.Matches(labels)
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label

@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
@@ -1174,13 +1175,14 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	ref          string
-	repo         providers.RepositoryRef
-	labels       []string
-	resolver     credentials.Resolver
-	reg          runner.SecretRegistrar
-	schedulerDir string
-	quota        *localscheduler.ProviderQuotaState
+	ref            string
+	repo           providers.RepositoryRef
+	labels         []string
+	labelPredicate *labelpredicate.Predicate
+	resolver       credentials.Resolver
+	reg            runner.SecretRegistrar
+	schedulerDir   string
+	quota          *localscheduler.ProviderQuotaState
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -1212,12 +1214,22 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
 	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
+		Repository: b.repo, Labels: b.labels, LabelPredicate: b.labelPredicate, State: "open", Limit: 100,
 	})
 	if err != nil {
 		return 0, err
 	}
-	return len(items), nil
+	count := 0
+	for _, item := range items {
+		matched, err := b.labelPredicate.Matches(item.Labels)
+		if err != nil {
+			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+		}
+		if matched {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
@@ -1237,39 +1249,46 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
-		return nil
+		return nil, nil
 	}
 	var selector map[string]string
+	var expression string
 	found := false
 	for _, tr := range wf.Spec.Triggers {
 		if tr.Type == apiv1.TriggerBacklogItem {
 			selector = tr.Selector
+			expression = tr.LabelPredicate
 			found = true
 			break
 		}
 	}
 	if !found {
-		return nil
+		return nil, nil
 	}
 	labels := make([]string, 0, len(selector))
 	for k := range selector {
 		labels = append(labels, k)
 	}
 	sort.Strings(labels)
+	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
+	}
 	counter := &backlogCounter{
-		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
-		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
-		labels:       labels,
-		resolver:     resolver,
-		reg:          reg,
-		schedulerDir: schedulerDir,
+		ref:            cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:         labels,
+		labelPredicate: predicate,
+		resolver:       resolver,
+		reg:            reg,
+		schedulerDir:   schedulerDir,
 	}
 	if quota != nil {
 		counter.quota = quota
 	}
-	return counter
+	return counter, nil
 }
 
 type providerQuotaAccounting struct {

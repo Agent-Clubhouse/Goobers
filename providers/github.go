@@ -1962,7 +1962,7 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
 		}
-		return issuesToWorkItems(issues, req.Limit), nil
+		return issuesToWorkItems(issues, req)
 	}
 
 	endpoint, err = addQuery(endpoint, values)
@@ -1983,7 +1983,15 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			if issue.PullRequest != nil {
 				continue
 			}
-			items = append(items, mapGitHubIssue(issue))
+			item := mapGitHubIssue(issue)
+			matched, err := req.MatchesLabelPredicate(item.Labels)
+			if err != nil {
+				return err
+			}
+			if !matched {
+				continue
+			}
+			items = append(items, item)
 			if req.Limit > 0 && len(items) >= req.Limit {
 				return errStopPaging
 			}
@@ -1997,18 +2005,26 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 
 // issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
 // requests, and truncates to limit (0 = no cap).
-func issuesToWorkItems(issues []githubIssue, limit int) []WorkItem {
+func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
 	items := make([]WorkItem, 0, len(issues))
 	for _, issue := range issues {
 		if issue.PullRequest != nil {
 			continue
 		}
-		items = append(items, mapGitHubIssue(issue))
-		if limit > 0 && len(items) >= limit {
+		item := mapGitHubIssue(issue)
+		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		items = append(items, item)
+		if req.Limit > 0 && len(items) >= req.Limit {
 			break
 		}
 	}
-	return items
+	return items, nil
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.

@@ -34,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
@@ -144,15 +145,20 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 			}
 		}(g.Name)
 
+		predicate, predicateErr := labelpredicate.Compile(g.Spec.Backlog.LabelPredicate, g.Spec.Backlog.Labels, nil)
+		if predicateErr != nil {
+			return fmt.Errorf("gaggle %q backlog label predicate: %w", g.Name, predicateErr)
+		}
 		for _, wfName := range workflows {
 			tk := time.NewTicker(cfg.pollInterval)
 			tr := scheduler.BacklogPollTrigger{
-				WorkflowName: wfName,
-				Provider:     provider,
-				Repo:         repo,
-				Labels:       g.Spec.Backlog.Labels,
-				Ticks:        tk.C,
-				Limit:        cfg.pollLimit,
+				WorkflowName:   wfName,
+				Provider:       provider,
+				Repo:           repo,
+				Labels:         predicate.RequiredLabels(),
+				LabelPredicate: predicate,
+				Ticks:          tk.C,
+				Limit:          cfg.pollLimit,
 			}
 			wg.Add(1)
 			go func() {
