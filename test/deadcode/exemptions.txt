@@ -117,6 +117,9 @@ github.com/goobers/goobers/internal/instance.NewGitSource # Git-backed config so
 github.com/goobers/goobers/internal/instance.NewWorkflowGitSource # Workflow-source constructor retained for team-tier config repository authentication.
 github.com/goobers/goobers/internal/instance.workflowSourceTokenSource.Token # Dedicated config repository credential source retained for team-tier workflow sync.
 github.com/goobers/goobers/internal/instance.GitSource.Resolve # Git-backed config source implementation retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.Warnings # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.isSymlinkPrivilegeError # Windows symlink-privilege fallback helper for the team-tier Git config source.
+github.com/goobers/goobers/internal/instance.isWindowsSymlinkPrivilegeError # Windows symlink-privilege fallback helper for the team-tier Git config source.
 github.com/goobers/goobers/internal/instance.GitSource.materializeRevision # Git-backed config source helper retained for team-tier configuration.
 github.com/goobers/goobers/internal/instance.normalizeGitSourceRef # Git-backed config source helper retained for team-tier configuration.
 github.com/goobers/goobers/internal/instance.GitSource.refreshMirror # Git-backed config source helper retained for team-tier configuration.
