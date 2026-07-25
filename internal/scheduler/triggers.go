@@ -76,6 +76,11 @@ func (b BacklogPollTrigger) Name() string { return "backlog-poll:" + b.WorkflowN
 
 // Watch polls the backlog on each tick and emits an Event per open item.
 func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
+	cursor := ""
+	limit := b.Limit
+	if limit <= 0 {
+		limit = 100
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -84,15 +89,23 @@ func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
 			if !ok {
 				return nil
 			}
+			pageInfo := &providers.ListWorkItemsPageInfo{}
 			items, err := b.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-				Repository:     b.Repo,
-				Labels:         b.Labels,
-				LabelPredicate: b.LabelPredicate,
-				State:          "open",
-				Limit:          b.Limit,
+				Repository:  b.Repo,
+				Labels:      b.Labels,
+				State:       "open",
+				Limit:       limit,
+				Cursor:      cursor,
+				PageInfo:    pageInfo,
+				OldestFirst: true,
 			})
 			if err != nil {
 				return err
+			}
+			if pageInfo.HasNext {
+				cursor = pageInfo.NextCursor
+			} else {
+				cursor = ""
 			}
 			for i := range items {
 				item := items[i]

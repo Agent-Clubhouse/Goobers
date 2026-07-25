@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
@@ -45,6 +47,7 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListWorkItems returned error: %v", err)
 	}
+
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d", len(items))
 	}
@@ -57,6 +60,72 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 	if item.Parent == nil || item.Parent.Type != "parent" || item.Parent.ID != "41" {
 		t.Fatalf("expected hierarchy parent to be preserved: %#v", item.Parent)
+	}
+}
+
+func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	getRequests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "1" {
+			t.Fatalf("$top = %q, want 1", got)
+		}
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		id := 1
+		if strings.Contains(body["query"], "[System.Id] > 1") {
+			id = 2
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": id}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		getRequests++
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		tags := "other"
+		numericID := 1
+		if id == "2" {
+			tags = "wanted"
+			numericID = 2
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.Title": id,
+				"System.Tags":  tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+
+	firstPage := &ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, LabelPredicate: predicate, Limit: 1, PageInfo: firstPage,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems page 1: %v", err)
+	}
+	if len(items) != 0 || getRequests != 1 || !firstPage.HasNext || firstPage.NextCursor != "1" {
+		t.Fatalf(
+			"items = %#v, GET requests = %d, page info = %+v; want one nonmatching raw candidate",
+			items, getRequests, firstPage,
+		)
+	}
+	pageInfo := &ListWorkItemsPageInfo{}
+	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, LabelPredicate: predicate, Limit: 1, Cursor: "1", PageInfo: pageInfo,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems page 2: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
+		t.Fatalf("items = %#v, GET requests = %d; want matching second candidate", items, getRequests)
 	}
 }
 
