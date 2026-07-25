@@ -49,6 +49,9 @@ const hermeticEphemeralListen = "127.0.0.1:0"
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
 func TestMain(m *testing.M) {
+	if os.Getenv(docsDryRunMakeEnv) == "1" && isDocsDryRunMakeProcess() {
+		os.Exit(runDocsDryRunMake())
+	}
 	if baseURL := os.Getenv("GOOBERS_TEST_GITHUB_API_URL"); baseURL != "" {
 		newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
 			return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {

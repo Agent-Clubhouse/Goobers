@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,6 +29,7 @@ const (
 	docsDryRunID       = "docs-dry-run"
 	docsDryRunTokenEnv = "GOOBERS_DOCS_DRY_RUN_TOKEN"
 	docsDryRunFile     = "docs/generated.md"
+	docsDryRunMakeEnv  = "GOOBERS_DOCS_DRY_RUN_MAKE"
 )
 
 func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
@@ -40,6 +43,7 @@ func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile shipped docs-updater: %v", err)
 	}
+	installDocsDryRunMake(t)
 
 	origin := newDocsDryRunOrigin(t)
 	server := newFakeGitHubServer(t, "fixture", "repository")
@@ -84,11 +88,12 @@ func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run shipped docs-updater: %v", err)
 	}
+	runDir := filepath.Join(runsDir, docsDryRunID)
 	if result.Phase != journal.PhaseCompleted {
-		t.Fatalf("phase = %q, want completed", result.Phase)
+		t.Fatalf("phase = %q at %q, want completed; journal: %s", result.Phase, result.FinalState, docsDryRunJournalSummary(t, runDir))
 	}
 
-	assertDocsDryRunStages(t, filepath.Join(runsDir, docsDryRunID))
+	assertDocsDryRunStages(t, runDir)
 
 	server.mu.Lock()
 	if len(server.prs) != 1 {
@@ -202,7 +207,7 @@ func newDocsDryRunRunner(
 			}
 			shell.InstanceRoot = instanceRoot
 			shell.SelfBin = executable
-			shell.ExtraEnvAllowlist = []string{"GOOBERS_TEST_GITHUB_API_URL"}
+			shell.ExtraEnvAllowlist = []string{"GOOBERS_TEST_GITHUB_API_URL", docsDryRunMakeEnv}
 			return shell, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, registrar runner.SecretRegistrar) (invoke.Goober, error) {
@@ -273,6 +278,46 @@ func newDocsDryRunRunner(
 	return localRunner
 }
 
+// The hermetic unit-test tier excludes host make. A hard link to this test
+// binary preserves the shipped "make ci" command while providing its fixture.
+func installDocsDryRunMake(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable for make fixture: %v", err)
+	}
+	dir := t.TempDir()
+	name := "make"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if err := os.Link(executable, filepath.Join(dir, name)); err != nil {
+		t.Fatalf("install make fixture: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(docsDryRunMakeEnv, "1")
+}
+
+func runDocsDryRunMake() int {
+	if len(os.Args) != 2 || os.Args[1] != "ci" {
+		fmt.Fprintf(os.Stderr, "make fixture: args = %q, want [ci]\n", os.Args[1:])
+		return 2
+	}
+	cmd := exec.Command("git", "cat-file", "-e", "HEAD:"+docsDryRunFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: validate generated docs: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func isDocsDryRunMakeProcess() bool {
+	name := filepath.Base(os.Args[0])
+	return name == "make" || name == "make.exe"
+}
+
 func assertDocsDryRunStages(t *testing.T, runDir string) {
 	t.Helper()
 	reader, err := journal.OpenRead(runDir)
@@ -293,6 +338,32 @@ func assertDocsDryRunStages(t *testing.T, runDir string) {
 	if !reflect.DeepEqual(started, want) {
 		t.Fatalf("started stages = %v, want %v", started, want)
 	}
+}
+
+func docsDryRunJournalSummary(t *testing.T, runDir string) string {
+	t.Helper()
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return "open journal: " + err.Error()
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "read events: " + err.Error()
+	}
+	var summary []string
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageFinished:
+			detail := fmt.Sprintf("%s=%s", event.Stage, event.Status)
+			if event.Error != nil {
+				detail += ":" + event.Error.Code + ":" + event.Error.Message
+			}
+			summary = append(summary, detail)
+		case journal.EventGateEvaluated:
+			summary = append(summary, fmt.Sprintf("%s=%s->%s", event.Gate, event.Verdict, event.Target))
+		}
+	}
+	return strings.Join(summary, ", ")
 }
 
 func pathWithinDocsRoots(path string, roots []string) bool {
