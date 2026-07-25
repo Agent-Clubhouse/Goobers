@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -178,6 +178,120 @@ describe("run detail", () => {
     expect(portalStyles).toMatch(
       /\.output-line code\s*\{[^}]*overflow-wrap:\s*anywhere/s,
     );
+  });
+
+  it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+
+    fireEvent.click(within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }));
+
+    expect(fullscreenRoot).toHaveClass("workflow-graph-shell-expanded");
+    expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
+    expect(fullscreenRoot).toHaveAttribute("role", "dialog");
+    expect(
+      within(fullscreenRoot).getByRole("group", { name: "Replay controls" }),
+    ).toBeInTheDocument();
+    expect(
+      within(fullscreenRoot).getByRole("complementary", {
+        name: /attempt inspector/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(fullscreenRoot).queryByRole("heading", { name: "Event ledger" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(fullscreenRoot).not.toHaveClass("workflow-graph-shell-expanded");
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toHaveFocus();
+  });
+
+  it("requests native fullscreen for the complete run graph workspace", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+    const fullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const exitFullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    let fullscreenElement: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    const requestFullscreen = vi.fn(async () => {
+      fullscreenElement = fullscreenRoot;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(fullscreenRoot, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+
+    try {
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "native"),
+      );
+      expect(requestFullscreen).toHaveBeenCalledOnce();
+      expect(
+        within(fullscreenRoot).getByRole("group", { name: "Replay controls" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Exit fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "none"),
+      );
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    } finally {
+      if (fullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "fullscreenElement",
+          fullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "fullscreenElement");
+      }
+      if (exitFullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "exitFullscreen",
+          exitFullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "exitFullscreen");
+      }
+    }
   });
 
   it("follows appended live events without overwriting a historical selection", async () => {

@@ -1943,8 +1943,8 @@ a.telemetry-error-row:hover {
   gap: 9px;
 }
 
-.workflow-graph-shell:fullscreen,
-.workflow-graph-shell-expanded {
+.workflow-graph-fullscreen-target:fullscreen,
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -1953,14 +1953,15 @@ a.telemetry-error-row:hover {
   width: 100%;
 }
 
-.workflow-graph-shell-expanded {
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
   inset: 0;
   position: fixed;
   z-index: 1000;
 }
 
-.workflow-graph-shell:fullscreen .workflow-graph-viewport,
-.workflow-graph-shell-expanded .workflow-graph-viewport {
+.workflow-graph-fullscreen-target:fullscreen .workflow-graph-viewport,
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded
+  .workflow-graph-viewport {
   flex: 1;
   height: auto;
   min-height: 0;
@@ -2904,6 +2905,53 @@ a.telemetry-error-row:hover {
   min-width: 0;
 }
 
+.run-graph-fullscreen-root {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.run-graph-fullscreen-root:fullscreen .run-graph-panel,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .run-graph-panel {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen .workflow-graph-shell,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded
+  .workflow-graph-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen .playback-panel,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .playback-panel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.run-graph-fullscreen-root:fullscreen .run-inspector,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .run-inspector {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-height: 0;
+  overflow: auto;
+}
+
 .run-topology {
   background-color: var(--surface);
   background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
@@ -3692,9 +3740,23 @@ a.telemetry-error-row:hover {
     height: 420px;
   }
 
-  .workflow-graph-shell:fullscreen,
-  .workflow-graph-shell-expanded {
+  .workflow-graph-fullscreen-target:fullscreen,
+  .workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
     padding: 10px;
+  }
+
+  .run-graph-fullscreen-root:fullscreen,
+  .run-graph-fullscreen-root.workflow-graph-shell-expanded {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) auto auto;
+    overflow: auto;
+  }
+
+  .run-graph-fullscreen-root:fullscreen .run-inspector,
+  .run-graph-fullscreen-root.workflow-graph-shell-expanded .run-inspector {
+    grid-column: 1;
+    grid-row: 3;
+    overflow: visible;
   }
 
   .configuration-warning-heading {
