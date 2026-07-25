@@ -1,3 +1,4 @@
+// Package mcpconfig validates per-goober external MCP server declarations.
 package mcpconfig
 
 import (

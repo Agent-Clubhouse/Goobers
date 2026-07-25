@@ -20,8 +20,10 @@ const (
 type MCPHeaderScheme string
 
 const (
+	// MCPHeaderSchemeBearer prefixes a remote header credential with "Bearer ".
 	MCPHeaderSchemeBearer MCPHeaderScheme = "bearer"
-	MCPHeaderSchemeBasic  MCPHeaderScheme = "basic"
+	// MCPHeaderSchemeBasic prefixes a remote header credential with "Basic ".
+	MCPHeaderSchemeBasic MCPHeaderScheme = "basic"
 )
 
 // MCPCredentialRef binds one capability-scoped credential to an MCP server

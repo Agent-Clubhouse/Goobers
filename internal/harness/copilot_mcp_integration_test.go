@@ -319,7 +319,7 @@ func finishTestMCPProcess(command *exec.Cmd, stdin interface{ Close() error }, s
 	_ = stdin.Close()
 	waitErr := command.Wait()
 	if waitErr != nil {
-		return fmt.Errorf("%w; process: %v: %s", cause, waitErr, stderr)
+		return fmt.Errorf("%w; process: %w: %s", cause, waitErr, stderr)
 	}
 	return cause
 }
@@ -370,7 +370,7 @@ func testMCPHTTPRoundTrip(client *http.Client, url string, headers http.Header, 
 	if err != nil {
 		return testMCPResponse{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return testMCPResponse{}, fmt.Errorf("HTTP status %s", response.Status)
 	}
