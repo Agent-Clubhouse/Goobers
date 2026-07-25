@@ -215,10 +215,6 @@ func readClaudeStreamLine(reader *bufio.Reader) ([]byte, int64, error) {
 	}
 }
 
-func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {
-	return convertClaudeStreams([]io.Reader{r}, prompts, limit, alreadyDropped)
-}
-
 func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {
 	buf := newTranscriptBuffer(limit)
 	converted := false

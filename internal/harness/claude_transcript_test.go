@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -17,9 +18,9 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"finished"}]}}`,
 		`{"type":"result","subtype":"success","result":"finished","total_cost_usd":0.42,"usage":{"input_tokens":100,"output_tokens":20},"modelUsage":{"claude-opus-4-6":{"inputTokens":30,"outputTokens":5,"costUSD":0.2},"claude-sonnet-4-6":{"inputTokens":70,"outputTokens":15,"costUSD":0.22}}}`,
 	}, "\n")
-	capture, ok := convertClaudeStream(strings.NewReader(stream), []string{"implement the task"}, 1<<20, 0)
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, []string{"implement the task"}, 1<<20, 0)
 	if !ok {
-		t.Fatal("convertClaudeStream returned false")
+		t.Fatal("convertClaudeStreams returned false")
 	}
 	if got := capture.metrics[telemetry.AttrGenAIUsageInputTokens]; got != 100 {
 		t.Fatalf("input tokens = %v, want 100", got)
@@ -66,9 +67,9 @@ func TestConvertClaudeStreamBoundsCanonicalTranscript(t *testing.T) {
 	stream := `{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` +
 		longText + `"}]}}` + "\n" +
 		`{"type":"result","subtype":"success","result":"` + longText + `","usage":{"input_tokens":1,"output_tokens":2}}`
-	capture, ok := convertClaudeStream(strings.NewReader(stream), []string{longText}, 512, 17)
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, []string{longText}, 512, 17)
 	if !ok {
-		t.Fatal("convertClaudeStream returned false")
+		t.Fatal("convertClaudeStreams returned false")
 	}
 	if !capture.truncated || capture.droppedBytes <= 17 {
 		t.Fatalf("truncation = %v, dropped = %d", capture.truncated, capture.droppedBytes)
@@ -85,9 +86,9 @@ func TestConvertClaudeStreamCapturesFailedResultErrors(t *testing.T) {
 		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` + strings.Repeat("x", 1000) + `"}]}}`,
 		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: overloaded","Request ID: req-123"],"usage":{"input_tokens":4,"output_tokens":0}}`,
 	}, "\n")
-	capture, ok := convertClaudeStream(strings.NewReader(stream), []string{"implement the task"}, 512, 0)
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, []string{"implement the task"}, 512, 0)
 	if !ok {
-		t.Fatal("convertClaudeStream returned false")
+		t.Fatal("convertClaudeStreams returned false")
 	}
 	if !capture.truncated {
 		t.Fatal("expected canonical transcript truncation")
@@ -109,7 +110,7 @@ func TestConvertClaudeStreamCapturesFailedResultErrors(t *testing.T) {
 }
 
 func TestConvertClaudeStreamRejectsNonNativeOutput(t *testing.T) {
-	if _, ok := convertClaudeStream(strings.NewReader("ordinary stdout\nnot json\n"), nil, 1024, 0); ok {
+	if _, ok := convertClaudeStreams([]io.Reader{strings.NewReader("ordinary stdout\nnot json\n")}, nil, 1024, 0); ok {
 		t.Fatal("non-native output was accepted as a Claude stream")
 	}
 }
