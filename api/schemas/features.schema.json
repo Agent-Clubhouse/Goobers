@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/features.schema.json",
+  "title": "FeaturesEnvelope",
+  "description": "Machine-readable workflow-DSL feature discovery emitted by goobers features.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "version", "commit", "dslVersion", "features"],
+  "properties": {
+    "schemaVersion": { "const": "goobers.dev/features/v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "commit": { "type": "string", "minLength": 1 },
+    "dslVersion": { "type": "string", "minLength": 1 },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "stability", "sinceVersion"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "stability": {
+            "type": "string",
+            "enum": ["preview", "ga", "deprecated", "removed"]
+          },
+          "sinceVersion": { "type": "string", "minLength": 1 },
+          "used": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

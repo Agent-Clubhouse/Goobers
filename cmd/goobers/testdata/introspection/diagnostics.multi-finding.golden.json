@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "goobers.dev/diagnostics/v1",
+  "version": "dev",
+  "commit": "none",
+  "ok": false,
+  "counts": {
+    "errors": 2,
+    "warnings": 0
+  },
+  "findings": [
+    {
+      "file": "config/gaggles/example/workflows/default-implement.yaml",
+      "path": "/spec/start",
+      "code": "WF001",
+      "severity": "error",
+      "message": "start state \"missing\" is not a defined task or gate"
+    },
+    {
+      "file": "config/gaggles/example/workflows/default-implement.yaml",
+      "path": "/spec/tasks",
+      "code": "WF002",
+      "severity": "error",
+      "message": "task \"query-backlog\" next state \"also-missing\" is not defined"
+    }
+  ]
+}

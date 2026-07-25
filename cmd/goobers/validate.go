@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -49,11 +50,12 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
-const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). --source-tree validates a checked-in config source tree\n" +
 	"using instance.yaml.example and the path itself as config/. " +
 	"--strict treats config warnings as validation errors. " +
+	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--check-harness additionally preflights every agent harness\n" +
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
@@ -91,6 +93,7 @@ func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
@@ -108,18 +111,56 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
+	var diagnostics *diagnosticCollector
+	humanOut, humanErr := stdout, stderr
+	if *asJSON {
+		diagnostics = &diagnosticCollector{}
+		humanOut = io.Discard
+		humanErr = io.Discard
+	}
+	code := runValidateConfig(validateOptions{
+		root:         root,
+		sourceTree:   *sourceTree,
+		checkHarness: *checkHarness,
+		checkRepos:   *checkRepos,
+		strict:       *strict,
+	}, humanOut, humanErr, diagnostics)
+	if !*asJSON {
+		return code
+	}
+	if err := encodeIndentedJSON(stdout, diagnostics.envelope(code == 0)); err != nil {
+		pf(stderr, "error: encode diagnostics: %v\n", err)
+		return 1
+	}
+	return code
+}
+
+type validateOptions struct {
+	root         string
+	sourceTree   bool
+	checkHarness bool
+	checkRepos   bool
+	strict       bool
+}
+
+func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
+	root := options.root
 	l := instance.NewLayout(root)
 	configFile := l.ConfigFile()
 	configDir := l.ConfigDir()
-	if *sourceTree {
+	if options.sourceTree {
 		configFile = filepath.Join(root, "instance.yaml.example")
 		configDir = root
 	}
 	if _, err := os.Stat(configFile); err != nil {
-		if *sourceTree {
+		if options.sourceTree {
 			pf(stderr, "error: %s not found (not a config source tree)\n", configFile)
+			diagnostics.add(diagnosticFile(root, configFile), "/", "IO001", string(validate.Error),
+				fmt.Sprintf("%s not found (not a config source tree)", configFile))
 		} else {
 			pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", configFile)
+			diagnostics.add(diagnosticFile(root, configFile), "/", "IO001", string(validate.Error),
+				fmt.Sprintf("%s not found (not an instance root — run `goobers init` first)", configFile))
 		}
 		return 2
 	}
@@ -127,14 +168,17 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	cfg, err := instance.LoadConfig(configFile)
 	if err != nil {
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
+		diagnostics.add(diagnosticFile(root, configFile), "/", "CFG002", string(validate.Error), err.Error())
 		return 1
 	}
 
 	set, report, err := loadConfigDirectory(configDir)
 	if err != nil && !errors.Is(err, instance.ErrInvalidConfig) {
 		pf(stderr, "error: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/", "IO001", string(validate.Error), err.Error())
 		return 2
 	}
+	diagnostics.addReport(report, diagnosticFile(root, configDir))
 	printValidationIssues(stdout, report)
 	if errors.Is(err, instance.ErrInvalidConfig) {
 		pf(stdout, "\nconfig directory failed validation\n")
@@ -152,10 +196,12 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	instructions, err := loadGooberInstructions(configDir, goobers)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/", "CFG003", string(validate.Error), err.Error())
 		return 1
 	}
 	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "", "CFG003", string(validate.Error), err.Error())
 		return 1
 	}
 
@@ -166,7 +212,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	// tree. Resolved against the git working tree containing the config; skipped
 	// (not failed) when the config is not inside a git repository, since there is
 	// then no tree to check against.
-	if !checkDocsRootsExist(root, set.Workflows, stdout) {
+	if !checkDocsRootsExist(root, set.Workflows, stdout, diagnostics) {
 		return 1
 	}
 
@@ -179,27 +225,29 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	if problems := stageCommandProblems(set); len(problems) > 0 {
 		for _, problem := range problems {
 			pln(stdout, problem)
+			diagnostics.add(diagnosticFile(root, configDir), "/workflows", "CFG005", string(validate.Error), problem)
 		}
 		pf(stdout, "\nconfig references CLI stage commands that do not exist\n")
 		return 1
 	}
 
-	if *checkHarness {
-		if !checkHarnesses(set.Goobers, stdout, stderr) {
+	if options.checkHarness {
+		if !checkHarnesses(set.Goobers, stdout, stderr, diagnostics) {
 			return 1
 		}
 	}
-	if *checkRepos {
+	if options.checkRepos {
 		stores, err := secretstore.NewRegistry(cfg.SecretStores)
 		if err != nil {
 			pf(stdout, "INVALID secretStores:\n  %v\n", err)
+			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "CFG006", string(validate.Error), err.Error())
 			return 1
 		}
-		if !checkTargetRepositories(cfg.Repos, stores, stdout) {
+		if !checkTargetRepositories(cfg.Repos, stores, stdout, diagnostics) {
 			return 1
 		}
 	}
-	if *strict && len(report.Warnings()) > 0 {
+	if options.strict && len(report.Warnings()) > 0 {
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
 	}
@@ -215,7 +263,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 // true — skipping the check with a note — when base is not inside a git
 // repository, since the lexical config-load checks already ran and there is no
 // tree here to resolve roots against.
-func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writer) bool {
+func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writer, collectors ...*diagnosticCollector) bool {
 	type declaredRoot struct{ workflow, root string }
 	var declared []declaredRoot
 	for _, w := range workflows {
@@ -238,6 +286,8 @@ func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writ
 		if _, statErr := os.Stat(full); statErr != nil {
 			pf(stdout, "DOCSROOTS Workflow/%s: declared docs root %q does not exist in the repository (%s)\n",
 				d.workflow, d.root, repoRoot)
+			addDiagnostic(collectors, ".", "/workflows/"+d.workflow+"/spec/docsRoots", "CFG004", string(validate.Error),
+				fmt.Sprintf("declared docs root %q does not exist in the repository (%s)", d.root, repoRoot))
 			ok = false
 		}
 	}
@@ -327,7 +377,7 @@ const (
 
 var targetRepositoryReachable = gitRepositoryReachable
 
-func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer) bool {
+func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer, collectors ...*diagnosticCollector) bool {
 	if len(repos) == 0 {
 		pln(stdout, "REPOSITORY: no target repositories configured; nothing to check")
 		return true
@@ -370,6 +420,8 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 		if err != nil {
 			pf(stdout, "REPOSITORY %s: unreachable: %s\n", label, scrubRepositoryError(err, token))
 			pf(stdout, "  Check the owner/name, token source, repository access, and network connection.\n")
+			addDiagnostic(collectors, "instance.yaml", fmt.Sprintf("/repos/%d", i), "REPO001", string(validate.Error),
+				fmt.Sprintf("%s: unreachable: %s", label, scrubRepositoryError(err, token)))
 			ok = false
 			continue
 		}
@@ -459,7 +511,7 @@ var harnessAdapterFor = adapterFor
 // checkHarnesses preflights every distinct harness referenced by set's
 // goobers (GBO-011), printing actionable guidance per failure. Returns false
 // if any harness failed its preflight.
-func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
+func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer, collectors ...*diagnosticCollector) bool {
 	seen := map[apiv1.Harness]bool{}
 	ok := true
 	for _, g := range goobers {
@@ -472,6 +524,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 		adapter, err := harnessAdapterFor(h)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
+			addDiagnostic(collectors, ".", "/goobers/"+g.Name+"/spec/harness", "HARNESS001", string(validate.Error), err.Error())
 			ok = false
 			continue
 		}
@@ -484,12 +537,20 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
+			addDiagnostic(collectors, ".", "/goobers/"+g.Name+"/spec/harness", "HARNESS001", string(validate.Error), err.Error())
 			ok = false
 			continue
 		}
+
 		pf(stdout, "HARNESS %s: OK\n", h)
 	}
 	return ok
+}
+
+func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity, message string) {
+	if len(collectors) > 0 {
+		collectors[0].add(file, path, code, severity, message)
+	}
 }
 
 // adapterFor returns the registered adapter for a goober-declared harness kind.
