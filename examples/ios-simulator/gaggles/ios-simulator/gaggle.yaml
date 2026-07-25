@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: ios-simulator
+spec:
+  displayName: iOS Simulator (XCUITest reference)
+  project:
+    provider: github
+    owner: acme
+    name: ios-app
+    branch: main
+    connectionRef: github-main
+  backlog:
+    provider: github
+    project: acme/ios-app
+    labels:
+      - goobers
+    connectionRef: github-backlog
+  isolation:
+    namespace: gaggle-ios-simulator
+    identityRef: ios-simulator-identity

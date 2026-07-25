@@ -12,7 +12,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init scaffold validate lint doctor config up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init scaffold validate lint doctor config up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -30,7 +30,7 @@ complete -c goobers -n '__fish_seen_subcommand_from trace; and test (count (comm
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune compact'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
@@ -97,6 +97,8 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_s
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l since -r -d 'Include errors at or after this RFC3339 timestamp'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l until -r -d 'Include errors at or before this RFC3339 timestamp'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l rebuild -d 'Rebuild telemetry from run journals before querying'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l delete -d 'Delete eligible orphan directories (opt-in; default dry-run)'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l min-age -r -d 'Minimum inactivity age (at least 24h)'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l run -r -a '(__goobers_completion_runs)' -d 'Run id'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal-relative blob path'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'

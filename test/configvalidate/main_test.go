@@ -89,6 +89,53 @@ func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
 	}
 }
 
+func TestValidateTreesRejectsWarningDrift(t *testing.T) {
+	t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
+	t.Setenv("GO_CONFIGVALIDATE_WARNING", "WARNING Workflow/other: unexpected warning")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config-under-test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepository(t, root)
+
+	var stdout, stderr bytes.Buffer
+	code := validateTrees(
+		root,
+		[]checkedInTree{{
+			path:            "config-under-test",
+			sourceTree:      true,
+			strict:          true,
+			allowedWarnings: []string{"WARNING Workflow/docs-updater: expected warning"},
+		}},
+		validatorCommand{
+			path:       os.Args[0],
+			prefixArgs: []string{"-test.run=TestValidatorHelperProcess", "--"},
+		},
+		&stdout,
+		&stderr,
+	)
+	if code != 1 {
+		t.Fatalf("validateTrees code=%d, want 1; stdout=%q stderr=%q", code, &stdout, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "warnings changed") {
+		t.Fatalf("warning drift was not reported: %q", &stderr)
+	}
+}
+
+func TestValidationArgsKeepsStrictWithoutAllowlist(t *testing.T) {
+	args, err := validationArgs(t.TempDir(), t.TempDir(), checkedInTree{
+		path:       "strict-source",
+		sourceTree: true,
+		strict:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsArgument(args, "--strict") {
+		t.Fatalf("validation args = %q, want --strict", args)
+	}
+}
+
 func TestRunRejectsMissingValidator(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{filepath.Join(t.TempDir(), "missing")}, &stdout, &stderr); code != 2 {
@@ -109,8 +156,7 @@ func TestValidatorHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	target := args[len(args)-1]
-	wantStrict := filepath.Base(target) == "selfhost"
-	if containsArgument(args, "--strict") != wantStrict {
+	if containsArgument(args, "--strict") {
 		_, _ = fmt.Fprintf(os.Stderr, "validator strictness does not match target: %q\n", args)
 		os.Exit(2)
 	}
@@ -131,6 +177,11 @@ func TestValidatorHelperProcess(t *testing.T) {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+	}
+	if warning := os.Getenv("GO_CONFIGVALIDATE_WARNING"); warning != "" {
+		_, _ = fmt.Fprintln(os.Stdout, warning)
+	} else if filepath.Base(target) == "selfhost" {
+		_, _ = fmt.Fprintln(os.Stdout, docsUpdaterInertWarning)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)

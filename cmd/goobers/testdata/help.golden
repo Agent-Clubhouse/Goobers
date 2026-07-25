@@ -76,6 +76,8 @@ Usage:
                                 emit versioned candidate findings (a connector stage)
   goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
                                 emit the docs-drift churn digest since the watermark (a connector stage)
+  goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]
+                                run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
@@ -96,7 +98,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -188,6 +190,8 @@ Usage:
                                 emit versioned candidate findings (a connector stage)
   goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
                                 emit the docs-drift churn digest since the watermark (a connector stage)
+  goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]
+                                run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
@@ -208,7 +212,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -623,6 +627,25 @@ workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced.
 
+### ios-simulator-test
+Usage: goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]
+
+Run an XCUITest scheme on an available iPhone simulator, parse the xcresult
+summary, and write flat workflow outputs to GOOBERS_INPUT_RESULTFILE. A workflow
+using this command must declare runner requirements os=darwin and xcode so
+scheduling rejects incompatible hosts before invocation. The result records the
+selected Xcode, simulator device, and runtime versions; failure output includes
+the parsed xcresult test diagnostics.
+
+Flags:
+  --project <path>         Xcode project path (mutually exclusive with --workspace)
+  --workspace <path>       Xcode workspace path (mutually exclusive with --project)
+  --scheme <name>          shared test scheme to run
+  --device <name>          exact simulator device name (default: first available iPhone)
+  --runtime <version>      iOS runtime version, name, or identifier (default: latest available)
+  --only-testing <target>  optional xcodebuild only-testing selector
+  --result-bundle <path>   relative xcresult bundle path (default: ios-simulator.xcresult)
+
 ### issue-close-out
 Usage: goobers issue-close-out [path]
 
@@ -1029,12 +1052,13 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]
 
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:   remove terminal runs outside the configured retention bounds
+prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 
 ### telemetry compact
@@ -1072,6 +1096,16 @@ telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active
 and paused runs are never removed. The configured 90d/500-run defaults apply
 when a bound is omitted. This explicit command works even when automatic
 retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.
+
+### telemetry prune-orphans
+Usage: goobers telemetry prune-orphans [--delete] [--min-age=D] [path]
+
+Report directories without run.yaml from both published run roots and unpublished
+creation staging roots after at least 24h of inactivity. The default is a dry-run
+report; --delete opts into deletion. --min-age may raise but never lower
+the 24h safety threshold. Valid run journals, recent or active directories, files,
+and symlinks are always preserved.
+Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]

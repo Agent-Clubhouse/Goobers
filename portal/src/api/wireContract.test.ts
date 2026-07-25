@@ -31,6 +31,7 @@ describe("Go daemon wire contract", () => {
       "errorEnvelope",
     ]);
     expect(checkedFixtures.health.apiVersion).toBe("v1");
+    expect(checkedFixtures.goobers.items[0].harness).toBe("claude-code");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");
     expect(checkedFixtures.runEvents.events[0]).toMatchObject({

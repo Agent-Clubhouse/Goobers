@@ -180,7 +180,8 @@ func newTutorFixtureRepo(t *testing.T) string {
 	if err := os.CopyFS(filepath.Join(work, "selfhost"), os.DirFS(filepath.Join("..", "..", "selfhost"))); err != nil {
 		t.Fatal(err)
 	}
-	runFixtureGit(t, work, "add", "selfhost")
+	writeFixture(t, filepath.Join(work, "docs", "fixture.md"), "# Fixture documentation\n")
+	runFixtureGit(t, work, "add", "selfhost", "docs")
 	runFixtureGit(t, work, "commit", "-m", "add selfhost config fixture")
 	runFixtureGit(t, work, "push", "origin", "main")
 	return bare

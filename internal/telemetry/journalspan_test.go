@@ -24,6 +24,7 @@ func newTestClient(t *testing.T, dir string) (*Client, string) {
 	if err != nil {
 		t.Fatalf("NewRunID: %v", err)
 	}
+	writeTestRunMarker(t, dir, runID)
 	client, err := New(context.Background(), Config{
 		ServiceName:  "goobers-test",
 		SpanExporter: NewJournalSpanExporter(dir, nil),
@@ -33,6 +34,17 @@ func newTestClient(t *testing.T, dir string) (*Client, string) {
 	}
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
 	return client, runID
+}
+
+func writeTestRunMarker(t *testing.T, runsDir, runID string) {
+	t.Helper()
+	runDir := filepath.Join(runsDir, runID)
+	if err := os.MkdirAll(filepath.Join(runDir, spansDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func readSpanRecords(t *testing.T, dir, runID string) []SpanRecord {
@@ -136,12 +148,70 @@ func TestJournalSpanExporterAppendsAcrossExportCalls(t *testing.T) {
 	}
 }
 
+func TestJournalSpanExporterDoesNotCreateRunWithoutJournal(t *testing.T) {
+	dir := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName: "goobers-test", SpanExporter: NewJournalSpanExporter(dir, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "web", WorkflowID: "implement", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Fail(fmt.Errorf("journal creation failed"))
+	if _, err := os.Stat(filepath.Join(dir, runID)); !os.IsNotExist(err) {
+		t.Fatalf("span exporter created a run directory without run.yaml: %v", err)
+	}
+}
+
+func TestJournalSpanExporterDoesNotRecreateMissingSpansDirectory(t *testing.T) {
+	dir := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(dir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName: "goobers-test", SpanExporter: NewJournalSpanExporter(dir, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "web", WorkflowID: "implement", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+	if _, err := os.Stat(filepath.Join(runDir, spansDirName)); !os.IsNotExist(err) {
+		t.Fatalf("span exporter recreated a missing spans directory: %v", err)
+	}
+}
+
 func TestPerGaggleJournalSpanExporterRoutesToScopedRunDirectory(t *testing.T) {
 	root := t.TempDir()
 	runID, err := NewRunID()
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeTestRunMarker(t, filepath.Join(root, "gaggles", "alpha", "runs"), runID)
 	client, err := New(context.Background(), Config{
 		ServiceName:  "goobers-test",
 		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
@@ -209,6 +279,7 @@ func TestPerGaggleJournalSpanExporterSeparatesSchedulerAndRunArtifacts(t *testin
 		t.Fatalf("scheduler span created run directory %s: %v", runDir, err)
 	}
 
+	writeTestRunMarker(t, filepath.Join(root, "gaggles", "alpha", "runs"), runID)
 	_, run, err := client.StartRun(context.Background(), RunAttributes{
 		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
 	})
@@ -334,6 +405,7 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunID: %v", err)
 	}
+	writeTestRunMarker(t, dir, runID)
 	client, err := New(context.Background(), Config{
 		ServiceName:  "goobers-test",
 		SpanExporter: NewJournalSpanExporter(dir, journal.Chain(reg, journal.NewPatternScrubber())),

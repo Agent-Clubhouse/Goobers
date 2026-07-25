@@ -154,7 +154,7 @@ export const goWireFixtures = {
         "displayName": "Implementer",
         "role": "coder",
         "status": "configured",
-        "harness": "copilot",
+        "harness": "claude-code",
         "skills": [
           "go"
         ],
