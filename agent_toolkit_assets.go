@@ -1,3 +1,4 @@
+// Package goobers exposes release assets shared by Goobers binaries.
 package goobers
 
 import "embed"
