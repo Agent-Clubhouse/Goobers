@@ -1,7 +1,7 @@
 # Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels
 
-> Status: **Draft for review — prescriptive** · Area prefix: `TBH` · Milestone: **V1 —
-> arbitrary repos, teams, hardening**
+> Status: **TBH-1 phase-0 RFC complete; human design gate pending — prescriptive** ·
+> Area prefix: `TBH` · Milestone: **V1 — arbitrary repos, teams, hardening**
 > Origin: the comparative-security review of GitHub Agentic Workflows
 > (`~/source/Goobers-Review/GH-AW-VS-GOOBERS.md`), whose central finding names our gap
 > precisely: *capability-scoped credential injection is not enough when the same
@@ -45,23 +45,69 @@ Three properties this design holds fixed:
 
 ### TBH-1 — Mutation-proposal envelope + trusted executor
 
-- A typed proposal schema per mutating capability (start: `repo:merge`,
-  `github:pr:close`, `repo:push`, `github:issues:write`), carried as a result-envelope
-  artifact (`proposals/` pointer) — additive to the existing stage contract
-  (`docs/stage-contract.md`), not a new IPC mechanism.
-- A deterministic **executor stage kind** (`kind: apply-proposals`) that validates
-  proposals against: declared capability scope, target allowlists (repo/branch
-  patterns), size/count limits, and the run's own claimed scope — then executes with
-  the writer credential only it receives.
-- Refusals are first-class: a refused proposal journals a typed reason and routes to
-  the existing escalation ladder; it never silently drops.
-- Migration order: merge/close first (highest blast radius, already deterministic
-  stages — `merge-pr`, `apply-verdict` become the first executors), then push, then
-  issue mutations. Agentic stages that today call `gh` directly for these lose the
-  credential and gain the proposal path, capability by capability.
+- The normative phase-0 contract is
+  [`stage-contract.md` §“TBH-1 mutation proposals”](../stage-contract.md#tbh-1-mutation-proposals-design-target-not-implemented).
+  It defines the closed proposal set, four initial typed kinds, canonical-capability
+  mapping, fixed bounds, scope/allowlist checks, idempotency, execution ordering,
+  journal events, and refusal disposition.
+- Proposals use the existing `ResultEnvelope.artifacts` →
+  `InvocationEnvelope.contextPointers` path. There is no new IPC mechanism and no
+  proposal body in scalar `outputs`.
+- `kind: apply-proposals` is built-in trusted Go code, not an arbitrary command. It
+  is the only stage that receives a migrated writer credential. The producer still
+  declares the canonical capability as proposal authority but receives no credential
+  for it.
+- Refusal is fail-closed and first-class: `proposal.refused` plus a `blocked`
+  `PROPOSAL_REFUSED` result routes through the existing escalation disposition.
 - Explicit non-adoptions from the gh-aw review: no auto-enabled default mutations, no
   probabilistic threat-detection as an authorization gate, no runtime-editable prompt
   surface outside the run pin.
+
+#### TBH-1 decisions
+
+1. **The proposal vocabulary names intent, not credential aliases.** The initial
+   kinds are `repo:merge`, `github:pr:close`, `repo:push`, and
+   `github:issues:write`. They map respectively to the existing canonical
+   capabilities `github:pr:merge`, `github:pr:write`, `repo:push`, and
+   `github:issues:write`. This avoids weakening the canonical registry with duplicate
+   names while keeping close narrower than the credential that implements it.
+2. **Validation is trusted Go code (resolves TBH-Q1).** Phase 0 does not add a
+   workflow-authored constraint DSL. Repository, item/PR, and branch allowlists are
+   derived from the pinned run identity, `repoRef`, the claimed item or a trusted
+   deterministic selector, and the run branch namespace. Fixed limits are ceilings,
+   not defaults a workflow may raise. A future declarative vocabulary may only
+   narrow these rules and requires a separate design gate.
+3. **Existing reviewer gates stay evidence-based (resolves TBH-Q2).** The
+   implementation reviewer continues to review the diff and evidence it reviews
+   today. It is not an authorization oracle and does not consume proposals by
+   default. For merge/close, a trusted deterministic adapter maps the existing pinned
+   verdict into a typed proposal after review. A workflow that needs human or agentic
+   review of mutation intent may add an explicit proposal-review gate, but passing
+   that gate never bypasses deterministic validation.
+4. **A proposal set preflights atomically, then executes with per-call guards.** One
+   preflight refusal prevents every mutation in the set. Freshness is re-checked
+   immediately before each provider call; a later mismatch stops the remaining
+   proposals but does not roll back confirmed issue writes. Merge, close, and push
+   cannot be batched with another proposal. Journaled idempotency keys prevent blind
+   replay.
+
+#### TBH-1 migration
+
+Migration is capability-by-capability and pinned by workflow/DSL version. A run
+cannot switch routing mode after it starts, and no stage may retain both direct and
+proposal-routed authority for the same capability.
+
+| Order | Surface | Migration |
+|---|---|---|
+| 1 | Merge and PR close | Extract the credentialed provider handlers from `merge-pr` and `apply-verdict` behind `apply-proposals`. Their deterministic verdict/SHA checks become proposal production or executor validation as appropriate; compatibility entrypoints remain only for workflow versions still on direct injection. |
+| 2 | Push | Agentic implementation/remediation stages commit without a push credential and propose the exact source SHA and run-branch ref. The deterministic push stage applies it after reachability, namespace, and remote-SHA checks; rebased remediation uses provider-native force-with-lease against that exact remote SHA, never unconditional force. |
+| 3 | Issue writes | Curation/nomination stages emit bounded create/edit/comment/label/state proposals; the executor confines every operation to `repoRef` and the claimed issue except for bounded creation in that repository. |
+
+Until a row is migrated, its canonical capability keeps today's direct-injection
+behavior. A row is complete only when the compiler rejects mixed routing, every
+agentic producer is credentialless for that capability, the built-in executor is the
+sole credential recipient, and refusal/escalation coverage is present. This preserves
+incremental delivery without claiming the boundary before it exists.
 
 ### TBH-2 — Staged / dry-run mode
 
@@ -107,19 +153,23 @@ Three properties this design holds fixed:
 
 | Phase | Ships | Gate |
 |---|---|---|
-| 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | PO + second-reviewer sign-off (architectural blast radius) |
+| 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | **Pending:** PO + second-reviewer sign-off (architectural blast radius); no implementation issue may land first |
 | 1 | TBH-1 for merge/close; TBH-2 staged-lite on those capabilities | Selfhost runs with merge/close behind proposals for a full watched round |
 | 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on selfhost |
 | 3 | TBH-2 full staged mode; TBH-4 integrity labels | Stranger-repo pilot onboards in staged mode |
 
-## 4. Open questions
+The phase-0 sign-offs belong on the RFC change review so they identify the exact
+revision approved. Filing or approving an implementation issue is not a substitute.
+Until both are present, this document authorizes design review only.
 
-- **TBH-Q1:** Proposal validation vocabulary — per-capability Go validators only, or a
-  declarative constraint block in the workflow DSL (max-diff-size, branch patterns)?
-  (Declarative is Tutor-editable, which is both the appeal and the risk.)
-- **TBH-Q2:** Does the reviewer gate consume proposals (verdict over intended mutations)
-  or stay diff-based with proposals validated after? (gh-aw validates after; our
-  agentic reviewer could do better by seeing intent.)
+## 4. Resolved and open questions
+
+- **TBH-Q1 — resolved:** Per-kind Go validators are the phase-0 authorization
+  vocabulary. There is no Tutor-editable constraint block. See TBH-1 decision 2.
+- **TBH-Q2 — resolved:** Existing reviewer gates remain diff/evidence-based; proposals
+  are deterministically produced after the applicable verdict. Explicit
+  proposal-review gates are optional defense in depth, never authorization. See TBH-1
+  decision 3.
 - **TBH-Q3:** Integrity-label persistence — envelope field vs journal event attribute vs
   both? Interacts with the conformance surface (§3.3 ARCHITECTURE) — labels must not
   become a runner-specific divergence.
