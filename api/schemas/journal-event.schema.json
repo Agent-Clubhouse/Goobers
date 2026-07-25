@@ -40,6 +40,10 @@
         "redaction",
         "repaired",
         "runner.isolation.posture",
+        "parallel.started",
+        "branch.started",
+        "branch.finished",
+        "parallel.finished",
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
@@ -172,6 +176,34 @@
     "redaction": {
       "description": "Old->new digest remediation for redaction events.",
       "$ref": "#/$defs/redactionInfo"
+    },
+    "parallel": {
+      "description": "Name of the parallel state a branch belongs to. Normative.",
+      "type": "string"
+    },
+    "branchName": {
+      "description": "Declared name of the branch this event concerns; the numeric id is in `branch`. Normative.",
+      "type": "string"
+    },
+    "branchStatus": {
+      "description": "Terminal status of a branch on branch.finished. Normative.",
+      "type": "string",
+      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"]
+    },
+    "completeness": {
+      "description": "Branch completeness record on parallel.finished: one entry per DECLARED branch, in declaration order (which is what assigns branch ids). Normative — it, not the interleaving, is what a parallel means.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["branch", "name", "status"],
+        "properties": {
+          "branch": { "type": "integer", "minimum": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"] },
+          "artifacts": { "type": "integer", "minimum": 0 }
+        }
+      }
     },
     "runner": {
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
