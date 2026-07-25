@@ -50,6 +50,9 @@ spec:
       name: product-docs
       branch: main
       connectionRef: product-docs-pr
+    writeRoots:
+      - content/product
+      - README.md
   # triggers, tasks, and gates omitted
 ```
 
@@ -57,14 +60,16 @@ spec:
 
 | Form | Meaning |
 |---|---|
-| omitted, or `kind: in-repo` with no `repository` | Read and write `Gaggle.spec.project`; current behavior. |
-| `kind: docs-repo` with one `repository` | Read the gaggle project and propose changes in the named GitHub repository. |
+| omitted, or `kind: in-repo` with no `repository` or `writeRoots` | Read and write `Gaggle.spec.project`; `docsRoots` keeps its current dual role. |
+| `kind: docs-repo` with one `repository` and non-empty `writeRoots` | Read and classify the gaggle project using `docsRoots`; propose changes in the named GitHub repository only within `writeRoots`. |
 
 `repository` uses the existing `RepoRef` shape. For `docs-repo`, `provider`,
 `owner`, `name`, and `branch` are required. `provider` must be `github`.
 `project` is forbidden because it is an Azure DevOps field. `connectionRef` is
 required when the deployment uses Manifest connections and names the target's
-write-capable connection.
+GitHub App installation connection. A foreign sink's target credential must be
+introspectable `github-app` authentication; static PAT target bindings are
+rejected by this contract for the preflight reason below.
 
 The private local-runner configuration binds both identities independently:
 
@@ -77,7 +82,11 @@ repos:
   - provider: github
     owner: acme-docs
     name: product-docs
-    token: {env: PRODUCT_DOCS_PR_TOKEN}
+    auth:
+      kind: github-app
+      appId: 123456
+      installationId: 987654
+      privateKey: {env: PRODUCT_DOCS_APP_KEY}
 ```
 
 There is no token, credential alias, source override, or `autoMerge` field in
@@ -87,10 +96,20 @@ and `connectionRef` select one compatible GitHub connection. A global
 unqualified credential override must not replace either repository-qualified
 selection.
 
-`docsRoots` keeps its existing ordered, repo-relative shape. For an in-repo
-sink it is relative to the source project. For `docs-repo` it is relative to
-the target repository and is the write boundary there. Target-root existence
-is therefore checked against the target checkout, not the source checkout.
+`docsRoots` always keeps its existing source-relative meaning. `docs-churn`
+runs against the source checkout and emits the existing
+`goobers.dev/docs-churn/v1` artifact: its `docsRoots` and `docsRootChanges`
+fields contain source paths only. A foreign sink neither changes that schema
+nor mixes target changes into those fields. If a foreign-sink workflow omits
+`docsRoots` because the source has no documentation tree, both artifact fields
+retain their existing empty/omitted behavior.
+
+`docsSink.writeRoots` is a separate ordered list of target-relative files or
+directories and is the foreign sink's only write boundary. It is required and
+non-empty for `docs-repo`, forbidden for `in-repo`, and has no implicit default
+from `docsRoots`; source and target layouts need not correspond. The lists have
+no positional mapping. Each list independently uses the existing lexical and
+resolved containment rules and is checked for existence in its own checkout.
 
 ### Relationship to `AdditionalRepos`
 
@@ -121,13 +140,16 @@ identity. Validation uses the following rules:
    on the same repository is not a foreign sink.
 4. The target must have exactly one deployment credential binding. Missing and
    duplicate matches are errors; list order is never a selection rule.
-5. The source read binding and target write binding must use distinct
-   credential references. Structurally identical env, file, store, GitHub App
-   installation, or connection references are rejected.
+5. The source read binding and target GitHub App write binding must use
+   distinct credential identities. Structurally identical GitHub App
+   installation or connection references are rejected, as is reusing the
+   target App installation for the source.
 6. When `connectionRef` is used, it must resolve, name a GitHub connection,
-   match the repository's provider, and differ from the source connection.
-7. Every `docsRoot` must pass the existing lexical containment checks. Its
-   existence and resolved containment are checked in the target tree.
+   identify a GitHub App installation, match the repository's provider, and
+   differ from the source connection.
+7. `docsRoots` and `docsSink.writeRoots` must each pass the existing lexical
+   containment checks. Source roots are checked in the source tree; write
+   roots are checked in the target tree.
 
 Same-owner and cross-owner sinks follow the same rules. Sharing an owner does
 not permit credential reuse. Crossing owners does not require a special mode:
@@ -149,7 +171,8 @@ contents:read@acme/product
     -> PRODUCT_SOURCE_READ_TOKEN
 
 github:pr:write@acme-docs/product-docs
-    -> PRODUCT_DOCS_PR_TOKEN
+    -> GitHub App installation 987654
+    -> ephemeral token scoped to acme-docs/product-docs
 ```
 
 The source grant permits clone/fetch and read-only analysis of the source
@@ -184,48 +207,63 @@ untrusted workflow inputs from redirecting a valid credential.
   Logs and errors identify the capability and repository, never the ref's
   resolved value.
 
-Distinct reference names alone are not enough at runtime. Preflight compares
-non-reversible in-memory fingerprints of resolved secrets and fails if static
-PATs resolve to the same value. GitHub App credentials must use distinct
-repository-scoped installation bindings; the App private key is never exposed
-to a stage.
+Distinct reference names alone are not enough. GitHub App credentials must use
+distinct repository-scoped installation bindings. Every target mint is scoped
+to the one sink repository and only the permissions required by
+`github:pr:write`; the App private key is never exposed to a stage.
 
 ## Fail-closed preflight
 
 Foreign-sink admission completes before either repository is checked out and
 before any branch, commit, push, pull request, comment, or label mutation:
 
-1. Compile and cross-validate the source, sink, docs roots, exact deployment
-   bindings, and distinct credential references.
-2. Resolve both credential sources. A missing env var, unreadable file, failed
-   store lookup, or failed App-token mint aborts admission.
+1. Compile and cross-validate the source, sink, source `docsRoots`, target
+   `writeRoots`, exact deployment bindings, `github-app` target auth, and
+   distinct credential identities.
+2. Resolve the source credential and target App private-key source. A missing
+   env var, unreadable file, failed store lookup, or invalid App configuration
+   aborts admission.
 3. Probe the exact source repository with the source credential and require
-   read access.
-4. Probe the exact target repository and configured base branch with the
-   target credential and require repository write access sufficient for
-   Contents and pull requests.
-5. Reject an identity, owner, repository, branch, or permission mismatch. A
-   provider timeout or indeterminate permission result also fails closed.
+   read access to the source revision.
+4. Mint the target installation token with `repositories: [target.name]` and
+   requested permissions `contents: write` and `pull_requests: write`. Require
+   GitHub's mint response to report both permissions at `write`; a refused,
+   missing, downgraded, or indeterminate permission response fails admission.
+5. With that token, probe the exact target repository and configured base
+   branch. Reject an identity, owner, repository, branch, or accessibility
+   mismatch.
 6. Pin the admitted source and target base SHAs in the run input, then begin
    checkout.
 
-These probes are read-only provider operations. A failed preflight creates no
-working copy and performs no external mutation. In particular, the runner must
-not "try the source token" after a target probe fails.
+The repository probes are read-only. App-token minting creates only an
+ephemeral credential and no repository state. A failed preflight creates no
+working copy and performs no repository mutation. In particular, the runner
+must not "try the source token" after a target probe fails.
+
+GitHub does not expose the actual repository permission set of a fine-grained
+PAT through a read-only introspection endpoint. `X-Accepted-GitHub-Permissions`
+describes what an endpoint accepts, not what the presented token has, and a
+test push would violate fail-before-mutation. Therefore #1495 must reject a
+static PAT as the foreign target credential rather than claim to verify it.
+Adding PAT targets later requires a separately designed non-mutating
+permission-attestation mechanism; it is not an implementation choice left to
+#1495.
 
 ## Checkout, change, and publish contract
 
 After preflight, #1495 implements this fixed sequence:
 
-1. Check out the pinned source revision read-only and gather the churn/current
-   tree evidence used by docs-updater.
+1. Check out the pinned source revision read-only, validate any source
+   `docsRoots` for existence and resolved containment, and gather the
+   churn/current-tree evidence used by docs-updater.
 2. Check out the pinned target base into a separate managed working copy.
-   Create `BranchNamespace + "docs-updater/" + runID` from the target base, not
-   from the source revision.
+   Validate `writeRoots` for existence and resolved containment, then create
+   `BranchNamespace + "docs-updater/" + runID` from the target base, not from
+   the source revision.
 3. Present source evidence as read-only context and make the target checkout
    the only writable repository workspace for the docs agent.
 4. Apply and validate changes. Every changed path must remain inside at least
-   one target-relative `docsRoot`; an empty diff or an escaping path follows
+   one target-relative `writeRoot`; an empty diff or an escaping path follows
    the existing docs-boundary behavior.
 5. Re-check the target base according to the normal stale-base policy, commit,
    push the target run branch, and open or update exactly one pull request in
@@ -259,10 +297,10 @@ target review.
 ## Implementation boundary
 
 #1495 owns the additive `docsSink` API/schema/deep-copy surface, validation,
-repo-qualified write-grant routing, preflight probes, dual checkout, target
-docs-root validation, target branch push, and target PR creation described
-above. Existing in-repo workflows remain byte-for-byte compatible when
-`docsSink` is omitted.
+repo-qualified write-grant routing, GitHub App permission-scoped minting and
+preflight probes, dual checkout, target write-root validation, target branch
+push, and target PR creation described above. Existing in-repo workflows
+remain byte-for-byte compatible when `docsSink` is omitted.
 
 This decision does not provision a repository or credential, change
 `AdditionalRepos` into writable repositories, add merge authority, or define
