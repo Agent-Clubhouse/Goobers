@@ -137,6 +137,38 @@ func TestValidateJSONRoundTripRepair(t *testing.T) {
 	}
 }
 
+func TestValidateJSONMultiDocumentYAMLLocation(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	path := defaultWorkflowPath(root)
+	valid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed := append(valid, []byte("---\napiVersion: goobers.dev/v1alpha1\nkind: Workflow\n\tbad: true\n")...)
+	if err := os.WriteFile(path, malformed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", "--json", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate multi-document YAML: code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, stdout)
+	wantFile := filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml"))
+	wantLine := strings.Count(string(valid), "\n") + 4
+	for _, finding := range envelope.Findings {
+		if finding.Code != "YAML001" {
+			continue
+		}
+		if finding.File != wantFile || finding.Line != wantLine || finding.Col != 1 {
+			t.Fatalf("invalid-YAML source = %q:%d:%d, want %q:%d:1; finding=%+v",
+				finding.File, finding.Line, finding.Col, wantFile, wantLine, finding)
+		}
+		return
+	}
+	t.Fatalf("YAML001 finding not found in %+v", envelope.Findings)
+}
+
 func TestFeaturesJSONContract(t *testing.T) {
 	t.Run("all", func(t *testing.T) {
 		code, stdout, stderr := runArgs(t, "features", "--json")
