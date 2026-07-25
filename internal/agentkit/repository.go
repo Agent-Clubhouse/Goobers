@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -95,21 +96,13 @@ func OpenRepository(target string) (*Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent toolkit target: %w", err)
 	}
-	info, err := os.Lstat(absolute)
+	info, err := inspectTargetPath(absolute)
 	if err != nil {
 		return nil, fmt.Errorf("inspect agent toolkit target: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("agent toolkit target must not be a symbolic link")
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("agent toolkit target %s is not a directory", absolute)
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return nil, fmt.Errorf("resolve agent toolkit target symlinks: %w", err)
-	}
-	absolute = resolved
 	gitMarker := filepath.Join(absolute, ".git")
 	gitInfo, err := os.Lstat(gitMarker)
 	if err != nil {
@@ -215,7 +208,13 @@ func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
 	if err != nil {
 		return CheckReport{}, err
 	}
-	if semanticManifestDrift(manifest, bundle.Manifest) || !bytes.Equal(manifestData, canonical) {
+	manifestModified := semanticManifestDrift(manifest, bundle.Manifest) || !bytes.Equal(manifestData, canonical)
+	if !sameManifestRelease(manifest, bundle.Manifest) {
+		if committed, commitErr := r.readCommittedManifest(); commitErr == nil && !bytes.Equal(manifestData, committed) {
+			manifestModified = true
+		}
+	}
+	if manifestModified {
 		report.Modified = append(report.Modified, InstalledManifestPath)
 		sort.Strings(report.Modified)
 		if report.State == "current" {
@@ -242,9 +241,12 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		return r.planInterruptedUpdate(bundle, installed, manifestData, transactionData)
 	}
 
-	manifestDrift := semanticManifestDrift(installed, bundle.Manifest)
-	oldAssets := make(map[string]Asset, len(installed.Assets))
-	for _, asset := range installed.Assets {
+	ownershipManifest, manifestModified, err := r.trustedOwnershipManifest(bundle, installed, manifestData)
+	if err != nil {
+		return UpdatePlan{}, err
+	}
+	oldAssets := make(map[string]Asset, len(ownershipManifest.Assets))
+	for _, asset := range ownershipManifest.Assets {
 		installedPath, err := InstalledAssetPath(asset.Path)
 		if err != nil {
 			return UpdatePlan{}, err
@@ -298,35 +300,29 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		oldPaths = append(oldPaths, installedPath)
 	}
 	sort.Strings(oldPaths)
-	if !manifestDrift {
-		for _, installedPath := range oldPaths {
-			if _, stillOwned := bundle.Files[installedPath]; stillOwned {
-				continue
-			}
-			actual, exists, err := r.readFile(installedPath)
-			if err != nil {
-				return UpdatePlan{}, err
-			}
-			if !exists {
-				continue
-			}
-			plan.Changes = append(plan.Changes, Change{
-				Path: installedPath,
-				Kind: ChangeDelete,
-				Old:  actual,
-			})
-			if digest(actual) != oldAssets[installedPath].SHA256 {
-				plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
-			}
+	for _, installedPath := range oldPaths {
+		if _, stillOwned := bundle.Files[installedPath]; stillOwned {
+			continue
+		}
+		actual, exists, err := r.readFile(installedPath)
+		if err != nil {
+			return UpdatePlan{}, err
+		}
+		if !exists {
+			continue
+		}
+		plan.Changes = append(plan.Changes, Change{
+			Path: installedPath,
+			Kind: ChangeDelete,
+			Old:  actual,
+		})
+		if digest(actual) != oldAssets[installedPath].SHA256 {
+			plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
 		}
 	}
 
 	if !bytes.Equal(manifestData, bundle.ManifestJSON) {
-		canonical, err := marshalManifest(installed)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		if manifestDrift || !bytes.Equal(manifestData, canonical) {
+		if manifestModified {
 			plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
 		}
 		plan.Changes = append(plan.Changes, Change{
@@ -472,8 +468,16 @@ func (r *Repository) planInterruptedUpdate(
 		return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update omits the required manifest change")
 	}
 
-	oldAssets := make(map[string]Asset, len(sourceManifest.Assets))
-	for _, asset := range sourceManifest.Assets {
+	ownershipManifest, sourceManifestModified, err := r.trustedOwnershipManifest(
+		bundle,
+		sourceManifest,
+		sourceManifestData,
+	)
+	if err != nil {
+		return UpdatePlan{}, err
+	}
+	oldAssets := make(map[string]Asset, len(ownershipManifest.Assets))
+	for _, asset := range ownershipManifest.Assets {
 		installedPath, err := InstalledAssetPath(asset.Path)
 		if err != nil {
 			return UpdatePlan{}, err
@@ -485,14 +489,7 @@ func (r *Repository) planInterruptedUpdate(
 		Changes:                      transaction.Changes,
 		interruptedTransactionDigest: digest(transactionData),
 	}
-	if semanticManifestDrift(sourceManifest, bundle.Manifest) {
-		plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
-	}
-	canonicalSource, err := marshalManifest(sourceManifest)
-	if err != nil {
-		return UpdatePlan{}, err
-	}
-	if !bytes.Equal(sourceManifestData, canonicalSource) {
+	if sourceManifestModified {
 		plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
 	}
 
@@ -528,9 +525,6 @@ func (r *Repository) planInterruptedUpdate(
 		case ChangeDelete:
 			if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 {
 				return UpdatePlan{}, fmt.Errorf("interrupted update deletion %s is not an obsolete manifest-owned asset", change.Path)
-			}
-			if semanticManifestDrift(sourceManifest, bundle.Manifest) {
-				return UpdatePlan{}, fmt.Errorf("interrupted update cannot delete assets claimed by a locally modified manifest")
 			}
 			if digest(change.Old) != oldAsset.SHA256 {
 				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
@@ -760,6 +754,35 @@ func (r *Repository) readManifest() (Manifest, []byte, error) {
 	return manifest, data, nil
 }
 
+func (r *Repository) trustedOwnershipManifest(bundle Bundle, candidate Manifest, candidateData []byte) (Manifest, bool, error) {
+	if sameManifestRelease(candidate, bundle.Manifest) {
+		return bundle.Manifest, !bytes.Equal(candidateData, bundle.ManifestJSON), nil
+	}
+	committedData, err := r.readCommittedManifest()
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf(
+			"agent toolkit ownership cannot be verified across releases; commit %s before updating: %w",
+			InstalledManifestPath,
+			err,
+		)
+	}
+	committed, err := DecodeManifest(committedData)
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf("decode checked-in agent toolkit manifest: %w", err)
+	}
+	return committed, !bytes.Equal(candidateData, committedData), nil
+}
+
+func (r *Repository) readCommittedManifest() ([]byte, error) {
+	cmd := exec.Command("git", "--no-pager", "show", "--no-ext-diff", "--no-textconv", "HEAD:"+InstalledManifestPath)
+	cmd.Dir = r.root
+	data, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("read %s from HEAD: %w", InstalledManifestPath, err)
+	}
+	return data, nil
+}
+
 func (r *Repository) readFile(relative string) ([]byte, bool, error) {
 	fullPath, err := r.securePath(relative)
 	if err != nil {
@@ -907,15 +930,45 @@ func (r *Repository) removeEmptyParents(directory string) {
 	}
 }
 
+func inspectTargetPath(absolute string) (fs.FileInfo, error) {
+	root := filepath.VolumeName(absolute) + string(filepath.Separator)
+	relative, err := filepath.Rel(root, absolute)
+	if err != nil {
+		return nil, err
+	}
+	current := root
+	info, err := os.Lstat(current)
+	if err != nil {
+		return nil, err
+	}
+	if relative == "." {
+		return info, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err = os.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("target path traverses symbolic link %s", current)
+		}
+	}
+	return info, nil
+}
+
 func manifestsMatch(installed, current Manifest) bool {
 	return reflect.DeepEqual(installed, current)
 }
 
-func semanticManifestDrift(installed, current Manifest) bool {
-	sameRelease := installed.SchemaVersion == current.SchemaVersion &&
+func sameManifestRelease(installed, current Manifest) bool {
+	return installed.SchemaVersion == current.SchemaVersion &&
 		installed.BundleVersion == current.BundleVersion &&
 		installed.Producer == current.Producer
-	return sameRelease && !manifestsMatch(installed, current)
+}
+
+func semanticManifestDrift(installed, current Manifest) bool {
+	return sameManifestRelease(installed, current) && !manifestsMatch(installed, current)
 }
 
 func compactStrings(values []string) []string {
