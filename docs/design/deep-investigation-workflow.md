@@ -16,10 +16,11 @@ It has exactly five stages:
 reproduce -> instrument -> implement-fix -> validate-reproduction -> emit-evidence
 ```
 
-Deterministic contract gates between the stages admit only the artifacts described
-below. A gate can advance to the next stage or terminate at `@escalate`; it cannot
-invent stages, skip reproduction, or route back through an open-ended agent loop.
-The workflow is therefore a pinned step-machine, not a planner.
+Deterministic contract gates between the stages admit only the runner-authored
+artifact sets described below. A gate can advance to the next stage or terminate
+at `@escalate`; it cannot invent stages, skip reproduction, or route back through
+an open-ended agent loop. The workflow is therefore a pinned step-machine, not a
+planner.
 
 The load-bearing rule is:
 
@@ -86,9 +87,9 @@ Automatic routing is deferred beyond #1483.
 
 The issue snapshot, triage note, target repository and base revision, budgets, and
 environment constraints are immutable run inputs. Each stage receives only those
-inputs and named, digest-verified context pointers from earlier stages. It runs in
-a fresh disposable workspace; no server, process, temporary file, or ambient
-machine state is a stage handoff.
+inputs and digest-verified context pointers from earlier stages. It runs in a fresh
+disposable workspace; no server, process, temporary file, or ambient machine state
+is a stage handoff.
 
 The reproduction bundle is immutable after `reproduce`. Its digest is carried
 through every later result. `instrument` may copy and exercise the bundle, and may
@@ -97,11 +98,88 @@ temporarily modify its own worktree to add probes, but it cannot replace the bun
 journaled reproduction. `validate-reproduction` fails closed if the bundle or
 symptom-oracle digest differs from the baseline.
 
-All non-scalar data crosses stages as `ArtifactPointer` values. The implementation
-commit crosses through the run branch because only committed branch state survives
-fresh worktrees. Transcripts and telemetry spans remain diagnostic; a required
-handoff must be a declared artifact, not something a later stage scrapes from a
-transcript.
+All non-scalar data crosses stages as runner-authored `ArtifactPointer` values. The
+implementation commit crosses through the run branch because only committed branch
+state survives fresh worktrees. Transcripts and telemetry spans remain diagnostic;
+a required handoff must be a declared artifact, not something a later stage scrapes
+from a transcript.
+
+### 3.1 Runner-authored artifact-set handoff
+
+The shipped agentic harness can lift only one task-declared `inputs.artifactFile`
+and exposes it downstream as `<stage>.artifact[0]`. Agentic completion envelopes
+cannot be trusted to mint their own paths or digests, and the current runner does
+not create semantic context names such as `reproduction.bundle`. That single-file
+surface is insufficient for a harness plus a variable set of dumps, traces, or
+profiles.
+
+Therefore #1484 must add **manifest-driven agentic artifact-set lifting** before
+#1482 implements this workflow. Each deep-investigation task declares:
+
+```yaml
+inputs:
+  artifactManifestFile: .goobers/deep-investigation-artifacts.json
+```
+
+The stage writes that workspace-relative staging manifest with this logical shape:
+
+```yaml
+schemaVersion: goobers.dev/stage-artifact-set/v1alpha1
+entries:
+  - name: reproduction.bundle
+    path: .goobers/out/reproduction-bundle.tar
+    mediaType: application/x-tar
+  - name: reproduction.baseline
+    path: .goobers/out/reproduction-baseline.json
+    mediaType: application/json
+```
+
+`name` is a unique semantic key and `path` is a workspace-relative regular file.
+The manifest may list zero or more stage-appropriate attachment entries. The
+agentic result must leave `artifacts` empty; the staging manifest is a request for
+the runner to lift bytes, not an `ArtifactPointer` source. For a task using
+`artifactManifestFile`, the harness rejects a completion that self-reports any
+artifact pointer instead of appending it to the runner-authored set.
+
+The #1484 primitive validates the manifest and every path with the existing
+containment and symlink rules, applies artifact size and count bounds, scrubs each
+payload before digesting, and rejects duplicate names, missing files, directories,
+unsupported media, or unsafe payloads. It then:
+
+1. sorts entries by semantic `name`, lifts each payload, and authors its
+   `ArtifactPointer`;
+2. writes a normalized, runner-authored `artifact-set.json` containing each
+   semantic name, its pointer, and its one-based `slot`;
+3. returns the normalized index as result artifact 0 and the payload pointers in
+   slot order as the remaining result artifacts.
+
+The normalized index has this shape:
+
+```yaml
+schemaVersion: goobers.dev/stage-artifact-set/v1alpha1
+entries:
+  - name: reproduction.baseline
+    slot: 1
+    artifact: {path: artifacts/reproduce/<digest>, digest: "sha256:...", mediaType: application/json, size: 1234}
+  - name: reproduction.bundle
+    slot: 2
+    artifact: {path: artifacts/reproduce/<digest>, digest: "sha256:...", mediaType: application/x-tar, size: 5678}
+```
+
+Downstream runtime handles consequently remain the existing
+`<stage>.artifact[i]` names. `<stage>.artifact[0]` is always the normalized index;
+an index entry with `slot: 2` must exactly match `<stage>.artifact[2]` by path and
+digest. Consumers fail closed on a missing index, an unknown required semantic
+name, a slot mismatch, or a digest mismatch. Semantic names used below are keys
+inside that index, never promised `ContextPointer.Name` values. This convention
+supports optional attachments without depending on their count or inventing a
+new context naming contract.
+
+Before the final evidence manifest, structured payloads refer to another payload
+as `{producerStage, name}`, not by copying or predicting an `ArtifactPointer`.
+`emit-evidence` resolves those semantic references through the normalized indices
+and writes the corresponding runner-authored pointers into the canonical schema
+in section 6.
 
 ## 4. Stage contracts
 
@@ -126,13 +204,15 @@ mutation authority.
 
 **Outputs**
 
-- `reproduction.bundle`: a self-contained harness artifact containing a manifest,
-  launch/cleanup entrypoints, fixtures or workload definition, fixed seeds where
-  applicable, and the machine-evaluable symptom oracle;
-- `reproduction.baseline`: a result artifact recording the exact base revision,
-  sanitized environment, invocation, attempts/load/duration, harness health
-  signals, symptom observations, and pointers to raw baseline evidence;
-- optional attachment artifacts such as logs or fixture snapshots.
+- artifact-set entry `reproduction.bundle`: a self-contained harness containing a
+  manifest, launch/cleanup entrypoints, fixtures or workload definition, fixed
+  seeds where applicable, and the machine-evaluable symptom oracle;
+- artifact-set entry `reproduction.baseline`: a result recording the exact base
+  revision, sanitized environment, invocation, attempts/load/duration, harness
+  health signals, symptom observations, and semantic references to raw baseline
+  evidence entries in the same artifact set;
+- optional `reproduction.attachment.<id>` entries such as logs or fixture
+  snapshots.
 
 **Terminal outcomes**
 
@@ -144,8 +224,10 @@ mutation authority.
 - `failure` for a malformed/unsafe harness or an execution error after
   infrastructure retries are exhausted.
 
-The `reproduction-established` gate verifies both artifact digests, a healthy
-harness run, and at least one oracle-confirmed baseline symptom before admitting
+The `reproduction-established` gate reads `reproduce.artifact[0]`, resolves the
+`reproduction.bundle` and `reproduction.baseline` entries and any baseline
+evidence they reference, verifies every pointer/digest, and requires a healthy
+harness run plus at least one oracle-confirmed baseline symptom before admitting
 `instrument`.
 
 ### 4.2 `instrument`
@@ -154,7 +236,8 @@ harness run, and at least one oracle-confirmed baseline symptom before admitting
 
 **Inputs**
 
-- `reproduction.bundle` and `reproduction.baseline`;
+- `reproduce.artifact[0]` and its indexed payload pointers, including required
+  entries `reproduction.bundle` and `reproduction.baseline`;
 - the immutable run inputs;
 - the pinned base-revision worktree.
 
@@ -162,12 +245,13 @@ harness run, and at least one oracle-confirmed baseline symptom before admitting
 
 **Outputs**
 
-- `diagnosis.report`: the hypotheses tested, controlled experiments, accepted
-  causal chain, rejected alternatives, owning invariant/layer, confidence, and the
-  justified fix altitude;
-- `diagnosis.evidence`: an index of supporting attachment pointers;
-- zero or more independently useful dumps, traces, profiles, logs, metrics, or
-  other diagnostic attachments.
+- artifact-set entry `diagnosis.report`: the hypotheses tested, controlled
+  experiments, accepted causal chain, rejected alternatives, owning
+  invariant/layer, confidence, and the justified fix altitude;
+- artifact-set entry `diagnosis.evidence`: an index of supporting semantic
+  attachment names in this artifact set;
+- zero or more independently useful `diagnosis.attachment.<id>` entries containing
+  dumps, traces, profiles, logs, metrics, or other diagnostic evidence.
 
 **Terminal outcomes**
 
@@ -180,9 +264,10 @@ harness run, and at least one oracle-confirmed baseline symptom before admitting
 - `failure` when capture is corrupt, unsafe, or internally inconsistent after
   infrastructure retries are exhausted.
 
-The `cause-established` gate requires at least one digest-verified causal evidence
-pointer, an accepted causal chain, rejected alternatives where applicable, and an
-explicit fix-altitude rationale before admitting `implement-fix`.
+The `cause-established` gate reads `instrument.artifact[0]` and requires
+`diagnosis.evidence` to name at least one digest-verified attachment entry, plus an
+accepted causal chain, rejected alternatives where applicable, and an explicit
+fix-altitude rationale before admitting `implement-fix`.
 
 ### 4.3 `implement-fix`
 
@@ -190,8 +275,9 @@ explicit fix-altitude rationale before admitting `implement-fix`.
 
 **Inputs**
 
-- `reproduction.bundle`, `reproduction.baseline`, `diagnosis.report`, and
-  `diagnosis.evidence`;
+- `reproduce.artifact[0]` and `instrument.artifact[0]`, plus their indexed payload
+  pointers; required semantic entries are `reproduction.bundle`,
+  `reproduction.baseline`, `diagnosis.report`, and `diagnosis.evidence`;
 - the immutable run inputs and run branch based on the diagnosed revision.
 
 **Capabilities:** `repo:push`, `agent:model`.
@@ -200,8 +286,9 @@ explicit fix-altitude rationale before admitting `implement-fix`.
 
 - a committed product change on the run branch;
 - scalar `fixRevision` naming the resulting commit;
-- `fix.report` mapping each material change to the diagnosed causal chain and
-  documenting any retained regression test or production-safe instrumentation.
+- artifact-set entry `fix.report` mapping each material change to the diagnosed
+  causal chain and documenting any retained regression test or production-safe
+  instrumentation.
 
 **Terminal outcomes**
 
@@ -213,9 +300,10 @@ explicit fix-altitude rationale before admitting `implement-fix`.
 - `failure` for an implementation error after infrastructure retries are
   exhausted.
 
-The `fix-produced` gate verifies the commit exists on the run branch, the diff is
-non-empty, and `fix.report` cites the diagnosed invariant and evidence. It does not
-claim the fix works; that belongs only to the next stage.
+The `fix-produced` gate reads `implement-fix.artifact[0]`, verifies the commit
+exists on the run branch, the diff is non-empty, and `fix.report` cites the
+diagnosed invariant and evidence. It does not claim the fix works; that belongs
+only to the next stage.
 
 ### 4.4 `validate-reproduction`
 
@@ -224,22 +312,25 @@ capture, not source editing.
 
 **Inputs**
 
-- the exact `reproduction.bundle` and `reproduction.baseline` pointers emitted by
-  `reproduce`;
-- `diagnosis.report`, `fix.report`, and scalar `fixRevision`;
+- the exact `reproduce.artifact[0]` pointer and indexed payload pointers emitted
+  by `reproduce`, including `reproduction.bundle` and `reproduction.baseline`;
+- `instrument.artifact[0]`, `implement-fix.artifact[0]`, their indexed payload
+  pointers, and scalar `fixRevision`; required semantic entries are
+  `diagnosis.report` and `fix.report`;
 - a fresh worktree at `fixRevision`.
 
 **Capabilities:** `repo:read`, `agent:model`.
 
 **Outputs**
 
-- `validation.result`: the reproduced baseline count/rate, bundle and oracle
-  digests, fixed revision, sanitized environment, actual invocation, completed
-  validation budget, harness health signals, post-fix symptom count/rate, and
-  pass/fail decision;
-- raw validation logs/metrics and any post-fix diagnostic attachments;
-- optional ordinary unit, integration, or regression-test results, clearly marked
-  as supplemental.
+- artifact-set entry `validation.result`: the reproduced baseline count/rate,
+  bundle and oracle digests, fixed revision, sanitized environment, actual
+  invocation, completed validation budget, harness health signals, post-fix
+  symptom count/rate, and pass/fail decision;
+- `validation.attachment.<id>` entries for raw validation logs/metrics and any
+  post-fix diagnostics;
+- optional `validation.supplemental.<id>` entries for ordinary unit, integration,
+  or regression-test results, clearly marked as supplemental.
 
 **Terminal outcomes**
 
@@ -259,10 +350,11 @@ sample count, or carry a stronger predeclared statistical threshold. The result
 states that bound and its confidence. It must also prove the harness did useful
 work, so a no-op, early exit, disabled workload, or broken oracle cannot pass.
 
-The `reproduction-cleared` gate reads `validation.result` rather than an agent's
-prose. It verifies matching digests, matching environment dimensions, the fixed
-revision, a completed budget, healthy controls, and zero symptom observations.
-Only then may `emit-evidence` run.
+The `reproduction-cleared` gate reads `validate-reproduction.artifact[0]` and its
+`validation.result` entry rather than an agent's prose. It verifies matching
+digests, matching environment dimensions, the fixed revision, a completed budget,
+healthy controls, and zero symptom observations. Only then may `emit-evidence`
+run.
 
 ### 4.5 `emit-evidence`
 
@@ -270,15 +362,18 @@ Only then may `emit-evidence` run.
 
 **Inputs**
 
-- all required artifacts and scalars emitted by the first four stages.
+- `reproduce.artifact[0]`, `instrument.artifact[0]`,
+  `implement-fix.artifact[0]`, and `validate-reproduction.artifact[0]`, plus all
+  indexed payload pointers and required scalars emitted by those stages.
 
 **Capabilities:** `agent:model`.
 
 **Outputs**
 
-- `investigation-evidence.json`, the canonical manifest defined in section 6;
-- an `investigation-evidence` artifact pointer suitable for downstream journal,
-  portal, or provider surfaces;
+- artifact-set entry `investigation.evidence`, containing
+  `investigation-evidence.json`, the canonical manifest defined in section 6;
+- a runner-authored pointer discoverable through `emit-evidence.artifact[0]` and
+  suitable for downstream journal, portal, or provider surfaces;
 - no duplicated raw payloads: the manifest indexes the already digested artifacts.
 
 **Terminal outcomes**
@@ -290,8 +385,9 @@ Only then may `emit-evidence` run.
 - no `blocked` outcome: unavailable optional evidence is omitted, while unavailable
   required evidence is a contract failure.
 
-The `evidence-complete` gate performs schema and pointer validation. A pass completes
-the run; a failure escalates with the already durable stage artifacts.
+The `evidence-complete` gate resolves `investigation.evidence` through
+`emit-evidence.artifact[0]` and performs schema and pointer validation. A pass
+completes the run; a failure escalates with the already durable stage artifacts.
 
 ## 5. Harness and sandbox affordances
 
@@ -328,8 +424,10 @@ agent into an unbounded host debugger.
   under SEC-041. Evidence that cannot be safely scrubbed is not emitted and the
   required/optional rules in section 6 determine whether the run can continue.
 
-These are workflow-level requirements for #1482. They do not broaden the canonical
-capability registry or bypass the existing stage sandbox.
+Harness execution and cleanup are workflow-level requirements for #1482; #1484
+owns the artifact staging, redaction, and lifting boundary defined in section 3.1.
+Neither issue broadens the canonical capability registry or bypasses the existing
+stage sandbox.
 
 ## 6. Evidence-artifact schema
 
@@ -397,18 +495,23 @@ layers to reason about them without changing stage handoffs.
 
 ## 7. Handoffs and gates
 
-| Producer | Consumer context names | Admission condition |
+| Producer | Runtime handles and semantic entries | Admission condition |
 |---|---|---|
-| `reproduce` | `reproduction.bundle`, `reproduction.baseline` | Baseline harness is healthy and its oracle observed the symptom. |
-| `instrument` | `diagnosis.report`, `diagnosis.evidence` plus attachment pointers | Root cause, causal evidence, rejected alternatives, and fix altitude are recorded. |
-| `implement-fix` | `fix.report`, scalar `fixRevision`, committed run branch | The diff is non-empty and tied to the diagnosed invariant. |
-| `validate-reproduction` | `validation.result` plus attachment pointers | The original digests match, the workload completed, and the original symptom count is zero. |
-| `emit-evidence` | canonical manifest pointer | Schema validates and every listed pointer resolves with its digest. |
+| `reproduce` | `reproduce.artifact[0]` indexes `reproduction.bundle`, `reproduction.baseline`, and optional attachments. | Baseline harness is healthy and its oracle observed the symptom. |
+| `instrument` | `instrument.artifact[0]` indexes `diagnosis.report`, `diagnosis.evidence`, and optional attachments. | Root cause, causal evidence, rejected alternatives, and fix altitude are recorded. |
+| `implement-fix` | `implement-fix.artifact[0]` indexes `fix.report`; scalar `fixRevision` and the committed run branch travel separately. | The diff is non-empty and tied to the diagnosed invariant. |
+| `validate-reproduction` | `validate-reproduction.artifact[0]` indexes `validation.result` and optional attachments. | The original digests match, the workload completed, and the original symptom count is zero. |
+| `emit-evidence` | `emit-evidence.artifact[0]` indexes `investigation.evidence`. | Schema validates and every listed pointer resolves with its digest. |
 
 The gates are deterministic contract checks, not additional investigation stages.
 They never replace an artifact with evaluator prose. If a semantic assertion such
 as the symptom predicate needs code, that code belongs in the immutable harness
 and its result belongs in a structured artifact.
+
+Every gate starts from the producer's slot-0 normalized index and verifies that
+each referenced payload pointer is also present under the declared positional
+runtime handle. It never assumes a semantic name was installed directly into
+`ContextPointer.Name`.
 
 ## 8. Failure, retry, and escalation
 
@@ -431,21 +534,24 @@ and its result belongs in a structured artifact.
   Stage-local processes are recreated from the bundle; they are never adopted as
   hidden recovered state.
 - Stage 5 produces the canonical successful-investigation manifest. Earlier-stage
-  artifacts are already durable individually, so failure before stage 5 does not
-  discard the reproduction or diagnostics that were captured.
+  normalized indices and payload artifacts are already durable individually, so
+  failure before stage 5 does not discard the reproduction or diagnostics that
+  were captured.
 
 ## 9. Follow-on ownership
 
 | Issue | Owns | Explicitly does not own |
 |---|---|---|
-| #1482 | The static workflow definition, five goober roles/prompts, deterministic contract gates, harness execution/cleanup behavior, budgets, and workflow contract tests. | Automatic classification/routing or a new artifact-store design. |
+| #1482 | The static workflow definition, five goober roles/prompts, deterministic contract gates, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, self-reported artifact pointers, or an ad hoc workflow-local artifact transport. |
 | #1483 | Provisioning and documenting the `hard` triage label, the explicit manual start path, and mutual exclusion with ordinary implementation claims. | Inferring `hard` automatically or changing the five-stage graph. |
-| #1484 | The versioned evidence schema, validators/writer, optional attachment-kind support, redaction-safe durable emission, and manifest/payload retention behavior. | Investigation reasoning, workflow routing, or requiring every diagnostic artifact kind. |
+| #1484 | The versioned evidence schema; the `inputs.artifactManifestFile` agentic multi-file lifting primitive and normalized slot-0 index defined in section 3.1; runner-authored pointer validation; optional attachment-kind support; redaction-safe durable emission; and manifest/payload retention behavior. | Investigation reasoning, workflow routing, or requiring every diagnostic artifact kind. |
 
-Recommended landing order is #1484's schema primitives, then #1482's workflow
-against that contract, then #1483 enabling the manual route once a runnable target
-exists. Automatic routing requires a separate design and issue; it is not a hidden
-last step of any of these three.
+The required landing order is #1484's schema and artifact-set primitive, then
+#1482's workflow against that shipped contract, then #1483 enabling the manual
+route once a runnable target exists. #1482 is blocked by #1484; it must not emulate
+multi-artifact lifting in prompts, rely on agent-authored pointers, or reinterpret
+positional context names. Automatic routing requires a separate design and issue;
+it is not a hidden last step of any of these three.
 
 ## 10. Non-goals
 
