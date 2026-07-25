@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -103,23 +104,115 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 }
 
 type claudeSequenceRunner struct {
-	reqs    []ProcessRequest
-	results []ProcessResult
-	acts    []func(ProcessRequest) error
+	reqs       []ProcessRequest
+	results    []ProcessResult
+	rawOutputs [][]byte
+	acts       []func(ProcessRequest) error
 }
 
 func (r *claudeSequenceRunner) Run(_ context.Context, req ProcessRequest) (ProcessResult, error) {
 	call := len(r.reqs)
 	r.reqs = append(r.reqs, req)
+	var result ProcessResult
+	if call < len(r.rawOutputs) && r.rawOutputs[call] != nil {
+		if req.StdoutCapture != nil {
+			_, _ = req.StdoutCapture.Write(r.rawOutputs[call])
+		}
+		buf := newTranscriptBuffer(req.MaxTranscriptBytes)
+		_, _ = buf.Write(r.rawOutputs[call])
+		result = ProcessResult{
+			ExitCode:               0,
+			Transcript:             buf.Bytes(),
+			TranscriptTruncated:    buf.Truncated(),
+			TranscriptDroppedBytes: buf.Dropped(),
+		}
+	} else if call < len(r.results) {
+		result = r.results[call]
+	}
 	if call < len(r.acts) && r.acts[call] != nil {
 		if err := r.acts[call](req); err != nil {
 			return ProcessResult{ExitCode: 1}, err
 		}
 	}
-	if call < len(r.results) {
-		return r.results[call], nil
+	return result, nil
+}
+
+func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
+	const limit = 512
+	workspace := t.TempDir()
+	raw := []byte(strings.Join([]string{
+		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` + strings.Repeat("x", limit*2) + `"}]}}`,
+		`{"type":"result","subtype":"success","result":"terminal output","total_cost_usd":0.25,"usage":{"input_tokens":120,"output_tokens":30},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":120,"outputTokens":30,"costUSD":0.25}}}`,
+	}, "\n"))
+	runner := &claudeSequenceRunner{
+		rawOutputs: [][]byte{raw},
+		acts: []func(ProcessRequest) error{
+			func(req ProcessRequest) error {
+				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		},
 	}
-	return ProcessResult{ExitCode: 0}, nil
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:           testEnvelope(workspace),
+		Workspace:          workspace,
+		CompletionPath:     DefaultResultPath,
+		MaxTranscriptBytes: limit,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 120 {
+		t.Fatalf("input token metric = %v, want 120", got)
+	}
+	if len(out.ModelUsage) != 1 || out.ModelUsage[0].Model != "claude-sonnet-4-6" {
+		t.Fatalf("model usage = %+v", out.ModelUsage)
+	}
+	if !bytes.Contains(out.Transcript, []byte("terminal output")) {
+		t.Fatalf("transcript lost terminal output:\n%s", out.Transcript)
+	}
+	if !out.TranscriptTruncated || out.TranscriptDroppedBytes <= 0 {
+		t.Fatalf("truncation = %v, dropped = %d; want truncated output", out.TranscriptTruncated, out.TranscriptDroppedBytes)
+	}
+}
+
+func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
+	const limit = 512
+	workspace := t.TempDir()
+	recovery := []byte(strings.Join([]string{
+		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` + strings.Repeat("y", limit*2) + `"}]}}`,
+		`{"type":"result","subtype":"success","result":"recovered terminal output","total_cost_usd":0.5,"usage":{"input_tokens":40,"output_tokens":10}}`,
+	}, "\n"))
+	runner := &claudeSequenceRunner{
+		rawOutputs: [][]byte{[]byte(claudeResultStream), recovery},
+		acts: []func(ProcessRequest) error{
+			nil,
+			func(req ProcessRequest) error {
+				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:           testEnvelope(workspace),
+		Workspace:          workspace,
+		CompletionPath:     DefaultResultPath,
+		Timeout:            time.Minute,
+		MaxTranscriptBytes: limit,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 160 {
+		t.Fatalf("combined input token metric = %v, want 160", got)
+	}
+	if !bytes.Contains(out.Transcript, []byte("recovered terminal output")) {
+		t.Fatalf("transcript lost recovery terminal output:\n%s", out.Transcript)
+	}
 }
 
 func TestClaudeAdapterRecoversMissingCompletionFile(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -58,6 +59,118 @@ type claudeUsageAccumulator struct {
 	hasInput     bool
 	hasOutput    bool
 	hasCost      bool
+}
+
+type claudeTerminalCapture struct {
+	mu         sync.Mutex
+	line       []byte
+	overflowed bool
+	result     []byte
+}
+
+func (c *claudeTerminalCapture) Write(p []byte) (int, error) {
+	n := len(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for len(p) > 0 {
+		end := bytes.IndexByte(p, '\n')
+		fragment := p
+		complete := false
+		if end >= 0 {
+			fragment = p[:end]
+			p = p[end+1:]
+			complete = true
+		} else {
+			p = nil
+		}
+
+		if !c.overflowed {
+			if len(c.line)+len(fragment) > int(maxClaudeStreamEventBytes) {
+				c.line = nil
+				c.overflowed = true
+			} else {
+				c.line = append(c.line, fragment...)
+			}
+		}
+		if complete {
+			c.captureResult(c.line)
+			c.line = nil
+			c.overflowed = false
+		}
+	}
+	return n, nil
+}
+
+func (c *claudeTerminalCapture) captureResult(line []byte) {
+	if c.overflowed {
+		return
+	}
+	line = bytes.TrimSpace(line)
+	var event struct {
+		Type string `json:"type"`
+	}
+	if len(line) == 0 || json.Unmarshal(line, &event) != nil || event.Type != "result" {
+		return
+	}
+	c.result = append(c.result[:0], line...)
+}
+
+func (c *claudeTerminalCapture) Result() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.captureResult(c.line)
+	return append([]byte(nil), c.result...)
+}
+
+func claudeStreamWithTerminalResults(result ProcessResult, captures ...*claudeTerminalCapture) io.Reader {
+	results := make([][]byte, 0, len(captures))
+	captured := make(map[string]int, len(captures))
+	for _, capture := range captures {
+		if capture == nil {
+			continue
+		}
+		terminal := capture.Result()
+		if len(terminal) == 0 {
+			continue
+		}
+		results = append(results, terminal)
+		captured[string(terminal)]++
+	}
+
+	raw := processTranscriptBytes(result)
+	if len(results) == 0 {
+		return bytes.NewReader(raw)
+	}
+
+	var stream bytes.Buffer
+	for len(raw) > 0 {
+		line, rest, found := bytes.Cut(raw, []byte{'\n'})
+		key := string(bytes.TrimSpace(line))
+		if captured[key] > 0 {
+			captured[key]--
+		} else {
+			_, _ = stream.Write(line)
+			if found {
+				_ = stream.WriteByte('\n')
+			}
+		}
+		if !found {
+			break
+		}
+		raw = rest
+	}
+	for _, terminal := range results {
+		if stream.Len() > 0 {
+			data := stream.Bytes()
+			if data[len(data)-1] != '\n' {
+				_ = stream.WriteByte('\n')
+			}
+		}
+		_, _ = stream.Write(terminal)
+		_ = stream.WriteByte('\n')
+	}
+	return bytes.NewReader(stream.Bytes())
 }
 
 func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {

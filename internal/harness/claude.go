@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -189,12 +188,15 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 
 	runner := c.runner()
 	started := time.Now()
+	initialCapture := &claudeTerminalCapture{}
+	captures := []*claudeTerminalCapture{initialCapture}
 	result, runErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
+		StdoutCapture:      initialCapture,
 	})
 	prompts := []string{prompt}
 	var payload []byte
@@ -215,12 +217,15 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 				prompts = append(prompts, recoveryPrompt)
 				recoveryArgv := append([]string(nil), argv...)
 				recoveryArgv[promptArg] = recoveryPrompt
+				recoveryCapture := &claudeTerminalCapture{}
+				captures = append(captures, recoveryCapture)
 				recovery, recoveryErr := runner.Run(ctx, ProcessRequest{
 					Command:            recoveryArgv,
 					Dir:                req.Workspace,
 					Env:                env,
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
+					StdoutCapture:      recoveryCapture,
 				})
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if recoveryErr != nil {
@@ -238,7 +243,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
-	if native, ok := convertClaudeStream(bytes.NewReader(result.Transcript), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
+	if native, ok := convertClaudeStream(claudeStreamWithTerminalResults(result, captures...), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
 		out.Metrics = native.metrics
 		out.ModelUsage = native.modelUsage
 		if len(native.data) > 0 {
