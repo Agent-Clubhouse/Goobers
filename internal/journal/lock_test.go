@@ -62,6 +62,53 @@ func TestRecoverSerializesConcurrentWriters(t *testing.T) {
 	}
 }
 
+func TestRecoverWaitsForPublicationHandoff(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, testIdentity().RunID)
+	publicationLock, err := acquireRunPublicationLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			releaseJournalLock(publicationLock)
+		}
+	}()
+
+	recovered := make(chan error, 1)
+	go func() {
+		run, _, err := Recover(dir, WithClock(fixedClock()))
+		if run != nil {
+			_ = run.Close()
+		}
+		recovered <- err
+	}()
+	select {
+	case err := <-recovered:
+		t.Fatalf("Recover returned before publication handoff: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	releaseJournalLock(publicationLock)
+	lockHeld = false
+	select {
+	case err := <-recovered:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recover did not proceed after publication handoff")
+	}
+}
+
 // TestRecoverRefreshesEventsAfterWaitingForLock covers #277: the log snapshot
 // taken before a blocking lock acquisition may contain a torn tail that the
 // lock holder completes before releasing. Recovery must not truncate the newer

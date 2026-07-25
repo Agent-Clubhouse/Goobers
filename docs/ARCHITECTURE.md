@@ -125,6 +125,18 @@ gaggles/<gaggle>/runs/<run-id>/
 
 Rules:
 
+- **Publish initialized runs atomically.** Local journal creation builds the
+  identity, input snapshots, initial event, checkpoint, lock, and reserved
+  directories in a hidden sibling staging area, then atomically renames that
+  directory to `<run-id>`. Span export only appends to a directory whose
+  `run.yaml` already exists. Before this ordering was enforced, `journal.Create`
+  exposed the final directory and created `spans/` and `.lock` before writing
+  `run.yaml`; a crash or initialization error could therefore leave a directory
+  that looked like half a run, and the span exporter could keep it alive.
+  Existing directories from that historical failure mode are handled only by the
+  operator-invoked `goobers telemetry prune-orphans` command: it reports by default, requires
+  `--delete` to remove anything, and never selects a directory with `run.yaml` or
+  activity within the non-reducible 24-hour safety window.
 - **Append-only events; immutable snapshots.** Nothing in a journal is edited after
   the fact. Repairs happen by appending corrective events. The one sanctioned
   exception is secret remediation: `goobers journal redact` replaces a leaked blob

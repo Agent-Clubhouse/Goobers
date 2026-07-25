@@ -321,6 +321,9 @@ func init() {
 			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
+			subcommand("telemetry prune-orphans", "prune-orphans", apicontract.ActionMaintenance, runTelemetryPruneOrphans).
+				withHelp("report or delete old run directories that lack run.yaml", telemetryPruneOrphansHelp).
+				withExamples("goobers telemetry prune-orphans", "goobers telemetry prune-orphans --delete"),
 			subcommand("telemetry compact", "compact", apicontract.ActionMaintenance, runTelemetryCompact).
 				withHelp("drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)", telemetryCompactHelp).
 				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),

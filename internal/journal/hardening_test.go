@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -43,7 +44,7 @@ func TestNilScrubberFailsClosed(t *testing.T) {
 }
 
 // TestConcurrentCreateSameRunRejectsAllButOne asserts the concurrency property
-// the atomic-os.Mkdir fix guarantees: N goroutines racing to create the same run
+// atomic publication guarantees: N goroutines racing to create the same run
 // id yield exactly one winner, the rest a clean "already exists" error — never
 // two writers interleaving on one journal. It runs under -race for data-race
 // safety and guards against a regression that reintroduces a non-atomic create.
@@ -73,6 +74,31 @@ func TestConcurrentCreateSameRunRejectsAllButOne(t *testing.T) {
 
 	if wins != 1 {
 		t.Fatalf("expected exactly 1 Create to win the race, got %d", wins)
+	}
+}
+
+func TestCreateFailureLeavesNoPublishedOrStagedRun(t *testing.T) {
+	root := t.TempDir()
+	_, err := Create(root, testIdentity(), map[string][]byte{
+		"invalid\x00name": []byte("input"),
+	}, WithClock(constClock()))
+	if err == nil {
+		t.Fatal("Create succeeded with an invalid input path")
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed Create left run directory entries: %v", entries)
+	}
+	stagingRoot := filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+".creating")
+	stagingEntries, statErr := os.ReadDir(stagingRoot)
+	if statErr != nil {
+		t.Fatalf("read staging root: %v", statErr)
+	}
+	if len(stagingEntries) != 0 {
+		t.Fatalf("failed Create left staging entries: %v", stagingEntries)
 	}
 }
 
