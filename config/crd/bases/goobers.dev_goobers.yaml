@@ -226,6 +226,10 @@ spec:
             - instructions
             - role
             type: object
+            x-kubernetes-validations:
+            - message: mcpServers are only supported by harness copilot
+              rule: '!has(self.mcpServers) || size(self.mcpServers) == 0 || !has(self.harness)
+                || self.harness == ''copilot'''
         required:
         - spec
         type: object

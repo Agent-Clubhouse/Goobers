@@ -12,6 +12,18 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 )
 
+// ValidateForHarness checks that the selected harness can isolate and
+// materialize the declared servers before validating their contents.
+func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
+	if harness == "" {
+		harness = apiv1.HarnessCopilot
+	}
+	if len(servers) > 0 && harness != apiv1.HarnessCopilot {
+		return fmt.Errorf("mcpServers are only supported by harness %q; harness %q must not declare them", apiv1.HarnessCopilot, harness)
+	}
+	return Validate(servers, declaredCapabilities, tools)
+}
+
 // Validate checks MCP server shape, tool policy, and ensures every credential
 // reference is backed by a capability declared for the current scope.
 func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {

@@ -77,6 +77,10 @@ Remote URLs cannot contain query strings or fragments; credentials must use
 `spec.tools`; an omitted tool is unavailable, and an empty list denies all
 external MCP tools.
 
+External MCP servers currently require `harness: copilot` (or the default
+Copilot harness). Other harnesses reject non-empty `mcpServers` declarations
+until their adapters implement equivalent invocation-scoped isolation.
+
 The scoped Copilot home intentionally excludes ambient OAuth and BYOK
 credentials. A Copilot invocation with external MCP servers therefore requires
 a resolver-materialized `agent:model` credential; MCP-free invocations may

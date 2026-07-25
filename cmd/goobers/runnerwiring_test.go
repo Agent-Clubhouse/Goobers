@@ -440,6 +440,17 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			},
 			want: `capability "contents:read" is not declared`,
 		},
+		{
+			name: "unsupported MCP harness",
+			spec: apiv1.GooberSpec{
+				Harness: apiv1.HarnessClaudeCode,
+				MCPServers: []apiv1.MCPServer{{
+					Name:    "context",
+					Command: "context-server",
+				}},
+			},
+			want: `mcpServers are only supported by harness "copilot"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := compiledMachines(
@@ -450,6 +461,40 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+	const gooberName = "coder"
+	spec := apiv1.GooberSpec{
+		Harness: apiv1.HarnessClaudeCode,
+		MCPServers: []apiv1.MCPServer{{
+			Name:    "context",
+			Command: "context-server",
+		}},
+	}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(t.TempDir()),
+		&instance.Config{},
+		map[string]apiv1.GooberSpec{gooberName: spec},
+		map[string]string{gooberName: "instructions"},
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		apiv1.RepoRef{},
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+
+	_, err = cfg.NewAgentic(gooberName, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
+		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
 	}
 }
 

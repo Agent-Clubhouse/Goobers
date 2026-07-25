@@ -181,3 +181,17 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("Validate credential-free HTTP endpoint: %v", err)
 	}
 }
+
+func TestValidateForHarness(t *testing.T) {
+	servers := []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot} {
+		if err := ValidateForHarness(harness, servers, nil, []string{"read-context"}); err != nil {
+			t.Fatalf("ValidateForHarness(%q): %v", harness, err)
+		}
+	}
+
+	err := ValidateForHarness(apiv1.HarnessClaudeCode, servers, nil, []string{"read-context"})
+	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
+		t.Fatalf("ValidateForHarness(claude-code) error = %v, want unsupported-harness error", err)
+	}
+}

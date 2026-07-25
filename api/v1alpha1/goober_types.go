@@ -78,6 +78,7 @@ type MCPServer struct {
 // GooberSpec is the definition of a role-specialized AI worker. It declares
 // everything needed to materialize the goober as ephemeral pods when a workflow
 // invokes it (GBO-001, GBO-002).
+// +kubebuilder:validation:XValidation:rule="!has(self.mcpServers) || size(self.mcpServers) == 0 || !has(self.harness) || self.harness == 'copilot'",message="mcpServers are only supported by harness copilot"
 type GooberSpec struct {
 	// Gaggle is the name of the Gaggle this goober belongs to.
 	// +kubebuilder:validation:Required

@@ -44,7 +44,18 @@
         },
         "scaleFactor": { "type": "integer", "minimum": 1 },
         "workflows": { "type": "array", "items": { "type": "string" } }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["harness"],
+            "properties": { "harness": { "const": "claude-code" } }
+          },
+          "then": {
+            "properties": { "mcpServers": { "maxItems": 0 } }
+          }
+        }
+      ]
     }
   },
   "$defs": {

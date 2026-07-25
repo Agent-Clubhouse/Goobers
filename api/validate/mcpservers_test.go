@@ -86,6 +86,24 @@ func TestGooberSchemaLimitsMCPServerNameOnly(t *testing.T) {
 	}
 }
 
+func TestGooberSchemaRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+	raw := []byte(`{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "coder"},
+		"spec": {
+			"gaggle": "example",
+			"role": "coder",
+			"instructions": "instructions.md",
+			"harness": "claude-code",
+			"mcpServers": [{"name": "context", "command": "context-server"}]
+		}
+	}`)
+	if err := newV(t).ValidateJSON("goober.schema.json", raw); err == nil {
+		t.Fatal("claude-code MCP configuration passed schema validation")
+	}
+}
+
 func TestValidateDirRejectsUndeclaredMCPCredential(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
@@ -120,6 +138,35 @@ func TestValidateDirRejectsUndeclaredMCPCredential(t *testing.T) {
 	issues := joinIssues(report)
 	if !report.HasErrors() || !strings.Contains(issues, `capability "github:issues:write" is not declared`) {
 		t.Fatalf("undeclared MCP credential was not rejected:\n%s", issues)
+	}
+}
+
+func TestValidateDirRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "  harness: copilot", "  harness: claude-code", 1))
+	data = append(data, []byte(`
+  mcpServers:
+    - name: issue-context
+      command: context-server
+`)...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("unsupported MCP harness passed directory validation")
 	}
 }
 

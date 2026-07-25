@@ -1524,6 +1524,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if !ok {
 				return nil, fmt.Errorf("goober %q not found in config", gooberName)
 			}
+			harnessName := spec.Harness
+			if harnessName == "" {
+				harnessName = apiv1.HarnessCopilot
+			}
+			if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+				return nil, fmt.Errorf("validate goober %q MCP config: %w", gooberName, err)
+			}
 			// The injector registers resolved secrets into the run's registrar AND
 			// the shared instance registry (#117 Piece B). reg (not the tee) is
 			// kept below for the journal.Scrubber assertion — it still accumulates
@@ -1532,10 +1539,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
 			if err != nil {
 				return nil, err
-			}
-			harnessName := spec.Harness
-			if harnessName == "" {
-				harnessName = apiv1.HarnessCopilot
 			}
 			adapter, err := adapterRegistry.Get(string(harnessName))
 			if err != nil {
@@ -1817,7 +1820,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
 			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
 		}
-		if err := mcpconfig.Validate(spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
 			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
