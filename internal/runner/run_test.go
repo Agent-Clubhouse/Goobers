@@ -554,6 +554,115 @@ func newFixtureRepoWithFiles(t *testing.T, files map[string]string) string {
 	return bare
 }
 
+// TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts is MGV-11 (#1286): a gaggle
+// with read-only reference repos gets a detached (read-only, no run branch)
+// checkout of each alongside its stage, the stage can READ their files, and the
+// invocation envelope carries their paths. A gaggle with no AdditionalRepos
+// provisions nothing (byte-identical to before).
+func TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts(t *testing.T) {
+	projRepo := newFixtureRepoWithFiles(t, map[string]string{"README.md": "project\n"})
+	goobersRepo := newFixtureRepoWithFiles(t, map[string]string{"REFERENCE.md": "goobers-reference\n"})
+	clubhouseRepo := newFixtureRepoWithFiles(t, map[string]string{"SITE.md": "clubhouse-reference\n"})
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	urlByName := map[string]string{"site": projRepo, "goobers": goobersRepo, "clubhouse": clubhouseRepo}
+	r, err := New(Config{
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: wtMgr,
+		RunsDir:   filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(ref apiv1.RepoRef) (string, error) {
+			url, ok := urlByName[ref.Name]
+			if !ok {
+				return "", fmt.Errorf("no fixture repo for %q", ref.Name)
+			}
+			return url, nil
+		},
+		AdditionalRepos: []apiv1.RepoRef{
+			{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"},
+			{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "clubhouse"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	checkouts, err := r.provisionAdditionalCheckouts(context.Background(), StartInput{RunID: "run-1"}, "implement")
+	if err != nil {
+		t.Fatalf("provisionAdditionalCheckouts: %v", err)
+	}
+	if len(checkouts) != 2 {
+		t.Fatalf("provisioned %d reference checkouts, want 2", len(checkouts))
+	}
+
+	// Each reference repo is readable at its checkout, and detached (no run
+	// branch to push — read-only by construction).
+	wantFile := map[string]struct{ file, content string }{
+		"goobers":   {"REFERENCE.md", "goobers-reference\n"},
+		"clubhouse": {"SITE.md", "clubhouse-reference\n"},
+	}
+	for _, c := range checkouts {
+		if c.worktree == nil {
+			t.Fatalf("reference checkout %q has no worktree", c.name)
+		}
+		if c.worktree.Branch != "" {
+			t.Errorf("reference checkout %q is on branch %q, want a detached read-only checkout", c.name, c.worktree.Branch)
+		}
+		want, ok := wantFile[c.name]
+		if !ok {
+			t.Fatalf("unexpected reference checkout %q", c.name)
+		}
+		got, err := os.ReadFile(filepath.Join(c.worktree.Path, want.file))
+		if err != nil {
+			t.Fatalf("read %s from reference checkout %q: %v", want.file, c.name, err)
+		}
+		if string(got) != want.content {
+			t.Errorf("reference checkout %q %s = %q, want %q", c.name, want.file, got, want.content)
+		}
+	}
+
+	// The invocation envelope projection carries both, keyed by name.
+	ws := additionalWorkspaces(&stageWorkspace{additional: checkouts})
+	if len(ws) != 2 {
+		t.Fatalf("envelope AdditionalWorkspaces = %d, want 2", len(ws))
+	}
+	byName := map[string]string{}
+	for _, w := range ws {
+		byName[w.Name] = w.Path
+	}
+	for _, name := range []string{"goobers", "clubhouse"} {
+		if byName[name] == "" {
+			t.Errorf("envelope missing AdditionalWorkspace for %q", name)
+		}
+	}
+
+	// Teardown removes every reference checkout cleanly.
+	if err := (&stageWorkspace{additional: checkouts}).Remove(context.Background()); err != nil {
+		t.Errorf("teardown reference checkouts: %v", err)
+	}
+
+	// A runner with no AdditionalRepos provisions nothing.
+	bare, err := New(Config{
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return projRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New (no additional): %v", err)
+	}
+	none, err := bare.provisionAdditionalCheckouts(context.Background(), StartInput{RunID: "run-2"}, "implement")
+	if err != nil {
+		t.Fatalf("provisionAdditionalCheckouts (none): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a gaggle with no AdditionalRepos provisioned %d checkouts, want 0", len(none))
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

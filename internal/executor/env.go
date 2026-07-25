@@ -68,7 +68,21 @@ const (
 	// RepoNameEnvVar carries the scheduler-routed repository name to goobers
 	// CLI stages.
 	RepoNameEnvVar = "GOOBERS_REPO_NAME"
+
+	// AdditionalReposEnvVar carries the comma-separated names of the gaggle's
+	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,
+	// so a stage can discover which GOOBERS_ADDITIONAL_REPO_* vars are set.
+	AdditionalReposEnvVar = "GOOBERS_ADDITIONAL_REPOS"
 )
+
+// AdditionalRepoEnvVar returns the deterministic env var name a read-only
+// reference-repo checkout's path is injected under, e.g. a repo named "goobers"
+// -> "GOOBERS_ADDITIONAL_REPO_GOOBERS" (MGV-11 #1286). Same sanitization rule as
+// CredentialEnvVar so a stage can reconstruct the name from the repo name.
+func AdditionalRepoEnvVar(name string) string {
+	sanitized := nonAlnum.ReplaceAllString(name, "_")
+	return "GOOBERS_ADDITIONAL_REPO_" + strings.ToUpper(sanitized)
+}
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
@@ -115,7 +129,7 @@ func baseEnv(extra []string) []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string) ([]string, error) {
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
 	env := baseEnv(extraEnvAllowlist)
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
@@ -147,6 +161,20 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		}
 		if snapshotID := providersnapshot.ID(ctx); snapshotID != "" {
 			env = append(env, providersnapshot.EnvVar+"="+snapshotID)
+		}
+		// Read-only reference-repo checkout paths (MGV-11 #1286), sorted for a
+		// deterministic env. Run context, so gated with the other GOOBERS_* vars:
+		// a local-ci stage running the project's own build never receives them.
+		if len(additionalRepos) > 0 {
+			names := make([]string, 0, len(additionalRepos))
+			for name := range additionalRepos {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				env = append(env, AdditionalRepoEnvVar(name)+"="+additionalRepos[name])
+			}
+			env = append(env, AdditionalReposEnvVar+"="+strings.Join(names, ","))
 		}
 	}
 	for k, v := range inputs {

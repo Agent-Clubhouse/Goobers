@@ -310,6 +310,15 @@ type Config struct {
 	// RepoRef. Defaults to defaultRepoCloneURL. Tests
 	// override this to point at a local fixture repo without network access.
 	RepoCloneURL func(apiv1.RepoRef) (string, error)
+	// AdditionalRepos are the gaggle's read-only reference repos
+	// (GaggleSpec.AdditionalRepos, MGV-11 #1286). For a repo-workspace stage the
+	// runner provisions a read-only checkout of each alongside the primary
+	// worktree and hands the stage their paths via InvocationEnvelope
+	// AdditionalWorkspaces. Empty (the default) leaves stage provisioning
+	// byte-identical to before. The worktree Manager's git-auth resolver backs
+	// each reference-repo clone with that repo's contents:read token (MGV-10);
+	// no push credential is ever provisioned for them.
+	AdditionalRepos []apiv1.RepoRef
 	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
 	// disables span emission — every telemetry.Span zero-value method no-ops,
 	// so call sites below need no nil checks beyond the one guard in each
@@ -2869,6 +2878,32 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+	// additional are read-only reference-repo checkouts (MGV-11 #1286) provisioned
+	// alongside the primary worktree; torn down with it. Each carries its name for
+	// the invocation envelope's AdditionalWorkspaces.
+	additional []additionalCheckout
+}
+
+// additionalWorkspaces projects a stage workspace's provisioned reference
+// checkouts into the invocation envelope's AdditionalWorkspaces (MGV-11 #1286).
+func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
+	if w == nil || len(w.additional) == 0 {
+		return nil
+	}
+	out := make([]apiv1.AdditionalWorkspace, 0, len(w.additional))
+	for _, a := range w.additional {
+		if a.worktree == nil {
+			continue
+		}
+		out = append(out, apiv1.AdditionalWorkspace{Name: a.name, Path: a.worktree.Path})
+	}
+	return out
+}
+
+// additionalCheckout is one provisioned read-only reference-repo worktree.
+type additionalCheckout struct {
+	name     string
+	worktree *worktree.Worktree
 }
 
 func (w *stageWorkspace) ActivateAssetPathGuard() error {
@@ -2886,10 +2921,28 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
-	if w.worktree != nil {
-		return w.worktree.Remove(ctx, worktree.RemoveOptions{})
+	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
+	// independent worktrees off their own mirrors, so a failure to remove one must
+	// not block removing the primary worktree. Best-effort: collect the first error.
+	var firstErr error
+	for _, a := range w.additional {
+		if a.worktree == nil {
+			continue
+		}
+		if err := a.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return os.RemoveAll(w.path)
+	if w.worktree != nil {
+		if err := w.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	if err := os.RemoveAll(w.path); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // buildEnvelope provisions an isolated repository worktree or empty scratch
@@ -2905,20 +2958,21 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		inputs[k] = v
 	}
 	env := apiv1.InvocationEnvelope{
-		TaskID:          in.RunID + ":" + stageName,
-		WorkflowID:      in.Machine.Def.Name,
-		RunID:           in.RunID,
-		TriggerRef:      in.Trigger.Ref,
-		Gaggle:          in.Gaggle,
-		BranchNamespace: r.branchNamespaceFor(in.Gaggle),
-		Goal:            goal,
-		Workspace:       workspace.path,
-		RepoRef:         in.RepoRef.EnvelopeRef(),
-		Item:            in.Item,
-		ContextPointers: upstream,
-		Capabilities:    capabilities,
-		Limits:          limits,
-		Inputs:          inputs,
+		TaskID:               in.RunID + ":" + stageName,
+		WorkflowID:           in.Machine.Def.Name,
+		RunID:                in.RunID,
+		TriggerRef:           in.Trigger.Ref,
+		Gaggle:               in.Gaggle,
+		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
+		Goal:                 goal,
+		Workspace:            workspace.path,
+		RepoRef:              in.RepoRef.EnvelopeRef(),
+		AdditionalWorkspaces: additionalWorkspaces(workspace),
+		Item:                 in.Item,
+		ContextPointers:      upstream,
+		Capabilities:         capabilities,
+		Limits:               limits,
+		Inputs:               inputs,
 	}
 	return env, workspace, nil
 }
@@ -2971,10 +3025,92 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt}, nil
+		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			// Best-effort teardown of the primary worktree so a failed
+			// reference-repo checkout doesn't leak the stage's main worktree.
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+// provisionAdditionalCheckouts materializes a read-only checkout of each of the
+// gaggle's reference repos (Config.AdditionalRepos, MGV-11 #1286) for a
+// repo-workspace stage. Each is a detached worktree (Branch:"") off its own
+// mirror at the repo's default branch — the stage may READ it, but the worktree
+// Manager's git-auth resolver only ever holds that repo's contents:read token
+// (MGV-10), so there is no credential to push. A gaggle with no AdditionalRepos
+// returns nil and provisions nothing (byte-identical to prior behavior). A
+// failure to provision any reference repo tears down the ones already created
+// and fails the stage — a stage must not start with a partial reference set.
+func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput, stageName string) ([]additionalCheckout, error) {
+	if len(r.cfg.AdditionalRepos) == 0 {
+		return nil, nil
+	}
+	checkouts := make([]additionalCheckout, 0, len(r.cfg.AdditionalRepos))
+	for _, repo := range r.cfg.AdditionalRepos {
+		repoURL, err := r.cfg.RepoCloneURL(repo)
+		if err != nil {
+			r.teardownCheckouts(ctx, checkouts)
+			return nil, fmt.Errorf("resolve reference repo %q clone URL: %w", repo.Name, err)
+		}
+		baseRef := repo.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
+			RepoURL:    repoURL,
+			RunID:      in.RunID + "-" + stageName + "-ref-" + sanitizeRefName(repo.Name),
+			OwnerRunID: in.RunID,
+			BaseRef:    baseRef,
+			// Detached, read-only: no run branch, never pushed.
+			Branch: "",
+		})
+		if err != nil {
+			r.teardownCheckouts(ctx, checkouts)
+			return nil, fmt.Errorf("checkout reference repo %q: %w", repo.Name, err)
+		}
+		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt})
+	}
+	return checkouts, nil
+}
+
+// teardownCheckouts best-effort removes already-provisioned reference checkouts
+// after a mid-provision failure, so a partial reference set never leaks.
+func (r *Runner) teardownCheckouts(ctx context.Context, checkouts []additionalCheckout) {
+	for _, c := range checkouts {
+		if c.worktree != nil {
+			_ = c.worktree.Remove(ctx, worktree.RemoveOptions{})
+		}
+	}
+}
+
+// sanitizeRefName reduces a reference repo's name to a single safe path segment
+// for use in the worktree RunID (which must be one segment, no "/" or ".."). Any
+// run of non-alphanumeric characters collapses to a single '-'.
+func sanitizeRefName(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+			continue
+		}
+		if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "ref"
+	}
+	return out
 }
 
 // worktreeWarningEvent builds the runner.annotation journal event that surfaces
@@ -3064,10 +3200,12 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 	return out
 }
 
-// DefaultRepoCloneURL derives the git remote URL worktree.Manager clones from
-// a RepoRef — the same default Config.RepoCloneURL falls back to. Exported so
-// the tier-3 worker host's workspace provisioner (#632) shares the derivation
-// instead of copying it.
+// DefaultRepoCloneURL derives the git remote URL worktree.Manager clones from a
+// RepoRef — the same derivation Config.RepoCloneURL defaults to. Exported so
+// both the tier-3 worker host's workspace provisioner (#632) and the composition
+// root (cmd/goobers) — which keys the worktree Manager's per-repo git-auth
+// resolver on the identical URLs the runner will hand WorkingCopy (MGV-11 #1286) —
+// share the derivation instead of duplicating the provider URL rules.
 func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	return defaultRepoCloneURL(ref)
 }
