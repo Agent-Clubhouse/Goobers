@@ -457,6 +457,8 @@ export const goWireFixtures = {
         "branch": 0,
         "time": "2026-07-18T12:36:56Z",
         "knownSchema": true,
+        "category": "transition",
+        "replayChapter": true,
         "stage": "implement",
         "attempt": 2,
         "attemptClass": "policy",
@@ -643,7 +645,25 @@ export const goWireFixtures = {
         "costSamples": 3,
         "costUSD": 1.5
       }
-    ]
+    ],
+    "curation": {
+      "runs": 0,
+      "reportedRuns": 0,
+      "ready": 0,
+      "needsHuman": 0,
+      "closed": 0,
+      "deduped": 0,
+      "split": 0,
+      "stale": 0,
+      "reconciled": 0,
+      "milestoned": 0,
+      "bounced": 0
+    },
+    "readyPool": {
+      "claimAgeSamples": 0,
+      "forwardCurationThroughput": 0,
+      "implementationDemand": 0
+    }
   },
   "telemetryErrorSignatures": {
     "items": [

@@ -2,7 +2,9 @@ import { useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
+  TelemetryCurationStats,
   TelemetryGaggleStats,
+  TelemetryReadyPool,
   TelemetryRunStats,
   TelemetryStageStats,
   TelemetryStatsOptions,
@@ -87,8 +89,8 @@ export function InsightPage({
         <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
-          Success, failure-reason, AI usage, and latency diagnostics for the selected
-          operational scope. Every metric opens the runs behind it.
+          Success, backlog health, failure-reason, AI usage, and latency diagnostics for
+          the selected operational scope. Run-backed metrics open their source history.
         </p>
       </header>
 
@@ -167,6 +169,9 @@ function InsightContent({
   const failureReasonsFailed =
     errorSignatures.status === "error" ||
     (errorSignatures.status === "stale" && Boolean(errorSignatures.error));
+  const hasCurationHealth =
+    scope.kind === "instance" &&
+    (snapshot.stats.curation.runs > 0 || snapshot.stats.readyPool.depth !== undefined);
 
   if (
     !hasOutcomes &&
@@ -174,6 +179,7 @@ function InsightContent({
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
+    !hasCurationHealth &&
     errorSignatures.status !== "loading"
   ) {
     return (
@@ -217,6 +223,13 @@ function InsightContent({
         </section>
       )}
 
+      {hasCurationHealth && (
+        <CurationHealth
+          curation={snapshot.stats.curation}
+          readyPool={snapshot.stats.readyPool}
+        />
+      )}
+
       {usage && (
         <section className="content-section">
           <div className="section-heading">
@@ -254,6 +267,65 @@ function InsightContent({
       )}
     </>
   );
+}
+
+function CurationHealth({
+  curation,
+  readyPool,
+}: {
+  curation: TelemetryCurationStats;
+  readyPool: TelemetryReadyPool;
+}) {
+  const depth = readyPool.depth;
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Backlog</p>
+          <h2>Ready-pool health</h2>
+        </div>
+        <span className="section-count">{curation.runs} curation runs</span>
+      </div>
+      <dl className="curation-health">
+        <div>
+          <dt>Ready depth</dt>
+          <dd className={readyPool.starved ? "curation-health-alert" : undefined}>
+            {depth === undefined ? "Unmeasured" : readyPool.starved ? "0 · Starved" : depth}
+          </dd>
+        </div>
+        <div>
+          <dt>Oldest ready</dt>
+          <dd>{formatSeconds(readyPool.oldestAgeSeconds)}</dd>
+        </div>
+        <div>
+          <dt>Age before claim</dt>
+          <dd>{formatSeconds(readyPool.averageClaimAgeSeconds)}</dd>
+        </div>
+        <div>
+          <dt title="Share of items marked ready in the selected window that later moved to not-ready">
+            Bounce rate
+          </dt>
+          <dd>{readyPool.bounceRate === undefined ? "Unmeasured" : `${(readyPool.bounceRate * 100).toFixed(1)}%`}</dd>
+        </div>
+        <div>
+          <dt>Throughput / demand</dt>
+          <dd>
+            {readyPool.forwardCurationThroughput} / {readyPool.implementationDemand}
+          </dd>
+        </div>
+        <div>
+          <dt>Curation actions</dt>
+          <dd>
+            {curation.ready} ready · {curation.needsHuman} needs human · {curation.closed} closed
+          </dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function formatSeconds(value: number | undefined): string {
+  return value === undefined ? "Unmeasured" : formatDuration(value * 1_000);
 }
 
 function FailureReasonBreakdown({

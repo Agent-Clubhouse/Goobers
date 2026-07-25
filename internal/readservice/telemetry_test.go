@@ -96,6 +96,16 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			Model: "gpt-5.4", UsageSamples: 1,
 			InputTokenSamples: 1, InputTokens: 0, HasInputTokens: true,
 		}},
+		Curation: rollup.CurationStats{
+			Runs: 2, ReportedRuns: 1, Ready: 4, NeedsHuman: 1, Bounced: 1,
+		},
+		ReadyPool: rollup.ReadyPoolHealth{
+			HasSample: true, ObservedAt: since.Add(time.Hour), Depth: 0, Starved: true,
+			AverageAgeSeconds: 3600, OldestAgeSeconds: 7200,
+			ClaimAgeSamples: 2, AverageClaimAgeSeconds: 5400,
+			HasBounceRate: true, BounceRate: 0.2,
+			ForwardCurationThroughput: 4, ImplementationDemand: 3,
+		},
 	}}
 	service := &Telemetry{store: store}
 
@@ -160,6 +170,15 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
 		got.Usage[0].RetryWasteCostUSD == nil || *got.Usage[0].RetryWasteCostUSD != 0.5 {
 		t.Fatalf("projected scope usage = %+v", got.Usage)
+	}
+	if got.Curation.Runs != 2 || got.Curation.ReportedRuns != 1 || got.Curation.Ready != 4 {
+		t.Fatalf("projected curation = %+v", got.Curation)
+	}
+	if got.ReadyPool.Depth == nil || *got.ReadyPool.Depth != 0 ||
+		got.ReadyPool.Starved == nil || !*got.ReadyPool.Starved ||
+		got.ReadyPool.AverageClaimAgeSeconds == nil || *got.ReadyPool.AverageClaimAgeSeconds != 5400 ||
+		got.ReadyPool.BounceRate == nil || *got.ReadyPool.BounceRate != 0.2 {
+		t.Fatalf("projected ready-pool health = %+v", got.ReadyPool)
 	}
 
 	data, err := json.Marshal(got.Runs[1])
