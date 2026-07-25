@@ -436,10 +436,6 @@ const (
 
 var targetRepositoryReachable = gitRepositoryReachable
 
-func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer, collectors ...*diagnosticCollector) bool {
-	return checkTargetRepositoriesAtFile(repos, stores, stdout, "instance.yaml", collectors...)
-}
-
 func checkTargetRepositoriesAtFile(
 	repos []instance.RepoRef,
 	stores credentials.StoreResolver,
@@ -572,18 +568,14 @@ func scrubRepositoryError(err error, token string) string {
 	return string(scrubber.Scrub([]byte(err.Error())))
 }
 
-// harnessAdapterFor is the harness-adapter lookup checkHarnesses uses.
+// harnessAdapterFor is the harness-adapter lookup checkHarnessesAtSources uses.
 // Package-level so tests can substitute a fake lookup without depending on a
 // real, installed, signed-in Copilot CLI.
 var harnessAdapterFor = adapterFor
 
-// checkHarnesses preflights every distinct harness referenced by set's
+// checkHarnessesAtSources preflights every distinct harness referenced by set's
 // goobers (GBO-011), printing actionable guidance per failure. Returns false
 // if any harness failed its preflight.
-func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer, collectors ...*diagnosticCollector) bool {
-	return checkHarnessesAtSources(goobers, stdout, stderr, nil, collectors...)
-}
-
 func checkHarnessesAtSources(
 	goobers []apiv1.Goober,
 	stdout, stderr io.Writer,
