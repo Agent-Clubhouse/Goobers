@@ -95,8 +95,10 @@ is a stage handoff.
 The reproduction bundle is immutable after `reproduce`. Its digest is carried
 through every later result. `instrument` may copy and exercise the bundle, and may
 temporarily modify its own worktree to add probes, but it cannot replace the bundle.
-`implement-fix` changes product source on the run branch; it cannot edit the
-journaled reproduction. `validate-reproduction` fails closed if the bundle or
+Neither pre-fix stage is attached to the managed run branch; its local edits and
+commits remain in a stage-private detached repository. `implement-fix` is the first
+stage that receives the run branch and changes product source there; it cannot edit
+the journaled reproduction. `validate-reproduction` fails closed if the bundle or
 symptom-oracle digest differs from the baseline.
 
 All non-scalar data crosses stages as runner-authored `ArtifactPointer` values. The
@@ -248,7 +250,46 @@ that comparison after `emit-evidence` and couples a matching attestation to the
 terminal success transition. The agent may propose revision values, but no gate
 trusts them without the runner-owned comparison.
 
-### 3.3 Sealed revision execution
+### 3.3 Pre-fix branch boundary
+
+The absence of `repo:push` does not stop an agent from committing to a locally
+attached branch. #1482 therefore owns a workflow-specific workspace and ref policy
+that prevents `reproduce` and `instrument` from advancing or contributing commits
+to the run branch:
+
+1. At admission, the runner resolves and records `baseRevision` and reserves the
+   run-branch name. Until `cause-established` passes, the managed run-branch ref
+   must either be absent or point exactly to `baseRevision`, with an empty canonical
+   `base...HEAD` diff. This supports runners that create the ref lazily and runners
+   whose generic setup creates it at the base, without trusting either state
+   implicitly.
+2. The runner provisions `reproduce` and `instrument` from the exact base revision
+   as stage-private, detached repository copies. Each copy has private Git metadata,
+   object storage, and refs; the managed repository path, common Git directory, and
+   run-branch ref are not mounted or otherwise addressable from the stage sandbox.
+   The stage may edit files and create commits for exploratory probes, but those
+   commits can advance only private detached state and are discarded with the
+   workspace. Only declared artifacts cross the stage boundary.
+3. Immediately before each pre-fix adapter starts, and after its complete process
+   tree and runner finalizers have exited but before its result and artifact set are
+   committed, the runner takes the run-branch ref lock and verifies the allowed
+   absent-or-exact-base state. A mismatch fails closed with
+   `PRE_FIX_BRANCH_DRIFT`; the runner neither resets the ref nor incorporates its
+   diff, and that integrity failure is not retried. An ordinary infrastructure
+   retry unrelated to branch drift receives a new detached copy and repeats both
+   checks.
+4. After `cause-established` passes and immediately before `implement-fix`, the
+   runner repeats that verification under the ref lock, atomically creates the run
+   branch at `baseRevision` when it is absent (or accepts the existing exact-base
+   ref), and records the initialized base in workflow state. Only then may it
+   provision a writable worktree attached to that branch for `implement-fix`.
+
+The inaccessible managed ref is the preventive boundary; the locked before/after
+checks detect runner or external drift. Together they ensure the later
+`base...HEAD` digest can contain only changes made after the implementation boundary,
+not exploratory instrumentation.
+
+### 3.4 Sealed revision execution
 
 Removing `repo:push` credentials is not a repository-integrity boundary. An agent
 can still edit tracked files, change a staged harness, create local commits, or
@@ -338,6 +379,7 @@ mutation authority.
 
 - the immutable issue snapshot and triage note;
 - target repository identity and pinned base revision;
+- the runner-owned, stage-private detached base workspace from section 3.3;
 - known environment facts, prior observations, and safety/resource budgets.
 
 **Capabilities:** `repo:read`, `agent:model`.
@@ -348,7 +390,7 @@ mutation authority.
   manifest, launch/cleanup entrypoints, fixtures or workload definition, fixed
   seeds where applicable, and the machine-evaluable symptom oracle;
 - runner-authored artifact-set entry `reproduction.baseline`: the sealed-execution
-  record from section 3.3, including the exact base source-snapshot digest,
+  record from section 3.4, including the exact base source-snapshot digest,
   sanitized environment, invocation, attempts/load/duration, harness health
   signals, symptom observations, and semantic references to raw baseline evidence
   entries in the same artifact set;
@@ -382,7 +424,7 @@ harness run and at least one oracle-confirmed baseline symptom before admitting
 - `reproduce.artifact[0]` and its indexed payload pointers, including required
   entries `reproduction.bundle` and `reproduction.baseline`;
 - the immutable run inputs;
-- the pinned base-revision worktree.
+- a new runner-owned, stage-private detached base workspace from section 3.3.
 
 **Capabilities:** `repo:read`, `agent:model`.
 
@@ -421,7 +463,8 @@ fix-altitude rationale before admitting `implement-fix`.
 - `reproduce.artifact[0]` and `instrument.artifact[0]`, plus their indexed payload
   pointers; required semantic entries are `reproduction.bundle`,
   `reproduction.baseline`, `diagnosis.report`, and `diagnosis.evidence`;
-- the immutable run inputs and run branch based on the diagnosed revision.
+- the immutable run inputs and the run branch initialized and re-attested at
+  `baseRevision` under section 3.3's ref lock.
 
 **Capabilities:** `repo:push`, `agent:model`.
 
@@ -574,9 +617,11 @@ agent into an unbounded host debugger.
   merely because its harness needs network access.
 - **Disposable writable roots:** agent and harness writes stay in the stage
   worktree, stage telemetry directory, and declared artifact staging roots.
+  Pre-fix worktrees use section 3.3's private detached repositories and cannot
+  address managed refs.
   OS-native sandboxing follows ADR 0001 where enabled and fails closed when the
   configured mechanism or a required profiling affordance is unavailable. The
-  authoritative baseline and validation finalizers use section 3.3's stricter
+  authoritative baseline and validation finalizers use section 3.4's stricter
   sealed execution roots; exploratory worktree execution cannot substitute for
   them.
 - **Redaction before durability:** dumps and traces can contain credentials,
@@ -690,6 +735,10 @@ never assumes a semantic name was installed directly into `ContextPointer.Name`.
 - A contract gate failure routes directly to `@escalate`. There is no automatic
   reproduce/instrument/fix loop and no validate-to-implement repass in this static
   design. A human may start a new pinned run with a revised budget or harness.
+- `PRE_FIX_BRANCH_DRIFT` is a non-retryable integrity failure. It terminates before
+  `implement-fix`, preserves any artifacts committed by earlier completed stages,
+  and reports the expected base and observed ref state; the runner never resets or
+  adopts the unexpected branch.
 - An exhausted infrastructure failure ends `failed`; the terminal cause and every
   artifact successfully written before the failure remain in the append-only
   journal.
@@ -710,7 +759,7 @@ never assumes a semantic name was installed directly into `ContextPointer.Name`.
 
 | Issue | Owns | Explicitly does not own |
 |---|---|---|
-| #1482 | The static workflow definition, five goober roles/prompts, five workflow-specific artifact-aware checks built on #1484's resolver, the narrow run-revision verifier used by the repository-sensitive checks, the sealed revision executor and runner-owned reproduce/validate finalizers from section 3.3, the final ref-locked attestation, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, treating a writable worktree or missing `repo:push` as revision attestation, self-reported execution records or artifact pointers, or an ad hoc workflow-local artifact transport. |
+| #1482 | The static workflow definition, five goober roles/prompts, five workflow-specific artifact-aware checks built on #1484's resolver, the private detached pre-fix workspace policy and locked branch initializer from section 3.3, the narrow run-revision verifier used by the repository-sensitive checks, the sealed revision executor and runner-owned reproduce/validate finalizers from section 3.4, the final ref-locked attestation, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, exposing a managed ref to pre-fix stages, treating a writable worktree or missing `repo:push` as revision attestation, self-reported execution records or artifact pointers, or an ad hoc workflow-local artifact transport. |
 | #1483 | Provisioning and documenting the `hard` triage label, the explicit manual start path, and mutual exclusion with ordinary implementation claims. | Inferring `hard` automatically or changing the five-stage graph. |
 | #1484 | The versioned evidence schema; the `inputs.artifactManifestFile` agentic multi-file lifting primitive and normalized slot-0 index defined in section 3.1; automated-gate pointer projection, read-only resolver, and artifact-aware check seam from section 3.2; runner-authored pointer validation; optional attachment-kind support; redaction-safe durable emission; and manifest/payload retention behavior. | Investigation reasoning, workflow-specific admission predicates, routing, or requiring every diagnostic artifact kind. |
 
