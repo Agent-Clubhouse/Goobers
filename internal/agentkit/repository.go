@@ -510,9 +510,9 @@ func (r *Repository) planInterruptedUpdate(
 		target, targetOwned := bundle.Files[change.Path]
 		switch change.Kind {
 		case ChangeAdd:
-			if previouslyOwned || !targetOwned || len(change.Old) != 0 ||
+			if !targetOwned || len(change.Old) != 0 ||
 				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
-				return UpdatePlan{}, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition", change.Path)
+				return UpdatePlan{}, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition or owned-file restoration", change.Path)
 			}
 		case ChangeModify:
 			if !previouslyOwned || !targetOwned ||
