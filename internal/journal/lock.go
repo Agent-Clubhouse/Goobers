@@ -1,8 +1,10 @@
 package journal
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -43,8 +45,27 @@ var ErrLockTimeout = errors.New("journal: lock held by another process (a runnin
 
 type journalLock = platformlock.Handle
 
+const publicationLocksDirName = ".journal-publication-locks"
+
 func acquireJournalLock(dir, target string) (*journalLock, error) {
 	path := filepath.Join(dir, fileLock)
+	return acquireJournalLockPath(path, dir, target)
+}
+
+func acquireRunPublicationLock(runDir string) (*journalLock, error) {
+	runsDir := filepath.Dir(runDir)
+	root := filepath.Join(filepath.Dir(runsDir), "."+filepath.Base(runsDir)+publicationLocksDirName)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("journal: create publication lock directory: %w", err)
+	}
+	// Bucket locks keep handoff coordination bounded instead of leaking one
+	// persistent lock file for every run ever created.
+	bucket := sha256.Sum256([]byte(filepath.Base(runDir)))
+	path := filepath.Join(root, fmt.Sprintf("%02x.lock", bucket[0]))
+	return acquireJournalLockPath(path, runDir, "run publication")
+}
+
+func acquireJournalLockPath(path, location, target string) (*journalLock, error) {
 	// A non-blocking acquire retried on a short poll up to journalLockTimeout,
 	// rather than a bare blocking acquire, so a lock a live daemon holds for a
 	// run's lifetime can never wedge a second opener forever. Mirrors the
@@ -59,7 +80,7 @@ func acquireJournalLock(dir, target string) (*journalLock, error) {
 			return nil, fmt.Errorf("journal: acquire %s lock: %w", target, lockErr)
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("journal: acquire %s lock at %s within %s: %w", target, dir, journalLockTimeout, ErrLockTimeout)
+			return nil, fmt.Errorf("journal: acquire %s lock at %s within %s: %w", target, location, journalLockTimeout, ErrLockTimeout)
 		}
 		time.Sleep(journalLockPollInterval)
 	}

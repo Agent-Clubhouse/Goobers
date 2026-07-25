@@ -182,6 +182,10 @@ type RecoverReport struct {
 // event so even the repair leaves a trace (§4, append-only). The returned Run is
 // ready to continue the run from where it left off.
 func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
+	return recover(dir, false, opts...)
+}
+
+func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverReport, error) {
 	cfg := newConfig(opts...)
 	rd, err := OpenRead(dir)
 	if err != nil {
@@ -195,6 +199,15 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	eventsPath := filepath.Join(dir, fileEvents)
 	if _, _, err := readEvents(eventsPath); err != nil {
 		return nil, RecoverReport{}, err
+	}
+
+	var publicationLock *journalLock
+	if !publicationLocked {
+		publicationLock, err = acquireRunPublicationLock(dir)
+		if err != nil {
+			return nil, RecoverReport{}, err
+		}
+		defer releaseJournalLock(publicationLock)
 	}
 
 	// Acquire the per-run-dir lock (#243) before any write below, including

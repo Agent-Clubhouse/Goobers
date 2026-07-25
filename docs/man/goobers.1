@@ -11,7 +11,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -125,6 +125,9 @@ load other open PRs as review evidence (a workflow stage)
 .TP
 \fBgoobers init\fR
 scaffold an instance root
+.TP
+\fBgoobers ios-simulator-test\fR
+run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
 .TP
 \fBgoobers issue-close-out\fR
 comment + close out the claimed issue (a workflow stage)
@@ -246,6 +249,9 @@ re-emit a span-start-time window from journaled OTLP/JSON
 \fBgoobers telemetry prune\fR
 remove terminal runs outside configured retention bounds
 .TP
+\fBgoobers telemetry prune-orphans\fR
+report or delete old orphan and unfinished run directories
+.TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
 .TP
@@ -312,6 +318,7 @@ show a workflow as a text DAG
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
 \fBgoobers-init\fR(1),
+\fBgoobers-ios-simulator-test\fR(1),
 \fBgoobers-issue-close-out\fR(1),
 \fBgoobers-journal\fR(1),
 \fBgoobers-journal-redact\fR(1),
@@ -352,6 +359,7 @@ show a workflow as a text DAG
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
+\fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),

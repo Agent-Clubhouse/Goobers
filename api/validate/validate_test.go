@@ -81,7 +81,7 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the two
+	// The compatibility warnings are the manual-only advisories on the three
 	// example workflows that carry no schedule trigger. Preview warnings are
 	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
@@ -90,10 +90,10 @@ func TestExampleConfigPasses(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 2 {
-		t.Fatalf("expected two actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 3 {
+		t.Fatalf("expected three actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDotnetImplementation bool
+	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -101,12 +101,15 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run default-implement") {
 			sawDefaultImplement = true
 		}
+		if strings.Contains(w.Explanation, "goobers run docs-updater") {
+			sawDocsUpdater = true
+		}
 		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
 			sawDotnetImplementation = true
 		}
 	}
-	if !sawDefaultImplement || !sawDotnetImplementation {
-		t.Fatalf("expected manual-only warnings for both default-implement and the dotnet-service implementation, got %+v", warnings)
+	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation {
+		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service implementation, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
@@ -221,7 +224,8 @@ func TestGooberAssetStructureIsValidated(t *testing.T) {
 
 func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 	v := newV(t)
-	goober := `{
+	for _, harness := range []string{"copilot", "claude-code"} {
+		goober := `{
 		"apiVersion": "goobers.dev/v1alpha1",
 		"kind": "Goober",
 		"metadata": {"name": "coder"},
@@ -229,7 +233,7 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 			"gaggle": "example",
 			"role": "coder",
 			"instructions": "instructions.md",
-			"harness": "copilot",
+			"harness": "` + harness + `",
 			"model": "adapter-specific-model",
 			"harnessOptions": {
 				"enabled": true,
@@ -239,9 +243,10 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 			"policyActions": ["modify-repository"],
 			"conditionalPolicyActions": ["open-or-update-pr"]
 		}
-	}`
-	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
-		t.Fatalf("adapter-owned harness config failed schema validation: %v", err)
+		}`
+		if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
+			t.Fatalf("%s adapter-owned harness config failed schema validation: %v", harness, err)
+		}
 	}
 }
 

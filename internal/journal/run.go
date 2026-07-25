@@ -108,6 +108,12 @@ func newConfig(opts ...Option) config {
 // Dir returns the run directory.
 func (r *Run) Dir() string { return r.dir }
 
+// RunCreationStagingDir returns the hidden sibling directory where Create
+// assembles unpublished runs before their atomic rename into runsDir.
+func RunCreationStagingDir(runsDir string) string {
+	return filepath.Join(filepath.Dir(runsDir), "."+filepath.Base(runsDir)+".creating")
+}
+
 // Create scaffolds a new run journal under runsDir/<run-id>, pins the identity
 // to run.yaml, snapshots the given inputs by content digest, writes the initial
 // state.json checkpoint, and appends the run.started event. inputs may be nil
@@ -125,31 +131,27 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		return nil, fmt.Errorf("journal: invalid run id %q", id.RunID)
 	}
 	cfg := newConfig(opts...)
-	dir := filepath.Join(runsDir, id.RunID)
-	// Create the run directory atomically. os.Mkdir fails with EEXIST if the dir
-	// already exists, so two processes racing to create the same run id can't both
-	// proceed and interleave writers on one journal — the loser gets a clean
-	// "already exists" error instead of the previous Stat-then-MkdirAll TOCTOU
-	// window (goobers run takes no flock). The parent chain (shared instance state,
-	// plus any nested segments if a run id contains a separator) is created
-	// non-exclusively first; only the leaf run dir needs the atomic guarantee.
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	finalDir := filepath.Join(runsDir, id.RunID)
+	runsDir = filepath.Dir(finalDir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: create runs dir: %w", err)
 	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("journal: run %q already exists at %s", id.RunID, dir)
-		}
-		return nil, fmt.Errorf("journal: create run dir: %w", err)
+	publicationLock, err := acquireRunPublicationLock(finalDir)
+	if err != nil {
+		return nil, err
 	}
-	// fsync the parent (runs) directory so the new run dir's own directory
-	// entry is durable across a crash (#243) — every OTHER durable write in
-	// this package (writeStateAtomic, writeFileAtomic) already fsyncs its
-	// parent after a rename into it; this Mkdir was the one directory-entry
-	// creation that didn't, so a crash right after it could lose the whole
-	// run dir despite its own contents being fsynced later.
-	if err := fsyncDir(filepath.Dir(dir)); err != nil {
-		return nil, fmt.Errorf("journal: fsync runs dir: %w", err)
+	defer releaseJournalLock(publicationLock)
+	stagingRoot := RunCreationStagingDir(runsDir)
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("journal: create run staging root: %w", err)
+	}
+	dir, err := os.MkdirTemp(stagingRoot, id.RunID+"-")
+	if err != nil {
+		return nil, fmt.Errorf("journal: create run staging dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("journal: set run staging permissions: %w", err)
 	}
 	for _, sub := range []string{dirInputs, dirArtifacts, dirSpans} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
@@ -157,13 +159,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		}
 	}
 
-	// Acquire the per-run-dir lock (#243) before any further writes. Create
-	// itself is already race-free against a second Create of the SAME new
-	// id (os.Mkdir's EEXIST atomicity above), but this run directory is
-	// about to become resumable — the lock, held for the lifetime of the
-	// returned *Run, is what stops a concurrent Recover (e.g. `goobers run
-	// abort` racing this same run while it's still live) from opening a
-	// second independent writer on this journal.
+	// Serialize initialization inside the staging directory. The staged writer is
+	// closed before rename so publication also works on Windows; Recover below
+	// reacquires the same lock at its final path and refreshes state under it.
 	lock, err := acquireRunLock(dir)
 	if err != nil {
 		return nil, err
@@ -213,7 +211,26 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		releaseRunLock(lock)
 		return nil, err
 	}
-	return r, nil
+	if err := r.Close(); err != nil {
+		return nil, fmt.Errorf("journal: close staged run: %w", err)
+	}
+	if err := renameNoReplace(dir, finalDir); err != nil {
+		if _, statErr := os.Stat(finalDir); statErr == nil {
+			return nil, fmt.Errorf("journal: run %q already exists at %s", id.RunID, finalDir)
+		}
+		return nil, fmt.Errorf("journal: publish run directory: %w", err)
+	}
+	if err := fsyncDir(runsDir); err != nil {
+		return nil, fmt.Errorf("journal: fsync runs dir: %w", err)
+	}
+	if err := fsyncDir(stagingRoot); err != nil {
+		return nil, fmt.Errorf("journal: fsync run staging root: %w", err)
+	}
+	published, _, err := recover(finalDir, true, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open published run: %w", err)
+	}
+	return published, nil
 }
 
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are

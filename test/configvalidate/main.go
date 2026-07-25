@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -20,15 +21,24 @@ repos:
       env: GOOBERS_GITHUB_TOKEN
 `
 
+const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
+
 type checkedInTree struct {
-	path       string
-	sourceTree bool
-	strict     bool
+	path            string
+	sourceTree      bool
+	strict          bool
+	allowedWarnings []string
 }
 
 var checkedInTrees = []checkedInTree{
-	{path: "selfhost", sourceTree: true, strict: true},
+	{
+		path:            "selfhost",
+		sourceTree:      true,
+		strict:          true,
+		allowedWarnings: []string{docsUpdaterInertWarning},
+	},
 	{path: "config-examples"},
+	{path: "examples/ios-simulator"},
 	{path: "internal/instance/starter"},
 	{path: "internal/instance/demo"},
 	{path: "test/fixtures/e2e/walking-skeleton"},
@@ -96,11 +106,36 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		cmd := exec.Command(validator.path, commandArgs...)
 		cmd.Dir = root
 		cmd.Env = gitEnv
-		cmd.Stdout = stdout
-		cmd.Stderr = stderr
-		if err := cmd.Run(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "validate-configs: %s: %v\n", tree.path, err)
+		var commandStdout, commandStderr bytes.Buffer
+		if len(tree.allowedWarnings) > 0 {
+			cmd.Stdout = &commandStdout
+			cmd.Stderr = &commandStderr
+		} else {
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+		}
+		runErr := cmd.Run()
+		if len(tree.allowedWarnings) > 0 {
+			_, _ = io.WriteString(stdout, commandStdout.String())
+			_, _ = io.WriteString(stderr, commandStderr.String())
+		}
+		if runErr != nil {
+			_, _ = fmt.Fprintf(stderr, "validate-configs: %s: %v\n", tree.path, runErr)
 			failed = true
+			continue
+		}
+		if len(tree.allowedWarnings) > 0 {
+			got := validationWarnings(commandStdout.String())
+			if !equalStrings(got, tree.allowedWarnings) {
+				_, _ = fmt.Fprintf(
+					stderr,
+					"validate-configs: %s: warnings changed: got %q, want %q\n",
+					tree.path,
+					got,
+					tree.allowedWarnings,
+				)
+				failed = true
+			}
 		}
 	}
 	if failed {
@@ -131,9 +166,31 @@ func gitWorktreeEnv(root string) ([]string, error) {
 	return append(env, "GIT_DIR="+strings.TrimSpace(lines[0]), "GIT_WORK_TREE="+strings.TrimSpace(lines[1])), nil
 }
 
+func validationWarnings(output string) []string {
+	var warnings []string
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, "WARNING ") {
+			warnings = append(warnings, line)
+		}
+	}
+	return warnings
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func validationArgs(root, tempDir string, tree checkedInTree) ([]string, error) {
 	args := []string{"validate"}
-	if tree.strict {
+	if tree.strict && len(tree.allowedWarnings) == 0 {
 		args = append(args, "--strict")
 	}
 	if tree.sourceTree {

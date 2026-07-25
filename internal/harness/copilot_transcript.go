@@ -340,7 +340,7 @@ func convertCopilotSessionEvent(native copilotSessionEvent) []transcriptEvent {
 	}
 }
 
-func newCopilotCaptureID() (string, error) {
+func newHarnessSessionID() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return "", err

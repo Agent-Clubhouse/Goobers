@@ -321,6 +321,9 @@ func init() {
 			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
+			subcommand("telemetry prune-orphans", "prune-orphans", apicontract.ActionMaintenance, runTelemetryPruneOrphans).
+				withHelp("report or delete old orphan and unfinished run directories", telemetryPruneOrphansHelp).
+				withExamples("goobers telemetry prune-orphans", "goobers telemetry prune-orphans --delete"),
 			subcommand("telemetry compact", "compact", apicontract.ActionMaintenance, runTelemetryCompact).
 				withHelp("drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)", telemetryCompactHelp).
 				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
@@ -396,6 +399,10 @@ func init() {
 			withSynopsis(synopsisByID["docs-churn"]).
 			withHelp("emit the docs-drift churn digest since the watermark (a connector stage)", docsChurnHelp).
 			withExamples("goobers docs-churn --format churn-digest"),
+		command("ios-simulator-test", apicontract.ActionWorkflowExecution, runIOSSimulatorTest).
+			withSynopsis(synopsisByID["ios-simulator-test"]).
+			withHelp("run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)", iosSimulatorTestHelp).
+			withExamples("goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
