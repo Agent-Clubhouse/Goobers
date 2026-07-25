@@ -451,9 +451,11 @@ func buildSchedulerDefinitions(
 					sigs = append(sigs, webhookhttp.SignalName(event))
 				}
 			}
-			if trigger.Type == apiv1.TriggerBacklogItem && !pollPrioritySet {
-				pollPriority = trigger.Priority
-				pollPrioritySet = true
+			if trigger.Type == apiv1.TriggerBacklogItem || trigger.Type == apiv1.TriggerSchedule {
+				if !pollPrioritySet || trigger.Priority > pollPriority {
+					pollPriority = trigger.Priority
+					pollPrioritySet = true
+				}
 			}
 		}
 		pollFallbackCause := ""
@@ -487,8 +489,12 @@ func buildSchedulerDefinitions(
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
 			BacklogCounter:    backlogCounter,
-			// buildBacklogCounter currently uses GitHub; charge the provider
-			// actually called rather than a future configured adapter.
+			ScheduleDemandCounter: buildScheduleDemandCounter(
+				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
+				branchNamespaces[wf.Spec.Gaggle], providerQuota,
+			),
+			// The current provider-backed demand counters use GitHub; charge the
+			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
 			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
