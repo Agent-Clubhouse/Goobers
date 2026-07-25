@@ -133,10 +133,13 @@ Rules:
   exposed the final directory and created `spans/` and `.lock` before writing
   `run.yaml`; a crash or initialization error could therefore leave a directory
   that looked like half a run, and the span exporter could keep it alive.
-  Existing directories from that historical failure mode are handled only by the
-  operator-invoked `goobers telemetry prune-orphans` command: it reports by default, requires
-  `--delete` to remove anything, and never selects a directory with `run.yaml` or
-  activity within the non-reducible 24-hour safety window.
+  Existing directories from that historical failure mode and half-initialized
+  crash residue in the dedicated `.runs.creating` staging area are handled only
+  by the operator-invoked `goobers telemetry prune-orphans` command. It reports
+  by default, requires `--delete` to remove anything, and never selects a
+  directory with `run.yaml`, a recently modified directory, or a staging
+  directory whose creation lock is still held. The inactivity window has a
+  non-reducible 24-hour minimum.
 - **Append-only events; immutable snapshots.** Nothing in a journal is edited after
   the fact. Repairs happen by appending corrective events. The one sanctioned
   exception is secret remediation: `goobers journal redact` replaces a leaked blob

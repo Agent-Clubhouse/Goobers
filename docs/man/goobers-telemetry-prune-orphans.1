@@ -1,17 +1,18 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TELEMETRY PRUNE ORPHANS" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers telemetry prune-orphans \- report or delete old run directories that lack run.yaml
+goobers telemetry prune-orphans \- report or delete old orphan and unfinished run directories
 .SH SYNOPSIS
 \fBgoobers telemetry prune-orphans\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
 Usage: goobers telemetry prune-orphans [--delete] [--min-age=D] [path]
 
-Report run directories that have no run.yaml and whose directory contents have
-not changed for at least 24h. The default is a dry-run report; --delete opts
-into deletion. --min-age may raise but never lower the 24h safety threshold.
-Valid run journals, recent directories, files, and symlinks are always preserved.
+Report directories without run.yaml from both published run roots and unpublished
+creation staging roots after at least 24h of inactivity. The default is a dry-run
+report; --delete opts into deletion. --min-age may raise but never lower
+the 24h safety threshold. Valid run journals, recent or active directories, files,
+and symlinks are always preserved.
 Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 .fi
 .SH EXAMPLES

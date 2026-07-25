@@ -92,7 +92,7 @@ func TestCreateFailureLeavesNoPublishedOrStagedRun(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("failed Create left run directory entries: %v", entries)
 	}
-	stagingRoot := filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+".creating")
+	stagingRoot := RunCreationStagingDir(root)
 	stagingEntries, statErr := os.ReadDir(stagingRoot)
 	if statErr != nil {
 		t.Fatalf("read staging root: %v", statErr)

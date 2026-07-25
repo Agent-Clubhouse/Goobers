@@ -81,7 +81,7 @@
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
-| [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old run directories that lack run.yaml |
+| [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
@@ -1729,15 +1729,16 @@ $ goobers telemetry prune
 
 ## `goobers telemetry prune-orphans`
 
-report or delete old run directories that lack run.yaml
+report or delete old orphan and unfinished run directories
 
 ~~~text
 Usage: goobers telemetry prune-orphans [--delete] [--min-age=D] [path]
 
-Report run directories that have no run.yaml and whose directory contents have
-not changed for at least 24h. The default is a dry-run report; --delete opts
-into deletion. --min-age may raise but never lower the 24h safety threshold.
-Valid run journals, recent directories, files, and symlinks are always preserved.
+Report directories without run.yaml from both published run roots and unpublished
+creation staging roots after at least 24h of inactivity. The default is a dry-run
+report; --delete opts into deletion. --min-age may raise but never lower
+the 24h safety threshold. Valid run journals, recent or active directories, files,
+and symlinks are always preserved.
 Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 ~~~
 

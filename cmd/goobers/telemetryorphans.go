@@ -10,10 +10,11 @@ import (
 )
 
 const telemetryPruneOrphansHelp = "Usage: goobers telemetry prune-orphans [--delete] [--min-age=D] [path]\n\n" +
-	"Report run directories that have no run.yaml and whose directory contents have\n" +
-	"not changed for at least 24h. The default is a dry-run report; --delete opts\n" +
-	"into deletion. --min-age may raise but never lower the 24h safety threshold.\n" +
-	"Valid run journals, recent directories, files, and symlinks are always preserved.\n" +
+	"Report directories without run.yaml from both published run roots and unpublished\n" +
+	"creation staging roots after at least 24h of inactivity. The default is a dry-run\n" +
+	"report; --delete opts into deletion. --min-age may raise but never lower\n" +
+	"the 24h safety threshold. Valid run journals, recent or active directories, files,\n" +
+	"and symlinks are always preserved.\n" +
 	"Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.\n"
 
 func runTelemetryPruneOrphans(args []string, stdout, stderr io.Writer) int {
@@ -54,7 +55,7 @@ func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now tim
 		return 1
 	}
 	if len(results) == 0 {
-		pf(stdout, "no orphan run directories inactive for at least %s\n", *minAge)
+		pf(stdout, "no orphan run or creation-stage directories inactive for at least %s\n", *minAge)
 		return 0
 	}
 	verb := "would delete"
@@ -62,8 +63,12 @@ func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now tim
 		verb = "deleted"
 	}
 	for _, result := range results {
-		pf(stdout, "%s orphan=%q path=%q lastModified=%s\n",
-			verb, result.Name, result.RunDir, result.LastModified.UTC().Format(time.RFC3339))
+		source := "run"
+		if result.CreationStage {
+			source = "creation-stage"
+		}
+		pf(stdout, "%s orphan=%q source=%s path=%q lastModified=%s\n",
+			verb, result.Name, source, result.RunDir, result.LastModified.UTC().Format(time.RFC3339))
 	}
 	return 0
 }

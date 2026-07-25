@@ -108,6 +108,12 @@ func newConfig(opts ...Option) config {
 // Dir returns the run directory.
 func (r *Run) Dir() string { return r.dir }
 
+// RunCreationStagingDir returns the hidden sibling directory where Create
+// assembles unpublished runs before their atomic rename into runsDir.
+func RunCreationStagingDir(runsDir string) string {
+	return filepath.Join(filepath.Dir(runsDir), "."+filepath.Base(runsDir)+".creating")
+}
+
 // Create scaffolds a new run journal under runsDir/<run-id>, pins the identity
 // to run.yaml, snapshots the given inputs by content digest, writes the initial
 // state.json checkpoint, and appends the run.started event. inputs may be nil
@@ -135,7 +141,7 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		return nil, err
 	}
 	defer releaseJournalLock(publicationLock)
-	stagingRoot := filepath.Join(filepath.Dir(runsDir), "."+filepath.Base(runsDir)+".creating")
+	stagingRoot := RunCreationStagingDir(runsDir)
 	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: create run staging root: %w", err)
 	}
