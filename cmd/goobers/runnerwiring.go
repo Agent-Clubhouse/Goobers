@@ -1867,6 +1867,33 @@ func knownAutomatedCheckNames() []string {
 	return names
 }
 
+type gooberHarnessConfigError struct {
+	Goober string
+	Err    error
+}
+
+func (e *gooberHarnessConfigError) Error() string {
+	return fmt.Sprintf("validate goober %q harness config: %v", e.Goober, e.Err)
+}
+
+func (e *gooberHarnessConfigError) Unwrap() error {
+	return e.Err
+}
+
+type workflowCompileError struct {
+	Gaggle   string
+	Workflow string
+	Err      error
+}
+
+func (e *workflowCompileError) Error() string {
+	return fmt.Sprintf("compile workflow %q: %v", e.Workflow, e.Err)
+}
+
+func (e *workflowCompileError) Unwrap() error {
+	return e.Err
+}
+
 // compiledMachines compiles every workflow in set, admission-checked against
 // goobers (capabilities, harness, gate-outcome coverage, and known automated
 // check names — #124), keyed by gaggle and workflow name. WorkflowVersion is
@@ -1893,7 +1920,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			harnessName = apiv1.HarnessCopilot
 		}
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+			return nil, &gooberHarnessConfigError{Goober: name, Err: err}
 		}
 		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
 			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
@@ -1912,7 +1939,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}

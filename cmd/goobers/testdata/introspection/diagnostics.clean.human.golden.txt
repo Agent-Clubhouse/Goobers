@@ -1,0 +1,1 @@
+OK: instance.yaml valid; config/ valid (1 gaggle(s), 1 goober(s), 1 workflow(s))

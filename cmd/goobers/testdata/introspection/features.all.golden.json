@@ -1,0 +1,518 @@
+{
+  "schemaVersion": "goobers.dev/features/v1",
+  "version": "dev",
+  "commit": "none",
+  "dslVersion": "all",
+  "features": [
+    {
+      "name": "gaggle.spec.project.checkout.sparse",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.sandbox",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.branch.escalate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.branches",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.goober",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.retry",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.retry.backoff",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.retry.maxAttempts",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.timeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.ci-status",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.land-outcome",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-equals",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-matches",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-not-equals",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-numeric-gte",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-numeric-lt",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.output-numeric-lte",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.queue-outcome",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.status-equals",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.params",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.pollIntervalSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.retry",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.retry.backoff",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.retry.maxAttempts",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.timeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human.approvers",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human.onTimeout.escalate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human.onTimeout.reject",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human.onTimeout.remind",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.human.timeout",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.name",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.gaggle",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.harness.claude-code",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.harness.copilot",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.harnessOptions",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.instructions",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.mcpServers",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.model",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.role",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.scaleFactor",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.skills",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.timeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.tools",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.workflows",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.ci-poll",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.resultFile",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.command",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.env",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.network.none",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.script",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.syncBase",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.workspace.repo",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.run.workspace.scratch",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.shell",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.agentic",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.continueOnError",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.deterministic",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.expectedOutputs",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.goal",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.goober",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.inputs",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.inputsFrom",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.limits",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.limits.maxCostUSD",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.limits.maxDurationSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.limits.maxTokens",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.name",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.next",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.onTimeout.fail",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.onTimeout.salvage",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.retry",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.retry.backoff",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.retry.maxAttempts",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.timeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.backlog-item",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.backlog-item.selector",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.manual",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.schedule",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.signal",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.webhook",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.gaggle",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.gates",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.maxChainDepth",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.maxConcurrentRuns",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.maxOpenPRs",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.maxRunsPerDay",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.maxRunsPerHour",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.start",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.tasks",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.triggers",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.terminal.abort",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.terminal.complete",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.terminal.escalate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    }
+  ]
+}
