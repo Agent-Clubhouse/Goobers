@@ -73,9 +73,9 @@ spec:
       next: pr-select
 
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI goobers/implementation/* PR not
-    # already carrying a merge-review label. The selected PR is leased in the
-    # same claim namespace gather-pr-context uses, excluding concurrent
+    # PRs): one open, non-draft, green-CI implementation or docs-updater PR
+    # not already carrying a merge-review label. The selected PR is leased in
+    # the same claim namespace gather-pr-context uses, excluding concurrent
     # review/remediation of one PR.
     - name: pr-select
       type: deterministic
@@ -83,7 +83,7 @@ spec:
       run:
         command: ["goobers", "pr-select"]
       inputs:
-        headPrefix: "goobers/implementation/"
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write

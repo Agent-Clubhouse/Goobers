@@ -47,7 +47,7 @@ spec:
       run:
         command: ["goobers", "pr-select"]
       inputs:
-        headPrefix: "goobers/implementation/"
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write

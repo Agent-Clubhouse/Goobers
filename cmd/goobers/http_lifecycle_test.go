@@ -41,6 +41,21 @@ func freeLoopbackAddress(t *testing.T) string {
 	return address
 }
 
+// holdLoopbackAddress reserves a loopback address for the lifetime of the test
+// and keeps it bound. Use it instead of freeLoopbackAddress when the assertion
+// is that nothing else binds the address: releasing the port first leaves a
+// window in which an unrelated process on the machine can claim it, which reads
+// as a failure of the code under test.
+func holdLoopbackAddress(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
 func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	root := initDeterministicDemo(t)
 	address := freeLoopbackAddress(t)
