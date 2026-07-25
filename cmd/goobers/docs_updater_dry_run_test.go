@@ -27,12 +27,82 @@ import (
 
 const (
 	docsDryRunID       = "docs-dry-run"
+	docsNoWorkRunID    = "docs-no-work"
 	docsDryRunTokenEnv = "GOOBERS_DOCS_DRY_RUN_TOKEN"
 	docsDryRunFile     = "docs/generated.md"
 	docsDryRunMakeEnv  = "GOOBERS_DOCS_DRY_RUN_MAKE"
 )
 
 func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
+	dryRun := runDocsUpdaterDryRun(t, docsDryRunID, apiv1.ResultSuccess)
+	definition := dryRun.definition
+	if dryRun.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q at %q, want completed; journal: %s", dryRun.result.Phase, dryRun.result.FinalState, docsDryRunJournalSummary(t, dryRun.runDir))
+	}
+
+	assertDocsDryRunStages(t, dryRun.runDir, []string{"signal-gather", "update-docs", "validate", "push-branch", "open-pr"})
+
+	dryRun.server.mu.Lock()
+	if len(dryRun.server.prs) != 1 {
+		count := len(dryRun.server.prs)
+		dryRun.server.mu.Unlock()
+		t.Fatalf("opened %d PRs, want one", count)
+	}
+	pr := *dryRun.server.prs[1]
+	dryRun.server.mu.Unlock()
+
+	wantHead := providers.BranchName(definition.Name, docsDryRunID)
+	if pr.head != wantHead || pr.base != "main" {
+		t.Fatalf("PR head/base = %q/%q, want %q/main", pr.head, pr.base, wantHead)
+	}
+	if !branchExistsOnOrigin(t, dryRun.origin, wantHead) {
+		t.Fatalf("PR head %q was not pushed to origin", wantHead)
+	}
+	changed := strings.Fields(runGitOutputT(
+		t,
+		dryRun.origin,
+		"-c", "safe.bareRepository=all",
+		"diff", "--name-only", "main..."+wantHead,
+	))
+	if want := []string{docsDryRunFile}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("PR changed paths = %v, want docs-only %v", changed, want)
+	}
+	for _, path := range changed {
+		if !pathWithinDocsRoots(path, definition.Spec.DocsRoots) {
+			t.Fatalf("PR path %q is outside configured docs roots %v", path, definition.Spec.DocsRoots)
+		}
+	}
+}
+
+func TestDocsUpdaterAgenticNoWorkCompletesWithoutPublishing(t *testing.T) {
+	dryRun := runDocsUpdaterDryRun(t, docsNoWorkRunID, apiv1.ResultNoWork)
+	if dryRun.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q at %q, want completed; journal: %s", dryRun.result.Phase, dryRun.result.FinalState, docsDryRunJournalSummary(t, dryRun.runDir))
+	}
+	assertDocsDryRunStages(t, dryRun.runDir, []string{"signal-gather", "update-docs"})
+
+	dryRun.server.mu.Lock()
+	prCount := len(dryRun.server.prs)
+	dryRun.server.mu.Unlock()
+	if prCount != 0 {
+		t.Fatalf("opened %d PRs, want none", prCount)
+	}
+	head := providers.BranchName(dryRun.definition.Name, docsNoWorkRunID)
+	if branchExistsOnOrigin(t, dryRun.origin, head) {
+		t.Fatalf("no-work branch %q was pushed to origin", head)
+	}
+}
+
+type docsUpdaterDryRun struct {
+	definition apiv1.Workflow
+	origin     string
+	server     *fakeGitHubServer
+	runDir     string
+	result     runner.Result
+}
+
+func runDocsUpdaterDryRun(t *testing.T, runID string, agentStatus apiv1.ResultStatus) docsUpdaterDryRun {
+	t.Helper()
 	definition := loadShippedDocsUpdater(t)
 	machine, err := workflow.Compile(workflow.Definition{
 		Name:       definition.Name,
@@ -64,17 +134,16 @@ func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write dry-run instance config: %v", err)
 	}
-
 	gaggleLayout := layout.ForGaggle(definition.Spec.Gaggle)
 	manager, err := worktree.NewManager(gaggleLayout.WorkcopiesDir())
 	if err != nil {
 		t.Fatalf("create worktree manager: %v", err)
 	}
 	runsDir := gaggleLayout.RunsDir()
-	localRunner := newDocsDryRunRunner(t, instanceRoot, runsDir, origin, manager)
+	localRunner := newDocsDryRunRunner(t, instanceRoot, runsDir, origin, manager, agentStatus)
 
 	result, err := localRunner.Start(context.Background(), runner.StartInput{
-		RunID:   docsDryRunID,
+		RunID:   runID,
 		Machine: machine,
 		Gaggle:  definition.Spec.Gaggle,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
@@ -88,42 +157,12 @@ func TestDocsUpdaterNonEmptyDryRunOpensDocsOnlyPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run shipped docs-updater: %v", err)
 	}
-	runDir := filepath.Join(runsDir, docsDryRunID)
-	if result.Phase != journal.PhaseCompleted {
-		t.Fatalf("phase = %q at %q, want completed; journal: %s", result.Phase, result.FinalState, docsDryRunJournalSummary(t, runDir))
-	}
-
-	assertDocsDryRunStages(t, runDir)
-
-	server.mu.Lock()
-	if len(server.prs) != 1 {
-		count := len(server.prs)
-		server.mu.Unlock()
-		t.Fatalf("opened %d PRs, want one", count)
-	}
-	pr := *server.prs[1]
-	server.mu.Unlock()
-
-	wantHead := providers.BranchName(definition.Name, docsDryRunID)
-	if pr.head != wantHead || pr.base != "main" {
-		t.Fatalf("PR head/base = %q/%q, want %q/main", pr.head, pr.base, wantHead)
-	}
-	if !branchExistsOnOrigin(t, origin, wantHead) {
-		t.Fatalf("PR head %q was not pushed to origin", wantHead)
-	}
-	changed := strings.Fields(runGitOutputT(
-		t,
-		origin,
-		"-c", "safe.bareRepository=all",
-		"diff", "--name-only", "main..."+wantHead,
-	))
-	if want := []string{docsDryRunFile}; !reflect.DeepEqual(changed, want) {
-		t.Fatalf("PR changed paths = %v, want docs-only %v", changed, want)
-	}
-	for _, path := range changed {
-		if !pathWithinDocsRoots(path, definition.Spec.DocsRoots) {
-			t.Fatalf("PR path %q is outside configured docs roots %v", path, definition.Spec.DocsRoots)
-		}
+	return docsUpdaterDryRun{
+		definition: definition,
+		origin:     origin,
+		server:     server,
+		runDir:     filepath.Join(runsDir, runID),
+		result:     result,
 	}
 }
 
@@ -177,6 +216,7 @@ func newDocsDryRunRunner(
 	runsDir string,
 	origin string,
 	manager *worktree.Manager,
+	agentStatus apiv1.ResultStatus,
 ) *runner.Runner {
 	t.Helper()
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
@@ -233,24 +273,28 @@ func newDocsDryRunRunner(
 					if request.Mode != harness.ModeInvoke {
 						return fmt.Errorf("unexpected harness mode %q", request.Mode)
 					}
-					path := filepath.Join(request.Workspace, docsDryRunFile)
-					if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-						return err
+					summary := "documentation already accurate"
+					if agentStatus == apiv1.ResultSuccess {
+						path := filepath.Join(request.Workspace, docsDryRunFile)
+						if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+							return err
+						}
+						if err := os.WriteFile(path, []byte("# Generated reference\n"), 0o644); err != nil {
+							return err
+						}
+						runGitT(t, request.Workspace, "add", docsDryRunFile)
+						runGitT(
+							t,
+							request.Workspace,
+							"-c", "user.name=docs fixture",
+							"-c", "user.email=docs-fixture@example.test",
+							"commit", "-m", "docs: add generated reference",
+						)
+						summary = "updated fixture documentation"
 					}
-					if err := os.WriteFile(path, []byte("# Generated reference\n"), 0o644); err != nil {
-						return err
-					}
-					runGitT(t, request.Workspace, "add", docsDryRunFile)
-					runGitT(
-						t,
-						request.Workspace,
-						"-c", "user.name=docs fixture",
-						"-c", "user.email=docs-fixture@example.test",
-						"commit", "-m", "docs: add generated reference",
-					)
 					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
-						Status:  apiv1.ResultSuccess,
-						Summary: "updated fixture documentation",
+						Status:  agentStatus,
+						Summary: summary,
 					})
 				},
 			}
@@ -318,7 +362,7 @@ func isDocsDryRunMakeProcess() bool {
 	return name == "make" || name == "make.exe"
 }
 
-func assertDocsDryRunStages(t *testing.T, runDir string) {
+func assertDocsDryRunStages(t *testing.T, runDir string, want []string) {
 	t.Helper()
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
@@ -334,7 +378,6 @@ func assertDocsDryRunStages(t *testing.T, runDir string) {
 			started = append(started, event.Stage)
 		}
 	}
-	want := []string{"signal-gather", "update-docs", "validate", "push-branch", "open-pr"}
 	if !reflect.DeepEqual(started, want) {
 		t.Fatalf("started stages = %v, want %v", started, want)
 	}
