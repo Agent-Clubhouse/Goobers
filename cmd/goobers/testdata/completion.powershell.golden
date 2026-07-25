@@ -13,6 +13,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'fix'
         'doctor'
         'config'
+        'speech'
         'up'
         'service'
         'worker'

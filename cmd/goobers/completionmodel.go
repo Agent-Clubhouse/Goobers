@@ -98,6 +98,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
 	},
+	"speech preflight": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"speech test": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
