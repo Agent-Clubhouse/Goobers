@@ -173,6 +173,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `task.goober` | 2.0 | ga | supported | dev |
 | `task.inputs` | 2.0 | ga | supported | dev |
 | `task.inputsFrom` | 2.0 | ga | supported | dev |
+| `task.inputsFrom.stageQualified` | 2.0 | preview | supported | dev |
 | `task.limits` | 2.0 | ga | supported | dev |
 | `task.limits.maxCostUSD` | 2.0 | ga | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | dev |
@@ -211,6 +212,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: none
+- Added: `task.inputsFrom.stageQualified`
 - Removed: none
 - Level changes: none
