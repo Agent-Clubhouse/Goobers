@@ -241,11 +241,9 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 		return "", fmt.Errorf("daemon did not report running within 30s; last status:\n%s\ndaemon log:\n%s", lastStatus, readLog(logFile, logPath))
 	}
 
-	releaseConsole, err := sendCtrlBreak(uint32(cmd.Process.Pid))
-	if err != nil {
+	if err := sendCtrlBreak(uint32(cmd.Process.Pid)); err != nil {
 		return "", fmt.Errorf("send Ctrl+Break to daemon process group: %w", err)
 	}
-	defer releaseConsole()
 	select {
 	case err := <-waitErr:
 		exited = true
@@ -280,30 +278,26 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 		"`daemon.clean_shutdown`.\n\n", nil
 }
 
-func sendCtrlBreak(consoleProcessID uint32) (func(), error) {
+func sendCtrlBreak(consoleProcessID uint32) error {
 	// The Actions runner is a Windows service and may not have a console. Give
-	// the daemon a dedicated console, attach here to target every process in
-	// that console, and ignore the event in this sender. The caller keeps this
-	// attachment until the daemon exits because Ctrl event delivery is asynchronous.
+	// the daemon a dedicated console, attach here only long enough to target
+	// every process in that console, and ignore the event in this sender.
 	_, _, _ = freeConsole.Call()
 	attached, _, attachErr := attachConsole.Call(uintptr(consoleProcessID))
 	if attached == 0 {
-		return nil, fmt.Errorf("attach to daemon console: %w", attachErr)
+		return fmt.Errorf("attach to daemon console: %w", attachErr)
 	}
-	release := func() {
-		_, _, _ = setConsoleCtrlHandler.Call(ignoreConsoleCtrl, 0)
+	defer func() {
 		_, _, _ = freeConsole.Call()
-	}
+	}()
 	ignored, _, handlerErr := setConsoleCtrlHandler.Call(ignoreConsoleCtrl, 1)
 	if ignored == 0 {
-		release()
-		return nil, fmt.Errorf("ignore Ctrl events in validation process: %w", handlerErr)
+		return fmt.Errorf("ignore Ctrl events in validation process: %w", handlerErr)
 	}
 	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, 0); err != nil {
-		release()
-		return nil, err
+		return err
 	}
-	return release, nil
+	return nil
 }
 
 func configureEphemeralAPI(root string) error {
