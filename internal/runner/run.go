@@ -1049,7 +1049,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if humanDecision.Gate != g.Name {
 					return Result{}, fmt.Errorf("runner: human decision for gate %q reached gate %q", humanDecision.Gate, g.Name)
 				}
-				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision)
+				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision, humanDecision.Actor)
 				humanDecision = nil
 			} else {
 				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch, knownOutcome)

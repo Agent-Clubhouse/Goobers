@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -740,16 +741,24 @@ func TestEvaluatorHumanGateRequiresExplicitDecision(t *testing.T) {
 	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("Evaluate without a human decision succeeded")
 	}
-	if _, err := ev.EvaluateHuman(g, "unknown"); err == nil {
+	if _, err := ev.EvaluateHuman(g, "unknown", ""); err == nil {
 		t.Fatal("EvaluateHuman accepted a decision with no branch")
 	}
 	restricted := g
 	restricted.Human = &apiv1.HumanGate{Approvers: []string{"maintainers"}}
-	if _, err := ev.EvaluateHuman(restricted, "pass"); err == nil {
-		t.Fatal("EvaluateHuman ignored configured approver restrictions")
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", ""); err == nil ||
+		!strings.Contains(err.Error(), "actor is required") {
+		t.Fatalf("EvaluateHuman without actor error = %v, want required actor", err)
+	}
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", "contributor"); err == nil ||
+		!strings.Contains(err.Error(), "not an authorized approver") {
+		t.Fatalf("EvaluateHuman unauthorized actor error = %v, want authorization failure", err)
+	}
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", "maintainers"); err != nil {
+		t.Fatalf("EvaluateHuman authorized actor: %v", err)
 	}
 
-	got, err := ev.EvaluateHuman(g, "needs-changes")
+	got, err := ev.EvaluateHuman(g, "needs-changes", "")
 	if err != nil {
 		t.Fatalf("EvaluateHuman: %v", err)
 	}

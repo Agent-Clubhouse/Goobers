@@ -24,9 +24,10 @@ Goal ladder (PO):
   `gate.paused`; `Runner.Resume` accepts an explicit gate-scoped decision and records the
   selected configured branch as `gate.evaluated`. Decisions bind to the paused event's sequence
   so a delayed request cannot resolve a later visit to the same gate. A restart with no decision
-  remains paused, and an unknown, mismatched, or stale decision fails closed. The CLI/API
-  approval surface remains separate work (#170); configured timeout behavior is rejected until
-  the runner can enforce it durably.
+  remains paused, and an unknown, mismatched, stale, or unauthorized decision fails closed.
+  Configured approvers are enforced against the submitted actor identity. The CLI/API approval
+  surface remains separate work (#170); configured timeout behavior is rejected until the runner
+  can enforce it durably.
 - **Automated/agentic escalation works:** bounded repass budget (`DefaultMaxRepasses = 3`) → on exceed,
   the gate branch is overridden to `@escalate` (`internal/gate/evaluate.go`), and `EscalationNotifier`
   posts a **comment on the driving issue/PR** (`internal/gate/escalate.go`) — that's the *entire* surface.

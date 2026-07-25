@@ -23,6 +23,9 @@ const DefaultMaxRepasses = 3
 type Result struct {
 	// Gate is the evaluated gate's name.
 	Gate string
+	// Actor identifies the human principal that supplied a human-gate
+	// decision. Empty for automated and agentic gates.
+	Actor string
 	// Outcome is the evaluator outcome (a check's "pass"/"fail", or an
 	// agentic Verdict's Decision string), or the synthesized fail-closed
 	// outcome for an interrupted-budget escalation.
@@ -279,27 +282,51 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
-// decision must exactly match a configured branch; unknown values fail closed.
-// Human gates execute nothing, so there is no pre-dispatch gate.started marker.
-func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision string) (Result, error) {
-	if g.Evaluator != apiv1.EvaluatorHuman {
-		return Result{}, fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
+// actor must match a configured approver when the gate restricts approvers, and
+// the decision must exactly match a configured branch. Human gates execute
+// nothing, so there is no pre-dispatch gate.started marker.
+func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision, actor string) (Result, error) {
+	if err := ValidateHumanDecision(g, decision, actor); err != nil {
+		return Result{}, err
 	}
-	if g.Human != nil && len(g.Human.Approvers) > 0 {
-		return Result{}, fmt.Errorf("gate %q: human approver restrictions are not supported yet", g.Name)
-	}
-	if decision == "" {
-		return Result{}, fmt.Errorf("gate %q: human decision is required", g.Name)
-	}
-	target, ok := wf.BranchTarget(g, decision)
-	if !ok {
-		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, decision)
-	}
-	r := Result{Gate: g.Name, Outcome: decision, Target: target}
+	target, _ := wf.BranchTarget(g, decision)
+	r := Result{Gate: g.Name, Actor: actor, Outcome: decision, Target: target}
 	if _, err := recordVerdict(e.Journal, r, ""); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
 	}
 	return r, nil
+}
+
+// ValidateHumanDecision verifies a human-gate decision without mutating its
+// journal. The runner uses it before resuming so invalid external input cannot
+// fail an otherwise healthy paused run.
+func ValidateHumanDecision(g apiv1.Gate, decision, actor string) error {
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		return fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
+	}
+	if g.Human != nil && len(g.Human.Approvers) > 0 {
+		if actor == "" {
+			return fmt.Errorf("gate %q: human decision actor is required by approver restrictions", g.Name)
+		}
+		authorized := false
+		for _, approver := range g.Human.Approvers {
+			if actor == approver {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return fmt.Errorf("gate %q: actor %q is not an authorized approver", g.Name, actor)
+		}
+	}
+	if decision == "" {
+		return fmt.Errorf("gate %q: human decision is required", g.Name)
+	}
+	_, ok := wf.BranchTarget(g, decision)
+	if !ok {
+		return fmt.Errorf("gate %q: decision %q has no defined branch (never a silent pass, GT-002)", g.Name, decision)
+	}
+	return nil
 }
 
 // EvaluateKnownOutcome applies the gate's branch and repass policy to an

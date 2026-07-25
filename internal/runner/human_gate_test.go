@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-func humanGateFixtureMachine(t *testing.T) *workflow.Machine {
+func humanGateFixtureMachine(t *testing.T, approvers ...string) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
 		Name:    "human-approval",
@@ -26,7 +26,7 @@ func humanGateFixtureMachine(t *testing.T) *workflow.Machine {
 				{
 					Name:      "approval",
 					Evaluator: apiv1.EvaluatorHuman,
-					Human:     &apiv1.HumanGate{},
+					Human:     &apiv1.HumanGate{Approvers: approvers},
 					Branches: map[string]string{
 						"pass":          workflow.TerminalComplete,
 						"needs-changes": "revision",
@@ -258,6 +258,50 @@ func TestRunnerHumanGateDecisionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRunnerHumanGateEnforcesConfiguredApprovers(t *testing.T) {
+	machine := humanGateFixtureMachine(t, "maintainers")
+	r, runsDir := newTestRunnerWithDeterministic(t, nil, nil)
+	const runID = "human-restricted-approvers"
+	startHumanGateRun(t, r, machine, runID)
+
+	pauseSeq := latestHumanPauseSeq(t, runsDir, runID, "approval")
+	unauthorized := humanResumeInput(runID, machine, "approval", pauseSeq, "pass")
+	unauthorized.HumanDecision.Actor = "contributor"
+	if _, err := r.Resume(context.Background(), unauthorized); err == nil ||
+		!strings.Contains(err.Error(), `actor "contributor" is not an authorized approver`) {
+		t.Fatalf("unauthorized Resume error = %v, want authorization failure", err)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events after refused decision: %v", err)
+	}
+	if len(events) != 2 || events[len(events)-1].Type != journal.EventGatePaused {
+		t.Fatalf("unauthorized decision mutated journal: %+v", events)
+	}
+
+	authorized := humanResumeInput(runID, machine, "approval", pauseSeq, "pass")
+	authorized.HumanDecision.Actor = "maintainers"
+	result, err := r.Resume(context.Background(), authorized)
+	if err != nil {
+		t.Fatalf("authorized Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("authorized Resume phase = %q, want completed", result.Phase)
+	}
+	events, err = rd.Events()
+	if err != nil {
+		t.Fatalf("Events after authorized decision: %v", err)
+	}
+	if len(events) != 4 || events[2].Type != journal.EventGateEvaluated || events[2].Actor != "maintainers" {
+		t.Fatalf("authorized decision events = %+v, want actor on gate.evaluated", events)
+	}
+}
+
 func TestRunnerHumanGateReplaysRecordedDecision(t *testing.T) {
 	machine := humanGateFixtureMachine(t)
 	r, runsDir := newTestRunnerWithDeterministic(t, nil, nil)
@@ -285,7 +329,7 @@ func TestRunnerHumanGateReplaysRecordedDecision(t *testing.T) {
 			if !ok {
 				t.Fatal("fixture has no approval gate")
 			}
-			if _, err := (&gate.Evaluator{Journal: run}).EvaluateHuman(approval, test.decision); err != nil {
+			if _, err := (&gate.Evaluator{Journal: run}).EvaluateHuman(approval, test.decision, ""); err != nil {
 				t.Fatalf("record human decision: %v", err)
 			}
 			if err := run.Close(); err != nil {
@@ -422,7 +466,7 @@ func TestRunnerHumanGateRecordedDecisionOverridesMissingCheckpoint(t *testing.T)
 		t.Fatalf("Recover: %v", err)
 	}
 	approval, _ := machine.Gate("approval")
-	if _, err := (&gate.Evaluator{Journal: run}).EvaluateHuman(approval, "pass"); err != nil {
+	if _, err := (&gate.Evaluator{Journal: run}).EvaluateHuman(approval, "pass", ""); err != nil {
 		t.Fatalf("record human decision: %v", err)
 	}
 	if err := run.Close(); err != nil {

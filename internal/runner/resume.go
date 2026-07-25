@@ -43,12 +43,15 @@ type ResumeInput struct {
 
 // HumanGateDecision is an explicit outcome submitted for one paused human
 // gate. PauseSeq binds the decision to the durable gate.paused occurrence so a
-// delayed request cannot resolve a later visit to the same gate. Decision must
-// exactly match one of that gate's configured branch keys.
+// delayed request cannot resolve a later visit to the same gate. Actor is the
+// authenticated principal supplying the decision and is required when the gate
+// restricts approvers. Decision must exactly match one of that gate's configured
+// branch keys.
 type HumanGateDecision struct {
 	Gate     string
 	PauseSeq uint64
 	Decision string
+	Actor    string
 }
 
 // ResumeFromTerminalInput describes an explicit human action that reopens an
@@ -115,6 +118,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		decision := *in.HumanDecision
 		decision.Gate = strings.TrimSpace(decision.Gate)
 		decision.Decision = strings.TrimSpace(decision.Decision)
+		decision.Actor = strings.TrimSpace(decision.Actor)
 		if decision.Gate == "" {
 			return Result{}, fmt.Errorf("runner: human decision gate is required")
 		}
@@ -311,14 +315,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		} else if in.HumanDecision.Gate != humanProgress.gate || in.HumanDecision.PauseSeq != humanProgress.pauseSeq {
 			return Result{}, fmt.Errorf("runner: run %q is awaiting human gate %q pause %d, not %q pause %d",
 				in.RunID, humanProgress.gate, humanProgress.pauseSeq, in.HumanDecision.Gate, in.HumanDecision.PauseSeq)
-		} else {
-			g, ok := in.Machine.Gate(humanProgress.gate)
-			if !ok || g.Evaluator != apiv1.EvaluatorHuman {
-				return Result{}, fmt.Errorf("runner: paused gate %q is not a human gate", humanProgress.gate)
-			}
-			if _, ok := workflow.BranchTarget(g, in.HumanDecision.Decision); !ok {
-				return Result{}, fmt.Errorf("runner: human gate %q decision %q has no defined branch (never a silent pass, GT-002)", humanProgress.gate, in.HumanDecision.Decision)
-			}
+		}
+		g, ok := in.Machine.Gate(humanProgress.gate)
+		if !ok || g.Evaluator != apiv1.EvaluatorHuman {
+			return Result{}, fmt.Errorf("runner: paused gate %q is not a human gate", humanProgress.gate)
+		}
+		if err := gate.ValidateHumanDecision(g, in.HumanDecision.Decision, in.HumanDecision.Actor); err != nil {
+			return Result{}, fmt.Errorf("runner: %w", err)
 		}
 	}
 	rerun, seedEvents, err := pendingRerun(events, in.Machine)
