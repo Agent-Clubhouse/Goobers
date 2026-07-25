@@ -3,6 +3,7 @@ package readservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -190,6 +191,8 @@ type RunEvent struct {
 	Branch          int                    `json:"branch"`
 	Time            time.Time              `json:"time"`
 	KnownSchema     bool                   `json:"knownSchema"`
+	Category        RunEventCategory       `json:"category"`
+	ReplayChapter   bool                   `json:"replayChapter"`
 	Stage           string                 `json:"stage,omitempty"`
 	Attempt         int                    `json:"attempt,omitempty"`
 	AttemptClass    string                 `json:"attemptClass,omitempty"`
@@ -239,6 +242,10 @@ type AttemptList struct {
 
 // StageAttempt is one durable stage traversal.
 type StageAttempt struct {
+	// ID is opaque and remains stable when a live attempt completes.
+	ID string `json:"id"`
+	// Visit groups retries under the same per-stage graph traversal.
+	Visit          int                  `json:"visit"`
 	Number         int                  `json:"number"`
 	Class          string               `json:"class"`
 	Status         string               `json:"status"`
@@ -250,6 +257,7 @@ type StageAttempt struct {
 	Outputs        map[string]any       `json:"outputs,omitempty"`
 	Artifacts      []ArtifactMetadata   `json:"artifacts"`
 	Error          *journal.ErrorDetail `json:"error,omitempty"`
+	branch         int
 }
 
 // ArtifactContent is a verified, already-redacted journal artifact.
@@ -505,6 +513,19 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 // every run it executes, so the set difference is empty and this only lists
 // directory names (never parses a journal). An individual run that fails to
 // ingest simply stays out of this pass rather than failing the whole list.
+//
+// The scan is incremental. A new or removed run directory bumps its parent's
+// mtime, so a parent whose mtime has not advanced past the last successful
+// reconcile's watermark cannot hold anything new and is skipped without a
+// ReadDir. Steady-state reconcile therefore costs one stat per run-parent
+// directory rather than one ReadDir over every run — bounded by newly-appeared
+// runs, not by history or by the orphan directories that accumulate alongside
+// it. The first reconcile (zero watermark) still full-scans so nothing on disk
+// is missed on startup. This bound is safe because a run that is actively
+// executing is ingested into the index at write time by the runner; reconcile
+// is only a backstop for imported/migrated/externally-added runs, whose
+// appearance necessarily bumps a parent mtime, so a bounded incremental scan
+// can never hide a live run.
 func (s *Local) reconcileIndex(ctx context.Context) error {
 	// Serialize reconciliation and throttle it: concurrent callers block here,
 	// and once the first completes the rest observe a fresh lastReconcile and
@@ -526,7 +547,31 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Watermarks are compared against filesystem mtimes, so they are real wall
+	// clock and independent of the injectable s.now() used only for TTL
+	// throttling. newWatermark tracks the newest parent mtime across every parent
+	// (skipped ones included), and advances the stored watermark only on success.
+	previousWatermark := s.reconcileWatermark
+	fullScan := previousWatermark.IsZero()
+	newWatermark := previousWatermark
 	for _, runsDir := range runDirs {
+		// Stat the parent before reading it: a run directory added concurrently
+		// with or after this stat lands on a strictly later mtime (on any
+		// fine-grained filesystem), so the next reconcile still rediscovers it.
+		info, err := os.Stat(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("inspect runs directory: %w", err)
+		}
+		if mtime := info.ModTime(); mtime.After(newWatermark) {
+			newWatermark = mtime
+		}
+		if !fullScan && !info.ModTime().After(previousWatermark) {
+			continue
+		}
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -538,6 +583,9 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if reconcileInspectObserver != nil {
+				reconcileInspectObserver(entry.Name())
+			}
 			if !entry.IsDir() || !apiv1.ValidRunID(entry.Name()) {
 				continue
 			}
@@ -547,6 +595,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
 		}
 	}
+	s.reconcileWatermark = newWatermark
 	s.lastReconcile = s.now()
 	return nil
 }
@@ -556,6 +605,13 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 // that a burst of concurrent/rapid ListRuns collapses to a single scan. Always
 // nil in production.
 var reconcileScanObserver func()
+
+// reconcileInspectObserver, when non-nil, is invoked with each directory entry
+// name a reconcile scan actually inspects — i.e. one it reaches inside a parent
+// it did not skip via the mtime watermark. It is a test seam proving the
+// incremental scan does near-zero work when no run directory has changed. Always
+// nil in production.
+var reconcileInspectObserver func(name string)
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
 	return s.runSummariesForStage(ctx, skipUnreadable, "")
@@ -724,7 +780,7 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 		return AttemptList{}, err
 	}
 
-	attempts := collectStageAttempts(run.records, indexArtifacts(run.records), stage)[stage]
+	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
 }
 
@@ -1052,7 +1108,7 @@ func summarizeRunForStage(
 	sort.Strings(stages)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
-		stageAttempts = collectStageAttempts(run.records, artifactIndex{}, attemptStage)
+		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
 
 	return RunSummary{
@@ -1506,13 +1562,16 @@ func eventErrorReason(detail *journal.ErrorDetail) string {
 
 func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent {
 	event := record.Event
+	category, replayChapter := classifyRunEvent(event)
 	projected := RunEvent{
-		Schema:      event.Schema,
-		Seq:         event.Seq,
-		Type:        event.Type,
-		Branch:      event.Branch,
-		Time:        event.Time,
-		KnownSchema: event.KnownSchema(),
+		Schema:        event.Schema,
+		Seq:           event.Seq,
+		Type:          event.Type,
+		Branch:        event.Branch,
+		Time:          event.Time,
+		KnownSchema:   event.KnownSchema(),
+		Category:      category,
+		ReplayChapter: replayChapter,
 	}
 	if !projected.KnownSchema {
 		projected.Raw = append(json.RawMessage(nil), record.Raw...)
@@ -1761,11 +1820,13 @@ func (i *artifactIndex) applyRedaction(event journal.Event) {
 }
 
 func collectStageAttempts(
+	runID string,
 	records []journal.EventRecord,
 	artifacts artifactIndex,
 	stage string,
 ) map[string][]StageAttempt {
 	byStage := make(map[string][]StageAttempt)
+	visits := make(map[string]stageVisitState)
 	if stage != "" {
 		byStage[stage] = []StageAttempt{}
 	}
@@ -1802,21 +1863,17 @@ func collectStageAttempts(
 		}
 		attempts := byStage[event.Stage]
 		switch event.Type {
+		case journal.EventStageRerunRequested:
+			visit := visits[event.Stage]
+			visit.humanRequested = true
+			visits[event.Stage] = visit
 		case journal.EventStageStarted:
-			started := event.Time
-			attempts = append(attempts, StageAttempt{
-				Number:     event.Attempt,
-				Class:      attemptClass(event.AttemptClass),
-				Status:     "running",
-				StartedSeq: event.Seq,
-				StartedAt:  &started,
-				Artifacts:  []ArtifactMetadata{},
-			})
+			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
 			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass); i >= 0 {
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
 				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
 				}
@@ -1825,24 +1882,16 @@ func collectStageAttempts(
 			if event.Error == nil || event.Error.Code != "executor_error" {
 				continue
 			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
 		case journal.EventStageFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
@@ -1864,6 +1913,60 @@ func collectStageAttempts(
 		byStage[event.Stage] = attempts
 	}
 	return byStage
+}
+
+type stageVisitState struct {
+	ordinal        int
+	humanVisit     bool
+	humanRequested bool
+}
+
+func newStageAttempt(
+	runID string,
+	event journal.Event,
+	visits map[string]stageVisitState,
+	started bool,
+) StageAttempt {
+	visit := visits[event.Stage]
+	switch event.AttemptClass {
+	case "":
+		visit.ordinal++
+		visit.humanVisit = false
+		visit.humanRequested = false
+	case journal.AttemptHuman:
+		// Legacy journals can lack stage.rerun.requested. Treat their first
+		// consecutive human attempt as the visit boundary.
+		if visit.humanRequested || !visit.humanVisit || visit.ordinal == 0 {
+			visit.ordinal++
+		}
+		visit.humanVisit = true
+		visit.humanRequested = false
+	default:
+		if visit.ordinal == 0 {
+			visit.ordinal = 1
+		}
+	}
+	visits[event.Stage] = visit
+	attempt := StageAttempt{
+		ID:        stageAttemptID(runID, event.Branch, event.Stage, event.Seq),
+		Visit:     visit.ordinal,
+		Number:    event.Attempt,
+		Class:     attemptClass(event.AttemptClass),
+		Artifacts: []ArtifactMetadata{},
+		branch:    event.Branch,
+	}
+	if started {
+		eventTime := event.Time
+		attempt.Status = "running"
+		attempt.StartedSeq = event.Seq
+		attempt.StartedAt = &eventTime
+	}
+	return attempt
+}
+
+func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
+	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func finishAttempt(
@@ -1905,21 +2008,35 @@ func attemptClass(class journal.AttemptClass) string {
 	return string(class)
 }
 
-func matchingOpenAttempt(attempts []StageAttempt, number int, class journal.AttemptClass) int {
+func matchingOpenAttempt(
+	attempts []StageAttempt,
+	number int,
+	class journal.AttemptClass,
+	branch int,
+) int {
 	wantClass := attemptClass(class)
-	fallback := -1
+	bestIndex := -1
+	bestScore := -1
 	for i := len(attempts) - 1; i >= 0; i-- {
 		if attempts[i].FinishedSeq != 0 || attempts[i].Number != number {
 			continue
 		}
+		score := 0
+		if attempts[i].branch == branch {
+			score += 2
+		}
 		if attempts[i].Class == wantClass {
+			score++
+		}
+		if score > bestScore {
+			bestIndex = i
+			bestScore = score
+		}
+		if score == 3 {
 			return i
 		}
-		if fallback < 0 {
-			fallback = i
-		}
 	}
-	return fallback
+	return bestIndex
 }
 
 func scalarOutputs(outputs map[string]any) map[string]any {

@@ -20,6 +20,7 @@ const (
 
 	HealthPath                   = V1Prefix + "/health"
 	InstancePath                 = V1Prefix + "/instance"
+	PortalConfigPath             = V1Prefix + "/portal/config"
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
@@ -42,6 +43,7 @@ type RouteID string
 const (
 	RouteHealth                   RouteID = "health"
 	RouteInstance                 RouteID = "instance"
+	RoutePortalConfig             RouteID = "portalConfig"
 	RouteGaggles                  RouteID = "gaggles"
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
@@ -69,6 +71,7 @@ type Route struct {
 var v1Routes = []Route{
 	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation},
+	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation},

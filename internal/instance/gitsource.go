@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -57,8 +58,11 @@ type GitSource struct {
 	mirror        string
 	tokenSource   GitTokenSource
 	askpass       string
+	createSymlink func(string, string) error
 
-	mu sync.Mutex
+	mu                 sync.Mutex
+	warnings           []string
+	warningsByRevision map[string][]string
 }
 
 var _ ConfigSource = (*GitSource)(nil)
@@ -109,10 +113,12 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 	sum := sha256.Sum256([]byte(repository))
 	repositoryDir := filepath.Join(managedRoot, hex.EncodeToString(sum[:])[:16])
 	source := &GitSource{
-		repository:    repository,
-		ref:           ref,
-		local:         local,
-		repositoryDir: repositoryDir,
+		repository:         repository,
+		ref:                ref,
+		local:              local,
+		repositoryDir:      repositoryDir,
+		createSymlink:      os.Symlink,
+		warningsByRevision: make(map[string][]string),
 	}
 
 	if !local {
@@ -219,6 +225,7 @@ func (s *GitSource) Resolve(ctx context.Context) (string, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.warnings = nil
 
 	if _, err := s.gitOutput(ctx, "validate tracked ref", "check-ref-format", s.ref); err != nil {
 		return "", fmt.Errorf("git config source: invalid tracked ref: %w", err)
@@ -242,46 +249,65 @@ func (s *GitSource) Resolve(ctx context.Context) (string, error) {
 	}
 	revision := strings.TrimSpace(string(revisionBytes))
 
-	return s.materializeRevision(ctx, repoArgs, revision)
+	destination, warnings, err := s.materializeRevision(ctx, repoArgs, revision)
+	if err != nil {
+		return "", err
+	}
+	s.warnings = append([]string(nil), warnings...)
+	return destination, nil
 }
 
-func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, revision string) (string, error) {
+// Warnings reports non-fatal issues encountered while resolving the most
+// recently materialized snapshot.
+func (s *GitSource) Warnings() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.warnings...)
+}
+
+func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, revision string) (string, []string, error) {
 	snapshotsDir := filepath.Join(s.repositoryDir, "snapshots")
 	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
-		return "", fmt.Errorf("git config source: create snapshots directory: %w", err)
+		return "", nil, fmt.Errorf("git config source: create snapshots directory: %w", err)
 	}
 	destination := filepath.Join(snapshotsDir, revision)
 	switch info, err := os.Lstat(destination); {
 	case err == nil && !info.IsDir():
-		return "", fmt.Errorf("git config source: snapshot path %s is not a directory", destination)
+		return "", nil, fmt.Errorf("git config source: snapshot path %s is not a directory", destination)
 	case err == nil:
-		return destination, nil
+		return destination, append([]string(nil), s.warningsByRevision[revision]...), nil
 	case !os.IsNotExist(err):
-		return "", fmt.Errorf("git config source: inspect snapshot: %w", err)
+		return "", nil, fmt.Errorf("git config source: inspect snapshot: %w", err)
 	}
 
 	staging, err := os.MkdirTemp(snapshotsDir, "tree-")
 	if err != nil {
-		return "", fmt.Errorf("git config source: create snapshot: %w", err)
+		return "", nil, fmt.Errorf("git config source: create snapshot: %w", err)
 	}
-	if err := s.extractRevision(ctx, repoArgs, revision, staging); err != nil {
-		return "", errors.Join(err, os.RemoveAll(staging))
+	warnings, err := s.extractRevision(ctx, repoArgs, revision, staging)
+	if err != nil {
+		return "", nil, errors.Join(err, os.RemoveAll(staging))
 	}
 	renameFailure := os.Rename(staging, destination)
 	if renameFailure == nil {
-		return destination, nil
+		s.warningsByRevision[revision] = append([]string(nil), warnings...)
+		return destination, append([]string(nil), warnings...), nil
 	}
 	renameErr := fmt.Errorf("git config source: install snapshot: %w", renameFailure)
 	switch info, statErr := os.Lstat(destination); {
 	case statErr == nil && info.IsDir():
 		if removeErr := os.RemoveAll(staging); removeErr != nil {
-			return "", errors.Join(renameErr, removeErr)
+			return "", nil, errors.Join(renameErr, removeErr)
 		}
-		return destination, nil
+		s.warningsByRevision[revision] = append([]string(nil), warnings...)
+		return destination, append([]string(nil), warnings...), nil
 	case statErr == nil:
-		return "", errors.Join(renameErr, os.RemoveAll(staging))
+		return "", nil, errors.Join(renameErr, os.RemoveAll(staging))
 	default:
-		return "", errors.Join(renameErr, statErr, os.RemoveAll(staging))
+		return "", nil, errors.Join(renameErr, statErr, os.RemoveAll(staging))
 	}
 }
 
@@ -362,50 +388,51 @@ type gitTreeEntry struct {
 	name       string
 }
 
-func (s *GitSource) extractRevision(ctx context.Context, repoArgs []string, revision, destination string) error {
+func (s *GitSource) extractRevision(ctx context.Context, repoArgs []string, revision, destination string) ([]string, error) {
 	output, err := s.gitOutput(
 		ctx,
 		"list tracked revision",
 		append(repoArgs, "ls-tree", "-r", "-z", "--full-tree", revision)...,
 	)
 	if err != nil {
-		return fmt.Errorf("git config source: list revision %s: %w", revision, err)
+		return nil, fmt.Errorf("git config source: list revision %s: %w", revision, err)
 	}
+	var warnings []string
 
 	for len(output) > 0 {
 		end := bytes.IndexByte(output, 0)
 		if end < 0 {
-			return fmt.Errorf("git config source: malformed tree listing for revision %s", revision)
+			return nil, fmt.Errorf("git config source: malformed tree listing for revision %s", revision)
 		}
 		entry, err := parseGitTreeEntry(output[:end])
 		if err != nil {
-			return fmt.Errorf("git config source: parse revision %s: %w", revision, err)
+			return nil, fmt.Errorf("git config source: parse revision %s: %w", revision, err)
 		}
 		output = output[end+1:]
 
 		treePath, target, err := treeTarget(destination, entry.name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if entry.objectType != "blob" {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"git config source: unsupported tree entry type %q for %q",
 				entry.objectType,
 				entry.name,
 			)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("git config source: create parent for %q: %w", entry.name, err)
+			return nil, fmt.Errorf("git config source: create parent for %q: %w", entry.name, err)
 		}
 
 		switch entry.mode {
 		case "100644":
 			if err := s.writeBlob(ctx, repoArgs, entry.objectID, target, 0o644); err != nil {
-				return fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
+				return nil, fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
 			}
 		case "100755":
 			if err := s.writeBlob(ctx, repoArgs, entry.objectID, target, 0o755); err != nil {
-				return fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
+				return nil, fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
 			}
 		case "120000":
 			linkTarget, err := s.gitOutput(
@@ -414,19 +441,28 @@ func (s *GitSource) extractRevision(ctx context.Context, repoArgs []string, revi
 				append(repoArgs, "cat-file", "blob", entry.objectID)...,
 			)
 			if err != nil {
-				return fmt.Errorf("git config source: read symlink %q: %w", entry.name, err)
+				return nil, fmt.Errorf("git config source: read symlink %q: %w", entry.name, err)
 			}
 			if err := validateGitSymlink(treePath, string(linkTarget)); err != nil {
-				return err
+				return nil, err
 			}
-			if err := os.Symlink(filepath.FromSlash(string(linkTarget)), target); err != nil {
-				return fmt.Errorf("git config source: materialize symlink %q: %w", entry.name, err)
+			if err := s.createSymlink(filepath.FromSlash(string(linkTarget)), target); err != nil {
+				if !isSymlinkPrivilegeError(err) {
+					return nil, fmt.Errorf("git config source: materialize symlink %q: %w", entry.name, err)
+				}
+				if writeErr := os.WriteFile(target, linkTarget, 0o644); writeErr != nil {
+					return nil, fmt.Errorf("git config source: materialize symlink fallback %q: %w", entry.name, writeErr)
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"config-source symlink %q was materialized as a plain file because Windows symlink creation requires Developer Mode or elevated rights; its contents are the link target text.",
+					treePath,
+				))
 			}
 		default:
-			return fmt.Errorf("git config source: unsupported tree mode %q for %q", entry.mode, entry.name)
+			return nil, fmt.Errorf("git config source: unsupported tree mode %q for %q", entry.mode, entry.name)
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 func parseGitTreeEntry(record []byte) (gitTreeEntry, error) {
@@ -505,6 +541,13 @@ func validateGitSymlink(name, target string) error {
 		return fmt.Errorf("tree symlink %q escapes snapshot", name)
 	}
 	return nil
+}
+
+// isSymlinkPrivilegeError reports whether err is the Windows
+// ERROR_PRIVILEGE_NOT_HELD error returned when symlink creation requires
+// Developer Mode or elevated rights.
+func isSymlinkPrivilegeError(err error) bool {
+	return runtime.GOOS == "windows" && isWindowsSymlinkPrivilegeError(err)
 }
 
 func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...string) ([]byte, error) {

@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// askpassScriptName is the fixed filename for the askpass helper written
-// into a workcopy/worktree's control directory.
+// askpassScriptName is the fixed filename for the POSIX askpass helper
+// written into a workcopy/worktree's control directory.
 const askpassScriptName = "goobers-askpass.sh"
+
+// askpassScriptNameWindows is the fixed filename for the Windows askpass
+// helper written into a workcopy/worktree's control directory.
+const askpassScriptNameWindows = "goobers-askpass.cmd"
 
 // askpassScript is a secret-free helper: it holds no token. It reads the
 // token from an environment variable set only on the git child process, so
@@ -26,6 +31,21 @@ case "$1" in
 esac
 `
 
+// askpassScriptWindows is a secret-free helper for Windows cmd.exe-based
+// GIT_ASKPASS execution. It mirrors the POSIX askpassScript contract exactly:
+// a "Username" prompt is answered from GOOBERS_GIT_USERNAME (defaulting to
+// x-access-token), every other prompt from GOOBERS_GIT_TOKEN. Answering the
+// Username prompt with the raw token (as an earlier version did) diverges from
+// that contract and leaks the token into git's username field.
+const askpassScriptWindows = `@echo off
+echo(%~1| findstr /B /I /C:"Username" >nul
+if not errorlevel 1 (
+  if defined GOOBERS_GIT_USERNAME (echo(%GOOBERS_GIT_USERNAME%) else (echo x-access-token)
+) else (
+  echo(%GOOBERS_GIT_TOKEN%
+)
+`
+
 // WriteAskpassScript writes the (secret-free) askpass helper into dir,
 // creating dir if needed, and returns its path. It is safe to call
 // repeatedly (e.g. once per workcopy); the script is identical every time
@@ -35,8 +55,16 @@ func WriteAskpassScript(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("credentials: create askpass dir %q: %w", dir, err)
 	}
-	path := filepath.Join(dir, askpassScriptName)
-	if err := os.WriteFile(path, []byte(askpassScript), 0o700); err != nil {
+
+	if runtime.GOOS == "windows" {
+		return writeAskpassFile(dir, askpassScriptNameWindows, askpassScriptWindows)
+	}
+	return writeAskpassFile(dir, askpassScriptName, askpassScript)
+}
+
+func writeAskpassFile(dir, name, content string) (string, error) {
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		return "", fmt.Errorf("credentials: write askpass script: %w", err)
 	}
 	return path, nil

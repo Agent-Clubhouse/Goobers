@@ -644,3 +644,181 @@ func TestRunRejectsArguments(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
+
+func mergeGateChecks() []check {
+	tools := toolchain{
+		goCommand:       "go",
+		gofmtCommand:    "gofmt",
+		gitCommand:      "git",
+		npmCommand:      "npm",
+		golangciCommand: "golangci-lint",
+	}
+	return checks([]string{"config-sync", "goobers", "scheduler"}, tools, buildMetadata{}, "linux", "")
+}
+
+// TestEveryMergeCheckHasAGroup guarantees the parallel CI jobs collectively run
+// every merge-gate check: each check names one of the four known groups, and no
+// check is orphaned into a group no job runs.
+func TestEveryMergeCheckHasAGroup(t *testing.T) {
+	t.Parallel()
+	known := map[string]bool{groupChecks: true, groupLint: true, groupUnit: true, groupShipped: true}
+	seen := map[string]bool{}
+	for _, current := range mergeGateChecks() {
+		if !known[current.group] {
+			t.Errorf("check %q has group %q, not one of the CI job groups", current.label, current.group)
+		}
+		seen[current.group] = true
+	}
+	for group := range known {
+		if !seen[group] {
+			t.Errorf("no merge-gate check belongs to group %q; the %q job would run nothing", group, group)
+		}
+	}
+}
+
+// TestGroupPartitionCoversMergeGate proves that concatenating the four groups
+// reproduces exactly the full merge-gate check set — no check is dropped or
+// double-counted when the monolith fans out across runners.
+func TestGroupPartitionCoversMergeGate(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	var reassembled []string
+	for _, group := range []string{groupChecks, groupLint, groupUnit, groupShipped} {
+		for _, current := range groupChecksOnly(all, group) {
+			reassembled = append(reassembled, current.label)
+		}
+	}
+	wantCount := len(all)
+	if len(reassembled) != wantCount {
+		t.Fatalf("groups cover %d checks, merge gate has %d", len(reassembled), wantCount)
+	}
+	slices.Sort(reassembled)
+	var want []string
+	for _, current := range all {
+		want = append(want, current.label)
+	}
+	slices.Sort(want)
+	if !reflect.DeepEqual(reassembled, want) {
+		t.Fatalf("group union = %q, want %q", reassembled, want)
+	}
+}
+
+func TestGroupChecksOnlyIsolatesHeavyweights(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	for _, tc := range []struct {
+		group string
+		want  []string
+	}{
+		{groupLint, []string{"lint"}},
+		{groupUnit, []string{"test"}},
+		{groupShipped, []string{"shipped-workflows"}},
+	} {
+		var got []string
+		for _, current := range groupChecksOnly(all, tc.group) {
+			got = append(got, current.label)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("group %q = %q, want %q", tc.group, got, tc.want)
+		}
+	}
+}
+
+func labelArgs(checks []check, label string) []string {
+	for _, current := range checks {
+		if current.label == label {
+			return current.args
+		}
+	}
+	return nil
+}
+
+func TestApplyRuntimeTogglesDropsRaceWhenDisabled(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_RACE" {
+			return "0"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), env)
+	if slices.Contains(labelArgs(unit, "test"), "-race") {
+		t.Errorf("unit test retained -race with GOOBERS_CI_RACE=0: %q", labelArgs(unit, "test"))
+	}
+	shipped := applyRuntimeToggles(groupChecksOnly(all, groupShipped), env)
+	if slices.Contains(labelArgs(shipped, "shipped-workflows"), "-race") {
+		t.Errorf("shipped suite retained -race with GOOBERS_CI_RACE=0: %q", labelArgs(shipped, "shipped-workflows"))
+	}
+}
+
+func TestApplyRuntimeTogglesKeepsRaceByDefault(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(string) string { return "" })
+	if !slices.Contains(labelArgs(unit, "test"), "-race") {
+		t.Errorf("unit test dropped -race by default: %q", labelArgs(unit, "test"))
+	}
+}
+
+func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_SHARD" {
+			return "2/3"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), env)
+	args := labelArgs(unit, "test")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--shard 2/3 --") {
+		t.Errorf("unit args missing shard flag before separator: %q", joined)
+	}
+	if slices.Contains(args, "-coverprofile=coverage.out") || slices.Contains(args, "-covermode=atomic") {
+		t.Errorf("sharded unit args retained coverage flags: %q", joined)
+	}
+	if !slices.Contains(args, "-race") {
+		t.Errorf("sharded unit args dropped -race unexpectedly: %q", joined)
+	}
+	if !slices.Contains(args, "./...") {
+		t.Errorf("sharded unit args lost the package spec (hermetic expands ./...): %q", joined)
+	}
+}
+
+func TestApplyRuntimeTogglesCrossLintsViaSubprocessEnv(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_LINT_GOOS" {
+			return "darwin"
+		}
+		return ""
+	}
+	lint := applyRuntimeToggles(groupChecksOnly(all, groupLint), env)
+	var lintCheck check
+	for _, current := range lint {
+		if current.label == "lint" {
+			lintCheck = current
+		}
+	}
+	// GOOS goes into the golangci-lint subprocess env, not the launcher's args.
+	if !slices.Contains(lintCheck.env, "GOOS=darwin") {
+		t.Errorf("lint check env = %q, want it to contain GOOS=darwin", lintCheck.env)
+	}
+	if slices.Contains(lintCheck.args, "GOOS=darwin") {
+		t.Errorf("GOOS must not leak into lint args (would cross-build the launcher): %q", lintCheck.args)
+	}
+}
+
+func TestRunRejectsUnknownGroup(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"group", "nope"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("run() = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "unknown check group") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}

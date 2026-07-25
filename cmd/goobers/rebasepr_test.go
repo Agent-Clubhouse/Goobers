@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -1007,9 +1008,56 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 }
 
-// TestRebasePRRefusesWithoutCapability proves rebase-pr fails closed before
-// any git/provider call when a required capability is absent.
-func TestRebasePRRefusesWithoutCapability(t *testing.T) {
+func TestRebasePRPushFailurePreservesDownstreamContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reject git push")
+	}
+	const prBranch = "goobers/impl/run-push-failure"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	attemptedHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	rebaseBaseSHA := strings.TrimSpace(runGitOutputT(t, filepath.Dir(origin), "--git-dir="+origin, "rev-parse", "refs/heads/main"))
+
+	hook := filepath.Join(origin, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'push rejected by test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 65)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "65",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want rejected push failure", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	want := map[string]interface{}{
+		"selectedNumber":         "65",
+		"head":                   prBranch,
+		"needsAgent":             "true",
+		"conflict":               "false",
+		"conflictLocations":      "[]",
+		"attemptedHeadSha":       attemptedHeadSHA,
+		"rebaseBaseSha":          rebaseBaseSHA,
+		executor.OutputErrorCode: errorCodeProvider,
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
+	}
+}
+
+// TestRebasePRFailureWritesDownstreamContract proves rebase-pr fails closed
+// before any git/provider call when a required capability is absent while
+// preserving every output needed to route through remediation-checkpoint.
+func TestRebasePRFailureWritesDownstreamContract(t *testing.T) {
 	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-363-nocap")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
@@ -1022,5 +1070,21 @@ func TestRebasePRRefusesWithoutCapability(t *testing.T) {
 	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "rebase-result.json"))
+	want := map[string]interface{}{
+		"selectedNumber":         "58",
+		"head":                   "goobers/impl/run-d",
+		"needsAgent":             "true",
+		"conflict":               "false",
+		"conflictLocations":      "[]",
+		"attemptedHeadSha":       "",
+		"rebaseBaseSha":          "",
+		executor.OutputErrorCode: errorCodeProvider,
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
 	}
 }

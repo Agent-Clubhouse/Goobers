@@ -140,6 +140,51 @@ func TestClassifyProviderError_Network(t *testing.T) {
 	}
 }
 
+func TestClassifyProviderError_MergeQueuedBranch(t *testing.T) {
+	err := errors.New("exit status 1: remote: error: GH006: Protected branch update failed\n" +
+		"remote: - A pull request for this branch has been added to a merge queue.\n" +
+		"remote: Branches that are queued for merging cannot be updated.")
+
+	code, retryable, extra := classifyProviderError(err)
+	if code != errorCodeBranchMergeQueued {
+		t.Fatalf("code = %q, want %q", code, errorCodeBranchMergeQueued)
+	}
+	if !retryable {
+		t.Fatal("retryable = false, want true while the merge queue owns the branch")
+	}
+	if extra != nil {
+		t.Fatalf("extra = %v, want nil", extra)
+	}
+}
+
+func TestClassifyProviderError_OtherProtectedBranchRejectionsStayTerminal(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "different GH006 policy",
+			err:  errors.New("remote: error: GH006: Protected branch update failed\nremote: Changes must be made through a pull request."),
+		},
+		{
+			name: "merge queue wording without GH006",
+			err:  errors.New("branch was added to a merge queue"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, retryable, _ := classifyProviderError(tt.err)
+			if code != errorCodeProvider {
+				t.Fatalf("code = %q, want %q", code, errorCodeProvider)
+			}
+			if retryable {
+				t.Fatal("retryable = true, want false")
+			}
+		})
+	}
+}
+
 // TestClassifyProviderError_UnknownErrorFallsBackToProviderError proves the
 // classifier never panics or leaves code empty for a plain, untyped error —
 // every failProviderStage caller passes a provider-originated error, so this

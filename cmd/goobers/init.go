@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/version"
 )
 
 const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart] [path]\n\n" +
@@ -120,7 +121,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
-	pf(stdout, "\nLearn the desired-state model: %s\n", conceptsGuideURL)
+	pf(stdout, "\nLearn the desired-state model: %s\n", documentationURL("docs/concepts/README.md"))
 	demoSeeded := false
 	for _, created := range res.Created {
 		if created == instance.ConfigDirName {
@@ -143,7 +144,15 @@ func finishGuidedInit(root, abs string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: guided setup did not produce a valid instance\n")
 		return code
 	}
-	pf(stdout, guidedDocsBanner, abs)
+	pf(
+		stdout,
+		guidedDocsBanner,
+		abs,
+		documentationURL("docs/guides/dsl-authoring-skill.md"),
+		documentationURL("docs/requirements/goober.md"),
+		documentationURL("docs/stage-contract.md"),
+		documentationURL("docs/cli/README.md"),
+	)
 	return 0
 }
 
@@ -206,7 +215,7 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 	pln(stdout, "")
 	pln(stdout, "Create separate fine-grained, least-privilege PATs; never paste their values here.")
 	pln(stdout, "  Create: https://github.com/settings/personal-access-tokens/new")
-	pln(stdout, "  Scopes: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md")
+	pf(stdout, "  Scopes: %s\n", documentationURL("docs/guides/github-token-scopes.md"))
 	pf(stdout, "  Repository access: select only %s/%s for repository-scoped PATs.\n", repoOwner, repoName)
 	pln(stdout, "Repository read PAT permissions: Contents: Read-only.")
 	repoTokenEnv, err := p.ask("Repository read PAT environment variable", "GOOBERS_GITHUB_REPO_TOKEN", instance.ValidGuidedTokenEnvName)
@@ -430,12 +439,20 @@ Ready to run from %s:
   goobers run <workflow>
 
 Developer docs:
-  Author workflows:          https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md
-  Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and docs/stage-contract.md
-  View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (` + "`goobers trace` / `goobers telemetry`" + `)
+  Author workflows:         %s
+  Make custom agent stages: %s and %s
+  View journal telemetry:   %s (` + "`goobers trace` / `goobers telemetry`" + `)
 `
 
-const conceptsGuideURL = "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
+var stableReleaseVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+func documentationURL(path string) string {
+	ref := "main"
+	if stableReleaseVersion.MatchString(version.Version) {
+		ref = url.PathEscape(version.Version)
+	}
+	return fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/blob/%s/%s", ref, path)
+}
 
 const demoTourBanner = `
 Demo full loop (run these from %s):

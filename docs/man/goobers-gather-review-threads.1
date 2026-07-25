@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATHER REVIEW THREADS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gather-review-threads \- add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gather-review-threads\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gather-review-threads [path]
+
+Read this run's latest remediation brief and replace only its
+gatherReviewThreads section with native review bodies and inline review
+comments. File, line, side, diff-hunk, resolved, and outdated metadata
+are preserved so the remediator can distinguish live feedback from stale
+threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty), 1 = business/provider/journal error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gather-review-threads
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

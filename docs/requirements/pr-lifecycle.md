@@ -276,7 +276,9 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   behind-base — in the shared claim namespace (PRL-002). A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
-  enters full remediation.
+  enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
+  from every remediation tier until a human clears that explicit park state;
+  it cannot retain selection priority and starve another eligible PR.
 - **PRL-051 (MUST, Shipped):** The entry stage MUST check out the **PR's own
   branch**, rebind the run's workspace branch to it for every later stage
   (#392 — so the reviewer's computed diff is the PR's real diff), and emit the

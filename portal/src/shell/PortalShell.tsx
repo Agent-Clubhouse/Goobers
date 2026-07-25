@@ -1,18 +1,29 @@
 import { useRef } from "react";
+import { useCobrand } from "../cobrand";
 import { useLiveData, type LiveFreshness } from "../liveData";
 import type { Navigate, PrimaryArea } from "../routing";
-import { useTheme } from "../theme";
+import type { Theme } from "../theme";
 import { Icon } from "../ui/Icon";
+import { SupportFooter } from "./SupportFooter";
 
 interface PortalShellProps {
   activeArea: PrimaryArea;
   children: React.ReactNode;
   navigate: Navigate;
   standalone: boolean;
+  theme: Theme;
+  toggleTheme: () => void;
 }
 
-export function PortalShell({ activeArea, children, navigate, standalone }: PortalShellProps) {
-  const { theme, toggleTheme } = useTheme();
+export function PortalShell({
+  activeArea,
+  children,
+  navigate,
+  standalone,
+  theme,
+  toggleTheme,
+}: PortalShellProps) {
+  const { config } = useCobrand();
   const { freshness } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
 
@@ -33,10 +44,10 @@ export function PortalShell({ activeArea, children, navigate, standalone }: Port
           onClick={() => navigate({ page: "overview" })}
           type="button"
         >
-          <img alt="" src="/goober-mascot.png" />
+          <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
           <span>
-            <strong>goobers</strong>
-            <small>local operations</small>
+            <strong>{config.brand.name}</strong>
+            <small>{config.brand.tagline}</small>
           </span>
         </button>
 
@@ -96,14 +107,15 @@ export function PortalShell({ activeArea, children, navigate, standalone }: Port
             </span>
           </div>
         </div>
+        <SupportFooter />
       </aside>
 
       <div className="portal-main">
         <header className="topbar">
           <div className="topbar-context">
-            <span className="scope-mark">G</span>
+            <span className="scope-mark">{config.brand.scopeMark}</span>
             <span>
-              <strong>goobers</strong>
+              <strong>{config.brand.name}</strong>
               <small>operations workbench</small>
             </span>
           </div>

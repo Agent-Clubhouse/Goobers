@@ -287,13 +287,22 @@ func init() {
 					return runCompletionScript(fishCompletion(), args, stdout, stderr)
 				},
 			).withHelp("generate a fish completion script", completionHelp),
+			subcommand(
+				"completion powershell",
+				"powershell",
+				apicontract.ActionConfigTime,
+				func(args []string, stdout, stderr io.Writer) int {
+					return runCompletionScript(powershellCompletion(), args, stdout, stderr)
+				},
+			).withHelp("generate a PowerShell completion script", completionHelp),
 		).
 			withSynopsis(synopsisByID["completion"]).
 			withHelp("generate a shell completion script", completionHelp).
-			withExamples("goobers completion bash", "goobers completion zsh"),
+			withExamples("goobers completion bash", "goobers completion zsh", "goobers completion powershell"),
 		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
 			return runCompletionCandidates(args, stdout)
 		}),
+		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
 		groupCommand(
 			"telemetry",
 			runTelemetry,
@@ -309,9 +318,12 @@ func init() {
 			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
+			subcommand("telemetry compact", "compact", apicontract.ActionMaintenance, runTelemetryCompact).
+				withHelp("drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)", telemetryCompactHelp).
+				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("query, export, or prune run telemetry", telemetryHelp).
+			withHelp("query, export, prune, or compact run telemetry", telemetryHelp).
 			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry prune --dry-run"),
 		groupCommand(
 			"journal",
@@ -325,6 +337,10 @@ func init() {
 			withSynopsis(synopsisByID["backlog-dedupe"]).
 			withHelp("surface ranked duplicate candidates for curator judgment (a workflow stage)", backlogDedupeHelp).
 			withExamples("goobers backlog-dedupe"),
+		command("backlog-health", apicontract.ActionWorkflowExecution, runBacklogHealth).
+			withSynopsis(synopsisByID["backlog-health"]).
+			withHelp("snapshot ready-pool depth and age (a workflow stage)", backlogHealthHelp).
+			withExamples("goobers backlog-health"),
 		command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery).
 			withSynopsis(synopsisByID["backlog-query"]).
 			withHelp("query/claim one eligible backlog item (a workflow stage)", backlogQueryHelp).
@@ -405,6 +421,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).
 			withExamples("goobers gather-pr-context"),
+		command("gather-review-threads", apicontract.ActionWorkflowExecution, runGatherReviewThreads).
+			withSynopsis(synopsisByID["gather-review-threads"]).
+			withHelp("add native reviews and anchored inline threads to a remediation brief (a workflow stage)", gatherReviewThreadsHelp).
+			withExamples("goobers gather-review-threads"),
 		command("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).

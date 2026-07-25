@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -468,6 +469,56 @@ func TestPushRemediatedLosesGracefullyToAConcurrentPush(t *testing.T) {
 	pushedSHA, _, _ := strings.Cut(pushed, "\t")
 	if pushedSHA != humanSHA {
 		t.Errorf("remote %s = %q, want the human's commit %q preserved", remediationPRBranch, pushedSHA, humanSHA)
+	}
+}
+
+func TestPushRemediatedReportsMergeQueueRejectionAsRetryable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reproduce GitHub's push rejection")
+	}
+	instanceRoot, st, wtPath, remoteTip := pushRemediatedFixture(t, true)
+	t.Setenv("GOOBERS_REPO_PROVIDER", "github")
+	t.Setenv("GOOBERS_REPO_OWNER", "your-org")
+	t.Setenv("GOOBERS_REPO_NAME", "your-repo")
+	origin := strings.TrimSpace(runGitOutputT(t, wtPath, "remote", "get-url", "origin"))
+	hook := filepath.Join(origin, "hooks", "pre-receive")
+	hookBody := "#!/bin/sh\n" +
+		"echo 'error: GH006: Protected branch update failed' >&2\n" +
+		"echo '- A pull request for this branch has been added to a merge queue.' >&2\n" +
+		"echo 'Branches that are queued for merging cannot be updated.' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hook, []byte(hookBody), 0o755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	var result struct {
+		ErrorCode      string `json:"errorCode"`
+		ErrorRetryable bool   `json:"errorRetryable"`
+	}
+	raw, err := os.ReadFile(filepath.Join(wtPath, pushRemediatedResultName))
+	if err != nil {
+		t.Fatalf("read push result: %v", err)
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal push result: %v", err)
+	}
+	if result.ErrorCode != errorCodeBranchMergeQueued || !result.ErrorRetryable {
+		t.Fatalf("push result = %+v, want retryable %q; stderr = %q", result, errorCodeBranchMergeQueued, stderr)
+	}
+
+	pushed := strings.TrimSpace(runGitOutputT(t, wtPath, "ls-remote", "origin", "refs/heads/"+remediationPRBranch))
+	pushedSHA, _, _ := strings.Cut(pushed, "\t")
+	if pushedSHA != remoteTip {
+		t.Errorf("remote %s = %q, want rejected push to leave it at %q", remediationPRBranch, pushedSHA, remoteTip)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !slices.Contains(st.labels, needsRemediationLabel) {
+		t.Errorf("labels = %v, want %s retained until publication succeeds", st.labels, needsRemediationLabel)
 	}
 }
 

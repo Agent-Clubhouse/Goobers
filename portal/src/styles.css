@@ -178,6 +178,24 @@ summary:focus-visible {
   font-size: 12px;
 }
 
+.support-footer {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 0 5px;
+}
+
+.support-footer a {
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.support-footer a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
 .live-mark {
   background: var(--success);
   border: 2px solid var(--success-soft);
@@ -1278,6 +1296,42 @@ summary:focus-visible {
   margin: -4px 0 10px;
 }
 
+.curation-health {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.curation-health > div {
+  background: var(--paper);
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.curation-health dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.curation-health dd {
+  font-size: 16px;
+  font-weight: 720;
+  margin: 0;
+}
+
+.curation-health-alert {
+  color: var(--danger);
+}
+
 .usage-analytics {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1889,6 +1943,29 @@ a.telemetry-error-row:hover {
   gap: 9px;
 }
 
+.workflow-graph-shell:fullscreen,
+.workflow-graph-shell-expanded {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  width: 100%;
+}
+
+.workflow-graph-shell-expanded {
+  inset: 0;
+  position: fixed;
+  z-index: 1000;
+}
+
+.workflow-graph-shell:fullscreen .workflow-graph-viewport,
+.workflow-graph-shell-expanded .workflow-graph-viewport {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
 .workflow-graph-controls {
   align-items: center;
   display: flex;
@@ -1919,13 +1996,6 @@ a.telemetry-error-row:hover {
   opacity: 0.45;
 }
 
-.graph-control-divider {
-  background: var(--line);
-  height: 20px;
-  margin: 0 3px;
-  width: 1px;
-}
-
 .graph-zoom-value {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1940,11 +2010,24 @@ a.telemetry-error-row:hover {
   background-size: 16px 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
+  cursor: grab;
   height: 360px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   position: relative;
   scrollbar-gutter: stable;
+  touch-action: pan-y;
+}
+
+.workflow-graph-viewport.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.workflow-graph-viewport:focus,
+.workflow-graph-viewport:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .workflow-graph-sizer {
@@ -2818,6 +2901,7 @@ a.telemetry-error-row:hover {
 .run-detail-workspace {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .run-topology {
@@ -3045,8 +3129,14 @@ a.telemetry-error-row:hover {
 }
 
 .run-inspector {
-  position: sticky;
-  top: 81px;
+  min-width: 0;
+  position: static;
+  scroll-margin-top: 81px;
+}
+
+.run-inspector:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .not-reached {
@@ -3095,6 +3185,7 @@ a.telemetry-error-row:hover {
 
 .attempt-content {
   border-top: 1px solid var(--line);
+  min-width: 0;
   padding-top: 14px;
 }
 
@@ -3137,6 +3228,7 @@ a.telemetry-error-row:hover {
   display: grid;
   gap: 5px;
   margin-bottom: 16px;
+  min-width: 0;
   padding: 9px;
 }
 
@@ -3148,6 +3240,9 @@ a.telemetry-error-row:hover {
 
 .output-line code {
   font-size: 9px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .artifact-heading {
@@ -3157,11 +3252,13 @@ a.telemetry-error-row:hover {
 .artifact-list {
   border-bottom: 1px solid var(--line);
   border-top: 1px solid var(--line);
+  min-width: 0;
 }
 
 .artifact-row {
   display: grid;
   gap: 8px;
+  min-width: 0;
   padding: 10px 2px;
 }
 
@@ -3179,10 +3276,12 @@ a.telemetry-error-row:hover {
 .artifact-row-heading > span {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .artifact-row strong {
   font-size: 9px;
+  overflow-wrap: anywhere;
 }
 
 .artifact-row small,
@@ -3208,6 +3307,7 @@ a.telemetry-error-row:hover {
 .artifact-metadata dd {
   font-size: 8px;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .artifact-digest {
@@ -3347,13 +3447,15 @@ a.telemetry-error-row:hover {
 }
 
 .artifact-content {
-  background: var(--surface);
+  background: var(--code-bg);
   border: 1px solid var(--line);
   border-radius: 6px;
+  color: var(--code-ink);
   font-size: 9px;
   line-height: 1.5;
-  max-height: 360px;
-  overflow: auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
   padding: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -3513,6 +3615,10 @@ a.telemetry-error-row:hover {
     position: static;
   }
 
+  .run-inspector {
+    scroll-margin-top: 16px;
+  }
+
   .page-content {
     padding: 34px 18px 60px;
   }
@@ -3552,6 +3658,11 @@ a.telemetry-error-row:hover {
   .workflow-graph-viewport {
     background-image: none;
     height: 420px;
+  }
+
+  .workflow-graph-shell:fullscreen,
+  .workflow-graph-shell-expanded {
+    padding: 10px;
   }
 
   .configuration-warning-heading {
@@ -3814,6 +3925,10 @@ a.telemetry-error-row:hover {
 
   .usage-header {
     display: none;
+  }
+
+  .curation-health {
+    grid-template-columns: 1fr;
   }
 
   .usage-row {

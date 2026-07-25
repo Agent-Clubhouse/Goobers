@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY COMPACT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry compact \- drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+.SH SYNOPSIS
+\fBgoobers telemetry compact\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry compact [--dry-run] [path]
+
+Reclaim disk from a bloated instance: drop scheduler journal records
+(scheduler/events.jsonl) and rollup scheduler rows older than
+telemetry.retention.window, then VACUUM the rollup database and truncate its
+write-ahead log so freed pages return to the filesystem. The daemon must be
+stopped first — compaction rewrites files a running daemon holds open.
+--dry-run reports what would be reclaimed without changing anything. The
+default 90d window applies when none is configured. Exit codes: 0 = OK,
+1 = compaction error, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry compact --dry-run
+goobers telemetry compact
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

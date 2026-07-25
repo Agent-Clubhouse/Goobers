@@ -1,12 +1,25 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
   window.location.hash = "#/insight";
+  // populatedDaemonFixtures() is anchored to 2026-07-18, but the Insight page
+  // filters telemetry by a window relative to the current time. Pin the clock to
+  // the fixtures' "now" (their observedAt) so those windows include the fixture
+  // data deterministically. Faking only Date leaves setTimeout/microtasks real,
+  // so userEvent and findBy* still resolve. Without this the suite is a time
+  // bomb: it passes at authoring time, then fails once wall-clock drifts past
+  // the window (it began failing ~24h after landing).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-18T20:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Insight page", () => {
@@ -25,6 +38,9 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
+    expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
+    expect(screen.getByText("8 / 6")).toBeInTheDocument();
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
@@ -343,6 +359,24 @@ describe("Insight page", () => {
       stages: [],
       usage: [],
       models: [],
+      curation: {
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        claimAgeSamples: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
     });
     getTelemetryErrorSignatures.mockResolvedValueOnce({ items: [] });
 

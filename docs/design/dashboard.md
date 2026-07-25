@@ -277,6 +277,22 @@ the TypeScript client. It must preserve canonical journal phases:
 `running`, `completed`, `failed`, `aborted`, and `escalated`. Presentation
 groupings such as "Needs attention" are UI derivations, not new persisted states.
 
+Each event returned by `GET /api/v1/runs/{run}/events` adds a `category` and
+`replayChapter` to the unmodified journal projection. Categories are the bounded
+values `transition`, `decision`, `result`, `evidence`, `liveness`,
+`bookkeeping`, and `unknown`. The chapter flag is the service's deterministic
+recommendation for replay navigation: run/stage transitions, gate and condition
+decisions, failures or escalations, terminal events, and meaningful external
+results such as pull requests are chapters; heartbeats, spans, artifacts, and
+maintenance records are not. `ref.touched` is payload-sensitive: pull requests
+are results while other refs are bookkeeping. Unknown event types or schemas
+remain in sequence with category `unknown` and are not chapters.
+
+This metadata is only a presentation/query classification. It does not filter,
+rewrite, or authorize retention of journal records; the complete append-only
+journal remains authoritative and every event remains queryable in raw sequence
+order.
+
 A run response includes the graph pinned to its recorded workflow
 version/digest. It never reconstructs historic topology from mutable current
 config.

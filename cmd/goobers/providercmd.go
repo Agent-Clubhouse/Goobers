@@ -284,6 +284,9 @@ const (
 	// status code attached — retryable, since the failure is unrelated to
 	// the request's content.
 	errorCodeNetwork = "network_error"
+	// errorCodeBranchMergeQueued is GitHub's transient GH006 rejection when
+	// the branch being updated belongs to a pull request in the merge queue.
+	errorCodeBranchMergeQueued = "github_branch_merge_queued"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -333,6 +336,10 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 			return errorCodeSecondaryRateLimited, true, extra
 		}
 		return providers.ErrorCodeRateLimited, true, extra
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "gh006") && strings.Contains(message, "added to a merge queue") {
+		return errorCodeBranchMergeQueued, true, nil
 	}
 	if status, ok := statusCodeFrom(err); ok {
 		switch {

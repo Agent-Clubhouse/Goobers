@@ -301,7 +301,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[]}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"curation":{"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"claimAgeSamples":0,"forwardCurationThroughput":0,"implementationDemand":0}}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -322,6 +322,10 @@ type telemetryParityReader struct {
 
 func (r *telemetryParityReader) Health(context.Context) (readservice.Health, error) {
 	return readservice.Health{Ready: true}, nil
+}
+
+func (r *telemetryParityReader) PortalConfig(context.Context) (readservice.PortalConfig, error) {
+	return readservice.PortalConfig{}, nil
 }
 
 func (r *telemetryParityReader) ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error) {

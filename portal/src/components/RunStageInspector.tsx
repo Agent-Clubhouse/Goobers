@@ -41,16 +41,18 @@ export function RunStageInspector({
   runId,
   node,
   selectedSeq,
+  inspectorRef,
 }: {
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
   selectedSeq: number;
+  inspectorRef?: React.Ref<HTMLElement>;
 }) {
   const [attempts, setAttempts] = useState<StageAttempt[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
-  const [selectedNumber, setSelectedNumber] = useState<number>();
+  const [selectedId, setSelectedId] = useState<string>();
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const stageId = node?.id;
@@ -67,7 +69,7 @@ export function RunStageInspector({
       .then((list) => {
         setAttempts(list.attempts);
         setLoadState("idle");
-        setSelectedNumber(undefined);
+        setSelectedId(undefined);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
@@ -81,7 +83,7 @@ export function RunStageInspector({
 
   if (!node) {
     return (
-      <Inspector className="run-inspector" label="Stage inspector">
+      <Inspector className="run-inspector" label="Stage inspector" rootRef={inspectorRef}>
         <div className="not-reached">
           <span>Select a node</span>
           <small>Choose a stage in the graph to inspect its attempts.</small>
@@ -95,14 +97,14 @@ export function RunStageInspector({
     (attempt) => attempt.startedSeq === undefined || attempt.startedSeq <= selectedSeq,
   );
   const selected =
-    visible.find((attempt) => attempt.number === selectedNumber) ?? visible[visible.length - 1];
+    visible.find((attempt) => attempt.id === selectedId) ?? visible[visible.length - 1];
 
   const moveSelection = (index: number) => {
     const attempt = visible[index];
     if (!attempt) {
       return;
     }
-    setSelectedNumber(attempt.number);
+    setSelectedId(attempt.id);
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -116,7 +118,11 @@ export function RunStageInspector({
   };
 
   return (
-    <Inspector className="run-inspector" label={`${node.id} attempt inspector`}>
+    <Inspector
+      className="run-inspector"
+      label={`${node.id} attempt inspector`}
+      rootRef={inspectorRef}
+    >
       <div className="inspector-heading">
         <span className={`primitive-icon primitive-${node.kind}`}>
           <Icon name={nodeIcon(node.kind)} size={17} />
@@ -151,22 +157,22 @@ export function RunStageInspector({
               <div aria-label="Stage attempts" className="attempt-switcher" role="group">
                 {visible.map((attempt, index) => (
                   <button
-                    aria-pressed={selected?.number === attempt.number}
+                    aria-pressed={selected?.id === attempt.id}
                     className={
-                      selected?.number === attempt.number
+                      selected?.id === attempt.id
                         ? "attempt-button attempt-button-active"
                         : "attempt-button"
                     }
-                    key={attempt.number}
-                    onClick={() => setSelectedNumber(attempt.number)}
+                    key={attempt.id}
+                    onClick={() => setSelectedId(attempt.id)}
                     onKeyDown={(event) => onAttemptKeyDown(event, index)}
                     ref={(element) => {
                       attemptButtons.current[index] = element;
                     }}
-                    tabIndex={selected?.number === attempt.number ? 0 : -1}
+                    tabIndex={selected?.id === attempt.id ? 0 : -1}
                     type="button"
                   >
-                    Attempt {attempt.number}
+                    Visit {attempt.visit} · Attempt {attempt.number}
                   </button>
                 ))}
               </div>
@@ -227,6 +233,7 @@ function AttemptDetail({
             <ArtifactRow
               artifact={artifact}
               attemptNumber={attempt.number}
+              attemptVisit={attempt.visit}
               client={client}
               key={artifact.digest}
               runId={runId}
@@ -241,11 +248,13 @@ function AttemptDetail({
 function ArtifactRow({
   artifact,
   attemptNumber,
+  attemptVisit,
   client,
   runId,
 }: {
   artifact: ArtifactMetadata;
   attemptNumber: number;
+  attemptVisit: number;
   client: DaemonClient;
   runId: string;
 }) {
@@ -285,7 +294,7 @@ function ArtifactRow({
         <div>
           <dt>Provenance</dt>
           <dd>
-            Attempt {attemptNumber}
+            Visit {attemptVisit} · Attempt {attemptNumber}
             {artifact.recordedSeq !== undefined ? ` · Seq ${artifact.recordedSeq}` : ""}
           </dd>
         </div>

@@ -352,6 +352,9 @@ func filterRemediationPullRequests(ctx context.Context, provider *providers.GitH
 		if heldBranches[pr.Head] {
 			continue
 		}
+		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
+			continue
+		}
 		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 		if err != nil {
 			return nil, fmt.Errorf("check escalation state for PR #%d: %w", pr.Number, err)

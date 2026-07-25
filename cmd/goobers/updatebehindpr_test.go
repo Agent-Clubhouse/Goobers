@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 const (
@@ -212,6 +214,30 @@ func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "updated behind branch through GitHub API") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestUpdateBehindPRSkipsNeedsHuman(t *testing.T) {
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	state := &updateBehindServer{
+		labels: []string{needsRemediationLabel, providers.LabelNeedsHuman},
+	}
+	root, _ := setupUpdateBehindPRTest(t, state)
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0", state.updateCalls)
+	}
+	if got := strings.Join(state.labels, ","); got != needsRemediationLabel+","+providers.LabelNeedsHuman {
+		t.Fatalf("labels = %v, want unchanged", state.labels)
+	}
+	if !strings.Contains(stdout, "no work") || stderr != "" {
+		t.Fatalf("stdout = %q, stderr = %q", stdout, stderr)
 	}
 }
 
