@@ -50,7 +50,11 @@ func Compile(expression string, required, excluded []string) (*Predicate, error)
 	if !ast.OutputType().IsExactType(cel.BoolType) {
 		return nil, fmt.Errorf("CEL expression must return bool, got %s", ast.OutputType())
 	}
-	if err := validateExpression(ast.Expr(), predicate.referenced); err != nil {
+	checked, err := cel.AstToCheckedExpr(ast)
+	if err != nil {
+		return nil, fmt.Errorf("convert checked CEL expression: %w", err)
+	}
+	if err := validateExpression(checked.GetExpr(), predicate.referenced); err != nil {
 		return nil, err
 	}
 	program, err := env.Program(ast)
@@ -153,5 +157,5 @@ func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error
 }
 
 func unsupportedExpressionError() error {
-	return fmt.Errorf(`unsupported CEL expression: use only string membership checks ("label" in labels) combined with &&, ||, and !`)
+	return fmt.Errorf(`unsupported CEL expression: use only string membership checks ("label" in labels) combined with the &&, ||, and ! operators`)
 }
