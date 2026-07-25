@@ -1314,7 +1314,7 @@ func buildScheduleDemandCounter(
 		return nil
 	}
 	return &remediationDemandCounter{
-		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		ref:          repoRef.Owner + "/" + repoRef.Name,
 		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
 		base:         base,
 		headPrefix:   headPrefix,

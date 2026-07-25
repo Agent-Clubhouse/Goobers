@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -103,5 +104,79 @@ func TestRunRefillsScheduledDemandWhenCapacityIsReleased(t *testing.T) {
 	}
 	if counter.polls() != 1 {
 		t.Fatalf("demand polls = %d, want original due poll reused", counter.polls())
+	}
+}
+
+func TestReconcileRepollsScheduledDemandBeforeNextFire(t *testing.T) {
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	runsDir := t.TempDir()
+	active, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           "active-run",
+		Gaggle:          "goobers",
+		Workflow:        "pr-remediation",
+		WorkflowVersion: 1,
+		Trigger:         journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := active.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTriggerFired,
+		Gaggle:   "goobers",
+		Workflow: "pr-remediation",
+		Reason:   triggerReasonScheduled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err = journal.OpenInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	counter := &fakeBacklogCounter{count: 2}
+	sched := New([]WorkflowEntry{{
+		Gaggle:                "goobers",
+		Workflow:              "pr-remediation",
+		Readiness:             apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules:             []Schedule{fakeSchedule{d: time.Hour}},
+		ScheduleDemandCounter: counter,
+		Starter:               starter,
+	}}, log)
+	restartedAt := time.Now().Add(30 * time.Minute)
+	if err := sched.Reconcile(runsDir, restartedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	sched.Tick(context.Background(), restartedAt)
+	if starter.count() != 0 {
+		t.Fatalf("scheduled runs = %d, want reconciled run to hold capacity", starter.count())
+	}
+
+	sched.ReleaseReconciled("active-run", "pr-remediation")
+	sched.Tick(context.Background(), restartedAt)
+	waitForCount(t, starter.count, 1)
+	close(block)
+	sched.Wait()
+
+	if counter.polls() != 1 {
+		t.Fatalf("demand polls = %d, want recovered demand retained after the original poll", counter.polls())
+	}
+	if starter.count() != 1 {
+		t.Fatalf("scheduled runs = %d, want recovered demand to refill released capacity before the next firing", starter.count())
 	}
 }

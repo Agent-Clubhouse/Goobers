@@ -153,7 +153,9 @@ type Scheduler struct {
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
 	// pendingScheduleDemand retains demand that a due scheduled poll found but
-	// concurrency limits could not admit yet.
+	// concurrency limits could not admit yet. Reconcile installs a repoll marker
+	// after a previously fired schedule so current unclaimed demand is recovered
+	// without persisting a count that may become stale while the daemon is down.
 	pendingScheduleDemand map[WorkflowIdentity]scheduledDemand
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
@@ -358,6 +360,13 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 	}
 	s.conditions.ReconcileWorkflowBudgets(starts)
 	last := ReconstructLastEval(fired, identities, now)
+	recoverScheduleDemand := make(map[WorkflowIdentity]bool)
+	for _, record := range fired {
+		identity, ok := resolveWorkflowIdentity(record.Gaggle, record.Workflow, identities)
+		if ok && s.workflows[identity].ScheduleDemandCounter != nil {
+			recoverScheduleDemand[identity] = true
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -369,6 +378,11 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		at := last[identity]
 		ts.LastEval = at
 		s.triggers[identity] = ts
+		if recoverScheduleDemand[identity] {
+			s.pendingScheduleDemand[identity] = scheduledDemand{
+				repoll: true,
+			}
+		}
 	}
 	return nil
 }
@@ -575,6 +589,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			schedule:          pending.schedule,
 			scheduleRemaining: pending.remaining,
 			scheduleDemand:    pending.remaining > 0,
+			schedulePollDue:   pending.repoll,
 		}
 		if pending.remaining == 0 {
 			candidate.schedule = TickResult{LastEval: now}
@@ -833,6 +848,7 @@ type demandPoll struct {
 type scheduledDemand struct {
 	schedule  TickResult
 	remaining int
+	repoll    bool
 }
 
 func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCandidate, now time.Time) {
