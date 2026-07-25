@@ -58,7 +58,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.resultFile` | 1.4 | ga | supported | dev |
 | `stage.run.command` | 1.4 | ga | supported | dev |
 | `stage.run.env` | 1.4 | ga | supported | dev |
-| `stage.run.image` | 1.4 | preview | supported | dev |
 | `stage.run.network.none` | 1.4 | ga | supported | dev |
 | `stage.run.syncBase` | 1.4 | ga | supported | dev |
 | `stage.run.workspace.repo` | 1.4 | ga | supported | dev |
@@ -158,7 +157,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.resultFile` | 2.0 | ga | supported | dev |
 | `stage.run.command` | 2.0 | ga | supported | dev |
 | `stage.run.env` | 2.0 | ga | supported | dev |
-| `stage.run.image` | 2.0 | preview | supported | dev |
 | `stage.run.network.none` | 2.0 | ga | supported | dev |
 | `stage.run.syncBase` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |

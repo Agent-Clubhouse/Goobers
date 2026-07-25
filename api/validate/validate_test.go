@@ -643,7 +643,7 @@ func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	}
 }
 
-func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
+func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-warnings")
 	if err != nil {
@@ -659,24 +659,53 @@ func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 2 {
-		t.Fatalf("compatibility warnings = %+v, want expectedOutputs and run.image warnings", warnings)
+	if len(warnings) != 1 {
+		t.Fatalf("compatibility warnings = %+v, want expectedOutputs warning", warnings)
 	}
-	all := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		if warning.Code != WarningCompatibility {
-			t.Errorf("warning code = %q, want %q", warning.Code, WarningCompatibility)
-		}
-		all = append(all, warning.Explanation)
+	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
+	if !strings.Contains(warnings[0].Explanation, want) {
+		t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
 	}
-	explanations := strings.Join(all, "\n")
-	for _, want := range []string{
-		"expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
-		"run.image is not honored by the local runner",
-	} {
-		if !strings.Contains(explanations, want) {
-			t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
+}
+
+func TestWorkflowSchemaRejectsRunImageFixture(t *testing.T) {
+	const fixture = "testdata/config-run-image"
+	report, err := newV(t).ValidateDir(fixture)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("workflow with run.image passed validation")
+	}
+	all := joinIssues(report)
+	for _, want := range []string{"/spec/tasks/0/run", "image", "additionalProperties"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("validation report = %q, want clear run.image rejection containing %q", all, want)
 		}
+	}
+
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	workflowPath := filepath.Join(root, "gaggles", "example", "workflows", "container-build.yaml")
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutImage := strings.Replace(string(raw), "        image: alpine:3.20\n", "", 1)
+	if withoutImage == string(raw) {
+		t.Fatal("test setup did not remove run.image")
+	}
+	if err := os.WriteFile(workflowPath, []byte(withoutImage), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err = newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatalf("ValidateDir without run.image: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("same workflow without run.image must remain valid:\n%s", joinIssues(report))
 	}
 }
 
@@ -997,70 +1026,6 @@ func TestFeatureSupportLevelsUseIssueChannel(t *testing.T) {
 	}
 }
 
-func TestPreviewFeaturesRequireInstanceOptIn(t *testing.T) {
-	tests := []struct {
-		name         string
-		annotation   string
-		omit         bool
-		wantSeverity Severity
-		wantErrors   bool
-	}{
-		{name: "explicit opt-in", annotation: "true", wantSeverity: Warning},
-		{name: "disabled", annotation: "false", wantSeverity: Error, wantErrors: true},
-		{name: "missing", omit: true, wantSeverity: Error, wantErrors: true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			if err := os.CopyFS(root, os.DirFS("testdata/config-warnings")); err != nil {
-				t.Fatal(err)
-			}
-			manifestPath := filepath.Join(root, "manifest.yaml")
-			manifest, err := os.ReadFile(manifestPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			needle := wf.PreviewFeaturesAnnotation + `: "true"`
-			replacement := wf.PreviewFeaturesAnnotation + `: "` + tc.annotation + `"`
-			if tc.omit {
-				needle = "  annotations:\n    " + needle
-				replacement = ""
-			}
-			manifest = []byte(strings.Replace(
-				string(manifest),
-				needle,
-				replacement,
-				1,
-			))
-			if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			report, err := newV(t).ValidateDir(root)
-			if err != nil {
-				t.Fatalf("ValidateDir: %v", err)
-			}
-			if report.HasErrors() != tc.wantErrors {
-				t.Fatalf("HasErrors() = %v, want %v:\n%s", report.HasErrors(), tc.wantErrors, joinIssues(report))
-			}
-			previewIssues := 0
-			for _, issue := range report.Issues {
-				if issue.Code != WarningPreviewFeature {
-					continue
-				}
-				previewIssues++
-				if issue.Severity != tc.wantSeverity {
-					t.Errorf("preview issue severity = %q, want %q: %+v", issue.Severity, tc.wantSeverity, issue)
-				}
-			}
-			if previewIssues == 0 {
-				t.Fatal("expected preview feature issues")
-			}
-		})
-	}
-}
-
 func TestReportWarningsPreserveShapeAndSortDeterministically(t *testing.T) {
 	report := &Report{Issues: []Issue{
 		{Code: WarningPreviewFeature, Severity: Warning, File: "z.yaml", Kind: "Workflow", Name: "preview", Message: "preview feature is unstable"},
@@ -1294,8 +1259,8 @@ func TestGaggleSchemaSandboxAndCheckout(t *testing.T) {
 
 // TestGaggleCheckoutSparseIsInertWarning pins the accepted-but-inert contract
 // for checkout.sparse (#649): declaring it must validate without errors and
-// surface a VER003 compatibility notice — exactly the task.run.image shape —
-// on both the project repo and any additionalRepos entry.
+// surface a VER003 compatibility notice on both the project repo and any
+// additionalRepos entry.
 func TestGaggleCheckoutSparseIsInertWarning(t *testing.T) {
 	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
 kind: Gaggle

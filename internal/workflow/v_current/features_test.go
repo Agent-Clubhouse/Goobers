@@ -110,9 +110,9 @@ func TestPreviewFeatureRequiresOptIn(t *testing.T) {
 
 // TestCurrentFeatureClassification pins the #1196 fix: the canonical DSL
 // surface is GA (so guided-init and config-examples validate without a preview
-// opt-in), while only genuinely-unproven features (container-image stages,
-// deferred per #1102) remain preview. An earlier placeholder marked every
-// field preview, which made VER002 blanket-flag every standard field.
+// opt-in), while only genuinely-unproven features remain preview. An earlier
+// placeholder marked every field preview, which made VER002 blanket-flag every
+// standard field.
 func TestCurrentFeatureClassification(t *testing.T) {
 	features := AllFeatures()
 	if len(features) == 0 {
@@ -122,7 +122,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	for _, feature := range features {
 		wantLevel := SupportGA
 		switch feature.ID {
-		case featureStageImage, featureGaggleSandbox, featureGaggleCheckoutSparse:
+		case featureGaggleSandbox, featureGaggleCheckoutSparse:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -489,8 +489,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
 				Run: &apiv1.DeterministicRun{
-					Command: []string{"true"}, Image: "example/image",
-					Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone,
+					Command: []string{"true"}, Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone,
 					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
@@ -764,7 +763,6 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.ci-poll",
 		"stage.run.command",
 		"stage.run.env",
-		"stage.run.image",
 		"stage.run.network.none",
 		"stage.run.syncBase",
 		"stage.run.workspace.repo",

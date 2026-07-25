@@ -333,10 +333,6 @@ spec:
                             Env is the explicit environment supplied to the command in addition to
                             the runner's minimal base environment and capability-scoped credentials.
                           type: object
-                        image:
-                          description: Image optionally overrides the container image
-                            the command runs in.
-                          type: string
                         network:
                           description: |-
                             Network selects the command's network access. Empty inherits the host

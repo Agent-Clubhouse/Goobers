@@ -112,7 +112,6 @@
           "properties": {
             "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
             "env": { "type": "object", "additionalProperties": { "type": "string" } },
-            "image": { "type": "string" },
             "network": { "type": "string", "enum": ["none"] },
             "workspace": { "type": "string", "enum": ["repo", "scratch"] },
             "syncBase": { "type": "boolean" }

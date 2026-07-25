@@ -158,7 +158,9 @@ the doc set.)
 - **Deterministic stages** — arbitrary commands (tests, linters, builders, CI pollers)
   run with declared env, timeout, and retry policy. They use a repository worktree
   by default, or an empty disposable scratch workspace when they do not need a repo;
-  commands that require no connectivity may declare `run.network: none`.
+  commands that require no connectivity may declare `run.network: none`. At tiers 1–2
+  these commands are native host subprocesses, not containers; containerized stage
+  execution is tracked in [#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494).
 - **Agentic stages** — an agent harness invoked in the stage worktree with an
   **invocation envelope** (goal, context pointers, capability grants); it must finish
   by producing a **result envelope** (status, outputs, artifact pointers). Harness

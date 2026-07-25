@@ -56,32 +56,6 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsPreviewFeaturesWhenOptionOmitted(t *testing.T) {
-	// A container-image stage is the DSL feature that remains preview (#1102);
-	// standard fields are GA (#1196), so the gate must fire on the image, not on
-	// ordinary fields like workflow.spec.gaggle.
-	def := Definition{Name: "image-build", Version: 1, Spec: apiv1.WorkflowSpec{
-		Gaggle:   "web",
-		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    "build",
-		Tasks: []apiv1.Task{{
-			Name: "build",
-			Type: apiv1.TaskDeterministic,
-			Goal: "build",
-			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
-		}},
-	}}
-
-	_, err := Compile(def)
-	if err == nil || !strings.Contains(err.Error(), `DSL feature "stage.run.image" is preview and requires explicit instance opt-in`) {
-		t.Fatalf("Compile error = %v, want stage.run.image preview opt-in diagnostic", err)
-	}
-	// The same workflow compiles once the instance opts into preview features.
-	if _, err := Compile(def, WithPreviewFeatures(true)); err != nil {
-		t.Fatalf("Compile with preview opt-in must succeed, got: %v", err)
-	}
-}
-
 func TestCompileAllowsHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
@@ -243,7 +217,7 @@ func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
 	}
 }
 
-func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
+func TestCheckWarningsAcceptedButInertField(t *testing.T) {
 	def := Definition{Name: "inert-fields", Version: 1, Spec: apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
@@ -252,7 +226,7 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 			Name:            "build",
 			Type:            apiv1.TaskDeterministic,
 			Goal:            "build",
-			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}},
 			ExpectedOutputs: []string{"artifact"},
 		}},
 	}}
@@ -261,17 +235,12 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 		t.Fatalf("warnings must not fail compilation: %v", err)
 	}
 	warnings := CheckWarnings(def)
-	if len(warnings) != 2 {
-		t.Fatalf("warnings = %v, want expectedOutputs and run.image warnings", warnings)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want expectedOutputs warning", warnings)
 	}
-	all := strings.Join(warnings, "\n")
-	for _, want := range []string{
-		"expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
-		"run.image is not honored by the local runner",
-	} {
-		if !strings.Contains(all, want) {
-			t.Errorf("warnings = %v, want warning containing %q", warnings, want)
-		}
+	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
+	if !strings.Contains(warnings[0], want) {
+		t.Errorf("warnings = %v, want warning containing %q", warnings, want)
 	}
 }
 

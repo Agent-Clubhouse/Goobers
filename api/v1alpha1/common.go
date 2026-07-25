@@ -53,8 +53,7 @@ type RepoRef struct {
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
 	// Checkout narrows how much of the repository run workspaces materialize
 	// (B2, #649). Accepted but not honored by the local runner yet: declaring
-	// it is inert and surfaces a VER003 compatibility warning at validate
-	// time, mirroring task.run.image.
+	// it is inert and surfaces a VER003 compatibility warning at validate time.
 	// +optional
 	Checkout *CheckoutSpec `json:"checkout,omitempty" yaml:"checkout,omitempty"`
 }

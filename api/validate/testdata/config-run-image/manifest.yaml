@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: run-image
+spec:
+  instance:
+    name: run-image
+    environment: dev
+  gaggles:
+    - example

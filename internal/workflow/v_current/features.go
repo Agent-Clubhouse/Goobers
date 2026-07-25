@@ -426,7 +426,6 @@ const (
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageCommand                   FeatureID = "stage.run.command"
 	featureStageEnv                       FeatureID = "stage.run.env"
-	featureStageImage                     FeatureID = "stage.run.image"
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
 	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
@@ -545,7 +544,6 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageCIPoll,
 		featureStageCommand,
 		featureStageEnv,
-		featureStageImage,
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
 		featureStageWorkspaceScratch,
@@ -615,14 +613,11 @@ func currentFeatures(sinceVersion string) []Feature {
 // and config-examples model, which must validate without a preview
 // acknowledgement (an earlier placeholder marked *every* field preview, so
 // guided-init tripped VER002 on every standard field, #1196). Only genuinely
-// unproven features stay preview — container-image stages, whose execution
-// path is deferred (#1102) and is exercised by nothing in the canonical set;
-// sparse checkout, accepted but inert on the local runner (#649); and the
-// per-gaggle sandbox posture override, whose enforcement is landing behind
-// the default-off instance opt-in (#1305). Promoting a feature to GA is a
-// one-line removal from this map.
+// unproven features stay preview: sparse checkout, accepted but inert on the
+// local runner (#649), and the per-gaggle sandbox posture override, whose
+// enforcement is landing behind the default-off instance opt-in (#1305).
+// Promoting a feature to GA is a one-line removal from this map.
 var previewFeatures = map[FeatureID]struct{}{
-	featureStageImage:           {},
 	featureGaggleSandbox:        {},
 	featureGaggleCheckoutSparse: {},
 }
@@ -835,9 +830,6 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageShell)
 	case "ci-poll":
 		used.add(featureStageCIPoll)
-	}
-	if task.Run.Image != "" {
-		used.add(featureStageImage)
 	}
 	if task.Run.Network == apiv1.NetworkNone {
 		used.add(featureStageNetworkNone)

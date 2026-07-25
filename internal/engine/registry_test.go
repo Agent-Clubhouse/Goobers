@@ -178,13 +178,6 @@ func TestConcurrentRegistrationAssignsMonotonicVersions(t *testing.T) {
 	}
 }
 
-func TestRegisterPreviewFeaturesRequiresOptIn(t *testing.T) {
-	r := NewRegistry()
-	if _, err := r.Register("flow", previewSpec()); err == nil {
-		t.Fatal("expected preview workflow registration without opt-in to fail")
-	}
-}
-
 func TestStartUnregistered(t *testing.T) {
 	r := NewRegistry()
 	if _, err := r.StartInput("missing", StartSpec{RunID: "x"}); err == nil {

@@ -120,13 +120,15 @@ The CLI warning codes are stable within their namespace:
 #### Compatibility registry
 
 The compatibility registry also tracks accepted-but-inert fields. At V0,
-`task.expectedOutputs` is **declared-not-enforced** and
-`task.run.image` is not honored by the local runner; declaring either emits
-`VER003` rather than failing validation. Enforcing `expectedOutputs` remains a
-later contract change once shipped declarations are trustworthy. The code and
-file/gaggle provenance are carried on the `--json`/API surface; `goobers
-validate`'s human output prints these workflow compatibility notices as
-`WARNING  <scope>: <explanation>`, without the code.
+`task.expectedOutputs` is **declared-not-enforced** and emits `VER003` rather
+than failing validation. Removed fields fail schema validation: `task.run.image`
+is rejected because deterministic stages currently execute as native host
+subprocesses, while containerized execution is tracked in
+[#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494). Enforcing
+`expectedOutputs` remains a later contract change once shipped declarations are
+trustworthy. The code and file/gaggle provenance are carried on the
+`--json`/API surface; `goobers validate`'s human output prints compatibility
+notices as `WARNING  <scope>: <explanation>`, without the code.
 
 Human output from both commands is `WARNING <code> <scope>: <explanation>`.
 `goobers status --json` emits one object with `warnings` and `runs` arrays:
