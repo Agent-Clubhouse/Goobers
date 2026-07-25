@@ -44,8 +44,10 @@ a monorepo.
 - **GAG-010 (MUST):** A Gaggle definition MUST be tier-portable — the same definition,
   unmodified, MUST run on both the local runner and the Temporal runner; scaling a
   gaggle to tier 3 MUST NOT require rewriting any part of the workforce. *(All tiers;
-  applies to the cross-tier DSL surface — tier-3 schema extensions such as parallel
-  branches are the explicit, declared exception, `CFG-022`.)*
+  applies to the cross-tier DSL surface — **child workflows** are the one explicit,
+  declared exception, `CFG-022`. Static parallel branches were formerly listed here and
+  no longer are: they are core DSL implemented by the local runner,
+  `design/static-fan-out-fan-in.md` §4.)*
 - **GAG-011 (MUST):** At tiers 1–2 gaggle isolation MUST be enforced by per-gaggle
   scoping inside the instance root: separate managed working copies/worktrees, run
   journals attributed per gaggle, telemetry rows partitioned per gaggle, and gaggle-
