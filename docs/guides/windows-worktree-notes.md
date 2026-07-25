@@ -123,7 +123,7 @@ git binary and the worktree fixes, and matches the versions Goobers is exercised
 elsewhere. The exact version of each Windows CI run should be recorded into the
 validation evidence artifact the same way `test/linuxvalidate` records it for Linux.
 
-## 5. Windows prerequisites checklist (for the future Windows quickstart)
+## 5. Windows prerequisites checklist
 
 - [ ] Git-for-Windows ≥ 2.40 on `PATH`.
 - [ ] OS long-path support enabled (`LongPathsEnabled=1` registry **or** group policy).
@@ -133,19 +133,10 @@ validation evidence artifact the same way `test/linuxvalidate` records it for Li
       `runner.annotation` events.
 - [ ] Target repos carry a `.gitattributes` for deterministic line endings.
 
-## Remaining activation work
+## Runtime validation
 
-These behaviors are covered by tests that run today on the ubuntu/macos matrix legs
-and exercise the Windows-fallback path deterministically via injection
-(`internal/worktree/windows_audit_test.go`). Two things are needed to run them as
-**live** Windows cargo:
-
-- **P6/#633** — the Windows CI matrix leg does not exist yet (the advisory
-  `windows-smoke` job was removed pending it). When it lands, the existing tests
-  run on it unchanged and additionally assert the real (non-injected) behavior.
-- **Windows cross-compilation of `internal/worktree`** — the package's transitive
-  deps (`internal/gooberassets`, `internal/platform/proc`) do not yet cross-compile
-  to `GOOS=windows` (tracked by the P1–P4 abstraction work, #620–#627, and #1090's
-  chain). The worktree audit code added here introduces no new Windows-incompatible
-  imports — it is platform-neutral Go dispatching on `runtime.GOOS` — so it will
-  cross-compile as soon as those land.
+The required Windows CI gate now runs the worktree regressions natively and
+drives the shipped implementation workflow with its fake harness. The
+`windows-validation-evidence` artifact records the exact Git version and the
+workflow's real run journal; see the
+[Windows quickstart](quickstart-windows.md#validated-environment-and-evidence).

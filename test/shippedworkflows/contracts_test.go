@@ -41,6 +41,7 @@ const (
 	contractHelperResultFile = "GOOBERS_SHIPPED_CONTRACT_RESULT_FILE"
 	contractHelperExitCode   = "GOOBERS_SHIPPED_CONTRACT_EXIT_CODE"
 	skipShippedContracts     = "GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS"
+	contractEvidenceDir      = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
 	contractMaxRepasses      = 1
 	contractNumber           = float64(73)
 )
@@ -189,11 +190,26 @@ func TestShippedWorkflowContracts(t *testing.T) {
 								t.Fatalf("%s: workflow %q terminal path %q phase = %q, want %q",
 									source, key, scenario.name, state.Phase, scenario.wantPhase)
 							}
+							captureImplementationEvidence(t, config.name, key, scenario.name, runDir)
 						})
 					}
 				})
 			}
 		})
+	}
+}
+
+func captureImplementationEvidence(t *testing.T, config, workflowName, scenario, runDir string) {
+	t.Helper()
+	evidenceDir := os.Getenv(contractEvidenceDir)
+	if evidenceDir == "" ||
+		config != "selfhost" ||
+		workflowName != "goobers/implementation" ||
+		scenario != "01_query-backlog_next" {
+		return
+	}
+	if err := os.CopyFS(evidenceDir, os.DirFS(runDir)); err != nil {
+		t.Fatalf("capture implementation-workflow journal: %v", err)
 	}
 }
 
