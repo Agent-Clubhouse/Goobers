@@ -1,0 +1,70 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: additional-repos
+spec:
+  instance:
+    name: additional-repos
+    environment: dev
+  gaggles:
+    - site
+---
+# A site gaggle writes PRs against its own repo (the read-write Project) while
+# reading the goobers and clubhouse repos as read-only reference sources
+# (MGV-10, #1285). The reference repos are distinct from the Project, so they
+# validate cleanly.
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: site
+spec:
+  project:
+    provider: github
+    owner: example
+    name: site
+  additionalRepos:
+    - provider: github
+      owner: example
+      name: goobers
+    - provider: github
+      owner: example
+      name: clubhouse
+  backlog:
+    provider: github
+    project: example/site
+  isolation:
+    namespace: site
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: author
+spec:
+  gaggle: site
+  role: coder
+  instructions: config.yaml
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: publish
+spec:
+  gaggle: site
+  triggers:
+    - type: manual
+  start: draft
+  tasks:
+    - name: draft
+      type: agentic
+      goober: author
+      goal: Draft the site update.
+      next: approve
+  gates:
+    - name: approve
+      evaluator: agentic
+      agentic:
+        goober: author
+      branches:
+        pass: ""
+        fail: ""
+        needs-changes: ""

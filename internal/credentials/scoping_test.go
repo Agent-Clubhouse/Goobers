@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,73 @@ func TestRunnerGrants_NoReposLeavesOnlyOverrides(t *testing.T) {
 	want := []Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("grants = %+v, want only the override %+v", got, want)
+	}
+}
+
+// TestAdditionalReadGrants_RoutesEachReferenceRepoItsOwnReadToken is the core
+// MGV-10 (#1285) invariant: each read-only reference repo gets a repo-qualified
+// contents:read grant backed by its OWN token ref — never a write capability,
+// never another repo's token.
+func TestAdditionalReadGrants_RoutesEachReferenceRepoItsOwnReadToken(t *testing.T) {
+	additional := []RepoBinding{
+		{Owner: "alpha-org", Name: "site"},
+		{Owner: "bravo-org", Name: "app"},
+	}
+	grants := AdditionalReadGrants(twoRepoBindings, additional, "contents:read")
+
+	got := grantMap(grants)
+	if ref := got["contents:read@alpha-org/site"]; ref != "alpha-org/site" {
+		t.Errorf("alpha-org/site read grant ref = %q, want alpha-org/site", ref)
+	}
+	if ref := got["contents:read@bravo-org/app"]; ref != "bravo-org/app" {
+		t.Errorf("bravo-org/app read grant ref = %q, want bravo-org/app", ref)
+	}
+	// Read-only by construction: not one write capability is ever produced.
+	for _, g := range grants {
+		if !strings.HasPrefix(g.Capability, "contents:read@") {
+			t.Errorf("AdditionalReadGrants produced a non-read grant %q", g.Capability)
+		}
+	}
+	// Deterministic order follows the additional slice.
+	if len(grants) != 2 || grants[0].Capability != "contents:read@alpha-org/site" {
+		t.Errorf("grants out of order: %+v", grants)
+	}
+}
+
+// TestAdditionalReadGrants_SkipsUntokenedAndDedupes: a reference repo with no
+// configured token yields no grant (nothing to route), and a repo listed twice
+// is granted once.
+func TestAdditionalReadGrants_SkipsUntokenedAndDedupes(t *testing.T) {
+	additional := []RepoBinding{
+		{Owner: "alpha-org", Name: "site"},
+		{Owner: "no-token", Name: "repo"},  // not in twoRepoBindings → no token → skipped
+		{Owner: "alpha-org", Name: "site"}, // duplicate → granted once
+	}
+	grants := AdditionalReadGrants(twoRepoBindings, additional, "contents:read")
+	if len(grants) != 1 {
+		t.Fatalf("got %d grants, want exactly 1 (untokened skipped, duplicate deduped): %+v", len(grants), grants)
+	}
+	if grants[0].Capability != "contents:read@alpha-org/site" {
+		t.Errorf("grant = %q, want contents:read@alpha-org/site", grants[0].Capability)
+	}
+}
+
+// TestAdditionalReadGrants_EmptyInputs: no additional repos, or an empty read
+// capability, produces no grants — a single-repo gaggle is unaffected.
+func TestAdditionalReadGrants_EmptyInputs(t *testing.T) {
+	if g := AdditionalReadGrants(twoRepoBindings, nil, "contents:read"); len(g) != 0 {
+		t.Errorf("no additional repos should yield no grants, got %+v", g)
+	}
+	if g := AdditionalReadGrants(twoRepoBindings, []RepoBinding{{Owner: "alpha-org", Name: "site"}}, ""); len(g) != 0 {
+		t.Errorf("empty read capability should yield no grants, got %+v", g)
+	}
+}
+
+// TestRepoScopedCapability documents the repo-qualified grant-key convention
+// (mirrors the isolation-conformance test's cap@owner/repo keys).
+func TestRepoScopedCapability(t *testing.T) {
+	if got := RepoScopedCapability("contents:read", "example", "goobers"); got != "contents:read@example/goobers" {
+		t.Errorf("RepoScopedCapability = %q, want contents:read@example/goobers", got)
 	}
 }
 

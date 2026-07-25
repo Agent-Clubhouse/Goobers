@@ -298,7 +298,10 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // token, byte-identical to the prior instance-global behavior. agent:model and
 // other cfg.Credentials entries stay unqualified (the shared token every gaggle
 // uses), overriding the repo-default grant for their capability (#287).
-func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
+// additionalRepos are the gaggle's read-only reference repos (MGV-10, #1285):
+// each gains only a repo-qualified contents:read grant from its own token, never
+// a write capability. Pass nil for instance-level or single-repo callers.
+func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, r := range cfg.Repos {
@@ -340,6 +343,21 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: credentialRefName(cg.Capability)})
 	}
 	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
+	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
+	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
+	// from that repo's own configured token binding. These runner-owned grants
+	// authenticate the reference-repo checkout at provision time (MGV-11); no
+	// write capability is ever produced for an additional repo, so a stage cannot
+	// obtain a write token for one — reference repos are read-only by construction.
+	additionalBindings := make([]credentials.RepoBinding, 0, len(additionalRepos))
+	for _, r := range additionalRepos {
+		owner := r.Owner
+		if r.Provider == apiv1.ProviderADO && r.Project != "" {
+			owner += "/" + r.Project
+		}
+		additionalBindings = append(additionalBindings, credentials.RepoBinding{Owner: owner, Name: r.Name})
+	}
+	grants = append(grants, credentials.AdditionalReadGrants(bindings, additionalBindings, string(capability.ContentsRead))...)
 	return resolver, grants, nil
 }
 
@@ -1003,7 +1021,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, "", "")
+	resolver, _, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1217,7 +1235,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1253,7 +1271,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
 		gaggleOwner += "/" + gaggleProject.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name)
+	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name, additionalRepos)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
