@@ -63,6 +63,7 @@ Usage:
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
+  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
@@ -177,6 +178,7 @@ Usage:
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
+  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
@@ -530,6 +532,18 @@ With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
+
+### gate-removal-guard
+Usage: goobers gate-removal-guard [path]
+
+Block a tutor run whose drafted change removes or loosens the specific
+gate its own finding flagged as noisy, unless the finding cites
+independent proof the gate is dead. Runs after draft-change, before
+validate-config, reading the analyze stage's finding.md from the run
+journal and diffing every changed workflow YAML file against base.
+A finding unrelated to gate noise, or a diff that doesn't touch the
+named gate, is a no-op pass-through.
+Exit codes: 0 = clear (or nothing to check), 1 = blocked, 2 = usage/IO error.
 
 ### gather-ci-failures
 Usage: goobers gather-ci-failures [path]

@@ -363,6 +363,10 @@ func init() {
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
 			withExamples("goobers open-pr"),
+		command("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
+			withSynopsis(synopsisByID["gate-removal-guard"]).
+			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).
+			withExamples("goobers gate-removal-guard"),
 		command("issue-close-out", apicontract.ActionWorkflowExecution, runIssueCloseOut).
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).

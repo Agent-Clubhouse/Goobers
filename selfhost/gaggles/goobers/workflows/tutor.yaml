@@ -94,7 +94,27 @@ spec:
         - modify-repository
       expectedOutputs:
         - changed-files
-      next: validate-config
+      next: gate-removal-guard
+
+    # Metric-gaming guard (TUT-A3, #1215, docs/design/tutor-redesign.md §5
+    # item 2): the Tutor mines gate-never-fails/gate-repass-churn findings,
+    # so the cheapest way for a drafted change to "improve" that metric is to
+    # loosen or delete the exact gate that produced it — a noisy gate can be
+    # miscalibrated rather than dead (see #415,
+    # shared-gate-evaluator-blast-radius). This deterministic stage reads the
+    # analyze stage's finding.md front matter and this run's diff, and aborts
+    # closed if the diff removes or loosens the flagged gate without the
+    # analyst having recorded independent proof it is dead. A finding
+    # unrelated to gate noise, or a diff that never touches the named gate,
+    # is a no-op.
+    - name: gate-removal-guard
+      type: deterministic
+      goal: Block a drafted change that removes/loosens its own flagged gate without proof.
+      run:
+        command: ["goobers", "gate-removal-guard"]
+      inputs:
+        resultFile: "gate-edit.json"
+      next: gate-removal-clear
 
     # Validate the drafted selfhost tree, not the running instance's unchanged
     # config copy. Calling the CLI directly lets the executor substitute the
@@ -147,6 +167,16 @@ spec:
       # in-product gate (TUT-006, design doc OQ-3).
 
   gates:
+    # A non-zero gate-removal-guard exit means it blocked a self-serving gate
+    # edit (TUT-A3, #1215) — abort rather than publishing the branch.
+    - name: gate-removal-clear
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: validate-config
+        fail: "@abort"
+
     # A non-zero validate exit becomes a failure ResultEnvelope. Abort rather
     # than publishing an invalid branch; the runner journals this verdict.
     - name: config-valid

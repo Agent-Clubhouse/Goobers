@@ -66,7 +66,11 @@ source and the enforcement mechanism of its write-boundary vary by tier.
   (it may add, change, strengthen, or weaken goober definitions, workflows, and gates).
   Human control over the quality bar is exercised entirely through standard **`config`-repo
   governance** — branch protection, required reviews, and CODEOWNERS — not via in-product
-  restrictions on the Tutor.
+  restrictions on the Tutor. **Exception (TUT-A3, #1215):** the one in-product restriction
+  is the metric-gaming guard — the Tutor may never remove/loosen the exact gate whose noise
+  produced a `gate-never-fails`/`gate-repass-churn` finding without independent proof the
+  gate is dead (`docs/design/tutor-redesign.md` §5 item 2); a drafted change that violates
+  this is blocked structurally (`gate-removal-guard`), not left to review alone.
 - **TUT-009 (SHOULD):** Setup SHOULD support **path-scoped governance** so teams can
   require stricter human review for sensitive changes (e.g. gate definitions) while
   allowing lower-risk changes (e.g. instruction tweaks) to flow more freely.
@@ -105,10 +109,12 @@ source and the enforcement mechanism of its write-boundary vary by tier.
 - **TUT-Q1:** ~~Detection method~~ **Resolved:** hybrid — metrics surface candidates,
   agentic step diagnoses & drafts (`TUT-003`). Re-anchored on the tiered stores: local
   rollup at tiers 1–2, ADX at tier 3 (`ARCHITECTURE.md §8`).
-- **TUT-Q2:** ~~Can the Tutor weaken/remove a required gate?~~ **Resolved:** yes — the
-  Tutor authors freely; humans hold the quality bar through `config`-repo PR governance
-  (branch protection / required review / CODEOWNERS), not via in-product restrictions
-  (`TUT-006`, `TUT-009`).
+- **TUT-Q2:** ~~Can the Tutor weaken/remove a required gate?~~ **Resolved:** yes in
+  general — the Tutor authors freely; humans hold the quality bar through `config`-repo
+  PR governance (branch protection / required review / CODEOWNERS), not via in-product
+  restrictions (`TUT-006`, `TUT-009`) — **except** it may never remove/loosen the exact
+  gate whose own noise flagged the finding without independent proof the gate is dead
+  (`TUT-006`'s exception, `TUT-A3`/#1215).
 - **TUT-Q3:** **Resolved (default):** one PR per finding (batchable). *(Build-time:
   batching heuristics.)*
 - **TUT-Q4:** **Resolved (default):** track prior-change history + assess whether they

@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATE REMOVAL GUARD" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gate-removal-guard \- block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gate-removal-guard\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gate-removal-guard [path]
+
+Block a tutor run whose drafted change removes or loosens the specific
+gate its own finding flagged as noisy, unless the finding cites
+independent proof the gate is dead. Runs after draft-change, before
+validate-config, reading the analyze stage's finding.md from the run
+journal and diffing every changed workflow YAML file against base.
+A finding unrelated to gate noise, or a diff that doesn't touch the
+named gate, is a no-op pass-through.
+Exit codes: 0 = clear (or nothing to check), 1 = blocked, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gate-removal-guard
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

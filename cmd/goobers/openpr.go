@@ -166,6 +166,17 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Gate-edit review routing (TUT-A3, #1215): a tutor run whose
+	// gate-removal-guard stage classified this diff as removing or loosening
+	// its own flagged gate gets the stricter-review label; ordinary gate
+	// tuning gets the lighter one. Best-effort — labeling failures never fail
+	// an already-opened PR, same posture as flagScopeDrift.
+	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
+		if lerr := labelGateEdit(ctx, provider, repo, result.Number, kind, subject); lerr != nil {
+			pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+		}
+	}
+
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
 }
