@@ -431,7 +431,7 @@ func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *tes
 	}
 	pullFiles := append([]fakePRFile(nil), compareFiles...)
 	pullFiles = append(pullFiles, fakePRFile{
-		path: "selfhost/gaggles/goobers/skills/reviewer/SKILL.md", status: "modified",
+		path: "selfhost/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
 	})
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",

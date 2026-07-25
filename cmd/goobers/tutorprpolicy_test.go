@@ -45,6 +45,7 @@ spec:
 
 func TestClassifyTutorChanges(t *testing.T) {
 	gateTune := strings.Replace(tutorPolicyWorkflowBase, `threshold: "2"`, `threshold: "1"`, 1)
+	goalTune := strings.Replace(tutorPolicyWorkflowBase, "Build the project.", "Compile the project.", 1)
 	topology := strings.Replace(tutorPolicyWorkflowBase, "next: quality", `next: validate
     - name: validate
       type: deterministic
@@ -79,11 +80,26 @@ func TestClassifyTutorChanges(t *testing.T) {
 			wantTypes: []tutorChangeType{tutorChangePersona},
 		},
 		{
+			name: "skill instructions",
+			changes: []tutorFileChange{{
+				Path: "gaggles/example/skills/review/instructions.md",
+			}},
+			wantTypes: []tutorChangeType{tutorChangeSkill},
+			wantHuman: true,
+		},
+		{
 			name: "gate tune",
 			changes: []tutorFileChange{{
 				Path: "gaggles/example/workflows/review.yaml", Before: []byte(tutorPolicyWorkflowBase), After: []byte(gateTune),
 			}},
 			wantTypes: []tutorChangeType{tutorChangeGateTune},
+		},
+		{
+			name: "task goal tune",
+			changes: []tutorFileChange{{
+				Path: "gaggles/example/workflows/review.yaml", Before: []byte(tutorPolicyWorkflowBase), After: []byte(goalTune),
+			}},
+			wantTypes: []tutorChangeType{tutorChangePersona},
 		},
 		{
 			name: "validation topology",
@@ -232,14 +248,15 @@ func TestPRSelectRoutesOnlyLowRiskTutorChangesToAutomatedReview(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const workflowPath = "selfhost/gaggles/goobers/workflows/review.yaml"
+	const skillPath = "selfhost/gaggles/goobers/skills/review/instructions.md"
 	gateTune := strings.Replace(tutorPolicyWorkflowBase, `threshold: "2"`, `threshold: "1"`, 1)
 	server.addOpenPR(10, "goobers/tutor/run-10", "main", "skill-head", "base",
-		false, nil, []fakePRFile{{path: "selfhost/gaggles/goobers/skills/review/SKILL.md", status: "modified"}})
+		false, nil, []fakePRFile{{path: skillPath, status: "modified"}})
 	server.addOpenPR(11, "goobers/tutor/run-11", "main", "gate-head", "base",
 		false, nil, []fakePRFile{{path: workflowPath, status: "modified"}})
 	server.compares["base...skill-head"] = fakeCompare{
 		mergeBaseSHA: "base",
-		files:        []fakePRFile{{path: "selfhost/gaggles/goobers/skills/review/SKILL.md", status: "modified"}},
+		files:        []fakePRFile{{path: skillPath, status: "modified"}},
 	}
 	server.compares["base...gate-head"] = fakeCompare{
 		mergeBaseSHA: "base",

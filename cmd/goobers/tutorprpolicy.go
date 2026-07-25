@@ -111,10 +111,10 @@ func classifyTutorFileChange(change tutorFileChange) ([]tutorChangeType, error) 
 	workflowPaths := 0
 	for _, filePath := range paths {
 		switch {
-		case path.Base(filePath) == "instructions.md":
-			types[tutorChangePersona] = true
 		case hasPathSegment(filePath, "skills"):
 			types[tutorChangeSkill] = true
+		case path.Base(filePath) == "instructions.md":
+			types[tutorChangePersona] = true
 		case isWorkflowPath(filePath):
 			workflowPaths++
 		default:
@@ -167,7 +167,21 @@ func classifyWorkflowChange(beforeRaw, afterRaw []byte) ([]tutorChangeType, erro
 	beforeWithoutGates.Spec.Gates = nil
 	afterWithoutGates.Spec.Gates = nil
 	if !reflect.DeepEqual(beforeWithoutGates, afterWithoutGates) {
-		types[tutorChangeStructure] = true
+		beforeWithoutGoals := beforeWithoutGates
+		afterWithoutGoals := afterWithoutGates
+		beforeWithoutGoals.Spec.Tasks = append([]apiv1.Task(nil), beforeWithoutGates.Spec.Tasks...)
+		afterWithoutGoals.Spec.Tasks = append([]apiv1.Task(nil), afterWithoutGates.Spec.Tasks...)
+		for i := range beforeWithoutGoals.Spec.Tasks {
+			beforeWithoutGoals.Spec.Tasks[i].Goal = ""
+		}
+		for i := range afterWithoutGoals.Spec.Tasks {
+			afterWithoutGoals.Spec.Tasks[i].Goal = ""
+		}
+		if reflect.DeepEqual(beforeWithoutGoals, afterWithoutGoals) {
+			types[tutorChangePersona] = true
+		} else {
+			types[tutorChangeStructure] = true
+		}
 	}
 
 	beforeGates, ok := tutorGatesByName(before.Spec.Gates)
