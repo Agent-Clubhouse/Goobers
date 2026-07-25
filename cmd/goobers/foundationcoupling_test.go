@@ -205,7 +205,7 @@ func TestPRSelectFlagsFoundationCouplingBeforeRemediation(t *testing.T) {
 		Labels: []string{needsRemediationLabel, blockedOnSiblingLabel},
 	}
 	provider := server.newGitHubProvider("token")
-	filtered, err := filterRemediationPullRequests(context.Background(), provider, providers.RepositoryRef{
+	filtered, _, err := filterRemediationPullRequests(context.Background(), provider, providers.RepositoryRef{
 		Owner: "your-org", Name: "your-repo",
 	}, []providers.PullRequestSummary{dependent}, nil)
 	if err != nil {
@@ -216,13 +216,13 @@ func TestPRSelectFlagsFoundationCouplingBeforeRemediation(t *testing.T) {
 	}
 
 	server.closeIssue(709)
-	filtered, err = filterRemediationPullRequests(context.Background(), provider, providers.RepositoryRef{
+	filtered, blockedDependents, err := filterRemediationPullRequests(context.Background(), provider, providers.RepositoryRef{
 		Owner: "your-org", Name: "your-repo",
 	}, []providers.PullRequestSummary{dependent}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates, priority, err := selectRemediationCandidates(filtered, func(providers.PullRequestSummary) (bool, error) {
+	candidates, priority, err := selectRemediationCandidates(filtered, blockedDependents, func(providers.PullRequestSummary) (bool, error) {
 		return false, nil
 	})
 	if err != nil {
@@ -345,7 +345,7 @@ func TestPRSelectFoundationScanIncludesSelfHealedLifecycleLabels(t *testing.T) {
 			assertFoundationBlocker(t, server, 700, 709)
 			if tc.label == mergeDemotedLabel {
 				provider := server.newGitHubProvider("token")
-				filtered, err := filterRemediationPullRequests(
+				filtered, _, err := filterRemediationPullRequests(
 					context.Background(),
 					provider,
 					providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},

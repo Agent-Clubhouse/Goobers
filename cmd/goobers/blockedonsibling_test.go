@@ -208,6 +208,80 @@ func TestUnparkResolvedSiblings(t *testing.T) {
 	}
 }
 
+func TestRemediationSelectionDrainsOverlapWaveLazily(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	for _, number := range []int{100, 101, 102} {
+		server.addIssue(number, "overlap wave")
+	}
+	server.addComment(101, blockedOnSiblingCommentFor(t, 100))
+	server.addComment(102, blockedOnSiblingCommentFor(t, 100, 101))
+	provider := server.newGitHubProvider("token")
+
+	waves := []struct {
+		prs  []providers.PullRequestSummary
+		want int
+	}{
+		{
+			prs: []providers.PullRequestSummary{
+				{Number: 100},
+				{Number: 101, Labels: []string{blockedOnSiblingLabel}},
+				{Number: 102, Labels: []string{blockedOnSiblingLabel}},
+			},
+			want: 100,
+		},
+		{
+			prs: []providers.PullRequestSummary{
+				{Number: 101, Labels: []string{blockedOnSiblingLabel, needsRemediationLabel}},
+				{Number: 102, Labels: []string{blockedOnSiblingLabel, needsRemediationLabel}},
+			},
+			want: 101,
+		},
+		{
+			prs: []providers.PullRequestSummary{
+				{Number: 102, Labels: []string{blockedOnSiblingLabel, needsRemediationLabel}},
+			},
+			want: 102,
+		},
+	}
+
+	var selected []int
+	behindProbes := 0
+	for i, wave := range waves {
+		if i > 0 {
+			server.closeIssue(waves[i-1].want)
+		}
+		eligible, blockedDependents, err := filterRemediationPullRequests(
+			context.Background(), provider, repo, wave.prs, nil,
+		)
+		if err != nil {
+			t.Fatalf("cycle %d filter: %v", i+1, err)
+		}
+		candidates, _, err := selectRemediationCandidates(
+			eligible,
+			blockedDependents,
+			func(pr providers.PullRequestSummary) (bool, error) {
+				behindProbes++
+				return true, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("cycle %d select: %v", i+1, err)
+		}
+		if len(candidates) != 1 || candidates[0].Number != wave.want {
+			t.Fatalf("cycle %d candidates = %+v, want only elected PR #%d", i+1, candidates, wave.want)
+		}
+		selected = append(selected, candidates[0].Number)
+	}
+
+	if got := joinPRNumbers(selected); got != "100,101,102" {
+		t.Fatalf("rebase order = %s, want deterministic predecessor order 100,101,102", got)
+	}
+	if behindProbes != 1 {
+		t.Fatalf("behind-base probes = %d, want only the initially crowned lander probed", behindProbes)
+	}
+}
+
 // TestPRSelectSkipsBlockedOnSibling is #748 AC1's merge-review-side acceptance:
 // a PR parked blocked-on-sibling with a still-open blocker is not selected.
 func TestPRSelectSkipsBlockedOnSibling(t *testing.T) {
