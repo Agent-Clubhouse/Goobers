@@ -23,6 +23,9 @@ const DefaultMaxRepasses = 3
 type Result struct {
 	// Gate is the evaluated gate's name.
 	Gate string
+	// Actor identifies the human principal that supplied a human-gate
+	// decision. Empty for automated and agentic gates.
+	Actor string
 	// Outcome is the evaluator outcome (a check's "pass"/"fail", or an
 	// agentic Verdict's Decision string), or the synthesized fail-closed
 	// outcome for an interrupted-budget escalation.
@@ -73,12 +76,12 @@ type Result struct {
 	VerdictArtifact *apiv1.ArtifactPointer
 }
 
-// Evaluator dispatches a gate to its configured evaluator (automated or
-// agentic — human gates are V1, GT-003), resolves the outcome to a branch via
-// the compiled machine, enforces the bounded-repass budget, and journals the
-// verdict. It is safe for reuse across every gate evaluation within a single
-// run; it is NOT safe for concurrent use (a run advances one state at a time)
-// and MUST NOT be shared across runs (repass counts are per-run state).
+// Evaluator dispatches automated and agentic gates and resolves explicit human
+// decisions, maps outcomes to branches via the compiled machine, enforces the
+// bounded-repass budget, and journals the verdict. It is safe for reuse across
+// every gate evaluation within a single run; it is NOT safe for concurrent use
+// (a run advances one state at a time) and MUST NOT be shared across runs
+// (repass counts are per-run state).
 type Evaluator struct {
 	// Automated evaluates automated gates. Required if any gate in the
 	// workflow is evaluator=automated.
@@ -189,7 +192,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		}
 	case apiv1.EvaluatorHuman:
-		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
+		return Result{}, fmt.Errorf("gate %q: human evaluator requires an explicit decision", g.Name)
 	default:
 		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
@@ -276,6 +279,54 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	}
 
 	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
+}
+
+// EvaluateHuman applies an explicit human decision to a human gate. The
+// actor must match a configured approver when the gate restricts approvers, and
+// the decision must exactly match a configured branch. Human gates execute
+// nothing, so there is no pre-dispatch gate.started marker.
+func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision, actor string) (Result, error) {
+	if err := ValidateHumanDecision(g, decision, actor); err != nil {
+		return Result{}, err
+	}
+	target, _ := wf.BranchTarget(g, decision)
+	r := Result{Gate: g.Name, Actor: actor, Outcome: decision, Target: target}
+	if _, err := recordVerdict(e.Journal, r, ""); err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
+	}
+	return r, nil
+}
+
+// ValidateHumanDecision verifies a human-gate decision without mutating its
+// journal. The runner uses it before resuming so invalid external input cannot
+// fail an otherwise healthy paused run.
+func ValidateHumanDecision(g apiv1.Gate, decision, actor string) error {
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		return fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
+	}
+	if g.Human != nil && len(g.Human.Approvers) > 0 {
+		if actor == "" {
+			return fmt.Errorf("gate %q: human decision actor is required by approver restrictions", g.Name)
+		}
+		authorized := false
+		for _, approver := range g.Human.Approvers {
+			if actor == approver {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return fmt.Errorf("gate %q: actor %q is not an authorized approver", g.Name, actor)
+		}
+	}
+	if decision == "" {
+		return fmt.Errorf("gate %q: human decision is required", g.Name)
+	}
+	_, ok := wf.BranchTarget(g, decision)
+	if !ok {
+		return fmt.Errorf("gate %q: decision %q has no defined branch (never a silent pass, GT-002)", g.Name, decision)
+	}
+	return nil
 }
 
 // EvaluateKnownOutcome applies the gate's branch and repass policy to an

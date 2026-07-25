@@ -2796,7 +2796,7 @@ func TestRunnerMaxStepsExceededFailsRunClosed(t *testing.T) {
 	}
 }
 
-func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
+func TestRunnerAcceptsHumanGateDefinition(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -2810,10 +2810,8 @@ func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
 			},
 		},
 	}
-	_, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
-	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("compile error = %v, want actionable rejection before runner start", err)
+	if _, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true)); err != nil {
+		t.Fatalf("compile human gate: %v", err)
 	}
 }
 

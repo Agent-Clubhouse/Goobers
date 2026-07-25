@@ -172,6 +172,12 @@ var checkEqualsVocab = map[string][]string{
 func gateVocabProblems(def Definition) []string {
 	var problems []string
 	for _, g := range def.Spec.Gates {
+		if g.Evaluator == apiv1.EvaluatorHuman && g.Human != nil {
+			if g.Human.TimeoutSeconds != 0 || g.Human.OnTimeout != "" {
+				problems = append(problems, fmt.Sprintf("gate %q: human timeout behavior is not supported yet", g.Name))
+			}
+			continue
+		}
 		if g.Evaluator != apiv1.EvaluatorAutomated || g.Automated == nil {
 			continue
 		}

@@ -102,6 +102,7 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,
+		Actor:     r.Actor,
 		Gate:      r.Gate,
 		Verdict:   r.Outcome,
 		Target:    r.Target,
