@@ -31,9 +31,12 @@ func Compile(expression string, required, excluded []string) (*Predicate, error)
 	for _, label := range required {
 		predicate.referenced[label] = struct{}{}
 	}
-	expression = strings.TrimSpace(expression)
 	if expression == "" {
 		return predicate, nil
+	}
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return nil, fmt.Errorf("CEL expression must not be blank")
 	}
 
 	env, err := cel.NewEnv(cel.Variable("labels", cel.MapType(cel.StringType, cel.BoolType)))

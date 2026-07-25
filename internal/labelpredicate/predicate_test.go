@@ -64,6 +64,13 @@ func TestPredicateRejectsInvalidCEL(t *testing.T) {
 	}
 }
 
+func TestPredicateRejectsBlankCEL(t *testing.T) {
+	_, err := Compile(" \t\n", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "must not be blank") {
+		t.Fatalf("Compile error = %v, want blank-expression error", err)
+	}
+}
+
 func TestPredicateRequiredLabelsAreCopied(t *testing.T) {
 	required := []string{"goobers:ready"}
 	predicate, err := Compile("", required, []string{"goobers:claimed"})
