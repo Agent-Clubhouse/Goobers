@@ -334,7 +334,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
-		captureID, err := newCopilotCaptureID()
+		captureID, err := newHarnessSessionID()
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
 		}

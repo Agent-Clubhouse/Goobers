@@ -150,6 +150,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if effort, ok := options["effort"]; ok {
 		argv = append(argv, "--effort", effort)
 	}
+	sessionID, err := newHarnessSessionID()
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: create session id: %w", err)
+	}
+	sessionSelectorArg := len(argv)
+	argv = append(argv, "--session-id", sessionID)
 
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
@@ -184,6 +190,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		}
 		argv = wrapped
 		promptArg += shift
+		sessionSelectorArg += shift
 	}
 
 	runner := c.runner()
@@ -218,6 +225,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 				prompts = append(prompts, recoveryPrompt)
 				recoveryArgv := append([]string(nil), argv...)
 				recoveryArgv[promptArg] = recoveryPrompt
+				recoveryArgv[sessionSelectorArg] = "--resume"
 				recoveryCapture := &claudeTerminalCapture{}
 				captures = append(captures, recoveryCapture)
 				recovery, recoveryErr := runner.Run(ctx, ProcessRequest{

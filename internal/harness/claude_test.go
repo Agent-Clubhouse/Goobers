@@ -273,43 +273,83 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 	}
 }
 
-func TestClaudeAdapterRecoversMissingCompletionFile(t *testing.T) {
-	workspace := t.TempDir()
-	runner := &claudeSequenceRunner{
-		results: []ProcessResult{
-			{ExitCode: 0, Transcript: []byte(claudeResultStream)},
-			{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		mode           Mode
+		completionPath string
+		completion     interface{}
+	}{
+		{
+			name:           "result",
+			mode:           ModeInvoke,
+			completionPath: DefaultResultPath,
+			completion:     apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 		},
-		acts: []func(ProcessRequest) error{
-			nil,
-			func(req ProcessRequest) error {
-				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
-			},
+		{
+			name:           "verdict",
+			mode:           ModeReview,
+			completionPath: DefaultVerdictPath,
+			completion:     apiv1.Verdict{Decision: apiv1.VerdictPass},
 		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			runner := &claudeSequenceRunner{
+				results: []ProcessResult{
+					{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+					{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+				},
+				acts: []func(ProcessRequest) error{
+					nil,
+					func(req ProcessRequest) error {
+						return WriteCompletion(req.Dir, tc.completionPath, tc.completion)
+					},
+				},
+			}
+			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Mode:           tc.mode,
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: tc.completionPath,
+				Timeout:        time.Minute,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(runner.reqs) != 2 {
+				t.Fatalf("process calls = %d, want 2", len(runner.reqs))
+			}
+			initialSession := commandOptionValue(runner.reqs[0].Command, "--session-id")
+			recoverySession := commandOptionValue(runner.reqs[1].Command, "--resume")
+			if initialSession == "" || recoverySession != initialSession {
+				t.Fatalf("recovery did not resume initial session: initial=%q recovery=%q", initialSession, recoverySession)
+			}
+			if slices.Contains(runner.reqs[1].Command, "--session-id") {
+				t.Fatalf("recovery started a new session: %v", runner.reqs[1].Command)
+			}
+			recoveryPrompt := runner.reqs[1].Command[slices.Index(runner.reqs[1].Command, "-p")+1]
+			if !strings.Contains(recoveryPrompt, tc.completionPath) ||
+				!strings.Contains(recoveryPrompt, "previous turn ended without writing") {
+				t.Fatalf("recovery prompt = %q", recoveryPrompt)
+			}
+			if len(out.Payload) == 0 {
+				t.Fatal("completion payload is empty after recovery")
+			}
+			if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 240 {
+				t.Fatalf("combined input token metric = %v, want 240", got)
+			}
+		})
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
-	out, err := adapter.Run(context.Background(), RunRequest{
-		Envelope:       testEnvelope(workspace),
-		Workspace:      workspace,
-		CompletionPath: DefaultResultPath,
-		Timeout:        time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+}
+
+func commandOptionValue(command []string, option string) string {
+	index := slices.Index(command, option)
+	if index < 0 || index+1 >= len(command) {
+		return ""
 	}
-	if len(runner.reqs) != 2 {
-		t.Fatalf("process calls = %d, want 2", len(runner.reqs))
-	}
-	recoveryPrompt := runner.reqs[1].Command[slices.Index(runner.reqs[1].Command, "-p")+1]
-	if !strings.Contains(recoveryPrompt, "previous turn ended without writing") {
-		t.Fatalf("recovery prompt = %q", recoveryPrompt)
-	}
-	if len(out.Payload) == 0 {
-		t.Fatal("completion payload is empty after recovery")
-	}
-	if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 240 {
-		t.Fatalf("combined input token metric = %v, want 240", got)
-	}
+	return command[index+1]
 }
 
 func TestClaudeAdapterFailsClosedWhenRecoveryOmitsCompletion(t *testing.T) {
