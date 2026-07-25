@@ -68,7 +68,9 @@ mcpServers:
 
 Each referenced capability must also be declared by the invoking stage. The
 runner resolves only those invocation-scoped credentials and materializes the
-MCP configuration in a fresh harness configuration directory.
+MCP configuration in a fresh harness configuration directory. Remote servers
+with credential references must use HTTPS; plaintext HTTP is allowed only for
+exact `localhost` or loopback-IP endpoints used for local development and tests.
 
 ## Invocation contract (runtime)
 

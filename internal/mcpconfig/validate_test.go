@@ -61,6 +61,15 @@ func TestValidate(t *testing.T) {
 			want:    "must not contain inline credentials",
 		},
 		{
+			name: "plaintext remote credential",
+			servers: []apiv1.MCPServer{{
+				Name: "remote", URL: "http://mcp.example.test",
+				CredentialRefs: []apiv1.MCPCredentialRef{{Capability: "contents:read", Header: "Authorization"}},
+			}},
+			caps: []string{"contents:read"},
+			want: "must use https when credentialRefs are configured",
+		},
+		{
 			name: "undeclared credential",
 			servers: []apiv1.MCPServer{{
 				Name: "remote", URL: "https://example.test",
@@ -103,5 +112,32 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+
+	for _, endpoint := range []string{
+		"http://localhost:8080/mcp",
+		"http://127.0.0.1:8080/mcp",
+		"http://[::1]:8080/mcp",
+	} {
+		t.Run("plaintext loopback credential "+endpoint, func(t *testing.T) {
+			server := apiv1.MCPServer{
+				Name: "local-remote",
+				URL:  endpoint,
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Header:     "Authorization",
+				}},
+			}
+			if err := Validate([]apiv1.MCPServer{server}, []string{"contents:read"}); err != nil {
+				t.Fatalf("Validate loopback credential endpoint: %v", err)
+			}
+		})
+	}
+
+	if err := Validate([]apiv1.MCPServer{{
+		Name: "public-remote",
+		URL:  "http://mcp.example.test",
+	}}, nil); err != nil {
+		t.Fatalf("Validate credential-free HTTP endpoint: %v", err)
 	}
 }

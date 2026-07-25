@@ -3,6 +3,7 @@ package mcpconfig
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -47,6 +48,9 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities []string) error {
 			}
 			if parsed.User != nil {
 				return fmt.Errorf("%s.url must not contain inline credentials; use credentialRefs", scope)
+			}
+			if parsed.Scheme == "http" && len(server.CredentialRefs) > 0 && !isLoopbackHost(parsed.Hostname()) {
+				return fmt.Errorf("%s.url %q must use https when credentialRefs are configured; http is allowed only for a loopback host", scope, server.URL)
 			}
 		default:
 			return fmt.Errorf("%s must set exactly one of command or url", scope)
@@ -114,6 +118,14 @@ func validName(name string) bool {
 		}
 	}
 	return true
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validHeaderName(name string) bool {
