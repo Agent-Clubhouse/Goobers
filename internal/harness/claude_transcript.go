@@ -20,6 +20,7 @@ type claudeStreamMessage struct {
 	Model        string                      `json:"model"`
 	Message      *claudeMessage              `json:"message"`
 	Result       string                      `json:"result"`
+	Errors       []string                    `json:"errors"`
 	Usage        claudeUsage                 `json:"usage"`
 	ModelUsage   map[string]claudeModelUsage `json:"modelUsage"`
 	TotalCostUSD *float64                    `json:"total_cost_usd"`
@@ -213,6 +214,7 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 	promptIndex := 0
 	var streamDropped int64
 	var finalOutput *transcriptEvent
+	var finalResult []transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
 
@@ -266,6 +268,12 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 			}
 		}
 		if native.Type == "result" {
+			finalResult = finalResult[:0]
+			for _, event := range events {
+				if event.Content != "" {
+					finalResult = append(finalResult, event)
+				}
+			}
 			accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, native.TotalCostUSD)
 			names := make([]string, 0, len(native.ModelUsage))
 			for name := range native.ModelUsage {
@@ -297,11 +305,13 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 			return transcriptCapture{}, false
 		}
 	}
-	floor := make([]transcriptEvent, 0, 2)
+	floor := make([]transcriptEvent, 0, len(finalResult)+2)
 	if len(prompts) > 0 {
 		floor = append(floor, transcriptEvent{Role: "user", Content: prompts[0]})
 	}
-	if finalOutput != nil {
+	if len(finalResult) > 0 {
+		floor = append(floor, finalResult...)
+	} else if finalOutput != nil {
 		floor = append(floor, *finalOutput)
 	}
 	if alreadyDropped > 0 && !buf.Truncated() {
@@ -404,9 +414,14 @@ func convertClaudeMessage(native claudeStreamMessage) ([]transcriptEvent, bool) 
 		}
 		return events, true
 	case "result":
-		events := make([]transcriptEvent, 0, len(native.ModelUsage)+2)
+		events := make([]transcriptEvent, 0, len(native.Errors)+len(native.ModelUsage)+2)
 		if native.Result != "" {
 			events = append(events, transcriptEvent{Role: "assistant", Content: native.Result})
+		}
+		for _, message := range native.Errors {
+			if message != "" {
+				events = append(events, transcriptEvent{Role: "system", Content: message})
+			}
 		}
 		names := make([]string, 0, len(native.ModelUsage))
 		for name := range native.ModelUsage {

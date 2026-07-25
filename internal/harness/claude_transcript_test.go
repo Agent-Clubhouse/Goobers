@@ -79,6 +79,35 @@ func TestConvertClaudeStreamBoundsCanonicalTranscript(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeStreamCapturesFailedResultErrors(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` + strings.Repeat("x", 1000) + `"}]}}`,
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: overloaded","Request ID: req-123"],"usage":{"input_tokens":4,"output_tokens":0}}`,
+	}, "\n")
+	capture, ok := convertClaudeStream(strings.NewReader(stream), []string{"implement the task"}, 512, 0)
+	if !ok {
+		t.Fatal("convertClaudeStream returned false")
+	}
+	if !capture.truncated {
+		t.Fatal("expected canonical transcript truncation")
+	}
+
+	var diagnostics []string
+	for _, line := range bytes.Split(bytes.TrimSpace(capture.data), []byte("\n")) {
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode canonical event: %v\n%s", err, line)
+		}
+		if event.Role == "system" && event.Content != "" && !event.Truncated {
+			diagnostics = append(diagnostics, event.Content)
+		}
+	}
+	if got, want := strings.Join(diagnostics, "\n"), "API Error: overloaded\nRequest ID: req-123"; got != want {
+		t.Fatalf("failed-result diagnostics = %q, want %q\n%s", got, want, capture.data)
+	}
+}
+
 func TestConvertClaudeStreamRejectsNonNativeOutput(t *testing.T) {
 	if _, ok := convertClaudeStream(strings.NewReader("ordinary stdout\nnot json\n"), nil, 1024, 0); ok {
 		t.Fatal("non-native output was accepted as a Claude stream")
