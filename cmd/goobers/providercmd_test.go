@@ -119,6 +119,7 @@ type fakeGitHubServer struct {
 	// memoized file lists from check states that must remain fresh.
 	filesRequests      int
 	checkStateRequests int
+	issueListRequests  int
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
@@ -142,6 +143,12 @@ func (s *fakeGitHubServer) pullListRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pullListRequests
+}
+
+func (s *fakeGitHubServer) issueListRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.issueListRequests
 }
 
 func (s *fakeGitHubServer) dependencyRequestCount() int {
@@ -335,6 +342,7 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.issueListRequests++
 	q := r.URL.Query()
 	var wantLabels []string
 	if lq := q.Get("labels"); lq != "" {

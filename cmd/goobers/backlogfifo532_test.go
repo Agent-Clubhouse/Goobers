@@ -99,3 +99,24 @@ func TestBacklogQueryBatchClaimsOldestFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestBacklogQueryPredicateDoesNotExpandScanCeiling(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for i := 1; i <= 400; i++ {
+		server.addIssue(i, fmt.Sprintf("Item %d", i), "goobers:approved")
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-bounded-scan")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_LABELPREDICATE", `"wanted" in labels`)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := server.issueListRequestCount(); got != 3 {
+		t.Fatalf("issue list requests = %d, want 3 for the 250-candidate scan ceiling", got)
+	}
+}
