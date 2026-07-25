@@ -11,7 +11,7 @@
     {
       "file": "config/gaggles/example/workflows/default-implement.yaml",
       "path": "/spec/start",
-      "code": "WF001",
+      "code": "WF002",
       "severity": "error",
       "message": "start state \"missing\" is not a defined task or gate"
     }

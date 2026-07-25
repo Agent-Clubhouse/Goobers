@@ -168,7 +168,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	cfg, err := instance.LoadConfig(configFile)
 	if err != nil {
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
-		diagnostics.add(diagnosticFile(root, configFile), "/", "CFG002", string(validate.Error), err.Error())
+		diagnostics.add(diagnosticFile(root, configFile), "/", "INSTANCE001", string(validate.Error), err.Error())
 		return 1
 	}
 
@@ -196,12 +196,18 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	instructions, err := loadGooberInstructions(configDir, goobers)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
-		diagnostics.add(diagnosticFile(root, configDir), "/", "CFG003", string(validate.Error), err.Error())
+		file := diagnosticFile(root, configDir)
+		var instructionsErr *gooberInstructionsError
+		if errors.As(err, &instructionsErr) {
+			file = gooberDiagnosticFile(root, configDir, set, instructionsErr.Goober)
+		}
+		diagnostics.add(file, "/spec/instructions", "GBO004", string(validate.Error), err.Error())
 		return 1
 	}
 	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
-		diagnostics.add(diagnosticFile(root, configDir), "", "CFG003", string(validate.Error), err.Error())
+		file, path, code := compiledConfigDiagnostic(root, configDir, set, err)
+		diagnostics.add(file, path, code, string(validate.Error), err.Error())
 		return 1
 	}
 
@@ -212,7 +218,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// tree. Resolved against the git working tree containing the config; skipped
 	// (not failed) when the config is not inside a git repository, since there is
 	// then no tree to check against.
-	if !checkDocsRootsExist(root, set.Workflows, stdout, diagnostics) {
+	if !checkDocsRootsExist(root, configDir, set, stdout, diagnostics) {
 		return 1
 	}
 
@@ -224,15 +230,18 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// drift from the CLI surface is caught before it reaches a live run.
 	if problems := stageCommandProblems(set); len(problems) > 0 {
 		for _, problem := range problems {
-			pln(stdout, problem)
-			diagnostics.add(diagnosticFile(root, configDir), "/workflows", "CFG005", string(validate.Error), problem)
+			pln(stdout, problem.message)
+			diagnostics.add(configSourceDiagnosticFile(root, configDir, problem.source), problem.path,
+				"COMMAND001", string(validate.Error), problem.message)
 		}
 		pf(stdout, "\nconfig references CLI stage commands that do not exist\n")
 		return 1
 	}
 
 	if options.checkHarness {
-		if !checkHarnesses(set.Goobers, stdout, stderr, diagnostics) {
+		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
+			return gooberDiagnosticFile(root, configDir, set, goober.Name)
+		}, diagnostics) {
 			return 1
 		}
 	}
@@ -240,10 +249,10 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		stores, err := secretstore.NewRegistry(cfg.SecretStores)
 		if err != nil {
 			pf(stdout, "INVALID secretStores:\n  %v\n", err)
-			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "CFG006", string(validate.Error), err.Error())
+			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
 			return 1
 		}
-		if !checkTargetRepositories(cfg.Repos, stores, stdout, diagnostics) {
+		if !checkTargetRepositoriesAtFile(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics) {
 			return 1
 		}
 	}
@@ -256,6 +265,36 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	return 0
 }
 
+func configSourceDiagnosticFile(root, configDir, source string) string {
+	if source == "" {
+		return diagnosticFile(root, configDir)
+	}
+	return diagnosticFile(root, filepath.Join(configDir, filepath.FromSlash(source)))
+}
+
+func gooberDiagnosticFile(root, configDir string, set *instance.ConfigSet, name string) string {
+	source, _ := set.GooberSource(name)
+	return configSourceDiagnosticFile(root, configDir, source)
+}
+
+func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, err error) (file, path, code string) {
+	var harnessErr *gooberHarnessConfigError
+	if errors.As(err, &harnessErr) {
+		return gooberDiagnosticFile(root, configDir, set, harnessErr.Goober), "/spec/harness", "HARNESS002"
+	}
+	var compileErr *workflowCompileError
+	if errors.As(err, &compileErr) {
+		source, _ := set.WorkflowSource(compileErr.Gaggle, compileErr.Workflow)
+		return configSourceDiagnosticFile(root, configDir, source), "/", "COMPILE001"
+	}
+	var digestErr *workflowDigestError
+	if errors.As(err, &digestErr) {
+		source, _ := set.WorkflowSource(digestErr.Gaggle, digestErr.Workflow)
+		return configSourceDiagnosticFile(root, configDir, source), "/", "COMPILE002"
+	}
+	return diagnosticFile(root, configDir), "/", "INTERNAL001"
+}
+
 // checkDocsRootsExist verifies every workflow-declared docs root exists in the
 // repository (#1016). base is the user-supplied validate path (a config source
 // tree or an instance root); the repository is its containing git working tree.
@@ -263,12 +302,18 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 // true — skipping the check with a note — when base is not inside a git
 // repository, since the lexical config-load checks already ran and there is no
 // tree here to resolve roots against.
-func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writer, collectors ...*diagnosticCollector) bool {
-	type declaredRoot struct{ workflow, root string }
+func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout io.Writer, collectors ...*diagnosticCollector) bool {
+	type declaredRoot struct {
+		workflow string
+		source   string
+		root     string
+		index    int
+	}
 	var declared []declaredRoot
-	for _, w := range workflows {
-		for _, dr := range w.Spec.DocsRoots {
-			declared = append(declared, declaredRoot{workflow: w.Name, root: dr})
+	for _, w := range set.Workflows {
+		source, _ := set.WorkflowSource(w.Spec.Gaggle, w.Name)
+		for i, dr := range w.Spec.DocsRoots {
+			declared = append(declared, declaredRoot{workflow: w.Name, source: source, root: dr, index: i})
 		}
 	}
 	if len(declared) == 0 {
@@ -286,7 +331,8 @@ func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writ
 		if _, statErr := os.Stat(full); statErr != nil {
 			pf(stdout, "DOCSROOTS Workflow/%s: declared docs root %q does not exist in the repository (%s)\n",
 				d.workflow, d.root, repoRoot)
-			addDiagnostic(collectors, ".", "/workflows/"+d.workflow+"/spec/docsRoots", "CFG004", string(validate.Error),
+			addDiagnostic(collectors, configSourceDiagnosticFile(base, configDir, d.source),
+				fmt.Sprintf("/spec/docsRoots/%d", d.index), "DOCS002", string(validate.Error),
 				fmt.Sprintf("declared docs root %q does not exist in the repository (%s)", d.root, repoRoot))
 			ok = false
 		}
@@ -303,17 +349,24 @@ func gitToplevel(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+type stageCommandFinding struct {
+	source  string
+	path    string
+	message string
+}
+
 // stageCommandProblems reports every deterministic stage whose `goobers …`
 // Command references a CLI verb — or, for a command group, a subcommand — that
 // the command registry does not define (#650). It is the compile-time guardrail
 // against a shipped config drifting from the actual CLI surface. Non-goobers
 // commands (arbitrary shell) are out of scope; their existence is not something
 // this binary can vouch for.
-func stageCommandProblems(set *instance.ConfigSet) []string {
-	var problems []string
+func stageCommandProblems(set *instance.ConfigSet) []stageCommandFinding {
+	var problems []stageCommandFinding
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		for _, task := range wf.Spec.Tasks {
+		source, _ := set.WorkflowSource(wf.Spec.Gaggle, wf.Name)
+		for taskIndex, task := range wf.Spec.Tasks {
 			if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 				continue
 			}
@@ -325,7 +378,13 @@ func stageCommandProblems(set *instance.ConfigSet) []string {
 			if kind := strings.TrimSpace(task.Inputs[executor.InputKind]); kind != "" && kind != executor.KindShell {
 				continue
 			}
-			problems = append(problems, stageCommandProblem(wf.Name, task.Name, task.Run.Command)...)
+			for _, message := range stageCommandProblem(wf.Name, task.Name, task.Run.Command) {
+				problems = append(problems, stageCommandFinding{
+					source:  source,
+					path:    fmt.Sprintf("/spec/tasks/%d/run/command", taskIndex),
+					message: message,
+				})
+			}
 		}
 	}
 	return problems
@@ -378,6 +437,16 @@ const (
 var targetRepositoryReachable = gitRepositoryReachable
 
 func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer, collectors ...*diagnosticCollector) bool {
+	return checkTargetRepositoriesAtFile(repos, stores, stdout, "instance.yaml", collectors...)
+}
+
+func checkTargetRepositoriesAtFile(
+	repos []instance.RepoRef,
+	stores credentials.StoreResolver,
+	stdout io.Writer,
+	file string,
+	collectors ...*diagnosticCollector,
+) bool {
 	if len(repos) == 0 {
 		pln(stdout, "REPOSITORY: no target repositories configured; nothing to check")
 		return true
@@ -420,7 +489,7 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 		if err != nil {
 			pf(stdout, "REPOSITORY %s: unreachable: %s\n", label, scrubRepositoryError(err, token))
 			pf(stdout, "  Check the owner/name, token source, repository access, and network connection.\n")
-			addDiagnostic(collectors, "instance.yaml", fmt.Sprintf("/repos/%d", i), "REPO001", string(validate.Error),
+			addDiagnostic(collectors, file, fmt.Sprintf("/repos/%d", i), "REPO001", string(validate.Error),
 				fmt.Sprintf("%s: unreachable: %s", label, scrubRepositoryError(err, token)))
 			ok = false
 			continue
@@ -512,6 +581,15 @@ var harnessAdapterFor = adapterFor
 // goobers (GBO-011), printing actionable guidance per failure. Returns false
 // if any harness failed its preflight.
 func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer, collectors ...*diagnosticCollector) bool {
+	return checkHarnessesAtSources(goobers, stdout, stderr, nil, collectors...)
+}
+
+func checkHarnessesAtSources(
+	goobers []apiv1.Goober,
+	stdout, stderr io.Writer,
+	sourceFile func(apiv1.Goober) string,
+	collectors ...*diagnosticCollector,
+) bool {
 	seen := map[apiv1.Harness]bool{}
 	ok := true
 	for _, g := range goobers {
@@ -520,11 +598,15 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer, collectors
 			continue
 		}
 		seen[h] = true
+		file := "."
+		if sourceFile != nil {
+			file = sourceFile(g)
+		}
 
 		adapter, err := harnessAdapterFor(h)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
-			addDiagnostic(collectors, ".", "/goobers/"+g.Name+"/spec/harness", "HARNESS001", string(validate.Error), err.Error())
+			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
 			ok = false
 			continue
 		}
@@ -537,7 +619,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer, collectors
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
-			addDiagnostic(collectors, ".", "/goobers/"+g.Name+"/spec/harness", "HARNESS001", string(validate.Error), err.Error())
+			addDiagnostic(collectors, file, "/spec/harness", "HARNESS003", string(validate.Error), err.Error())
 			ok = false
 			continue
 		}

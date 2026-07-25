@@ -78,38 +78,7 @@ func (c *diagnosticCollector) addReport(report *validate.Report, configBase stri
 		if issue.File != "" {
 			file = joinDiagnosticPath(configBase, issue.File)
 		}
-		c.add(file, "", diagnosticCode(issue), string(issue.Severity), issue.Message)
-	}
-}
-
-func diagnosticCode(issue validate.Issue) string {
-	if issue.Code != "" {
-		return string(issue.Code)
-	}
-	switch {
-	case strings.HasPrefix(issue.Message, "invalid YAML:"):
-		return "YAML001"
-	case strings.HasPrefix(issue.Message, "/"):
-		return "SCHEMA001"
-	case strings.Contains(issue.Message, "apiVersion/kind"):
-		return "SCHEMA002"
-	case strings.HasPrefix(issue.Message, "unknown kind "):
-		return "SCHEMA003"
-	case strings.Contains(issue.Message, "capability"):
-		return "CAP001"
-	case strings.HasPrefix(issue.Message, "spec.docsRoots"):
-		return "DOCS001"
-	case strings.HasPrefix(issue.Message, "start state "):
-		return "WF001"
-	case strings.HasPrefix(issue.Message, "task "), strings.HasPrefix(issue.Message, "gate "):
-		return "WF002"
-	case strings.Contains(issue.Message, "references "), strings.Contains(issue.Message, " is not defined"),
-		strings.Contains(issue.Message, "names "):
-		return "REF001"
-	case strings.HasPrefix(issue.Message, "duplicate "):
-		return "CFG002"
-	default:
-		return "CFG001"
+		c.add(file, "", string(issue.Code), string(issue.Severity), issue.Message)
 	}
 }
 

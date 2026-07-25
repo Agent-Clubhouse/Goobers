@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	apivalidate "github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -49,7 +51,19 @@ func TestDiagnosticsJSONGolden(t *testing.T) {
 				tc.mutate(t, root)
 			}
 
-			humanCode, _, _ := runArgs(t, "validate", root)
+			humanCode, humanStdout, humanStderr := runArgs(t, "validate", root)
+			if humanStderr != "" {
+				t.Fatalf("validate stderr = %q, want empty", humanStderr)
+			}
+			humanGolden := filepath.Join("testdata", "introspection", "diagnostics."+tc.name+".human.golden.txt")
+			assertGoldenFile(t, humanGolden, humanStdout)
+
+			lintHumanCode, lintHumanStdout, lintHumanStderr := runArgs(t, "lint", root)
+			if lintHumanCode != humanCode || lintHumanStdout != humanStdout || lintHumanStderr != humanStderr {
+				t.Fatalf("lint and validate human output drifted:\nvalidate code=%d stdout=%q stderr=%q\nlint code=%d stdout=%q stderr=%q",
+					humanCode, humanStdout, humanStderr, lintHumanCode, lintHumanStdout, lintHumanStderr)
+			}
+
 			jsonCode, stdout, stderr := runArgs(t, "validate", "--json", root)
 			if jsonCode != humanCode {
 				t.Fatalf("validate exit code changed with --json: human=%d json=%d", humanCode, jsonCode)
@@ -134,11 +148,17 @@ func TestFeaturesJSONContract(t *testing.T) {
 		if envelope.DSLVersion != "all" || len(envelope.Features) == 0 {
 			t.Fatalf("features envelope = %+v", envelope)
 		}
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.all.golden.json"), stdout)
 		for _, feature := range envelope.Features {
 			if feature.Used != nil {
 				t.Fatalf("unfiltered feature %q unexpectedly carries used", feature.Name)
 			}
 		}
+		humanCode, humanStdout, humanStderr := runArgs(t, "features")
+		if humanCode != code || humanStderr != "" {
+			t.Fatalf("features human output: code=%d stderr=%q", humanCode, humanStderr)
+		}
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.all.human.golden.txt"), humanStdout)
 	})
 
 	t.Run("dsl-version", func(t *testing.T) {
@@ -151,16 +171,23 @@ func TestFeaturesJSONContract(t *testing.T) {
 		if envelope.DSLVersion != supportmatrix.CurrentDSLVersion {
 			t.Fatalf("dslVersion = %q, want %q", envelope.DSLVersion, supportmatrix.CurrentDSLVersion)
 		}
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.dsl-version.golden.json"), stdout)
+		humanCode, humanStdout, humanStderr := runArgs(t, "features", "--dsl-version", supportmatrix.CurrentDSLVersion)
+		if humanCode != code || humanStderr != "" {
+			t.Fatalf("features --dsl-version human output: code=%d stderr=%q", humanCode, humanStderr)
+		}
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.dsl-version.human.golden.txt"), humanStdout)
 	})
 
 	t.Run("used", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
-		code, stdout, _ := runArgs(t, "features", "--json", "--used", root)
-		if code != 0 {
-			t.Fatalf("features --json --used code=%d stdout=%q", code, stdout)
+		code, stdout, stderr := runArgs(t, "features", "--json", "--used", root)
+		if code != 0 || stderr != "" {
+			t.Fatalf("features --json --used code=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		envelope := decodeFeaturesEnvelope(t, stdout)
 		assertFeaturesSchema(t, stdout)
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.used.golden.json"), stdout)
 		if len(envelope.Features) == 0 {
 			t.Fatal("used feature list is empty")
 		}
@@ -169,7 +196,85 @@ func TestFeaturesJSONContract(t *testing.T) {
 				t.Fatalf("used feature %q does not carry used=true", feature.Name)
 			}
 		}
+		humanCode, humanStdout, humanStderr := runArgs(t, "features", "--used", root)
+		if humanCode != code || humanStderr != "" {
+			t.Fatalf("features --used human output: code=%d stderr=%q", humanCode, humanStderr)
+		}
+		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.used.human.golden.txt"), humanStdout)
 	})
+}
+
+func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
+	t.Run("compile", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		path := defaultWorkflowPath(root)
+		replaceInFile(t, path,
+			"      expectedOutputs:\n        - pull-request",
+			"      expectedOutputs:\n        - pull-request\n      next: verify\n  gates:\n    - name: verify\n      evaluator: automated\n      automated:\n        check: missing-check\n      branches:\n        pass: \"\"\n        fail: \"@abort\"\n        escalate: \"@abort\"")
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate compile diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "COMPILE001",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml")), "/")
+	})
+
+	t.Run("docs root", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		runGitT(t, root, "init", "-q")
+		replaceInFile(t, defaultWorkflowPath(root), "  start: query-backlog",
+			"  start: query-backlog\n  docsRoots:\n    - missing-docs")
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate docs-root diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "DOCS002",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml")),
+			"/spec/docsRoots/0")
+	})
+
+	t.Run("stage command", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		replaceInFile(t, defaultWorkflowPath(root), `"backlog-query"`, `"missing-command"`)
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate stage-command diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "COMMAND001",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml")),
+			"/spec/tasks/0/run/command")
+	})
+
+	t.Run("harness", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+			return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+		})
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", "--check-harness", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate harness diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "HARNESS003",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "goobers", "coder", "goober.yaml")),
+			"/spec/harness")
+	})
+}
+
+func assertFindingSource(t *testing.T, envelope diagnosticsEnvelope, code, file, path string) {
+	t.Helper()
+	for _, finding := range envelope.Findings {
+		if finding.Code == code {
+			if finding.File != file || finding.Path != path {
+				t.Fatalf("finding %s source = %q %q, want %q %q", code, finding.File, finding.Path, file, path)
+			}
+			return
+		}
+	}
+	t.Fatalf("finding %s not found in %+v", code, envelope.Findings)
 }
 
 func initIntrospectionInstance(t *testing.T) string {

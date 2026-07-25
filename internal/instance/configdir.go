@@ -42,6 +42,7 @@ type ConfigSet struct {
 	Goobers   []apiv1.Goober
 	Workflows []apiv1.Workflow
 
+	gooberSources   map[string]string
 	workflowSources map[workflowIdentity]string
 }
 
@@ -56,6 +57,15 @@ func (s *ConfigSet) WorkflowSource(gaggle, name string) (string, bool) {
 		return "", false
 	}
 	source, ok := s.workflowSources[workflowIdentity{gaggle: gaggle, name: name}]
+	return source, ok
+}
+
+// GooberSource returns the config-relative source file for a loaded goober.
+func (s *ConfigSet) GooberSource(name string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	source, ok := s.gooberSources[name]
 	return source, ok
 }
 
@@ -194,10 +204,14 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		definition apiv1.Workflow
 		source     string
 	}
+	type sourcedGoober struct {
+		definition apiv1.Goober
+		source     string
+	}
 	var (
 		manifest *apiv1.Manifest
 		gaggles  []apiv1.Gaggle
-		goobers  []apiv1.Goober
+		goobers  []sourcedGoober
 		flows    []sourcedWorkflow
 	)
 	for _, d := range docs {
@@ -222,7 +236,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Goober %s: %w", d.name, err)
 			}
-			goobers = append(goobers, g)
+			goobers = append(goobers, sourcedGoober{definition: g, source: d.file})
 		case "Workflow":
 			var w apiv1.Workflow
 			if err := yaml.Unmarshal(d.yaml, &w); err != nil {
@@ -240,15 +254,21 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		included[name] = true
 	}
 
-	set := &ConfigSet{Manifest: manifest, workflowSources: map[workflowIdentity]string{}}
+	set := &ConfigSet{
+		Manifest:        manifest,
+		gooberSources:   map[string]string{},
+		workflowSources: map[workflowIdentity]string{},
+	}
 	for i := range gaggles {
 		if included[gaggles[i].Name] {
 			set.Gaggles = append(set.Gaggles, gaggles[i])
 		}
 	}
 	for i := range goobers {
-		if included[goobers[i].Spec.Gaggle] {
-			set.Goobers = append(set.Goobers, goobers[i])
+		goober := goobers[i].definition
+		if included[goober.Spec.Gaggle] {
+			set.Goobers = append(set.Goobers, goober)
+			set.gooberSources[goober.Name] = goobers[i].source
 		}
 	}
 	for i := range flows {

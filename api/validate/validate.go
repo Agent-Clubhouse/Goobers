@@ -53,6 +53,54 @@ const (
 	WarningModelFallback WarningCode = "MODEL002"
 )
 
+const (
+	errorInvalidGooberAssets      WarningCode = "ASSET001"
+	errorInvalidYAML              WarningCode = "YAML001"
+	errorMissingTypeMeta          WarningCode = "SCHEMA001"
+	errorUnknownKind              WarningCode = "SCHEMA002"
+	errorSchemaViolation          WarningCode = "SCHEMA003"
+	errorTypedDecode              WarningCode = "SCHEMA004"
+	errorDuplicateDefinition      WarningCode = "CFG001"
+	errorMissingManifest          WarningCode = "CFG002"
+	errorMultipleManifests        WarningCode = "CFG003"
+	errorPreviewAnnotation        WarningCode = "CFG004"
+	errorCICommand                WarningCode = "CFG005"
+	errorBranchNamespace          WarningCode = "CFG006"
+	errorManifestGaggleReference  WarningCode = "REF001"
+	errorGooberGaggleReference    WarningCode = "REF002"
+	errorGooberWorkflowReference  WarningCode = "REF003"
+	errorConnectionReference      WarningCode = "REF004"
+	errorAdditionalRepoProject    WarningCode = "REF005"
+	errorAdditionalRepoDuplicate  WarningCode = "REF006"
+	errorWorkflowGaggleReference  WarningCode = "REF007"
+	errorTaskGooberReference      WarningCode = "REF008"
+	errorTaskGooberGaggle         WarningCode = "REF009"
+	errorGateGooberReference      WarningCode = "REF010"
+	errorGateGooberGaggle         WarningCode = "REF011"
+	errorRunnerCapability         WarningCode = "CAP001"
+	errorUnknownCapability        WarningCode = "CAP002"
+	errorInstructionsMissing      WarningCode = "GBO001"
+	errorInstructionsAccess       WarningCode = "GBO002"
+	errorInstructionsNotRegular   WarningCode = "GBO003"
+	errorDuplicateState           WarningCode = "WF001"
+	errorStartState               WarningCode = "WF002"
+	errorTaskNextState            WarningCode = "WF003"
+	errorGateBranch               WarningCode = "WF004"
+	errorReachability             WarningCode = "WF005"
+	errorSchedule                 WarningCode = "WF006"
+	errorGateOutcome              WarningCode = "WF007"
+	errorGateParameter            WarningCode = "WF008"
+	errorTriggerField             WarningCode = "WF009"
+	errorWorkflowAdmission        WarningCode = "WF010"
+	errorStageContract            WarningCode = "WF011"
+	errorStageRequiredInput       WarningCode = "WF012"
+	errorStageTimeout             WarningCode = "WF013"
+	errorGateEvaluatorCardinality WarningCode = "WF014"
+	errorGateEvaluatorMismatch    WarningCode = "WF015"
+	errorDocsRoot                 WarningCode = "DOCS001"
+	errorUnsupportedFeature       WarningCode = "VER005"
+)
+
 // Issue is a single validation finding.
 type Issue struct {
 	Code     WarningCode `json:"code,omitempty"`
@@ -79,6 +127,9 @@ func (i Issue) CLIString() string {
 }
 
 func (i Issue) cliIssue() Issue {
+	if i.Severity == Error && i.Code != WarningPreviewFeature && i.Code != ErrorRemovedFeature {
+		i.Code = ""
+	}
 	if i.Severity == Warning && i.Code == WarningCompatibility && i.Gaggle != "" && i.Kind == "Workflow" {
 		i.Code = ""
 		i.File = ""
@@ -200,8 +251,8 @@ func (r *Report) CLIReport() *Report {
 	return report
 }
 
-func (r *Report) add(sev Severity, file, kind, name, format string, args ...interface{}) {
-	r.addCoded("", sev, file, kind, name, format, args...)
+func (r *Report) add(code WarningCode, sev Severity, file, kind, name, format string, args ...interface{}) {
+	r.addCoded(code, sev, file, kind, name, format, args...)
 }
 
 func (r *Report) addCoded(code WarningCode, sev Severity, file, kind, name, format string, args ...interface{}) {
@@ -241,6 +292,8 @@ func (r *Report) addFeatureDiagnostics(file, gaggle, kind, name string, diagnost
 			code = WarningPreviewFeature
 		case wf.SupportRemoved:
 			code = ErrorRemovedFeature
+		default:
+			code = errorUnsupportedFeature
 		}
 		r.Issues = append(r.Issues, Issue{
 			Code:     code,
@@ -346,7 +399,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if gooberassets.IsSourceDir(path) {
 			if assetErr := gooberassets.Validate(path); assetErr != nil {
 				rel, _ := filepath.Rel(root, path)
-				r.add(Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
+				r.add(errorInvalidGooberAssets, Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
 			}
 			if d.IsDir() {
 				return filepath.SkipDir
@@ -373,12 +426,12 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			}
 			jb, err := yaml.YAMLToJSON([]byte(seg))
 			if err != nil {
-				r.add(Error, rel, "", "", "invalid YAML: %v", err)
+				r.add(errorInvalidYAML, Error, rel, "", "", "invalid YAML: %v", err)
 				continue
 			}
 			var tm typeMeta
 			if err := json.Unmarshal(jb, &tm); err != nil || tm.Kind == "" {
-				r.add(Error, rel, "", "", "document is missing apiVersion/kind")
+				r.add(errorMissingTypeMeta, Error, rel, "", "", "document is missing apiVersion/kind")
 				continue
 			}
 			docs = append(docs, loadedDoc{
@@ -400,12 +453,12 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		}
 		schemaFile, ok := schemas.Kind[doc.kind]
 		if !ok {
-			r.add(Error, doc.file, doc.kind, doc.name, "unknown kind %q", doc.kind)
+			r.add(errorUnknownKind, Error, doc.file, doc.kind, doc.name, "unknown kind %q", doc.kind)
 			continue
 		}
 		if err := v.ValidateJSON(schemaFile, doc.json); err != nil {
 			for _, line := range flattenSchemaError(err) {
-				r.add(Error, doc.file, doc.kind, doc.name, "%s", line)
+				r.add(errorSchemaViolation, Error, doc.file, doc.kind, doc.name, "%s", line)
 			}
 		}
 		// Index the object even when it failed schema validation. Most schema
@@ -523,7 +576,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 	case "Manifest":
 		var m apiv1.Manifest
 		if err := yaml.Unmarshal(doc.json, &m); err != nil {
-			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
+			r.add(errorTypedDecode, Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
 		ix.manifests = append(ix.manifests, m)
@@ -531,7 +584,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 	case "Gaggle":
 		var g apiv1.Gaggle
 		if err := yaml.Unmarshal(doc.json, &g); err != nil {
-			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
+			r.add(errorTypedDecode, Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
 		ix.dupCheck(r, doc, "Gaggle", g.Name, func() bool { _, ok := ix.gaggles[g.Name]; return ok })
@@ -540,7 +593,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 	case "Goober":
 		var g apiv1.Goober
 		if err := yaml.Unmarshal(doc.json, &g); err != nil {
-			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
+			r.add(errorTypedDecode, Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
 		ix.dupCheck(r, doc, "Goober", g.Name, func() bool { _, ok := ix.goobers[g.Name]; return ok })
@@ -550,7 +603,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 	case "Workflow":
 		var w apiv1.Workflow
 		if err := yaml.Unmarshal(doc.json, &w); err != nil {
-			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
+			r.add(errorTypedDecode, Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
 		w.DSLVersion = doc.dslVersion
@@ -565,14 +618,14 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 
 func (ix *index) dupCheck(r *Report, doc loadedDoc, kind, name string, exists func() bool) {
 	if exists() {
-		r.add(Error, doc.file, kind, name, "duplicate %s name %q", kind, name)
+		r.add(errorDuplicateDefinition, Error, doc.file, kind, name, "duplicate %s name %q", kind, name)
 	}
 }
 
 // crossCheck applies the spec's reference rules across all loaded objects.
 func (ix *index) crossCheck(r *Report) {
 	if len(ix.manifests) == 0 && ix.manifestDocsSeen == 0 {
-		r.add(Error, "", "Manifest", "", "no Manifest object found in config directory")
+		r.add(errorMissingManifest, Error, "", "Manifest", "", "no Manifest object found in config directory")
 	}
 	if len(ix.manifests) > 1 {
 		// Error, not Warning (#243): internal/instance/configdir.go and
@@ -580,7 +633,7 @@ func (ix *index) crossCheck(r *Report) {
 		// more than one Manifest outright — a validate-only consumer must
 		// not report success-with-warning for a config the daemon actually
 		// refuses to load.
-		r.add(Error, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
+		r.add(errorMultipleManifests, Error, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
 	}
 	allowPreview := ix.allowPreviewFeatures(r)
 
@@ -588,7 +641,7 @@ func (ix *index) crossCheck(r *Report) {
 	for _, m := range ix.manifests {
 		for _, gname := range m.Spec.Gaggles {
 			if _, ok := ix.gaggles[gname]; !ok {
-				r.add(Error, ix.manifestFile[m.Name], "Manifest", m.Name,
+				r.add(errorManifestGaggleReference, Error, ix.manifestFile[m.Name], "Manifest", m.Name,
 					"spec.gaggles references %q, but no Gaggle/%s definition was found", gname, gname)
 			}
 		}
@@ -617,13 +670,13 @@ func (ix *index) crossCheck(r *Report) {
 		r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 			wf.CheckGooberFeatureSupport(g.Spec, allowPreview))
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
-			r.add(Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+			r.add(errorGooberGaggleReference, Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 				g.Spec.Gaggle, g.Spec.Gaggle)
 		}
 		for _, wf := range g.Spec.Workflows {
 			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
 			if _, ok := ix.workflows[identity]; !ok {
-				r.add(Error, file, "Goober", g.Name,
+				r.add(errorGooberWorkflowReference, Error, file, "Goober", g.Name,
 					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
 					wf, wf, g.Spec.Gaggle)
 			}
@@ -632,6 +685,7 @@ func (ix *index) crossCheck(r *Report) {
 			if capability.Known(value) {
 				if !capability.StageDeclarable(value) {
 					r.add(
+						errorRunnerCapability,
 						Error,
 						file,
 						"Goober",
@@ -646,7 +700,7 @@ func (ix *index) crossCheck(r *Report) {
 			if suggestion, ok := capability.Suggest(value); ok {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
-			r.add(Error, file, "Goober", g.Name, "%s", message)
+			r.add(errorUnknownCapability, Error, file, "Goober", g.Name, "%s", message)
 		}
 		if g.Spec.Instructions != "" {
 			p := filepath.Join(ix.gooberDir[g.Name], g.Spec.Instructions)
@@ -654,13 +708,13 @@ func (ix *index) crossCheck(r *Report) {
 			expected := filepath.ToSlash(filepath.Join(filepath.Dir(file), g.Spec.Instructions))
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
-				r.add(Error, file, "Goober", g.Name,
+				r.add(errorInstructionsMissing, Error, file, "Goober", g.Name,
 					"spec.instructions file %q was not found; expected it at %q", g.Spec.Instructions, expected)
 			case err != nil:
-				r.add(Error, file, "Goober", g.Name,
+				r.add(errorInstructionsAccess, Error, file, "Goober", g.Name,
 					"cannot access spec.instructions file %q at %q: %v", g.Spec.Instructions, expected, err)
 			case !info.Mode().IsRegular():
-				r.add(Error, file, "Goober", g.Name,
+				r.add(errorInstructionsNotRegular, Error, file, "Goober", g.Name,
 					"spec.instructions must name a regular file; %q resolves to %q", g.Spec.Instructions, expected)
 			}
 		}
@@ -684,7 +738,7 @@ func (ix *index) allowPreviewFeatures(r *Report) bool {
 	if value == "true" {
 		return true
 	}
-	r.add(Error, ix.manifestFile[manifest.Name], "Manifest", manifest.Name,
+	r.add(errorPreviewAnnotation, Error, ix.manifestFile[manifest.Name], "Manifest", manifest.Name,
 		"metadata.annotations[%q] must be %q or %q", wf.PreviewFeaturesAnnotation, "true", "false")
 	return false
 }
@@ -711,7 +765,7 @@ func (ix *index) checkGaggleCICommand(r *Report) {
 		}
 		program := g.Spec.CICommand[0]
 		if strings.ContainsAny(program, " \t\r\n") {
-			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
+			r.add(errorCICommand, Error, ix.gaggleFile[name], "Gaggle", name,
 				"spec.ciCommand program %q contains whitespace; ciCommand is run directly (not through a shell), so the program and each argument must be separate array elements \u2014 e.g. [\"npm\", \"run\", \"ci\"], not [\"npm run ci\"]", program)
 		}
 	}
@@ -745,7 +799,7 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 			}
 		}
 		if bad != "" {
-			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
+			r.add(errorBranchNamespace, Error, ix.gaggleFile[name], "Gaggle", name,
 				"spec.branchNamespace %q %s, which would produce an invalid git run-branch name at runtime", ns, bad)
 		}
 	}
@@ -788,7 +842,7 @@ func (ix *index) checkGaggleConnections(r *Report) {
 			if ref == "" || declared[ref] {
 				return
 			}
-			r.add(Error, file, "Gaggle", name,
+			r.add(errorConnectionReference, Error, file, "Gaggle", name,
 				"%s names connection %q, but no Connection/%s is declared in the Manifest", field, ref, ref)
 		}
 		check(g.Spec.Project.ConnectionRef, "spec.project.connectionRef")
@@ -811,12 +865,12 @@ func (ix *index) checkGaggleAdditionalRepos(r *Report) {
 		for i, repo := range g.Spec.AdditionalRepos {
 			id := repoIdentity(repo)
 			if id == repoIdentity(g.Spec.Project) {
-				r.add(Error, file, "Gaggle", name,
+				r.add(errorAdditionalRepoProject, Error, file, "Gaggle", name,
 					"spec.additionalRepos[%d] names the same repository as spec.project (%s); a read-only reference repo must not be the gaggle's read-write project", i, id)
 				continue
 			}
 			if seen[id] {
-				r.add(Error, file, "Gaggle", name,
+				r.add(errorAdditionalRepoDuplicate, Error, file, "Gaggle", name,
 					"spec.additionalRepos[%d] repeats repository %s already listed in spec.additionalRepos", i, id)
 				continue
 			}
@@ -835,7 +889,7 @@ func repoIdentity(ref apiv1.RepoRef) string {
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
-		r.add(Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+		r.add(errorWorkflowGaggleReference, Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
 	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
@@ -846,19 +900,19 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {
 		if states[t.Name] {
-			r.add(Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
 		}
 		states[t.Name] = true
 	}
 	for _, g := range w.Spec.Gates {
 		if states[g.Name] {
-			r.add(Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
 		}
 		states[g.Name] = true
 	}
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
-		r.add(Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
+		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
 	}
 
 	// Docs-location surface (#1016): a declared docs root must be a usable
@@ -869,7 +923,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// layers on top (validate.go), since api-level validation has no repo tree.
 	for i, dr := range w.Spec.DocsRoots {
 		if err := configboundary.ValidateDocsRoot(dr); err != nil {
-			r.add(Error, file, "Workflow", w.Name, "spec.docsRoots[%d]: %v", i, err)
+			r.add(errorDocsRoot, Error, file, "Workflow", w.Name, "spec.docsRoots[%d]: %v", i, err)
 		}
 	}
 
@@ -878,15 +932,15 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			goober, ok := ix.goobers[t.Goober]
 			switch {
 			case !ok:
-				r.add(Error, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
+				r.add(errorTaskGooberReference, Error, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
-				r.add(Error, file, "Workflow", w.Name,
+				r.add(errorTaskGooberGaggle, Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
 		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
-			r.add(Error, file, "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
+			r.add(errorTaskNextState, Error, file, "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
 		}
 	}
 
@@ -896,9 +950,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			goober, ok := ix.goobers[g.Agentic.Goober]
 			switch {
 			case !ok:
-				r.add(Error, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
+				r.add(errorGateGooberReference, Error, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
-				r.add(Error, file, "Workflow", w.Name,
+				r.add(errorGateGooberGaggle, Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
 					g.Name, g.Agentic.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
@@ -908,7 +962,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			// and "@escalate" are reserved terminal targets — neither is a
 			// dangling reference (workflow.IsReservedTarget).
 			if next != "" && !wf.IsReservedTarget(next) && !states[next] {
-				r.add(Error, file, "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
+				r.add(errorGateBranch, Error, file, "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
 			}
 		}
 	}
@@ -922,22 +976,22 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckSchedules(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorSchedule, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckGateOutcomes(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorGateOutcome, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckGateParameters(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorGateParameter, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckTriggerFields(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorTriggerField, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckWorkflowAdmission(def, ix.gooberSpecs()) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
@@ -946,7 +1000,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// branch does not produce. Reported as errors: both are unconditionally
 	// broken at runtime, on some path, every time.
 	for _, msg := range wf.CheckStageContracts(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Required-input contracts (#1061). The input-side analog of the above:
 	// a deterministic stage that invokes a `goobers` subcommand without
@@ -956,12 +1010,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// every election for a full build, and nothing static caught it. Also an
 	// error: the stage fails on every run, unconditionally.
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Bounded waits must finish before the executor can terminate their stage;
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
@@ -996,13 +1050,13 @@ func (ix *index) checkGateEvaluator(r *Report, w apiv1.Workflow, g apiv1.Gate, f
 		set++
 	}
 	if set != 1 {
-		r.add(Error, file, "Workflow", w.Name, "gate %q must have exactly one evaluator block, found %d", g.Name, set)
+		r.add(errorGateEvaluatorCardinality, Error, file, "Workflow", w.Name, "gate %q must have exactly one evaluator block, found %d", g.Name, set)
 		return
 	}
 	mismatch := (g.Evaluator == apiv1.EvaluatorAutomated && g.Automated == nil) ||
 		(g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic == nil) ||
 		(g.Evaluator == apiv1.EvaluatorHuman && g.Human == nil)
 	if mismatch {
-		r.add(Error, file, "Workflow", w.Name, "gate %q evaluator=%q but the matching evaluator block is not set", g.Name, g.Evaluator)
+		r.add(errorGateEvaluatorMismatch, Error, file, "Workflow", w.Name, "gate %q evaluator=%q but the matching evaluator block is not set", g.Name, g.Evaluator)
 	}
 }
