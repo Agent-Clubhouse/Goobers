@@ -120,6 +120,8 @@ github.com/goobers/goobers/internal/journal.ConformanceView # Cross-runner confo
 github.com/goobers/goobers/internal/journal.projectNormative # Cross-runner conformance helper retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Cross-runner conformance helper retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.NormativeEvent.String # Cross-runner conformance formatter retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.encodeCompleteness # Cross-runner conformance helper (branch completeness record) retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/localscheduler.ClaimLedger.MigrateLegacyNamespace # Claim-ledger migration seam retained for upgrades from legacy instances.
