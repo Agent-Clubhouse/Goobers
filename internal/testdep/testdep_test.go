@@ -100,6 +100,8 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "sh", InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)"},
 		{Name: "sleep", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
+		{Name: "xcodebuild", InstallHint: "install Xcode and select it with xcode-select (macOS)"},
+		{Name: "xcrun", InstallHint: "install Xcode Command Line Tools (macOS)"},
 		{Name: "yes", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 	}
 	if !reflect.DeepEqual(got, want) {

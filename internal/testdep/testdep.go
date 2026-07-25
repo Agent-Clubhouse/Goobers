@@ -59,6 +59,14 @@ var declared = map[string]Dependency{
 		Name:        "yes",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
+	"xcodebuild": {
+		Name:        "xcodebuild",
+		InstallHint: "install Xcode and select it with xcode-select (macOS)",
+	},
+	"xcrun": {
+		Name:        "xcrun",
+		InstallHint: "install Xcode Command Line Tools (macOS)",
+	},
 }
 
 // TB is the testing surface needed by Require.

@@ -61,3 +61,6 @@ spec:
     # connections + workflow machinery, differing only in its declared .NET CI
     # command and `dotnet@9` runtime requirement.
     - dotnet-service
+    # Standalone macOS/Xcode stage reference (#740): schedules only on a runner
+    # claiming both the host platform and Xcode, then gates on XCUITest.
+    - ios-simulator

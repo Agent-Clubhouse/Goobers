@@ -396,6 +396,10 @@ func init() {
 			withSynopsis(synopsisByID["docs-churn"]).
 			withHelp("emit the docs-drift churn digest since the watermark (a connector stage)", docsChurnHelp).
 			withExamples("goobers docs-churn --format churn-digest"),
+		command("ios-simulator-test", apicontract.ActionWorkflowExecution, runIOSSimulatorTest).
+			withSynopsis(synopsisByID["ios-simulator-test"]).
+			withHelp("run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)", iosSimulatorTestHelp).
+			withExamples("goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
