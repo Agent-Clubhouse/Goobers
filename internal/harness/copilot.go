@@ -319,6 +319,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, err
 	}
+	sourceCopilotHome, _ := copilotConfigHome(env)
 	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
 	// into the workspace so the sandbox policy needs no writable root beyond
 	// the worktree (plus its narrowed linked git directories) — the exact recipe the
@@ -336,7 +337,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		argv = append(argv, "--log-dir", confinement.logDir)
 	}
 	if len(req.MCPServers) > 0 {
-		env, err = prepareCopilotMCP(ctx, req, env)
+		env, err = prepareCopilotMCP(ctx, req, env, sourceCopilotHome)
 		if err != nil {
 			return Outcome{}, err
 		}

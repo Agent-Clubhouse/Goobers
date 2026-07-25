@@ -55,7 +55,6 @@
       "properties": {
         "name": {
           "type": "string",
-          "maxLength": 63,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
         "labels": { "type": "object", "additionalProperties": { "type": "string" } },
@@ -69,6 +68,7 @@
       "properties": {
         "name": {
           "type": "string",
+          "maxLength": 63,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
         "command": { "type": "string", "minLength": 1 },

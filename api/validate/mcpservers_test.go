@@ -60,6 +60,32 @@ func TestGooberSchemaAcceptsMCPServersWithoutInlineSecrets(t *testing.T) {
 	}
 }
 
+func TestGooberSchemaLimitsMCPServerNameOnly(t *testing.T) {
+	document := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "__GOOBER_NAME__"},
+		"spec": {
+			"gaggle": "example",
+			"role": "coder",
+			"instructions": "instructions.md",
+			"mcpServers": [{"name": "__MCP_NAME__", "command": "context-server"}]
+		}
+	}`
+	longName := strings.Repeat("a", 64)
+	valid := strings.ReplaceAll(document, "__GOOBER_NAME__", longName)
+	valid = strings.ReplaceAll(valid, "__MCP_NAME__", "context")
+	if err := newV(t).ValidateJSON("goober.schema.json", []byte(valid)); err != nil {
+		t.Fatalf("64-character metadata.name should remain valid: %v", err)
+	}
+
+	invalid := strings.ReplaceAll(document, "__GOOBER_NAME__", "coder")
+	invalid = strings.ReplaceAll(invalid, "__MCP_NAME__", longName)
+	if err := newV(t).ValidateJSON("goober.schema.json", []byte(invalid)); err == nil {
+		t.Fatal("64-character MCP server name passed schema validation")
+	}
+}
+
 func TestValidateDirRejectsUndeclaredMCPCredential(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {

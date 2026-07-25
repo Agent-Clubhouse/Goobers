@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,13 +61,15 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 		context.Background(),
 		req,
 		[]string{"HOME=/ambient/operator", "COPILOT_HOME=/ambient/copilot"},
+		"/ambient/copilot",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	home, ok := environmentValue(env, "COPILOT_HOME")
-	if !ok || !strings.HasPrefix(home, workspace+string(filepath.Separator)) {
-		t.Fatalf("COPILOT_HOME = %q, want invocation-local path under %q", home, workspace)
+	runtimeRoot := filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
+	if !ok || !strings.HasPrefix(home, runtimeRoot+string(filepath.Separator)) {
+		t.Fatalf("COPILOT_HOME = %q, want invocation-local path under %q", home, runtimeRoot)
 	}
 	configPath := filepath.Join(home, "mcp-config.json")
 	raw, err := os.ReadFile(configPath)
@@ -106,6 +109,73 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 		if !slices.Contains(env, want) {
 			t.Fatalf("scoped environment missing %q: %v", want, env)
 		}
+	}
+}
+
+func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T) {
+	ambientHome := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	copilotHome := filepath.Join(ambientHome, ".copilot")
+	if err := os.MkdirAll(copilotHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	storedConfig := []byte(`{"oauthToken":"stored-auth","model":"stored-model"}`)
+	if err := os.WriteFile(filepath.Join(copilotHome, "config.json"), storedConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(copilotHome, "mcp-config.json"),
+		[]byte(`{"mcpServers":{"ambient":{"type":"local","command":"ambient-server","tools":["*"]}}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			scopedHome, ok := environmentValue(req.Env, "COPILOT_HOME")
+			if !ok || scopedHome == copilotHome {
+				return fmt.Errorf("COPILOT_HOME = %q, %v; want isolated home", scopedHome, ok)
+			}
+			gotConfig, err := os.ReadFile(filepath.Join(scopedHome, "config.json"))
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(gotConfig, storedConfig) {
+				return fmt.Errorf("stored config = %s, want %s", gotConfig, storedConfig)
+			}
+			if _, ok := environmentValue(req.Env, "COPILOT_MODEL_TOKEN"); ok {
+				return fmt.Errorf("agent:model token was injected without a grant")
+			}
+			rawMCP, err := os.ReadFile(filepath.Join(scopedHome, "mcp-config.json"))
+			if err != nil {
+				return err
+			}
+			var config copilotMCPConfig
+			if err := json.Unmarshal(rawMCP, &config); err != nil {
+				return err
+			}
+			if len(config.MCPServers) != 1 || config.MCPServers["declared"].Command != "declared-server" {
+				return fmt.Errorf("scoped MCP servers = %#v, want only declared server", config.MCPServers)
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
+	}
+	workspace := t.TempDir()
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

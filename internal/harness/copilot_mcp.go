@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	copilotMCPRuntimePrefix = ".goobers-mcp-"
+	copilotMCPRuntimeSubdir = ".goobers/mcp"
+	copilotMCPRuntimePrefix = "runtime-"
 	copilotWorkspaceMCPEnv  = "GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP"
 )
 
@@ -30,7 +31,7 @@ type copilotMCPServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
+func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string, sourceHome string) ([]string, error) {
 	if len(req.MCPServers) == 0 {
 		return env, nil
 	}
@@ -38,7 +39,11 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
 	}
 
-	base, err := os.MkdirTemp(req.Workspace, copilotMCPRuntimePrefix)
+	runtimeRoot := filepath.Join(req.Workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
+	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime root: %w", err)
+	}
+	base, err := os.MkdirTemp(runtimeRoot, copilotMCPRuntimePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime: %w", err)
 	}
@@ -49,6 +54,9 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	env = removeEnvironment(env, copilotWorkspaceMCPEnv)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
+	}
+	if err := copyCopilotConfig(sourceHome, home); err != nil {
+		return nil, fmt.Errorf("harness: copilot-cli: preserve Copilot configuration: %w", err)
 	}
 
 	config := copilotMCPConfig{MCPServers: make(map[string]copilotMCPServer, len(req.MCPServers))}
@@ -104,6 +112,23 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 		return nil, fmt.Errorf("harness: copilot-cli: write scoped MCP config: %w", err)
 	}
 	return env, nil
+}
+
+func copyCopilotConfig(sourceHome, targetHome string) error {
+	if sourceHome == "" || filepath.Clean(sourceHome) == filepath.Clean(targetHome) {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(sourceHome, "config.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read config.json: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetHome, "config.json"), data, 0o600); err != nil {
+		return fmt.Errorf("write config.json: %w", err)
+	}
+	return nil
 }
 
 func removeEnvironment(env []string, name string) []string {

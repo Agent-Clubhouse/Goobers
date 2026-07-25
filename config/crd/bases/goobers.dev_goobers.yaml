@@ -54,9 +54,6 @@ spec:
                 items:
                   type: string
                 type: array
-                x-kubernetes-list-map-keys:
-                - name
-                x-kubernetes-list-type: map
               conditionalPolicyActions:
                 description: |-
                   ConditionalPolicyActions lists persona actions that are prescribed only
