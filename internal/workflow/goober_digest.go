@@ -17,6 +17,7 @@ type effectiveGoober struct {
 	Model          string                     `json:"model,omitempty"`
 	Harness        string                     `json:"harness"`
 	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
+	MCPServers     []apiv1.MCPServer          `json:"mcpServers,omitempty"`
 }
 
 // ComputeGooberDigest returns the stable content identity of the resolved
@@ -54,9 +55,29 @@ func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, in
 			Model:          spec.Model,
 			Harness:        string(harness),
 			HarnessOptions: options,
+			MCPServers:     canonicalMCPServers(spec.MCPServers),
 		})
 	}
 	return canonicalDigest(effective)
+}
+
+func canonicalMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
+	if len(servers) == 0 {
+		return nil
+	}
+	out := make([]apiv1.MCPServer, len(servers))
+	for i := range servers {
+		out[i] = servers[i]
+		out[i].Args = append([]string(nil), servers[i].Args...)
+		out[i].CredentialRefs = append([]apiv1.MCPCredentialRef(nil), servers[i].CredentialRefs...)
+		sort.Slice(out[i].CredentialRefs, func(a, b int) bool {
+			left, right := out[i].CredentialRefs[a], out[i].CredentialRefs[b]
+			return left.Capability+"\x00"+left.Env+"\x00"+left.Header+"\x00"+string(left.Scheme) <
+				right.Capability+"\x00"+right.Env+"\x00"+right.Header+"\x00"+string(right.Scheme)
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func participatingGoobers(def Definition) []string {

@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -1551,6 +1552,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
+				harness.WithMCPServers(spec.MCPServers),
 			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without
@@ -1792,6 +1794,9 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 		}
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
 			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+		}
+		if err := mcpconfig.Validate(spec.MCPServers, spec.Capabilities); err != nil {
+			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))

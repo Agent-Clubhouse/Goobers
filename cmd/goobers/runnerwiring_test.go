@@ -367,7 +367,7 @@ func TestValidationAutomatedChecksGolden(t *testing.T) {
 	}
 }
 
-func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
+func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		spec apiv1.GooberSpec
@@ -398,6 +398,20 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 				},
 			},
 			want: `reasoningEffort value "high" is not supported by model "claude-sonnet-4.5"`,
+		},
+		{
+			name: "undeclared MCP credential",
+			spec: apiv1.GooberSpec{
+				MCPServers: []apiv1.MCPServer{{
+					Name: "context",
+					URL:  "https://mcp.example.test",
+					CredentialRefs: []apiv1.MCPCredentialRef{{
+						Capability: "contents:read",
+						Header:     "Authorization",
+					}},
+				}},
+			},
+			want: `capability "contents:read" is not declared`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

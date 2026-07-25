@@ -96,6 +96,7 @@ type Executor struct {
 	model           string
 	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
+	mcpServers      []apiv1.MCPServer
 	resultPath      string
 	verdictPath     string
 	timeout         time.Duration
@@ -126,6 +127,13 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 				e.harnessOptions[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
 			}
 		}
+	}
+}
+
+// WithMCPServers supplies the goober's per-invocation external MCP servers.
+func WithMCPServers(servers []apiv1.MCPServer) Option {
+	return func(e *Executor) {
+		e.mcpServers = copyMCPServers(servers)
 	}
 }
 
@@ -330,6 +338,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Instructions:       e.instructions,
 		Model:              e.model,
 		HarnessOptions:     e.harnessOptions,
+		MCPServers:         copyMCPServers(e.mcpServers),
 		Workspace:          env.Workspace,
 		CompletionPath:     completionPath,
 		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
@@ -428,6 +437,19 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return out, transcript, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil
+}
+
+func copyMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
+	if len(servers) == 0 {
+		return nil
+	}
+	out := make([]apiv1.MCPServer, len(servers))
+	for i := range servers {
+		out[i] = servers[i]
+		out[i].Args = append([]string(nil), servers[i].Args...)
+		out[i].CredentialRefs = append([]apiv1.MCPCredentialRef(nil), servers[i].CredentialRefs...)
+	}
+	return out
 }
 
 func mergeAdapterMetrics(result *apiv1.ResultEnvelope, metrics map[string]float64) {

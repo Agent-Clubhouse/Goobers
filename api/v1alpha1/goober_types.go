@@ -15,6 +15,64 @@ const (
 	HarnessCopilot Harness = "copilot"
 )
 
+// MCPHeaderScheme controls how a resolved credential is formatted in a remote
+// MCP server header.
+type MCPHeaderScheme string
+
+const (
+	MCPHeaderSchemeBearer MCPHeaderScheme = "bearer"
+	MCPHeaderSchemeBasic  MCPHeaderScheme = "basic"
+)
+
+// MCPCredentialRef binds one capability-scoped credential to an MCP server
+// environment variable or HTTP header. Secret values remain in instance
+// credential configuration and are resolved only for the current invocation.
+// +kubebuilder:validation:XValidation:rule="(has(self.env) && !has(self.header) && !has(self.scheme)) || (!has(self.env) && has(self.header))",message="exactly one of env or header must be set, and scheme is only valid with header"
+type MCPCredentialRef struct {
+	// Capability is the goober capability whose scoped credential is resolved.
+	// +kubebuilder:validation:MinLength=1
+	Capability string `json:"capability" yaml:"capability"`
+	// Env names the environment variable exposed to a local stdio server.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Env string `json:"env,omitempty" yaml:"env,omitempty"`
+	// Header names the HTTP header sent to a remote server.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Header string `json:"header,omitempty" yaml:"header,omitempty"`
+	// Scheme optionally prefixes a remote header credential with "Bearer " or
+	// "Basic ".
+	// +kubebuilder:validation:Enum=bearer;basic
+	// +optional
+	Scheme MCPHeaderScheme `json:"scheme,omitempty" yaml:"scheme,omitempty"`
+}
+
+// MCPServer declares one external MCP server available to this goober. Exactly
+// one of Command (local stdio) or URL (remote HTTP) must be configured.
+// +kubebuilder:validation:XValidation:rule="(has(self.command) && !has(self.url)) || (!has(self.command) && has(self.url))",message="exactly one of command or url must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.command) || !has(self.args)",message="args are only valid with command"
+type MCPServer struct {
+	// Name is the invocation-local MCP server name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name" yaml:"name"`
+	// Command starts a local stdio MCP server.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Command string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Args are passed directly to Command without shell interpretation.
+	// +optional
+	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// URL is an HTTP(S) remote MCP endpoint.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
+	// CredentialRefs bind capability-scoped credentials to this server.
+	// +optional
+	CredentialRefs []MCPCredentialRef `json:"credentialRefs,omitempty" yaml:"credentialRefs,omitempty"`
+}
+
 // GooberSpec is the definition of a role-specialized AI worker. It declares
 // everything needed to materialize the goober as ephemeral pods when a workflow
 // invokes it (GBO-001, GBO-002).
@@ -83,6 +141,12 @@ type GooberSpec struct {
 	// servers/tools are reachable from a run (GBO-Q2/SEC-Q4).
 	// +optional
 	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
+	// MCPServers are external stdio or remote MCP servers materialized only for
+	// this goober's harness invocation.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	MCPServers []MCPServer `json:"mcpServers,omitempty" yaml:"mcpServers,omitempty"`
 	// ScaleFactor is the desired replica count for concurrent work. Increasing it
 	// and redeploying yields more concurrent replicas, which claim work so no two
 	// process the same item (GBO-030/GBO-031).

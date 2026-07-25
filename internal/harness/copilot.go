@@ -335,6 +335,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
 		argv = append(argv, "--log-dir", confinement.logDir)
 	}
+	if len(req.MCPServers) > 0 {
+		env, err = prepareCopilotMCP(ctx, req, env)
+		if err != nil {
+			return Outcome{}, err
+		}
+		argv = append(argv, "--disable-builtin-mcps")
+	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
 		captureID, err := newCopilotCaptureID()

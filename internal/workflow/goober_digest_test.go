@@ -22,6 +22,17 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 		HarnessOptions: map[string]apiextensionsv1.JSON{
 			"reasoningEffort": {Raw: []byte(`"high"`)},
 		},
+		MCPServers: []apiv1.MCPServer{
+			{
+				Name:    "local",
+				Command: "context-server",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Env:        "TOKEN",
+				}},
+			},
+			{Name: "remote", URL: "https://mcp.example.test"},
+		},
 	}
 	digest := func(spec apiv1.GooberSpec, instructions string) string {
 		t.Helper()
@@ -77,6 +88,12 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			}
 			return spec
 		}(), instructions: "original instructions"},
+		{name: "MCP servers", spec: func() apiv1.GooberSpec {
+			spec := base
+			spec.MCPServers = append([]apiv1.MCPServer(nil), base.MCPServers...)
+			spec.MCPServers[1].URL = "https://other.example.test"
+			return spec
+		}(), instructions: "original instructions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			changed := digest(tc.spec, tc.instructions)
@@ -89,6 +106,7 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	reordered := base
 	reordered.Instructions = "renamed.md"
 	reordered.Skills = []string{"go", "testing", "go"}
+	reordered.MCPServers = []apiv1.MCPServer{base.MCPServers[1], base.MCPServers[0]}
 	equivalent := digest(reordered, "original instructions")
 	if equivalent != original {
 		t.Fatalf("path or set ordering changed goober digest: %s != %s", equivalent, original)
