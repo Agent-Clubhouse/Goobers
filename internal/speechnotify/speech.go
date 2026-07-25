@@ -292,6 +292,9 @@ func (s *Sink) Deliver(ctx context.Context, request Request) (Receipt, error) {
 	if err := request.validate(); err != nil {
 		return s.reject(ctx, request.NotificationID, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return s.reject(ctx, request.NotificationID, err)
+	}
 	s.start.Do(func() { go s.run() })
 	job := &deliveryJob{ctx: ctx, request: request, result: make(chan deliveryResult, 1)}
 	select {

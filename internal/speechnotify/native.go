@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,7 +16,7 @@ type nativeSystem interface {
 	LookPath(string) (string, error)
 	Output(context.Context, string, ...string) ([]byte, error)
 	Run(context.Context, string, []string, string) error
-	AudioSession(string) (bool, string)
+	AudioSession(context.Context, string) (bool, string)
 }
 
 type execSystem struct{}
@@ -57,29 +55,8 @@ func (execSystem) Run(ctx context.Context, name string, args []string, stdin str
 	return nil
 }
 
-func (execSystem) AudioSession(platform string) (bool, string) {
-	switch platform {
-	case "darwin":
-		return true, "an active macOS user audio output; confirm it with `goobers speech test`"
-	case "linux":
-		const prerequisite = "an ALSA device or active PulseAudio/PipeWire session"
-		if _, err := os.Stat("/dev/snd"); err == nil {
-			return true, prerequisite
-		}
-		if os.Getenv("PULSE_SERVER") != "" || os.Getenv("PIPEWIRE_REMOTE") != "" {
-			return true, prerequisite
-		}
-		if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-			for _, socket := range []string{"pulse/native", "pipewire-0"} {
-				if _, err := os.Stat(filepath.Join(runtimeDir, socket)); err == nil {
-					return true, prerequisite
-				}
-			}
-		}
-		return false, prerequisite
-	default:
-		return false, "a supported local audio session"
-	}
+func (s execSystem) AudioSession(ctx context.Context, platform string) (bool, string) {
+	return newAudioSessionProbe(s.Output, s.Run).available(ctx, platform)
 }
 
 type nativeSynthesizer struct {
@@ -131,7 +108,7 @@ func (s *nativeSynthesizer) Preflight(ctx context.Context, config Config) (Prefl
 		Voice:    "system default",
 		Language: "system default",
 	}
-	report.AudioAvailable, report.AudioPrerequisite = s.system.AudioSession(s.platform)
+	report.AudioAvailable, report.AudioPrerequisite = s.system.AudioSession(ctx, s.platform)
 
 	var (
 		executable string

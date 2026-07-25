@@ -157,8 +157,8 @@ func buildTerminalNotifier(
 		}
 		if deliverSpeech {
 			timeout, _ := speechConfig.TimeoutDuration()
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			if _, err := speech.Deliver(ctx, speechnotify.Request{NotificationID: runID, Text: message.Body}); err != nil {
+			deliveryCtx, cancel := context.WithTimeout(ctx, timeout)
+			if _, err := speech.Deliver(deliveryCtx, speechnotify.Request{NotificationID: runID, Text: message.Body}); err != nil {
 				deliveryErrors = append(deliveryErrors, err)
 			}
 			cancel()

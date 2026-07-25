@@ -25,6 +25,24 @@ type recordingDesktopNotifier struct {
 	err         error
 }
 
+type lifecycleSpeechSynthesizer struct {
+	started chan struct{}
+}
+
+func (*lifecycleSpeechSynthesizer) Name() string {
+	return "lifecycle"
+}
+
+func (*lifecycleSpeechSynthesizer) Preflight(context.Context, speechnotify.Config) (speechnotify.Preflight, error) {
+	return speechnotify.Preflight{Engine: "lifecycle", AudioAvailable: true}, nil
+}
+
+func (s *lifecycleSpeechSynthesizer) Synthesize(ctx context.Context, _ speechnotify.Config, _ string) error {
+	close(s.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (n *recordingDesktopNotifier) Notify(ctx context.Context, message desktopnotify.Message) error {
 	n.messages = append(n.messages, message)
 	n.deadline, n.hasDeadline = ctx.Deadline()
@@ -308,5 +326,68 @@ func TestTerminalNotifierRejectsEnabledSpeechWithoutPreflight(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "speech notifications unavailable") ||
 		!strings.Contains(err.Error(), "audio device unavailable") {
 		t.Fatalf("buildTerminalNotifier = (%v, %v)", notifier, err)
+	}
+}
+
+func TestTerminalNotifierSpeechStopsWithLifecycleContext(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	runID := "0123456789abcdef"
+	jr, err := journal.Create(l.ForGaggle("goobers").RunsDir(), journal.RunIdentity{
+		RunID:    runID,
+		Workflow: "implementation",
+		Gaggle:   "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatalf("append terminal: %v", err)
+	}
+
+	synthesizer := &lifecycleSpeechSynthesizer{started: make(chan struct{})}
+	original := newNativeSpeechSink
+	newNativeSpeechSink = func(config speechnotify.Config, recorder speechnotify.Recorder) (*speechnotify.Sink, error) {
+		return speechnotify.New(config, synthesizer, recorder)
+	}
+	t.Cleanup(func() { newNativeSpeechSink = original })
+
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
+	notifier, err := buildTerminalNotifier(
+		lifecycleCtx,
+		l,
+		&instance.Config{Speech: &speechnotify.Config{Enabled: true}},
+		journal.NewPatternScrubber(),
+		schedulerSetupOptions{},
+	)
+	if err != nil {
+		t.Fatalf("buildTerminalNotifier: %v", err)
+	}
+	delivered := make(chan error, 1)
+	go func() {
+		delivered <- notifier(runID, journal.PhaseFailed, "implement")
+	}()
+	select {
+	case <-synthesizer.started:
+	case <-time.After(time.Second):
+		t.Fatal("speech synthesis did not start")
+	}
+	cancel()
+	select {
+	case err := <-delivered:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("notifier error = %v, want lifecycle cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("speech delivery did not stop after lifecycle cancellation")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(l.SchedulerDir(), speechnotify.ReceiptFileName))
+	if err != nil {
+		t.Fatalf("read receipt log: %v", err)
+	}
+	if strings.Count(string(raw), `"status":"started"`) != 1 ||
+		strings.Count(string(raw), `"status":"failed"`) != 1 {
+		t.Fatalf("receipt log = %q", raw)
 	}
 }

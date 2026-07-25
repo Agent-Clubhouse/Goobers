@@ -33,11 +33,13 @@ must be `say` or `espeak`; arbitrary commands and executable paths are not
 accepted.
 
 - **macOS:** `say` is included with macOS. Preflight reads `say -v ?` to verify
-  configured voices and languages.
+  configured voices and languages, requires an active GUI login session, and
+  checks that System Profiler identifies a default audio output.
 - **Linux:** install eSpeak NG so `espeak-ng` is on `PATH`; classic `espeak` is
-  also supported as a fallback. Preflight reads `--voices` and requires an ALSA
-  device or an active PulseAudio/PipeWire session. A headless host without an
-  audio session fails with the missing prerequisite instead of reporting
+  also supported as a fallback. Preflight reads `--voices` and requires an
+  openable ALSA playback device or a reachable PulseAudio/PipeWire Unix session.
+  Merely configured or stale endpoint paths do not pass. A headless host without
+  an audio session fails with the missing prerequisite instead of reporting
   success.
 
 `voice` is an installed engine voice. `language` is a BCP 47-style tag such as

@@ -232,6 +232,29 @@ func TestSinkQueuedCancellationReturnsWithoutOverlap(t *testing.T) {
 	}
 }
 
+func TestSinkRejectsPreCancelledRequestBeforeAdmission(t *testing.T) {
+	fake := &FakeSynthesizer{}
+	recorder := &memoryRecorder{}
+	sink, err := New(Config{}, fake, recorder)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	receipt, err := sink.Deliver(ctx, Request{NotificationID: "cancelled", Text: "must not start"})
+	if err == nil || receipt.Status != StatusFailed || receipt.Error != "context canceled" {
+		t.Fatalf("Deliver = (%+v, %v)", receipt, err)
+	}
+	if got := fake.Utterances(); len(got) != 0 {
+		t.Fatalf("utterances = %#v, want none", got)
+	}
+	receipts := recorder.snapshot()
+	if len(receipts) != 1 || receipts[0].Status != StatusFailed {
+		t.Fatalf("receipts = %+v, want one failed receipt", receipts)
+	}
+}
+
 func TestFileRecorderWritesJSONLWithoutText(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scheduler", "speech-receipts.jsonl")
 	recorder := NewFileRecorder(path)
