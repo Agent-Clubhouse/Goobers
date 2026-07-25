@@ -338,7 +338,7 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		},
 	}
 
-	if verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("sibling PR #480's substantive finding counted for selected PR #485")
 	}
 
@@ -346,7 +346,7 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		Class:    apiv1.FindingSubstantive,
 		Location: "cmd/goobers/foo.go:42",
 	})
-	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's file-scoped substantive finding was not counted")
 	}
 
@@ -355,8 +355,37 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		Class:    apiv1.FindingSubstantive,
 		Location: "PR #485",
 	})
-	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's substantive finding was not counted")
+	}
+}
+
+// TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor is #941/PRR-6's
+// gate-time severity-floor coverage: a finding below the declared minSeverity
+// does not count, one at or above it does, and an unset Severity (verdicts
+// recorded before this field existed) always counts regardless of the
+// floor — the liberal default must reproduce pre-#941 behavior exactly.
+func TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor(t *testing.T) {
+	infoFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityInfo, Location: "PR #485"}
+	warningFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityWarning, Location: "PR #485"}
+	unsetSeverityFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Location: "PR #485"}
+
+	below := &apiv1.Verdict{Findings: []apiv1.Finding{infoFinding}}
+	if verdictHasSubstantiveFindingForPR(below, 485, apiv1.SeverityWarning) {
+		t.Fatal("an info finding counted against a warning floor")
+	}
+	if !verdictHasSubstantiveFindingForPR(below, 485, apiv1.SeverityInfo) {
+		t.Fatal("an info finding did not count against the liberal info floor")
+	}
+
+	atFloor := &apiv1.Verdict{Findings: []apiv1.Finding{warningFinding}}
+	if !verdictHasSubstantiveFindingForPR(atFloor, 485, apiv1.SeverityWarning) {
+		t.Fatal("a warning finding did not count at the warning floor")
+	}
+
+	unset := &apiv1.Verdict{Findings: []apiv1.Finding{unsetSeverityFinding}}
+	if !verdictHasSubstantiveFindingForPR(unset, 485, apiv1.SeverityCritical) {
+		t.Fatal("an unset-severity finding was filtered by a severity floor — must always count")
 	}
 }
 
@@ -378,7 +407,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 					"Reconcile its shared run-table implementation with #597's runs list --json row shape and ordering.",
 			}},
 		}
-		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if !verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted (its Location references only the sibling)")
 		}
 	})
@@ -392,7 +421,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #538 concurrently evolves cmd/goobers/trace.go. Ensure the combined trace contract retains PR #597's JSON events.",
 			}},
 		}
-		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if !verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted")
 		}
 	})
@@ -406,7 +435,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #480's new table-alignment test asserts on locale-dependent width output and fails on CI runners.",
 			}},
 		}
-		if verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("a sibling's own substantive finding (never mentioning the selected PR) counted for selected PR #597")
 		}
 	})
@@ -423,7 +452,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #598 directly rewrites the same status/runs behavior. Reconcile its shared run-table implementation with #597's runs list --json row shape.",
 			}},
 		}
-		if verdictHasSubstantiveFindingForPR(verdict, 595) {
+		if verdictHasSubstantiveFindingForPR(verdict, 595, apiv1.SeverityInfo) {
 			t.Fatal("a finding about the #597/#598 conflict counted for uninvolved PR #595")
 		}
 	})

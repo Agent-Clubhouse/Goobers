@@ -40,14 +40,20 @@ import (
 const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
 	"Check out the selected PR's branch, attempt a rebase onto its base\n" +
 	"(force-with-lease is mandatory for the eventual push — never a bare\n" +
-	"push), and route on the result: a clean rebase with no substantive\n" +
-	"finding or failing CI force-pushes and clears goobers:needs-remediation;\n" +
-	"anything else (an unsafe conflict, substantive finding, or failing CI) needs the\n" +
-	"agentic remediation chain, reported via the needsAgent output for the\n" +
-	"workflow to route on. Requires selectedNumber/head/base\n" +
-	"(Task.InputsFrom gather-pr-context's own outputs) and\n" +
-	"hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =\n" +
-	"business error, 2 = usage/IO error.\n"
+	"push), and route on the result: a clean rebase with no detected,\n" +
+	"policy-allowed cause force-pushes and clears goobers:needs-remediation;\n" +
+	"a detected cause the declared policy allows needs the agentic remediation\n" +
+	"chain, reported via the needsAgent output for the workflow to route on; a\n" +
+	"detected cause the policy excludes is left untouched for a human\n" +
+	"(policyExcluded/policyExcludedReason outputs — #941/PRR-6). Requires\n" +
+	"selectedNumber/head/base (Task.InputsFrom gather-pr-context's own\n" +
+	"outputs) and hasSubstantiveFindings/hasFailingCI.\n\n" +
+	"remediate (input, default \"conflict,substantive,failing-ci,behind-base,\n" +
+	"sibling-overlap\") is a comma-separated policy naming which detected\n" +
+	"causes are allowed to trigger remediation; the shipped default is fully\n" +
+	"liberal. behind-base and sibling-overlap are accepted vocabulary but\n" +
+	"cannot fire yet (no detection reaches this stage's decision today).\n\n" +
+	"Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.\n"
 
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
@@ -81,6 +87,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
 	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
+	remediate := providerInput("remediate", defaultRemediatePolicy)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -106,16 +113,15 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
 
-	needsAgent := conflict || hasSubstantiveFindings || hasFailingCI
+	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI)
 
-	if !conflict && !hasSubstantiveFindings {
+	if !policy.needsAgent {
+		// Nothing detected at all — the liberal-default behavior this
+		// reproduces exactly regardless of the declared policy.
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
 			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
-	}
-
-	if !needsAgent {
 		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 		if err != nil {
 			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
@@ -127,18 +133,131 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
 				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
 			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+	if policy.policyExcluded {
+		// A cause WAS detected, but the declared `remediate` policy excludes
+		// every detected cause (#941/PRR-6). Force-pushing here would
+		// silently drop the excluded finding forever (clearing the label
+		// with no record); instead this cycle is left untouched for a human,
+		// and remediation-checkpoint (reading policyExcluded/
+		// policyExcludedReason below) escalates immediately rather than
+		// spending a repass budget on a cause the policy declined to touch.
+		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		}
+		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
+		return 0
+	}
+
+	// At least one detected cause is allowed by the declared policy — same
+	// force-push-to-retrigger-CI-only behavior as before when the rebase
+	// itself is clean (conflict=false, substantive=false; only failing-ci
+	// fired), since that push does not touch or hide the firing cause.
+	if !conflict && !hasSubstantiveFindings {
+		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
+				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+		}
+	}
+
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policyResult{}, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
 		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
+}
+
+// Remediation policy causes (#941/PRR-6): the vocabulary a workflow's
+// `remediate` input names. defaultRemediatePolicy is the shipped, fully
+// liberal default — every cause pr-remediation can detect fires the agentic
+// chain, reproducing today's behavior exactly.
+const (
+	remediateCauseConflict       = "conflict"
+	remediateCauseSubstantive    = "substantive"
+	remediateCauseFailingCI      = "failing-ci"
+	remediateCauseBehindBase     = "behind-base"
+	remediateCauseSiblingOverlap = "sibling-overlap"
+)
+
+// defaultRemediatePolicy lists every cause name, including two
+// (behind-base, sibling-overlap) that are accepted policy vocabulary but
+// cannot fire yet: behind-base's detection (gather-pr-context's
+// isBehindBase) is a native bool in the versioned RemediationBrief schema,
+// and only string-valued result-file keys survive Task.InputsFrom into a
+// downstream stage's input (see hasSubstantiveFindings/hasFailingCI's own
+// comment in gatherprcontext.go) — wiring it here needs a brief schema
+// version bump, tracked as a follow-up. sibling-overlap's detection
+// (gather-sibling-context) runs AFTER rebase-pr in pr-remediation.yaml's
+// graph today — wiring it into this decision needs reordering that stage
+// earlier, also tracked as a follow-up. Both names are still accepted (never
+// rejected) so a workflow author can declare the eventual full policy now
+// without a validation error, per the design's "policy visible in shipped
+// YAML" requirement.
+const defaultRemediatePolicy = remediateCauseConflict + "," + remediateCauseSubstantive + "," +
+	remediateCauseFailingCI + "," + remediateCauseBehindBase + "," + remediateCauseSiblingOverlap
+
+// policyResult carries the declared-policy outcome rebase-pr's result file
+// forwards to remediation-checkpoint.
+type policyResult struct {
+	excluded bool
+	reason   string
+}
+
+// remediatePolicyOutcome is evaluateRemediatePolicy's return value.
+type remediatePolicyOutcome struct {
+	needsAgent     bool
+	policyExcluded bool
+	excludedReason string
+	policyResult   policyResult
+}
+
+// evaluateRemediatePolicy applies the declared `remediate` policy (#941/
+// PRR-6) to this cycle's detected causes. Only conflict, substantive, and
+// failing-ci can actually fire today (see defaultRemediatePolicy's doc
+// comment on behind-base/sibling-overlap).
+func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI bool) remediatePolicyOutcome {
+	allowed := make(map[string]bool)
+	for _, cause := range splitLabelList(remediate) {
+		allowed[cause] = true
+	}
+
+	detected := []struct {
+		name    string
+		present bool
+	}{
+		{remediateCauseConflict, conflict},
+		{remediateCauseSubstantive, substantive},
+		{remediateCauseFailingCI, failingCI},
+	}
+
+	var firing, excluded []string
+	for _, cause := range detected {
+		if !cause.present {
+			continue
+		}
+		if allowed[cause.name] {
+			firing = append(firing, cause.name)
+		} else {
+			excluded = append(excluded, cause.name)
+		}
+	}
+
+	outcome := remediatePolicyOutcome{needsAgent: len(firing) > 0 || len(excluded) > 0}
+	if len(firing) == 0 && len(excluded) > 0 {
+		outcome.policyExcluded = true
+		outcome.excludedReason = fmt.Sprintf(
+			"remediation policy %q excludes the only detected cause(s) (%s) — leaving it for a human rather than force-pushing or silently rewriting",
+			remediate, strings.Join(excluded, ", "),
+		)
+		outcome.policyResult = policyResult{excluded: true, reason: outcome.excludedReason}
+	}
+	return outcome
 }
 
 func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string, err error) int {
@@ -176,6 +295,7 @@ func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedH
 func writeRebaseResult(
 	resultFile, selectedNumber, head string,
 	conflict, needsAgent bool,
+	policy policyResult,
 	conflictLocations []rebaseConflictLocation,
 	attemptedHeadSHA string,
 	rebaseBaseSHA string,
@@ -185,13 +305,15 @@ func writeRebaseResult(
 		return fmt.Errorf("marshal rebase conflict locations: %w", err)
 	}
 	data, err := json.Marshal(map[string]string{
-		"selectedNumber":    selectedNumber,
-		"head":              head,
-		"needsAgent":        strconv.FormatBool(needsAgent),
-		"conflict":          strconv.FormatBool(conflict),
-		"conflictLocations": string(locationsJSON),
-		"attemptedHeadSha":  attemptedHeadSHA,
-		"rebaseBaseSha":     rebaseBaseSHA,
+		"selectedNumber":       selectedNumber,
+		"head":                 head,
+		"needsAgent":           strconv.FormatBool(needsAgent),
+		"conflict":             strconv.FormatBool(conflict),
+		"conflictLocations":    string(locationsJSON),
+		"attemptedHeadSha":     attemptedHeadSHA,
+		"rebaseBaseSha":        rebaseBaseSHA,
+		"policyExcluded":       strconv.FormatBool(policy.excluded),
+		"policyExcludedReason": policy.reason,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal rebase result: %w", err)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -107,7 +108,8 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	candidate := *claimed
-	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR)
+	minSeverity := resolveMinSeverity(stderr)
+	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
@@ -142,7 +144,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool) (updateBehindAction, error) {
+func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		return updateBehindRouteFull, nil
 	}
@@ -172,7 +174,7 @@ func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProv
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number) {
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number, minSeverity) {
 		return updateBehindRouteFull, nil
 	}
 	if behind {
