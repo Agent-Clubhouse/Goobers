@@ -49,6 +49,9 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities []string) error {
 			if parsed.User != nil {
 				return fmt.Errorf("%s.url must not contain inline credentials; use credentialRefs", scope)
 			}
+			if parsed.RawQuery != "" || parsed.Fragment != "" {
+				return fmt.Errorf("%s.url must not contain a query or fragment; use credentialRefs for credentials", scope)
+			}
 			if parsed.Scheme == "http" && len(server.CredentialRefs) > 0 && !isLoopbackHost(parsed.Hostname()) {
 				return fmt.Errorf("%s.url %q must use https when credentialRefs are configured; http is allowed only for a loopback host", scope, server.URL)
 			}
@@ -77,10 +80,11 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities []string) error {
 				if !procenv.ValidName(ref.Env) {
 					return fmt.Errorf("%s.env %q is not a valid environment variable name", refScope, ref.Env)
 				}
-				if envNames[ref.Env] {
+				envName := strings.ToUpper(ref.Env)
+				if envNames[envName] {
 					return fmt.Errorf("%s.env %q is bound more than once", refScope, ref.Env)
 				}
-				envNames[ref.Env] = true
+				envNames[envName] = true
 			case ref.Env == "" && ref.Header != "":
 				if server.URL == "" {
 					return fmt.Errorf("%s.header is only valid for a remote server", refScope)

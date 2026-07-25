@@ -18,6 +18,7 @@ type effectiveGoober struct {
 	Harness        string                     `json:"harness"`
 	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
 	MCPServers     []apiv1.MCPServer          `json:"mcpServers,omitempty"`
+	Tools          []string                   `json:"tools,omitempty"`
 }
 
 // ComputeGooberDigest returns the stable content identity of the resolved
@@ -56,6 +57,7 @@ func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, in
 			Harness:        string(harness),
 			HarnessOptions: options,
 			MCPServers:     canonicalMCPServers(spec.MCPServers),
+			Tools:          canonicalSet(spec.Tools),
 		})
 	}
 	return canonicalDigest(effective)

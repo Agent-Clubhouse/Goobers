@@ -51,6 +51,7 @@ Credentials are capability references, never inline values:
 
 ```yaml
 capabilities: [contents:read, github:issues:write]
+tools: [lookup-issue, read-context]
 mcpServers:
   - name: local-context
     command: context-server
@@ -71,6 +72,10 @@ runner resolves only those invocation-scoped credentials and materializes the
 MCP configuration in a fresh harness configuration directory. Remote servers
 with credential references must use HTTPS; plaintext HTTP is allowed only for
 exact `localhost` or loopback-IP endpoints used for local development and tests.
+Remote URLs cannot contain query strings or fragments; credentials must use
+`credentialRefs`. Each external server receives only the explicit names in
+`spec.tools`; an omitted tool is unavailable, and an empty list denies all
+external MCP tools.
 
 ## Invocation contract (runtime)
 

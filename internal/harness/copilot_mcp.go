@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,7 +33,7 @@ type copilotMCPServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string, sourceHome string) ([]string, error) {
+func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
 	if len(req.MCPServers) == 0 {
 		return env, nil
 	}
@@ -60,14 +59,12 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string, source
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
 	}
-	if err := copyCopilotConfig(sourceHome, home); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: preserve Copilot configuration: %w", err)
-	}
-
+	// Ambient config.json may contain OAuth or BYOK credentials that were not
+	// resolver-registered, so the scoped home must start empty.
 	config := copilotMCPConfig{MCPServers: make(map[string]copilotMCPServer, len(req.MCPServers))}
 	for serverIndex, server := range req.MCPServers {
 		materialized := copilotMCPServer{
-			Tools: []string{"*"},
+			Tools: append([]string{}, req.Tools...),
 		}
 		if server.Command != "" {
 			materialized.Type = "local"
@@ -117,68 +114,6 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string, source
 		return nil, fmt.Errorf("harness: copilot-cli: write scoped MCP config: %w", err)
 	}
 	return env, nil
-}
-
-func copyCopilotConfig(sourceHome, targetHome string) error {
-	if sourceHome == "" || filepath.Clean(sourceHome) == filepath.Clean(targetHome) {
-		return nil
-	}
-	data, err := os.ReadFile(filepath.Join(sourceHome, "config.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read config.json: %w", err)
-	}
-	data, err = sanitizeCopilotConfig(data)
-	if err != nil {
-		return fmt.Errorf("sanitize config.json: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(targetHome, "config.json"), data, 0o600); err != nil {
-		return fmt.Errorf("write config.json: %w", err)
-	}
-	return nil
-}
-
-func sanitizeCopilotConfig(data []byte) ([]byte, error) {
-	var config map[string]json.RawMessage
-	if err := json.Unmarshal(trimLeadingJSONComments(data), &config); err != nil {
-		return nil, err
-	}
-	changed := false
-	for _, key := range []string{"installedPlugins", "trustedFolders"} {
-		if _, ok := config[key]; !ok {
-			continue
-		}
-		delete(config, key)
-		changed = true
-	}
-	if !changed {
-		return data, nil
-	}
-	return json.Marshal(config)
-}
-
-func trimLeadingJSONComments(data []byte) []byte {
-	data = bytes.TrimSpace(data)
-	for {
-		switch {
-		case bytes.HasPrefix(data, []byte("//")):
-			end := bytes.IndexByte(data, '\n')
-			if end < 0 {
-				return nil
-			}
-			data = bytes.TrimSpace(data[end+1:])
-		case bytes.HasPrefix(data, []byte("/*")):
-			end := bytes.Index(data[2:], []byte("*/"))
-			if end < 0 {
-				return data
-			}
-			data = bytes.TrimSpace(data[end+4:])
-		default:
-			return data
-		}
-	}
 }
 
 func removeEnvironment(env []string, name string) []string {

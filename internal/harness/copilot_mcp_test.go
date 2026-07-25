@@ -27,11 +27,12 @@ func environmentValue(env []string, name string) (string, bool) {
 	return "", false
 }
 
-func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
+func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{
 		Envelope:  testEnvelope(workspace, "contents:read", "github:issues:write"),
 		Workspace: workspace,
+		Tools:     []string{"reachability"},
 		Credentials: twoTokenCredentials(
 			t,
 			"contents:read", "local-mcp-secret",
@@ -63,7 +64,6 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 		context.Background(),
 		req,
 		[]string{"HOME=/ambient/operator", "COPILOT_HOME=/ambient/copilot"},
-		"/ambient/copilot",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -96,13 +96,18 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 	local := config.MCPServers["local-context"]
 	if local.Type != "local" || local.Command != "context-server" ||
 		!slices.Equal(local.Args, []string{"--stdio"}) ||
+		!slices.Equal(local.Tools, []string{"reachability"}) ||
 		local.Env["CONTEXT_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_0}" {
 		t.Fatalf("local server config = %#v", local)
 	}
 	remote := config.MCPServers["remote-context"]
 	if remote.Type != "http" || remote.URL != "https://mcp.example.test/api" ||
+		!slices.Equal(remote.Tools, []string{"reachability"}) ||
 		remote.Headers["Authorization"] != "Bearer ${GOOBERS_MCP_CREDENTIAL_1_0}" {
 		t.Fatalf("remote server config = %#v", remote)
+	}
+	if slices.Contains(local.Tools, "*") || slices.Contains(local.Tools, "omitted") {
+		t.Fatalf("local server exposed an undeclared tool: %v", local.Tools)
 	}
 	for _, want := range []string{
 		"GOOBERS_MCP_CREDENTIAL_0_0=local-mcp-secret",
@@ -114,52 +119,36 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 	}
 }
 
-func TestCopyCopilotConfigRemovesAmbientExtensionState(t *testing.T) {
-	sourceHome := t.TempDir()
-	targetHome := t.TempDir()
-	config := []byte(`// Copilot CLI managed configuration
-{
-  "oauthToken": "stored-auth",
-  "model": "stored-model",
-  "provider": {"type": "byok", "endpoint": "https://models.example.test"},
-  "trustedFolders": ["/ambient/trusted-workspace"],
-  "installedPlugins": [
-    {"name": "ambient-tools", "cache_path": "/ambient/plugins/tools"}
-  ]
-}`)
-	if err := os.WriteFile(filepath.Join(sourceHome, "config.json"), config, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyCopilotConfig(sourceHome, targetHome); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(targetHome, "config.json"))
+func TestPrepareCopilotMCPLeavesOmittedToolUnreachable(t *testing.T) {
+	workspace := t.TempDir()
+	env, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(got, []byte("installedPlugins")) ||
-		bytes.Contains(got, []byte("/ambient/plugins/tools")) ||
-		bytes.Contains(got, []byte("trustedFolders")) ||
-		bytes.Contains(got, []byte("/ambient/trusted-workspace")) {
-		t.Fatalf("scoped Copilot config retained ambient extension state: %s", got)
+	home, ok := environmentValue(env, "COPILOT_HOME")
+	if !ok {
+		t.Fatal("scoped Copilot home missing")
 	}
-	var preserved struct {
-		OAuthToken string          `json:"oauthToken"`
-		Model      string          `json:"model"`
-		Provider   json.RawMessage `json:"provider"`
-	}
-	if err := json.Unmarshal(got, &preserved); err != nil {
+	raw, err := os.ReadFile(filepath.Join(home, "mcp-config.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if preserved.OAuthToken != "stored-auth" ||
-		preserved.Model != "stored-model" ||
-		string(preserved.Provider) != `{"type":"byok","endpoint":"https://models.example.test"}` {
-		t.Fatalf("preserved Copilot config = %#v", preserved)
+	var config copilotMCPConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	tools := config.MCPServers["context"].Tools
+	if tools == nil || len(tools) != 0 {
+		t.Fatalf("omitted tool is reachable through materialized policy: %v", tools)
 	}
 }
 
-func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T) {
+func TestCopilotAdapterMCPDoesNotCopyAmbientAuthentication(t *testing.T) {
+	const ambientAuthCanary = "AMBIENT-AUTH-CANARY-732"
 	for _, profileSource := range []string{"USERPROFILE", "HOMEDRIVE/HOMEPATH"} {
 		t.Run(profileSource, func(t *testing.T) {
 			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
@@ -184,7 +173,7 @@ func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T
 			if err := os.MkdirAll(copilotHome, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			storedConfig := []byte(`{"oauthToken":"stored-auth","model":"stored-model"}`)
+			storedConfig := []byte(`{"oauthToken":"` + ambientAuthCanary + `","provider":{"type":"byok","apiKey":"` + ambientAuthCanary + `"}}`)
 			if err := os.WriteFile(filepath.Join(copilotHome, "config.json"), storedConfig, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -204,11 +193,11 @@ func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T
 						return fmt.Errorf("COPILOT_HOME = %q, %v; want isolated home", scopedHome, ok)
 					}
 					gotConfig, err := os.ReadFile(filepath.Join(scopedHome, "config.json"))
-					if err != nil {
-						return err
+					if err == nil {
+						return fmt.Errorf("ambient Copilot config was copied into scoped home: %s", gotConfig)
 					}
-					if !bytes.Equal(gotConfig, storedConfig) {
-						return fmt.Errorf("stored config = %s, want %s", gotConfig, storedConfig)
+					if !os.IsNotExist(err) {
+						return err
 					}
 					if _, ok := environmentValue(req.Env, "COPILOT_MODEL_TOKEN"); ok {
 						return fmt.Errorf("agent:model token was injected without a grant")
@@ -216,6 +205,9 @@ func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T
 					rawMCP, err := os.ReadFile(filepath.Join(scopedHome, "mcp-config.json"))
 					if err != nil {
 						return err
+					}
+					if bytes.Contains(rawMCP, []byte(ambientAuthCanary)) {
+						return fmt.Errorf("ambient authentication canary leaked into scoped MCP config")
 					}
 					var config copilotMCPConfig
 					if err := json.Unmarshal(rawMCP, &config); err != nil {
@@ -238,6 +230,7 @@ func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T
 				Workspace:      workspace,
 				CompletionPath: DefaultResultPath,
 				MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
+				Tools:          []string{"reachability"},
 			})
 			if err != nil {
 				t.Fatal(err)

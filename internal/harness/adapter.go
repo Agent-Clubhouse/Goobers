@@ -77,6 +77,8 @@ type RunRequest struct {
 	HarnessOptions map[string]apiextensionsv1.JSON
 	// MCPServers are the goober's external MCP declarations for this invocation.
 	MCPServers []apiv1.MCPServer
+	// Tools is the goober's default-deny tool allowlist.
+	Tools []string
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.

@@ -75,7 +75,7 @@ type testMCPResponse struct {
 	} `json:"error"`
 }
 
-func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
+func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.T) {
 	var declaredRemoteCalls atomic.Int32
 	declaredRemote := newTestRemoteMCPServer(t, "declared-remote-reachable", "Bearer "+remoteMCPSecret, &declaredRemoteCalls)
 	defer declaredRemote.Close()
@@ -145,6 +145,7 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
 		Timeout:        30 * time.Second,
+		Tools:          []string{"reachability"},
 		Credentials: twoTokenCredentials(
 			t,
 			"contents:read", stdioMCPSecret,
@@ -298,7 +299,7 @@ func TestCopilotMCPClientHelper(t *testing.T) {
 	sort.Strings(names)
 	outputs := make(map[string]interface{}, len(names))
 	for _, name := range names {
-		result, err := callTestMCPServer(config.MCPServers[name])
+		result, err := callTestMCPServer(config.MCPServers[name], scoped)
 		if err != nil {
 			t.Fatalf("call MCP server %q: %v", name, err)
 		}
@@ -361,9 +362,16 @@ func TestCopilotMCPStdioServerHelper(t *testing.T) {
 	}
 }
 
-func callTestMCPServer(server testCopilotMCPServer) (string, error) {
-	if !slices.Equal(server.Tools, []string{"*"}) {
-		return "", fmt.Errorf("tools = %v, want [*]", server.Tools)
+func callTestMCPServer(server testCopilotMCPServer, scoped bool) (string, error) {
+	if scoped {
+		if slices.Contains(server.Tools, "*") {
+			return "", fmt.Errorf("tools = %v, wildcard bypass is forbidden", server.Tools)
+		}
+		if !slices.Contains(server.Tools, "reachability") {
+			return "", fmt.Errorf("reachability tool is not allowlisted: %v", server.Tools)
+		}
+	} else if !slices.Equal(server.Tools, []string{"*"}) {
+		return "", fmt.Errorf("ambient tools = %v, want [*]", server.Tools)
 	}
 	switch server.Type {
 	case "local":

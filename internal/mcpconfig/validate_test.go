@@ -61,6 +61,16 @@ func TestValidate(t *testing.T) {
 			want:    "must not contain inline credentials",
 		},
 		{
+			name:    "inline query credentials",
+			servers: []apiv1.MCPServer{{Name: "remote", URL: "https://example.test/mcp?api_key=secret"}},
+			want:    "must not contain a query or fragment",
+		},
+		{
+			name:    "inline fragment credentials",
+			servers: []apiv1.MCPServer{{Name: "remote", URL: "https://example.test/mcp#secret"}},
+			want:    "must not contain a query or fragment",
+		},
+		{
 			name: "plaintext remote credential",
 			servers: []apiv1.MCPServer{{
 				Name: "remote", URL: "http://mcp.example.test",
@@ -94,6 +104,19 @@ func TestValidate(t *testing.T) {
 			}},
 			caps: []string{"contents:read"},
 			want: "only valid for a stdio server",
+		},
+		{
+			name: "case-insensitive duplicate env binding",
+			servers: []apiv1.MCPServer{{
+				Name:    "local",
+				Command: "server",
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{Capability: "contents:read", Env: "TOKEN"},
+					{Capability: "github:issues:write", Env: "token"},
+				},
+			}},
+			caps: []string{"contents:read", "github:issues:write"},
+			want: "is bound more than once",
 		},
 		{
 			name: "invalid header",

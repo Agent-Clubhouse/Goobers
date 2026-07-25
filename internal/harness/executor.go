@@ -97,6 +97,7 @@ type Executor struct {
 	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
 	mcpServers      []apiv1.MCPServer
+	tools           []string
 	resultPath      string
 	verdictPath     string
 	timeout         time.Duration
@@ -134,6 +135,13 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 func WithMCPServers(servers []apiv1.MCPServer) Option {
 	return func(e *Executor) {
 		e.mcpServers = copyMCPServers(servers)
+	}
+}
+
+// WithTools supplies the goober's default-deny tool allowlist.
+func WithTools(tools []string) Option {
+	return func(e *Executor) {
+		e.tools = append([]string(nil), tools...)
 	}
 }
 
@@ -339,6 +347,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Model:              e.model,
 		HarnessOptions:     e.harnessOptions,
 		MCPServers:         copyMCPServers(e.mcpServers),
+		Tools:              append([]string(nil), e.tools...),
 		Workspace:          env.Workspace,
 		CompletionPath:     completionPath,
 		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),

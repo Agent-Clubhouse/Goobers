@@ -1553,6 +1553,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
 				harness.WithMCPServers(spec.MCPServers),
+				harness.WithTools(spec.Tools),
 			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without

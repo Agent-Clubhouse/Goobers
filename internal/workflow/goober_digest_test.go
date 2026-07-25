@@ -17,6 +17,7 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	base := apiv1.GooberSpec{
 		Instructions: "instructions.md",
 		Skills:       []string{"testing", "go"},
+		Tools:        []string{"shell", "reachability"},
 		Model:        "model-a",
 		Harness:      apiv1.HarnessCopilot,
 		HarnessOptions: map[string]apiextensionsv1.JSON{
@@ -71,6 +72,11 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			spec.Skills = []string{"testing", "go", "security"}
 			return spec
 		}(), instructions: "original instructions"},
+		{name: "tools", spec: func() apiv1.GooberSpec {
+			spec := base
+			spec.Tools = []string{"shell"}
+			return spec
+		}(), instructions: "original instructions"},
 		{name: "model", spec: func() apiv1.GooberSpec {
 			spec := base
 			spec.Model = "model-b"
@@ -106,6 +112,7 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	reordered := base
 	reordered.Instructions = "renamed.md"
 	reordered.Skills = []string{"go", "testing", "go"}
+	reordered.Tools = []string{"reachability", "shell", "shell"}
 	reordered.MCPServers = []apiv1.MCPServer{base.MCPServers[1], base.MCPServers[0]}
 	equivalent := digest(reordered, "original instructions")
 	if equivalent != original {
