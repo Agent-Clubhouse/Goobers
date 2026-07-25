@@ -14,10 +14,12 @@ import (
 )
 
 const (
+	// DefaultResultBundle is the xcresult bundle path used when none is specified.
 	DefaultResultBundle = "ios-simulator.xcresult"
 	maxDiagnosticLength = 2048
 )
 
+// Options configures an XCUITest invocation and simulator selection.
 type Options struct {
 	Project      string
 	Workspace    string
@@ -28,6 +30,7 @@ type Options struct {
 	ResultBundle string
 }
 
+// Result is the workflow-safe outcome parsed from an XCUITest result bundle.
 type Result struct {
 	Passed            bool   `json:"passed"`
 	Outcome           string `json:"outcome"`
@@ -46,18 +49,22 @@ type Result struct {
 	ErrorRetryable    bool   `json:"errorRetryable,omitempty"`
 }
 
+// Report contains the parsed result and raw command output used for diagnostics.
 type Report struct {
 	Result        Result
 	XcodeOutput   []byte
 	SummaryOutput []byte
 }
 
+// ToolRunner runs the Xcode command-line tools used by the stage.
 type ToolRunner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
 
+// ExecToolRunner runs tools as local subprocesses.
 type ExecToolRunner struct{}
 
+// Run executes a tool and returns its combined output.
 func (ExecToolRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
@@ -102,6 +109,7 @@ type testFailure struct {
 	TestIdentifierString string `json:"testIdentifierString"`
 }
 
+// ValidateHost rejects hosts that cannot run iOS Simulator stages.
 func ValidateHost(goos string) error {
 	if goos != "darwin" {
 		return fmt.Errorf("iOS Simulator stages require macOS (host OS is %s)", goos)
@@ -109,6 +117,7 @@ func ValidateHost(goos string) error {
 	return nil
 }
 
+// ValidateOptions verifies that options identify one Xcode container and a safe result path.
 func ValidateOptions(options Options) error {
 	if (options.Project == "") == (options.Workspace == "") {
 		return fmt.Errorf("exactly one of project or workspace is required")
@@ -126,6 +135,7 @@ func ValidateOptions(options Options) error {
 	return nil
 }
 
+// Run executes XCUITest against a selected simulator and parses its result bundle.
 func Run(ctx context.Context, options Options, tools ToolRunner) Report {
 	result := Result{Outcome: "error"}
 	if err := ValidateOptions(options); err != nil {
