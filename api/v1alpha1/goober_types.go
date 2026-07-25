@@ -5,14 +5,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Harness identifies the agent harness a goober runs on. v1 supports the GitHub
-// Copilot agent harness only; a pluggable multi-harness abstraction is deferred
-// (GBO-040, GBO-041).
+// Harness identifies the agent harness a goober runs on.
 type Harness string
 
 const (
 	// HarnessCopilot is the GitHub Copilot agent harness (v1 default).
 	HarnessCopilot Harness = "copilot"
+	// HarnessClaudeCode is the Anthropic Claude Code agent harness.
+	HarnessClaudeCode Harness = "claude-code"
 )
 
 // MCPHeaderScheme controls how a resolved credential is formatted in a remote
@@ -94,7 +94,7 @@ type GooberSpec struct {
 	// +kubebuilder:validation:Required
 	Instructions string `json:"instructions" yaml:"instructions"`
 	// Harness is the agent harness this goober runs on.
-	// +kubebuilder:validation:Enum=copilot
+	// +kubebuilder:validation:Enum=copilot;claude-code
 	// +kubebuilder:default=copilot
 	// +optional
 	Harness Harness `json:"harness,omitempty" yaml:"harness,omitempty"`

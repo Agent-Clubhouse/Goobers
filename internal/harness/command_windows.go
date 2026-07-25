@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// resolveCopilotCommand bypasses npm's cmd.exe shim, which truncates a
+// resolveHarnessCommand bypasses npm's cmd.exe shim, which truncates a
 // multiline --prompt argument at its first newline. The sibling PowerShell
 // shim forwards the argument without lossy cmd.exe parsing.
-func resolveCopilotCommand(command []string) []string {
+func resolveHarnessCommand(command []string) []string {
 	if len(command) == 0 {
 		return nil
 	}

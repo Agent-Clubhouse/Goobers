@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
 	"time"
@@ -151,6 +152,9 @@ type ProcessRequest struct {
 	// MaxTranscriptBytes caps the combined stdout+stderr transcript retained
 	// in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
+	// StdoutCapture receives stdout before transcript truncation. The caller
+	// must keep this sink bounded; capture errors do not affect the subprocess.
+	StdoutCapture io.Writer
 }
 
 // ProcessResult is what a harness subprocess produced.
@@ -170,13 +174,26 @@ type ProcessResult struct {
 }
 
 // ProcessRunner runs the concrete harness subprocess — the seam that lets
-// CopilotAdapter be tested without a real Copilot CLI installed.
+// adapters be tested without their real CLIs installed.
 type ProcessRunner interface {
 	Run(ctx context.Context, req ProcessRequest) (ProcessResult, error)
 }
 
 // ExecProcessRunner runs a harness command with os/exec.
 type ExecProcessRunner struct{}
+
+type stdoutCaptureWriter struct {
+	transcript io.Writer
+	capture    io.Writer
+}
+
+func (w stdoutCaptureWriter) Write(p []byte) (int, error) {
+	n, err := w.transcript.Write(p)
+	if w.capture != nil {
+		_, _ = w.capture.Write(p)
+	}
+	return n, err
+}
 
 // Run executes req.Command in req.Dir with req.Env, capturing combined
 // stdout+stderr as the transcript. A ProcessResult is always returned
@@ -216,7 +233,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 
 	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
 	buf.progress = func() { invoke.ReportProgress(runCtx) }
-	cmd.Stdout = buf
+	cmd.Stdout = stdoutCaptureWriter{transcript: buf, capture: req.StdoutCapture}
 	cmd.Stderr = buf
 
 	// proc.Start puts the command in its own session (Setsid) so the tree can
