@@ -116,6 +116,24 @@ spec:
         resultFile: "gate-edit.json"
       next: gate-removal-clear
 
+    # Differentiated review classifier (TUT-A6, #1218, docs/design/
+    # tutor-redesign.md §5 item 5 / D5): a single undifferentiated CODEOWNERS
+    # gate treats every tutor PR the same, but a persona-prompt tweak and a
+    # workflow-topology rewrite carry very different risk. This deterministic
+    # stage classifies the drafted diff as persona, gate-tune, or structure
+    # (topology change, gate removal/loosening, or skill-list change) so
+    # open-pr can label the PR and merge-pr can refuse to auto-merge a
+    # structure-classified one — never a gate itself, since a classification
+    # is informational, not a pass/fail condition.
+    - name: classify-tutor-change
+      type: deterministic
+      goal: Classify the drafted diff as persona, gate-tune, or structure for differentiated review.
+      run:
+        command: ["goobers", "classify-tutor-change"]
+      inputs:
+        resultFile: "tutor-change-class.json"
+      next: validate-config
+
     # Validate the drafted selfhost tree, not the running instance's unchanged
     # config copy. Calling the CLI directly lets the executor substitute the
     # running daemon's exact binary rather than relying on PATH.
@@ -174,7 +192,7 @@ spec:
       automated:
         check: status-equals
       branches:
-        pass: validate-config
+        pass: classify-tutor-change
         fail: "@abort"
 
     # A non-zero validate exit becomes a failure ResultEnvelope. Abort rather

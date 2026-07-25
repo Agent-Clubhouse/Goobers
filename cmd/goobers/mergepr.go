@@ -38,7 +38,9 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"PR's live head/base (never a bare self-approval). Declared inputs:\n" +
 	"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n" +
 	"(required for the default commit message; supplied by apply-verdict), advisoryMode\n" +
-	"(default false — report only, no merge attempted), mergeMethod\n" +
+	"(default false — report only, no merge attempted), checkTutorSignoff\n" +
+	"(default false — opt-in TUT-A6 check: refuses a PR labeled\n" +
+	"tutor:needs-signoff), mergeMethod\n" +
 	"(merge/squash/rebase; default squash), commitMessage (default: PR\n" +
 	"title + review rationale + referenced issues), resultFile (default\n" +
 	"merge-result.json). Successful merges also report headBranch and\n" +
@@ -202,6 +204,24 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		if advisoryMode {
 			reasons = append(reasons, "advisory mode: no merge attempted")
+		}
+		// Tutor sign-off exclusion (TUT-A6, #1218). Opt-in and no-op by
+		// default (mirrors open-pr's confineToConfigRoot/confineToDocsRoots
+		// pattern) so every existing merge-pr caller is unaffected; a future
+		// pipeline that feeds tutor PRs through merge-pr sets checkTutorSignoff
+		// to enforce "structure/skill/validation tutor PRs are never
+		// auto-merged" (design doc D5) structurally rather than relying on
+		// the label alone. Fails CLOSED on a label-lookup error — unlike the
+		// other conjuncts above, an unverifiable sign-off requirement must
+		// refuse the merge, not silently proceed.
+		if providerInput("checkTutorSignoff", "") == "true" {
+			item, labelErr := provider.GetWorkItem(ctx, repo, pullNumber)
+			switch {
+			case labelErr != nil:
+				reasons = append(reasons, fmt.Sprintf("could not verify tutor sign-off label (%v) — refusing to merge unverified (TUT-A6)", labelErr))
+			case item.HasLabel(tutorSignoffRequiredLabel):
+				reasons = append(reasons, fmt.Sprintf("pull request carries %q — requires explicit human sign-off (TUT-A6, #1218), never auto-merged", tutorSignoffRequiredLabel))
+			}
 		}
 		if len(reasons) > 0 {
 			return nil

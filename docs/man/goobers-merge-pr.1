@@ -13,7 +13,9 @@ verdict=pass, CI green, not a draft, and the SHA-pin still matches the
 PR's live head/base (never a bare self-approval). Declared inputs:
 pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
 (required for the default commit message; supplied by apply-verdict), advisoryMode
-(default false — report only, no merge attempted), mergeMethod
+(default false — report only, no merge attempted), checkTutorSignoff
+(default false — opt-in TUT-A6 check: refuses a PR labeled
+tutor:needs-signoff), mergeMethod
 (merge/squash/rebase; default squash), commitMessage (default: PR
 title + review rationale + referenced issues), resultFile (default
 merge-result.json). Successful merges also report headBranch and

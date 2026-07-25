@@ -367,12 +367,27 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
 			t.Fatalf("gate-removal-clear evaluator = %+v, want automated status-equals", gate)
 		}
-		if gate.Branches["pass"] != "validate-config" || gate.Branches["fail"] != "@abort" {
-			t.Fatalf("gate-removal-clear branches = %v, want pass->validate-config and fail->@abort", gate.Branches)
+		if gate.Branches["pass"] != "classify-tutor-change" || gate.Branches["fail"] != "@abort" {
+			t.Fatalf("gate-removal-clear branches = %v, want pass->classify-tutor-change and fail->@abort", gate.Branches)
 		}
 	}
 	if !sawGateRemovalClear {
 		t.Fatal("tutor workflow has no gate-removal-clear gate")
+	}
+
+	classifyTask, ok := tasks["classify-tutor-change"]
+	if !ok {
+		t.Fatal("tutor workflow has no classify-tutor-change task")
+	}
+	if classifyTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("classify-tutor-change type = %q, want deterministic", classifyTask.Type)
+	}
+	if classifyTask.Run == nil || len(classifyTask.Run.Command) != 2 ||
+		classifyTask.Run.Command[0] != "goobers" || classifyTask.Run.Command[1] != "classify-tutor-change" {
+		t.Fatalf("classify-tutor-change run = %+v, want the classify-tutor-change command", classifyTask.Run)
+	}
+	if classifyTask.Next != "validate-config" {
+		t.Fatalf("classify-tutor-change next = %q, want validate-config", classifyTask.Next)
 	}
 
 	validateTask, ok := tasks["validate-config"]

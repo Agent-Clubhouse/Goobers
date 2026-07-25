@@ -37,6 +37,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'push-branch'
         'open-pr'
         'gate-removal-guard'
+        'classify-tutor-change'
         'issue-close-out'
         'set-milestone'
         'merge-pr'

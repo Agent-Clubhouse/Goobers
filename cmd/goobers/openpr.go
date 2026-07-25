@@ -177,6 +177,17 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Differentiated review routing (TUT-A6, #1218): label the PR by its
+	// classify-tutor-change category so a structure-classified tutor PR is
+	// both visibly flagged for explicit human sign-off and — via merge-pr's
+	// matching check — structurally refused auto-merge. Best-effort, same
+	// posture as the gate-edit labeling above.
+	if category, requiresSignoff := tutorChangeClassificationFromJournal(root, runID); category != "" {
+		if lerr := labelTutorChangeCategory(ctx, provider, repo, result.Number, category, requiresSignoff == "true"); lerr != nil {
+			pf(stderr, "warning: could not label pr #%d for change-category review routing (%v)\n", result.Number, lerr)
+		}
+	}
+
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
 }

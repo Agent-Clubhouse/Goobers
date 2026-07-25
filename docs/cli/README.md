@@ -18,6 +18,7 @@
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
+| [`goobers classify-tutor-change`](#goobers-classify-tutor-change) | classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage) |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
@@ -325,6 +326,27 @@ ambiguous, 2 = usage/IO error.
 ~~~console
 $ goobers claims release 955
 $ goobers claims release --force 955
+~~~
+
+## `goobers classify-tutor-change`
+
+classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage)
+
+~~~text
+Usage: goobers classify-tutor-change [path]
+
+Classify a tutor run's diff as persona, gate-tune, or structure
+(workflow topology change, gate removal/loosening, or skill-list
+change) by diffing every changed workflow/goober YAML file against
+base. Never fails the run — an unclassifiable file conservatively
+escalates to structure rather than silently defaulting to persona.
+Exit codes: 0 = classified, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers classify-tutor-change
 ~~~
 
 ## `goobers completion`
@@ -993,7 +1015,9 @@ verdict=pass, CI green, not a draft, and the SHA-pin still matches the
 PR's live head/base (never a bare self-approval). Declared inputs:
 pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
 (required for the default commit message; supplied by apply-verdict), advisoryMode
-(default false — report only, no merge attempted), mergeMethod
+(default false — report only, no merge attempted), checkTutorSignoff
+(default false — opt-in TUT-A6 check: refuses a PR labeled
+tutor:needs-signoff), mergeMethod
 (merge/squash/rebase; default squash), commitMessage (default: PR
 title + review rationale + referenced issues), resultFile (default
 merge-result.json). Successful merges also report headBranch and

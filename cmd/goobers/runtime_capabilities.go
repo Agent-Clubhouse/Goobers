@@ -367,6 +367,10 @@ func init() {
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).
 			withExamples("goobers gate-removal-guard"),
+		command("classify-tutor-change", apicontract.ActionWorkflowExecution, runClassifyTutorChange).
+			withSynopsis(synopsisByID["classify-tutor-change"]).
+			withHelp("classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage)", classifyTutorChangeHelp).
+			withExamples("goobers classify-tutor-change"),
 		command("issue-close-out", apicontract.ActionWorkflowExecution, runIssueCloseOut).
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).

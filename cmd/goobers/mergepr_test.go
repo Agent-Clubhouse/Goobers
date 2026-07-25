@@ -88,6 +88,11 @@ type mergePRServerState struct {
 	// retried stage attempt whose pull request the queue landed in the
 	// meantime.
 	alreadyMerged bool
+	// labels is this PR's own labels, served from the issues endpoint (GitHub
+	// treats a PR number as an issue number for labeling) — TUT-A6's
+	// checkTutorSignoff conjunct reads this via provider.GetWorkItem.
+	labels       []string
+	issueLookups int
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
@@ -227,6 +232,18 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			runs = append(runs, map[string]interface{}{"name": "windows-smoke", "status": "completed", "conclusion": "failure", "html_url": "https://ci/windows-smoke"})
 		}
 		writeFakeJSON(w, map[string]interface{}{"check_runs": runs})
+	})
+	mux.HandleFunc(prefix+"/issues/9", func(w http.ResponseWriter, r *http.Request) {
+		st.issueLookups++
+		labels := make([]map[string]string, 0, len(st.labels))
+		for _, l := range st.labels {
+			labels = append(labels, map[string]string{"name": l})
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"number": 9, "state": "open", "title": "Implement structured merge messages",
+			"body": "Implements the requested behavior.\n\nFixes #42", "labels": labels,
+			"html_url": "https://github.com/" + owner + "/" + repo + "/issues/9",
+		})
 	})
 	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
 		st.commentCalls++
@@ -1221,5 +1238,89 @@ func TestMergePRReleasesLockOnRefusal(t *testing.T) {
 	}
 	if st.mergeCalls != 0 {
 		t.Fatalf("merge endpoint called %d times across both runs, want 0 (still a draft)", st.mergeCalls)
+	}
+}
+
+// TestMergePRCheckTutorSignoffDefaultOffIsUnaffected proves checkTutorSignoff
+// is a true no-op when unset — TUT-A6's guard must never change behavior for
+// the every-other-workflow merge-pr caller that doesn't opt in, even when the
+// PR happens to carry the sign-off label (an ordinary label collision must
+// not matter unless the input explicitly asks for the check).
+func TestMergePRCheckTutorSignoffDefaultOffIsUnaffected(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", labels: []string{tutorSignoffRequiredLabel}}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.issueLookups != 0 {
+		t.Fatalf("issue lookups = %d, want 0 — checkTutorSignoff defaults off", st.issueLookups)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true (checkTutorSignoff not requested)", result)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1", st.mergeCalls)
+	}
+}
+
+// TestMergePRCheckTutorSignoffRefusesLabeledPR is TUT-A6's (#1218) headline
+// case: with checkTutorSignoff opted in, a PR carrying tutor:needs-signoff
+// is refused regardless of every other conjunct being met — the structural
+// half of "structure/skill/validation tutor PRs are never auto-merged"
+// (design doc D5).
+func TestMergePRCheckTutorSignoffRefusesLabeledPR(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", labels: []string{tutorSignoffRequiredLabel}}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456", "checkTutorSignoff": "true",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times, want 0 — a tutor:needs-signoff PR must never auto-merge", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
+	}
+	reason, _ := result["reason"].(string)
+	if !strings.Contains(reason, tutorSignoffRequiredLabel) {
+		t.Fatalf("reason = %q, want it to mention %q", reason, tutorSignoffRequiredLabel)
+	}
+}
+
+// TestMergePRCheckTutorSignoffAllowsUnlabeledPR is the mirror positive: with
+// checkTutorSignoff opted in, a PR without the label merges normally —
+// "persona/gate-tune PRs may follow the normal review path" (TUT-A6
+// acceptance).
+func TestMergePRCheckTutorSignoffAllowsUnlabeledPR(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", labels: []string{tutorGateTuneLabel}}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456", "checkTutorSignoff": "true",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.issueLookups != 1 {
+		t.Fatalf("issue lookups = %d, want 1", st.issueLookups)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true (no sign-off label)", result)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1", st.mergeCalls)
 	}
 }

@@ -64,6 +64,7 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+  goobers classify-tutor-change          classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
@@ -179,6 +180,7 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+  goobers classify-tutor-change          classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
@@ -356,6 +358,16 @@ is recorded as claim.force_released in the instance journal. Default
 path is ".". Scope flags are required when the item id exists in more
 than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.
+
+### classify-tutor-change
+Usage: goobers classify-tutor-change [path]
+
+Classify a tutor run's diff as persona, gate-tune, or structure
+(workflow topology change, gate removal/loosening, or skill-list
+change) by diffing every changed workflow/goober YAML file against
+base. Never fails the run — an unclassifiable file conservatively
+escalates to structure rather than silently defaulting to persona.
+Exit codes: 0 = classified, 1 = business error, 2 = usage/IO error.
 
 ### completion
 Usage: goobers completion <bash|zsh|fish|powershell>
@@ -714,7 +726,9 @@ verdict=pass, CI green, not a draft, and the SHA-pin still matches the
 PR's live head/base (never a bare self-approval). Declared inputs:
 pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
 (required for the default commit message; supplied by apply-verdict), advisoryMode
-(default false — report only, no merge attempted), mergeMethod
+(default false — report only, no merge attempted), checkTutorSignoff
+(default false — opt-in TUT-A6 check: refuses a PR labeled
+tutor:needs-signoff), mergeMethod
 (merge/squash/rebase; default squash), commitMessage (default: PR
 title + review rationale + referenced issues), resultFile (default
 merge-result.json). Successful merges also report headBranch and

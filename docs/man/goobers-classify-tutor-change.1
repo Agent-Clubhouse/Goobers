@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLASSIFY TUTOR CHANGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers classify-tutor-change \- classify a tutor run's diff as persona, gate-tune, or structure (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers classify-tutor-change\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers classify-tutor-change [path]
+
+Classify a tutor run's diff as persona, gate-tune, or structure
+(workflow topology change, gate removal/loosening, or skill-list
+change) by diffing every changed workflow/goober YAML file against
+base. Never fails the run — an unclassifiable file conservatively
+escalates to structure rather than silently defaulting to persona.
+Exit codes: 0 = classified, 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers classify-tutor-change
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
