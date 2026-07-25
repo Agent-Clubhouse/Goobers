@@ -282,8 +282,16 @@ func parseVoices(engine, output string) []voiceInfo {
 				}
 			}
 		case EngineESpeak:
-			if len(fields) >= 4 && strings.ToLower(fields[0]) != "pty" {
-				voices = append(voices, voiceInfo{name: fields[3], language: normalizeLanguage(fields[1])})
+			if len(fields) < 4 {
+				continue
+			}
+			if _, err := strconv.ParseUint(fields[0], 10, 8); err != nil {
+				continue
+			}
+			language := normalizeLanguage(fields[1])
+			name := strings.TrimSpace(fields[3])
+			if languagePattern.MatchString(language) && name != "" {
+				voices = append(voices, voiceInfo{name: name, language: language})
 			}
 		}
 	}

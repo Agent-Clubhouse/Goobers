@@ -346,6 +346,7 @@ func TestPreflightRejectsUnusableDefaultVoiceList(t *testing.T) {
 		{name: "malformed say", platform: "darwin", paths: map[string]string{"say": "/usr/bin/say"}, output: "# comment only\nAlex\n"},
 		{name: "empty espeak", platform: "linux", paths: map[string]string{"espeak": "/usr/bin/espeak"}},
 		{name: "malformed espeak", platform: "linux", paths: map[string]string{"espeak": "/usr/bin/espeak"}, output: "Pty Language Age/Gender VoiceName File Other Languages\nnot a voice\n"},
+		{name: "malformed four-field espeak", platform: "linux", paths: map[string]string{"espeak": "/usr/bin/espeak"}, output: "Pty Language Age/Gender VoiceName File Other Languages\ntotally malformed voice inventory line\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sink, err := newNativeForPlatform(test.platform, Config{}, nil, &fakeNativeSystem{
