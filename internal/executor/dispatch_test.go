@@ -292,6 +292,17 @@ func TestKindRegistryRejectsInvalidRegistrations(t *testing.T) {
 	}
 }
 
+func TestKindRegistryRejectsTypedNilExecutor(t *testing.T) {
+	registry := NewKindRegistry()
+	var shell *ShellExecutor
+	if err := registry.Register(KindShell, shell); err == nil || err.Error() != `executor: kind "shell" executor must not be nil` {
+		t.Fatalf("Register error = %v, want typed-nil executor error", err)
+	}
+	if _, err := NewTaskExecutor(registry); err == nil || err.Error() != "executor: shell executor must not be nil" {
+		t.Fatalf("NewTaskExecutor error = %v, want missing shell error", err)
+	}
+}
+
 func TestTaskExecutor_UnknownKindIsError(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	te := newRegisteredTaskExecutor(t, shell, nil)
@@ -307,5 +318,12 @@ func TestNewTaskExecutor_RequiresShell(t *testing.T) {
 	}
 	if _, err := NewTaskExecutor(NewKindRegistry()); err == nil || err.Error() != "executor: shell executor must not be nil" {
 		t.Fatalf("NewTaskExecutor error = %v, want missing shell error", err)
+	}
+
+	var shell *ShellExecutor
+	registry := NewKindRegistry()
+	registry.executors[KindShell] = shell
+	if _, err := NewTaskExecutor(registry); err == nil || err.Error() != "executor: shell executor must not be nil" {
+		t.Fatalf("NewTaskExecutor error = %v, want typed-nil shell error", err)
 	}
 }

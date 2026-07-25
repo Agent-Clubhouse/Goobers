@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
@@ -47,7 +48,7 @@ func (r *KindRegistry) Register(kind string, executor KindExecutor) error {
 	if kind == "" {
 		return errors.New("executor: kind must not be empty")
 	}
-	if executor == nil {
+	if isNilKindExecutor(executor) {
 		return fmt.Errorf("executor: kind %q executor must not be nil", kind)
 	}
 	if r.executors == nil {
@@ -75,14 +76,30 @@ func NewTaskExecutor(registry *KindRegistry) (*TaskExecutor, error) {
 	if registry == nil {
 		return nil, errors.New("executor: kind registry must not be nil")
 	}
-	if _, ok := registry.executors[KindShell]; !ok {
+	if shell, ok := registry.executors[KindShell]; !ok || isNilKindExecutor(shell) {
 		return nil, errors.New("executor: shell executor must not be nil")
 	}
 	executors := make(map[string]KindExecutor, len(registry.executors))
 	for kind, executor := range registry.executors {
+		if isNilKindExecutor(executor) {
+			return nil, fmt.Errorf("executor: kind %q executor must not be nil", kind)
+		}
 		executors[kind] = executor
 	}
 	return &TaskExecutor{executors: executors}, nil
+}
+
+func isNilKindExecutor(executor KindExecutor) bool {
+	if executor == nil {
+		return true
+	}
+	value := reflect.ValueOf(executor)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Run implements invoke.Deterministic, dispatching to the registered executor
