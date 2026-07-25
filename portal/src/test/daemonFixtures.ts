@@ -303,24 +303,24 @@ function runEvents(summary: RunSummary): RunEvent[] {
         }),
         journalEvent(summary, 8, "stage.started", {
           stage: "implement",
-          attempt: 2,
-          attemptClass: "policy",
+          attempt: 1,
+          attemptClass: "initial",
         }),
         journalEvent(summary, 9, "stage.finished", {
           stage: "implement",
-          attempt: 2,
-          attemptClass: "policy",
+          attempt: 1,
+          attemptClass: "initial",
           status: "success",
         }),
         journalEvent(summary, 10, "gate.started", {
           gate: "review",
-          attempt: 2,
-          attemptClass: "policy",
+          attempt: 1,
+          attemptClass: "initial",
         }),
         journalEvent(summary, 11, "gate.evaluated", {
           gate: "review",
-          attempt: 2,
-          attemptClass: "policy",
+          attempt: 1,
+          attemptClass: "initial",
           verdict: "fail",
           target: "@escalate",
         }),
@@ -430,6 +430,38 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         { runId: summary.id, events: runEvents(summary) },
       ]),
     ),
+    stageAttempts: {
+      [fixtureKey("01JZ402DASHBOARD", "implement")]: {
+        runId: "01JZ402DASHBOARD",
+        stage: "implement",
+        attempts: [
+          {
+            id: "sta-dashboard-implement-visit-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "failure",
+            startedSeq: 4,
+            finishedSeq: 5,
+            durationMillis: 1_000,
+            outputs: { summary: "Initial implementation." },
+            artifacts: [],
+          },
+          {
+            id: "sta-dashboard-implement-visit-2",
+            visit: 2,
+            number: 1,
+            class: "initial",
+            status: "success",
+            startedSeq: 8,
+            finishedSeq: 9,
+            durationMillis: 1_000,
+            outputs: { summary: "Addressed reviewer feedback." },
+            artifacts: [],
+          },
+        ],
+      },
+    },
     stageUsage: {
       "01JZ402DASHBOARD": [
         {
