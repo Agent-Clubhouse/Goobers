@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: ios-simulator
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+spec:
+  instance:
+    name: ios-simulator
+    environment: dev
+  connections:
+    - name: github-main
+      type: repo
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: ios-simulator-kv
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: ios-simulator-kv
+  gaggles:
+    - ios-simulator
