@@ -95,6 +95,11 @@ type Local struct {
 	// scan instead of one per request. See reconcileIndex.
 	reconcileMu   sync.Mutex
 	lastReconcile time.Time
+	// reconcileWatermark is the newest run-parent-directory mtime observed by the
+	// last successful reconcile. It bounds the per-scan cost: a parent whose mtime
+	// has not advanced past it cannot have gained or lost a run directory, so the
+	// next reconcile skips reading it entirely. Zero forces a full scan.
+	reconcileWatermark time.Time
 }
 
 type definitionSnapshot struct {
