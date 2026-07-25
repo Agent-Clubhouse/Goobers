@@ -108,7 +108,7 @@ func TestFindingSetHistoryBootstrapsLegacyStatusAndStaysBounded(t *testing.T) {
 	}
 }
 
-func TestApplyVerdictEscalatesOnFindingSetABARevisit(t *testing.T) {
+func TestApplyVerdictIgnoresReplayAndEscalatesOnFindingSetABARevisit(t *testing.T) {
 	const (
 		prNumber = 367
 		baseSHA  = "base-sha"
@@ -145,6 +145,7 @@ func TestApplyVerdictEscalatesOnFindingSetABARevisit(t *testing.T) {
 		finding apiv1.Finding
 	}{
 		{runID: "oscillation-1", headSHA: "head-a-1", finding: findingA},
+		{runID: "oscillation-1-replay", headSHA: "head-a-1", finding: findingA},
 		{runID: "oscillation-2", headSHA: "head-b-2", finding: findingB},
 		{runID: "oscillation-3", headSHA: "head-a-3", finding: findingA},
 	}

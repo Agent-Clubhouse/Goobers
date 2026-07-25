@@ -1206,6 +1206,15 @@ func advanceFindingSetHistory(prior findingSetHistory, findings []apiv1.Finding)
 		return findingSetHistory{}, "", false, err
 	}
 	revisited := false
+	if len(prior.Hashes) > 0 && prior.Hashes[len(prior.Hashes)-1] == digest {
+		for _, previous := range prior.Hashes[:len(prior.Hashes)-1] {
+			if previous == digest {
+				revisited = true
+				break
+			}
+		}
+		return findingSetHistory{Hashes: append([]string(nil), prior.Hashes...)}, digest, revisited, nil
+	}
 	for _, previous := range prior.Hashes {
 		if previous == digest {
 			revisited = true
