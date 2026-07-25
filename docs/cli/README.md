@@ -41,6 +41,7 @@
 | [`goobers gather-review-threads`](#goobers-gather-review-threads) | add native reviews and anchored inline threads to a remediation brief (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
+| [`goobers ios-simulator-test`](#goobers-ios-simulator-test) | run XCUITest on an iOS simulator and parse its xcresult (a workflow stage) |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
@@ -839,6 +840,36 @@ $ goobers init
 $ goobers init --template=quickstart ./tutorial
 $ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
+~~~
+
+## `goobers ios-simulator-test`
+
+run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
+
+~~~text
+Usage: goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]
+
+Run an XCUITest scheme on an available iPhone simulator, parse the xcresult
+summary, and write flat workflow outputs to GOOBERS_INPUT_RESULTFILE. A workflow
+using this command must declare runner requirements os=darwin and xcode so
+scheduling rejects incompatible hosts before invocation. The result records the
+selected Xcode, simulator device, and runtime versions; failure output includes
+the parsed xcresult test diagnostics.
+
+Flags:
+  --project <path>         Xcode project path (mutually exclusive with --workspace)
+  --workspace <path>       Xcode workspace path (mutually exclusive with --project)
+  --scheme <name>          shared test scheme to run
+  --device <name>          exact simulator device name (default: first available iPhone)
+  --runtime <version>      iOS runtime version, name, or identifier (default: latest available)
+  --only-testing <target>  optional xcodebuild only-testing selector
+  --result-bundle <path>   relative xcresult bundle path (default: ios-simulator.xcresult)
+~~~
+
+**Examples**
+
+~~~console
+$ goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests
 ~~~
 
 ## `goobers issue-close-out`
