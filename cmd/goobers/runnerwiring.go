@@ -230,6 +230,8 @@ const credentialGrantEnv = "GH_TOKEN"
 // clobbers the other (#288, multi-token credentials 2/3).
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
+const claudeModelEnv = "ANTHROPIC_API_KEY"
+
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
@@ -257,7 +259,7 @@ func buildEnvCapabilities() map[string]string {
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot, selfBin string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
-	adapter := &harness.CopilotAdapter{
+	copilotAdapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
 		AuthCheckArgs:   copilotAuthCheckArgs,
 		EnvCapabilities: envCaps,
@@ -268,8 +270,27 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 	}
-	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
+	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
+	}
+
+	claudeEnvCaps := make(map[string]string, len(envCaps)+1)
+	for capability, envVar := range envCaps {
+		claudeEnvCaps[capability] = envVar
+	}
+	claudeEnvCaps[string(capability.AgentModel)] = claudeModelEnv
+	claudeAdapter := &harness.ClaudeAdapter{
+		Command:         []string{"claude"},
+		EnvCapabilities: claudeEnvCaps,
+		OptionalCredentialCapabilities: map[string]bool{
+			string(capability.AgentModel): true,
+		},
+		ExtraEnvAllowlist: envPassthrough,
+		InstanceRoot:      instanceRoot,
+		SelfBin:           selfBin,
+	}
+	if err := registry.RegisterAs(string(apiv1.HarnessClaudeCode), claudeAdapter); err != nil {
+		return nil, fmt.Errorf("register Claude Code harness: %w", err)
 	}
 	return registry, nil
 }

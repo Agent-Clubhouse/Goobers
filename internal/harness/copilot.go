@@ -13,9 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -234,7 +231,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		command := resolveCopilotCommand(c.Command)
+		command := resolveHarnessCommand(c.Command)
 		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
@@ -301,7 +298,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	baseCommand := resolveCopilotCommand(c.Command)
+	baseCommand := resolveHarnessCommand(c.Command)
 	argv := append(baseCommand, flag, prompt)
 	promptArg := len(baseCommand) + 1
 	if req.Model != "" {
@@ -478,16 +475,6 @@ func processTranscriptBytes(result ProcessResult) []byte {
 	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
 }
 
-// baseEnv returns the minimal, explicit env every harness process starts
-// with — internal/procenv.BaseEnvWith, the allowlist internal/executor's
-// baseEnv() shares (#248, closing the #98/#122 drift for good: one
-// definition instead of two hand-kept-in-sync copies). extra carries the
-// instance-config-declared passthrough names (RunnerConfig.EnvPassthrough,
-// #736), additively and still default-deny.
-func baseEnv(extra []string) []string {
-	return procenv.BaseEnvWith(extra)
-}
-
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
 // TMPDIR — never a secret store, never the full os.Environ()), the stage
 // telemetry directory, routed repository and instance context, the running
@@ -496,62 +483,12 @@ func baseEnv(extra []string) []string {
 // A configured capability that fails to resolve is a hard stop — the harness
 // never runs half-credentialed.
 func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
-	env := baseEnv(c.ExtraEnvAllowlist)
-	telemetryDir := req.TelemetryDir
-	if telemetryDir == "" {
-		telemetryDir = telemetry.PrepareStageTelemetryDir(req.Workspace)
-	}
-	if telemetryDir != "" {
-		env = append(env, telemetry.StageTelemetryEnv+"="+telemetryDir)
-	}
-	if c.InstanceRoot != "" {
-		env = append(env, executor.InstanceRootEnvVar+"="+c.InstanceRoot)
-	}
-	if c.SelfBin != "" {
-		env = append(env, executor.GoobersBinEnvVar+"="+c.SelfBin)
-	}
-	if repo := req.Envelope.RepoRef; repo.Provider != "" {
-		env = append(env,
-			executor.RepoProviderEnvVar+"="+string(repo.Provider),
-			executor.RepoOwnerEnvVar+"="+repo.Owner,
-			executor.RepoNameEnvVar+"="+repo.Name,
-		)
-	}
-	// Read-only reference-repo checkouts (MGV-11 #1286): the agent may read them
-	// for cross-repo context. Sorted for a deterministic env.
-	if refs := req.Envelope.AdditionalWorkspaces; len(refs) > 0 {
-		type refWorkspace struct{ name, path string }
-		items := make([]refWorkspace, 0, len(refs))
-		for _, w := range refs {
-			if w.Name == "" || w.Path == "" {
-				continue
-			}
-			items = append(items, refWorkspace{w.Name, w.Path})
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
-		names := make([]string, 0, len(items))
-		for _, it := range items {
-			env = append(env, executor.AdditionalRepoEnvVar(it.name)+"="+it.path)
-			names = append(names, it.name)
-		}
-		if len(names) > 0 {
-			env = append(env, executor.AdditionalReposEnvVar+"="+strings.Join(names, ","))
-		}
-	}
-	for _, capability := range req.Envelope.Capabilities {
-		envVar, ok := c.EnvCapabilities[capability]
-		if !ok {
-			continue
-		}
-		token, err := req.Credentials.Token(ctx, capability)
-		if err != nil {
-			if c.OptionalCredentialCapabilities[capability] &&
-				errors.Is(err, credentials.ErrNoCredentialForCapability) {
-				continue
-			}
-			return nil, fmt.Errorf("harness: copilot-cli: resolve %s: %w", capability, err)
-		}
-		env = append(env, envVar+"="+token)
-	}
-	return env, nil
+	return buildCredentialEnv(ctx, credentialEnvConfig{
+		adapterName:                    c.Name(),
+		envCapabilities:                c.EnvCapabilities,
+		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
+		extraEnvAllowlist:              c.ExtraEnvAllowlist,
+		instanceRoot:                   c.InstanceRoot,
+		selfBin:                        c.SelfBin,
+	}, req)
 }

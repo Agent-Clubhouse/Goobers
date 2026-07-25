@@ -221,7 +221,8 @@ func TestGooberAssetStructureIsValidated(t *testing.T) {
 
 func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 	v := newV(t)
-	goober := `{
+	for _, harness := range []string{"copilot", "claude-code"} {
+		goober := `{
 		"apiVersion": "goobers.dev/v1alpha1",
 		"kind": "Goober",
 		"metadata": {"name": "coder"},
@@ -229,7 +230,7 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 			"gaggle": "example",
 			"role": "coder",
 			"instructions": "instructions.md",
-			"harness": "copilot",
+			"harness": "` + harness + `",
 			"model": "adapter-specific-model",
 			"harnessOptions": {
 				"enabled": true,
@@ -239,9 +240,10 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 			"policyActions": ["modify-repository"],
 			"conditionalPolicyActions": ["open-or-update-pr"]
 		}
-	}`
-	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
-		t.Fatalf("adapter-owned harness config failed schema validation: %v", err)
+		}`
+		if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
+			t.Fatalf("%s adapter-owned harness config failed schema validation: %v", harness, err)
+		}
 	}
 }
 

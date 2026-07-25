@@ -170,7 +170,7 @@ type ProcessResult struct {
 }
 
 // ProcessRunner runs the concrete harness subprocess — the seam that lets
-// CopilotAdapter be tested without a real Copilot CLI installed.
+// adapters be tested without their real CLIs installed.
 type ProcessRunner interface {
 	Run(ctx context.Context, req ProcessRequest) (ProcessResult, error)
 }

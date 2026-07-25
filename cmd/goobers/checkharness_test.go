@@ -29,7 +29,15 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("adapterFor(copilot) = %T, want *harness.CopilotAdapter", adapter)
 	}
 
-	if _, err := adapterFor("claude-code"); err == nil {
+	adapter, err = adapterFor(apiv1.HarnessClaudeCode)
+	if err != nil {
+		t.Fatalf("adapterFor(claude-code): %v", err)
+	}
+	if _, ok := adapter.(*harness.ClaudeAdapter); !ok {
+		t.Fatalf("adapterFor(claude-code) = %T, want *harness.ClaudeAdapter", adapter)
+	}
+
+	if _, err := adapterFor("nonesuch"); err == nil {
 		t.Fatal("expected an error for an unsupported harness")
 	}
 }

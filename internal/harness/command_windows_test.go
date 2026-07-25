@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestResolveCopilotCommandUsesPowerShellShim(t *testing.T) {
+func TestResolveHarnessCommandUsesPowerShellShim(t *testing.T) {
 	directory := t.TempDir()
-	cmdPath := filepath.Join(directory, "copilot.cmd")
-	psPath := filepath.Join(directory, "copilot.ps1")
+	cmdPath := filepath.Join(directory, "claude.cmd")
+	psPath := filepath.Join(directory, "claude.ps1")
 	if err := os.WriteFile(cmdPath, []byte("@echo off\r\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestResolveCopilotCommandUsesPowerShellShim(t *testing.T) {
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
 
-	got := resolveCopilotCommand([]string{"copilot", "--base-arg"})
+	got := resolveHarnessCommand([]string{"claude", "--base-arg"})
 	if len(got) < 9 || got[0] != "powershell.exe" {
 		t.Fatalf("resolved command = %v, want PowerShell wrapper", got)
 	}
@@ -29,10 +29,10 @@ func TestResolveCopilotCommandUsesPowerShellShim(t *testing.T) {
 	}
 }
 
-func TestResolvedCopilotCommandPreservesMultilinePrompt(t *testing.T) {
+func TestResolvedHarnessCommandPreservesMultilinePrompt(t *testing.T) {
 	directory := t.TempDir()
-	cmdPath := filepath.Join(directory, "copilot.cmd")
-	psPath := filepath.Join(directory, "copilot.ps1")
+	cmdPath := filepath.Join(directory, "claude.cmd")
+	psPath := filepath.Join(directory, "claude.ps1")
 	outputPath := filepath.Join(directory, "prompt.txt")
 	if err := os.WriteFile(cmdPath, []byte("@echo off\r\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestResolvedCopilotCommandPreservesMultilinePrompt(t *testing.T) {
 	t.Setenv("GOOBERS_PROMPT_CAPTURE", outputPath)
 	prompt := "---\nrole: curator\n---\n## Task\nExecute now."
 
-	command := append(resolveCopilotCommand([]string{"copilot"}), "-p", prompt)
+	command := append(resolveHarnessCommand([]string{"claude"}), "-p", prompt)
 	result, err := (ExecProcessRunner{}).Run(t.Context(), ProcessRequest{
 		Command: command,
 		Env:     append(baseEnv(nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),
@@ -70,10 +70,10 @@ func TestResolvedCopilotCommandPreservesMultilinePrompt(t *testing.T) {
 // Without this, "`n" in label names like `goobers:needs-human` would be
 // converted to a newline by PowerShell's double-quote expansion, corrupting
 // the curator instructions.
-func TestResolvedCopilotCommandPreservesBackticksInPrompt(t *testing.T) {
+func TestResolvedHarnessCommandPreservesBackticksInPrompt(t *testing.T) {
 	directory := t.TempDir()
-	cmdPath := filepath.Join(directory, "copilot.cmd")
-	psPath := filepath.Join(directory, "copilot.ps1")
+	cmdPath := filepath.Join(directory, "claude.cmd")
+	psPath := filepath.Join(directory, "claude.ps1")
 	outputPath := filepath.Join(directory, "prompt.txt")
 	if err := os.WriteFile(cmdPath, []byte("@echo off\r\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestResolvedCopilotCommandPreservesBackticksInPrompt(t *testing.T) {
 	// name starting with `n = newline escape).
 	prompt := "remove the `goobers:needs-human` label\nadd `goobers:ready` directly"
 
-	command := append(resolveCopilotCommand([]string{"copilot"}), "-p", prompt)
+	command := append(resolveHarnessCommand([]string{"claude"}), "-p", prompt)
 	result, err := (ExecProcessRunner{}).Run(t.Context(), ProcessRequest{
 		Command: command,
 		Env:     append(baseEnv(nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),

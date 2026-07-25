@@ -312,7 +312,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	}
 }
 
-func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
+func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
 	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme", "/opt/goobers/bin/goobers")
 	if err != nil {
@@ -343,6 +343,33 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 	if copilot.SelfBin != "/opt/goobers/bin/goobers" {
 		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", copilot.SelfBin)
+	}
+
+	adapter, err = registry.Get(string(apiv1.HarnessClaudeCode))
+	if err != nil {
+		t.Fatalf("Get(claude-code): %v", err)
+	}
+	claude, ok := adapter.(*harness.ClaudeAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.ClaudeAdapter", adapter)
+	}
+	if claude.Name() != "claude-code" {
+		t.Fatalf("adapter Name = %q, want claude-code", claude.Name())
+	}
+	if claude.EnvCapabilities[string(capability.AgentModel)] != claudeModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", claude.EnvCapabilities[string(capability.AgentModel)], claudeModelEnv)
+	}
+	if !claude.OptionalCredentialCapabilities[string(capability.AgentModel)] {
+		t.Fatal("agent:model must allow stored Claude Code authentication when no token grant is configured")
+	}
+	if claude.EnvCapabilities[string(capability.GitHubIssuesWrite)] != credentialGrantEnv {
+		t.Fatalf("github:issues:write env = %q, want %q", claude.EnvCapabilities[string(capability.GitHubIssuesWrite)], credentialGrantEnv)
+	}
+	if claude.InstanceRoot != "/instances/acme" {
+		t.Fatalf("adapter instance root = %q, want /instances/acme", claude.InstanceRoot)
+	}
+	if claude.SelfBin != "/opt/goobers/bin/goobers" {
+		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", claude.SelfBin)
 	}
 }
 
