@@ -103,8 +103,11 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("pr-select task not found")
 			}
-			if got := prSelect.Inputs["headPrefix"]; got != "goobers/implementation/" {
-				t.Errorf("pr-select headPrefix = %q, want goobers/implementation/", got)
+			if got := prSelect.Inputs["headPrefixes"]; got != "goobers/implementation/,goobers/docs-updater/" {
+				t.Errorf("pr-select headPrefixes = %q, want implementation and docs-updater prefixes", got)
+			}
+			if _, legacy := prSelect.Inputs["headPrefix"]; legacy {
+				t.Error("pr-select retained legacy headPrefix input")
 			}
 			if want := []string{"flag-foundation-coupling"}; !reflect.DeepEqual(prSelect.PolicyActions, want) {
 				t.Errorf("pr-select policyActions = %v, want %v", prSelect.PolicyActions, want)
