@@ -15,6 +15,15 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
+func environmentValue(env []string, name string) (string, bool) {
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, name+"="); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
 func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{

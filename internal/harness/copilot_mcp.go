@@ -106,16 +106,6 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	return env, nil
 }
 
-func environmentValue(env []string, name string) (string, bool) {
-	prefix := name + "="
-	for _, entry := range env {
-		if len(entry) >= len(prefix) && entry[:len(prefix)] == prefix {
-			return entry[len(prefix):], true
-		}
-	}
-	return "", false
-}
-
 func removeEnvironment(env []string, name string) []string {
 	out := env[:0]
 	prefix := name + "="
