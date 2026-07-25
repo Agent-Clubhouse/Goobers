@@ -123,6 +123,7 @@ func TestLabelPredicatesValidatedAtConfigLoad(t *testing.T) {
 		gaggleExpression  string
 		triggerExpression string
 		taskExpression    string
+		taskExpressionSet bool
 		want              string
 	}{
 		{
@@ -161,11 +162,16 @@ func TestLabelPredicatesValidatedAtConfigLoad(t *testing.T) {
 			taskExpression: " \t",
 			want:           "spec.tasks[0].inputs.labelPredicate is invalid",
 		},
+		{
+			name:              "empty backlog-query input",
+			taskExpressionSet: true,
+			want:              "spec.tasks[0].inputs.labelPredicate is invalid",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			field := func(indent, name, value string) string {
-				if value == "" {
+			field := func(indent, name, value string, includeEmpty bool) string {
+				if value == "" && !includeEmpty {
 					return ""
 				}
 				return fmt.Sprintf("%s%s: %q\n", indent, name, value)
@@ -216,9 +222,9 @@ spec:
       inputs:
         requireLabels: area:runner
         excludeLabels: goobers:claimed
-%s`, field("    ", "labelPredicate", tt.gaggleExpression),
-				field("      ", "labelPredicate", tt.triggerExpression),
-				field("        ", "labelPredicate", tt.taskExpression))
+%s`, field("    ", "labelPredicate", tt.gaggleExpression, false),
+				field("      ", "labelPredicate", tt.triggerExpression, false),
+				field("        ", "labelPredicate", tt.taskExpression, tt.taskExpressionSet))
 
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
