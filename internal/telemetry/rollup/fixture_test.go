@@ -78,7 +78,7 @@ startedAt: %s
 func writeMinimalFixtureRun(t *testing.T, runsDir, runID string, startedAt time.Time) string {
 	t.Helper()
 	dir := filepath.Join(runsDir, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, dirSpans), 0o755); err != nil {
 		t.Fatalf("mkdir run dir: %v", err)
 	}
 	runYAML := fmt.Sprintf(`schema: goobers.dev/journal/run/v1
