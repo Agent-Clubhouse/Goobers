@@ -708,6 +708,11 @@ func (ix *index) checkLabelPredicates(r *Report) {
 			if !ok {
 				continue
 			}
+			if strings.TrimSpace(expression) == "" {
+				r.add(Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: CEL expression must not be blank", i)
+				continue
+			}
 			if _, err := labelpredicate.Compile(
 				expression,
 				splitLabelInput(task.Inputs["requireLabels"]),
