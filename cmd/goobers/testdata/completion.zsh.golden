@@ -21,6 +21,7 @@ _goobers_completion()
             'lint:lint config via the single authoritative validation engine (alias for validate)'
             'doctor:preflight a Kubernetes cluster against the documented infra shape'
             'config:inspect, materialize, and compare instance configuration'
+            'speech:preflight and test local speech notifications'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'service:install and manage the platform-supervised daemon'
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
@@ -107,6 +108,12 @@ _goobers_completion()
             case "${words[3]:-}" in
                 diff) flags+=(--against) ;;
                 show) flags+=(--json) ;;
+            esac
+            ;;
+        speech)
+            case "${words[3]:-}" in
+                preflight) flags+=(--json) ;;
+                test) flags+=(--json) ;;
             esac
             ;;
         up)
@@ -215,6 +222,13 @@ _goobers_completion()
         config)
             if (( CURRENT == 3 )); then
                 candidates=(diff materialize show)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        speech)
+            if (( CURRENT == 3 )); then
+                candidates=(preflight test)
                 _describe -V 'command' candidates
                 return
             fi

@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/speechnotify"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -65,6 +66,8 @@ type Config struct {
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
+	// Speech configures an opt-in local speech sink for the same terminal alerts.
+	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
 	// Credentials sources individual stage capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one
@@ -120,6 +123,15 @@ type WorkcopiesConfig struct {
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// EffectiveSpeechConfig returns the configured speech settings or disabled
+// defaults when the speech section is absent.
+func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
+	if c.Speech == nil {
+		return speechnotify.Config{}
+	}
+	return *c.Speech
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -845,9 +857,15 @@ func (c *Config) Validate() error {
 	if err := c.Portal.Validate(); err != nil {
 		return fmt.Errorf("portal: %w", err)
 	}
+	if c.Speech != nil {
+		if err := c.Speech.Validate(); err != nil {
+			return fmt.Errorf("speech: %w", err)
+		}
+	}
 	if c.Webhook.Secret.sourceCount() > 1 {
 		return fmt.Errorf("webhook.secret must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 	}
+
 	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
 		return err
 	}

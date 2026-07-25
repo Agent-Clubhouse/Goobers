@@ -12,13 +12,14 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init scaffold agent-kit validate lint doctor config up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init scaffold agent-kit validate lint doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow'
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and test (count (commandline -opc)) -eq 2' -f -a 'install check update'
 complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and test (count (commandline -opc)) -eq 2' -f -a 'preflight test'
 complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall status'
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
@@ -55,6 +56,8 @@ complete -c goobers -n '__fish_seen_subcommand_from lint' -l source-tree -d 'Lin
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'Treat config warnings as validation errors'
 complete -c goobers -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from diff' -l against -r -d 'Canonical config source root'
 complete -c goobers -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from show' -l json -d 'Render the config as JSON instead of YAML'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and __fish_seen_subcommand_from preflight' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and __fish_seen_subcommand_from test' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l notify -d 'Desktop-notify on escalated/failed runs (=all for every outcome)'
