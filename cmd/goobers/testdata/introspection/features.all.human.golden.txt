@@ -110,6 +110,7 @@ gate.evaluator.agentic.retry                       2.0          ga              
 gate.evaluator.agentic.retry.backoff               2.0          ga               supported        dev
 gate.evaluator.agentic.retry.maxAttempts           2.0          ga               supported        dev
 gate.evaluator.agentic.timeoutSeconds              2.0          ga               supported        dev
+gate.evaluator.agentic.workspace                   2.0          preview          supported        dev
 gate.evaluator.automated                           2.0          ga               supported        dev
 gate.evaluator.automated.check                     2.0          ga               supported        dev
 gate.evaluator.automated.check.ci-status           2.0          ga               supported        dev
@@ -160,6 +161,8 @@ stage.run.syncBase                                 2.0          ga              
 stage.run.workspace.repo                           2.0          ga               supported        dev
 stage.run.workspace.scratch                        2.0          ga               supported        dev
 stage.shell                                        2.0          ga               supported        dev
+stage.workspace                                    2.0          preview          supported        dev
+stage.workspace.repo-readonly                      2.0          preview          supported        dev
 task.agentic                                       2.0          ga               supported        dev
 task.capabilities                                  2.0          ga               supported        dev
 task.continueOnError                               2.0          ga               supported        dev
@@ -203,4 +206,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-203 feature/version row(s)
+206 feature/version row(s)

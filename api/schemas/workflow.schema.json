@@ -118,7 +118,7 @@
             "script": { "type": "string", "minLength": 1 },
             "env": { "type": "object", "additionalProperties": { "type": "string" } },
             "network": { "type": "string", "enum": ["none"] },
-            "workspace": { "type": "string", "enum": ["repo", "scratch"] },
+            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
             "syncBase": { "type": "boolean" }
           },
           "oneOf": [
@@ -129,7 +129,7 @@
             {
               "not": {
                 "properties": {
-                  "workspace": { "const": "scratch" },
+                  "workspace": { "enum": ["scratch", "repo-readonly"] },
                   "syncBase": { "const": true }
                 },
                 "required": ["workspace", "syncBase"]
@@ -137,6 +137,7 @@
             }
           ]
         },
+        "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
@@ -232,6 +233,7 @@
           "properties": {
             "goober": { "type": "string", "minLength": 1 },
             "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
             "retry": {
               "type": "object",
               "additionalProperties": false,

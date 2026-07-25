@@ -232,6 +232,17 @@ type Task struct {
 	// contract, not a hint).
 	// +optional
 	InputsFrom map[string]string `json:"inputsFrom,omitempty" yaml:"inputsFrom,omitempty"`
+	// Workspace selects the filesystem workspace for this stage, for stages
+	// that cannot express it through Run — i.e. AGENTIC tasks, which have no
+	// DeterministicRun and were previously hardcoded to the writable repo
+	// worktree. A deterministic task should keep using Run.Workspace, which
+	// takes precedence when both are set.
+	//
+	// The motivating case is repo-readonly for an agentic research stage
+	// inside a parallel branch (docs/design/static-fan-out-fan-in.md §6.5).
+	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
+	// +optional
+	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
@@ -300,11 +311,34 @@ const (
 type WorkspaceMode string
 
 const (
-	// WorkspaceRepo provisions a fresh worktree from the target repository.
+	// WorkspaceRepo provisions a fresh worktree from the target repository on
+	// the run branch, which the stage may commit to and push.
 	WorkspaceRepo WorkspaceMode = "repo"
 	// WorkspaceScratch provisions an empty disposable directory.
 	WorkspaceScratch WorkspaceMode = "scratch"
+	// WorkspaceRepoReadOnly provisions a worktree at the run's pinned base
+	// revision in DETACHED HEAD — no branch name, so no branch-name collision
+	// and nothing to merge afterwards.
+	//
+	// This exists because every ordinary repo workspace is created on ONE run
+	// branch, and git refuses to check one branch out in two worktrees
+	// simultaneously: two concurrently-executing repo-backed stages collide
+	// outright. Read-only research fan-out (the quality-sprint shape) needs
+	// repo content without needing to write it, so detaching removes the
+	// collision entirely rather than inventing a per-branch naming and merge
+	// policy (docs/design/static-fan-out-fan-in.md §6.5).
+	WorkspaceRepoReadOnly WorkspaceMode = "repo-readonly"
 )
+
+// IsRepoBacked reports whether a workspace mode materialises the target
+// repository, whether or not the stage may write to it.
+func (m WorkspaceMode) IsRepoBacked() bool {
+	return m == WorkspaceRepo || m == WorkspaceRepoReadOnly
+}
+
+// IsWritableRepo reports whether a workspace mode puts the stage on the run
+// branch with the intent that it commit there.
+func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
@@ -384,6 +418,11 @@ type AgenticGate struct {
 	// implemented separately from this declarative contract.
 	// +optional
 	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// Workspace selects the filesystem workspace the reviewer evaluates in.
+	// Unset preserves the historical behaviour (a writable repo worktree).
+	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
+	// +optional
+	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 }
 
 // HumanGate pauses for an explicit human decision, surfaced in the portal.
