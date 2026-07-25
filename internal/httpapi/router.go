@@ -32,6 +32,8 @@ const (
 	RunsPath = apicontract.RunsPath
 	// InstancePath is the instance inventory endpoint.
 	InstancePath = apicontract.InstancePath
+	// PortalConfigPath is the dashboard co-brand config endpoint.
+	PortalConfigPath = apicontract.PortalConfigPath
 	// GagglesPath is the gaggle inventory endpoint.
 	GagglesPath = apicontract.GagglesPath
 	// GaggleGoobersPath is the gaggle-scoped goober inventory route.
@@ -248,6 +250,16 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			return
 		}
 		writeJSON(w, http.StatusOK, health)
+	})
+	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
+		config, err := reader.PortalConfig(request.Context())
+		if err != nil {
+			errorLog.Printf("portal config read failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "portal config could not be read")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, config)
 	})
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)

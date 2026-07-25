@@ -9,6 +9,35 @@ spec:
   instance:
     name: acme
     environment: dev
+  # portal:
+  #   brand:
+  #     # Human-readable deployment name shown in the sidebar and browser tab.
+  #     name: "Acme Ops"
+  #     # One-line tagline shown under the brand name.
+  #     tagline: "AI workforce platform"
+  #     # Single-character mark shown in the topbar.
+  #     scopeMark: "A"
+  #     # Optional same-origin assets served from <instance-root>/assets/.
+  #     logoUrl: "/assets/logo.svg"
+  #     faviconUrl: "/assets/favicon.ico"
+  #   theme:
+  #     # Optional accent token overrides for light and dark mode.
+  #     accentLight: "#6847d9"
+  #     accentDark: "#a98cff"
+  #     accentSoftLight: "#eee9ff"
+  #     accentSoftDark: "#2c2445"
+  #     accentInkLight: "#4c2db8"
+  #     accentInkDark: "#c5b4ff"
+  #   support:
+  #     # Optional support hooks shown in the sidebar footer.
+  #     docsUrl: "https://acme.example/docs/goobers"
+  #     issuesUrl: "https://acme.example/support"
+  #     chatUrl: "slack://channel/C000EXAMPLE"
+  #     links:
+  #       - label: "Runbooks"
+  #         url: "https://acme.example/runbooks"
+  #       - label: "On-call"
+  #         url: "https://acme.example/oncall"
   # Named, reusable connections. Credentials are Key Vault references — never
   # inline tokens (CFG-009, SEC-010).
   connections:

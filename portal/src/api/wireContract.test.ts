@@ -15,6 +15,7 @@ describe("Go daemon wire contract", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
       "health",
       "instance",
+      "portalConfig",
       "gaggles",
       "goobers",
       "workflows",

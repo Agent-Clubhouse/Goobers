@@ -68,9 +68,66 @@ The production build writes `cmd/goobers/portal-dist`, which is embedded in the
 - **Run detail**: pinned identity, synchronized execution graph, and durable
   event ledger.
 - **Theme**: independently tuned light and dark palettes.
+- **Co-branding**: operator-configurable name, logo, accent colors, and support
+  links via `instance.yaml`.
 
 Daemon fixtures cover live and terminal runs, repasses, and forward-compatible
 unknown journal events.
+
+## Co-branding and support hooks
+
+The portal reads a `GET /api/v1/portal/config` endpoint at startup and applies
+operator-supplied identity and support links from the instance's `portal:` config
+block. All fields are optional; an unconfigured instance shows standard Goobers
+branding with zero changes needed.
+
+**Brand identity** — set in `instance.yaml` under `portal.brand`:
+
+```yaml
+portal:
+  brand:
+    name: "Acme Ops"
+    tagline: "AI workforce platform"
+    scopeMark: "A"
+    logoUrl: "/assets/logo.svg"     # served from <instance-root>/assets/
+    faviconUrl: "/assets/favicon.ico"
+```
+
+**Accent color overrides** — replace the default purple accent in light and/or
+dark mode. Only the accent token family is overridable; semantic status tokens
+(success, warning, danger) are fixed.
+
+```yaml
+portal:
+  theme:
+    accentLight: "#0078d4"
+    accentDark: "#4fa3e3"
+    accentSoftLight: "#cce4f6"
+    accentSoftDark: "#1a3a52"
+    accentInkLight: "#004578"
+    accentInkDark: "#a8d4f5"
+```
+
+**Support links** — shown in a de-emphasized footer at the bottom of the sidebar
+when any field is set. Provides Docs, Get help, Chat, and up to 6 custom links.
+
+```yaml
+portal:
+  support:
+    docsUrl: "https://acme.example/docs/goobers"
+    issuesUrl: "https://acme.example/support"
+    chatUrl: "slack://channel/C000EXAMPLE"
+    links:
+      - label: "Runbooks"
+        url: "https://acme.example/runbooks"
+```
+
+Logo and favicon images are served from the `assets/` subdirectory of the
+instance root. Create the directory and place images there; no daemon restart is
+required for asset file changes (assets are served on-demand). `goobers validate`
+warns if a referenced asset file does not exist.
+
+Full design details: [`docs/design/cobrand.md`](../docs/design/cobrand.md).
 
 ## Accepted design decisions
 

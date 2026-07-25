@@ -49,7 +49,7 @@ func TestDashboardHandlerServesStandalonePortalAndAPI(t *testing.T) {
 	api := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(response, "api")
 	})
-	handler, err := newDashboardHandler(assets, api, dashboardModeStandalone)
+	handler, err := newDashboardHandler(assets, api, dashboardModeStandalone, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +238,7 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 		fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(dashboardTestIndex)}},
 		api.handler,
 		api.mode,
+		root,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -261,6 +262,51 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 	}
 	if health.Freshness.LastTickAgeMillis == nil || *health.Freshness.LastTickAgeMillis != lastTickAgeMillis {
 		t.Fatalf("last tick age = %v, want %d", health.Freshness.LastTickAgeMillis, lastTickAgeMillis)
+	}
+}
+
+func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
+	root := t.TempDir()
+	assetsDir := filepath.Join(root, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logoPath := filepath.Join(assetsDir, "logo.svg")
+	if err := os.WriteFile(logoPath, []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newDashboardHandler(
+		fstest.MapFS{
+			"index.html":       &fstest.MapFile{Data: []byte(dashboardTestIndex)},
+			"assets/bundle.js": &fstest.MapFile{Data: []byte("//embedded-bundle")},
+		},
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		dashboardModeStandalone,
+		root,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/logo.svg", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "<svg/>" {
+		t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+	}
+
+	// An /assets/ path with no instance-root override must fall through to the
+	// embedded bundle — the portal ships its own /assets/index-*.js|css there,
+	// so instance co-branding must not shadow it.
+	bundle := httptest.NewRecorder()
+	handler.ServeHTTP(bundle, httptest.NewRequest(http.MethodGet, "/assets/bundle.js", nil))
+	if bundle.Code != http.StatusOK || bundle.Body.String() != "//embedded-bundle" {
+		t.Fatalf("embedded bundle response = %d %q, want 200 %q", bundle.Code, bundle.Body.String(), "//embedded-bundle")
+	}
+
+	traversal := httptest.NewRecorder()
+	handler.ServeHTTP(traversal, httptest.NewRequest(http.MethodGet, "/assets/../dashboard.go", nil))
+	if traversal.Code != http.StatusNotFound {
+		t.Fatalf("traversal status = %d, want 404", traversal.Code)
 	}
 }
 

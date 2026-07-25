@@ -16,6 +16,7 @@ import (
 type wireFixtures struct {
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
+	PortalConfig             readservice.PortalConfig                   `json:"portalConfig"`
 	Gaggles                  readservice.GagglePage                     `json:"gaggles"`
 	Goobers                  readservice.GooberPage                     `json:"goobers"`
 	Workflows                readservice.WorkflowPage                   `json:"workflows"`
@@ -37,6 +38,7 @@ var wireFixtureTypes = []struct {
 }{
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
+	{name: "portalConfig", scriptType: "PortalConfig"},
 	{name: "gaggles", scriptType: "GagglePage"},
 	{name: "goobers", scriptType: "GooberPage"},
 	{name: "workflows", scriptType: "WorkflowPage"},
@@ -235,6 +237,29 @@ func newWireFixtures() wireFixtures {
 				ActiveRuns: 1,
 			},
 			Warnings: []validate.CodedWarning{warning},
+		},
+		PortalConfig: readservice.PortalConfig{
+			Brand: readservice.PortalBrandResponse{
+				Name:       "goobers",
+				Tagline:    "local operations",
+				ScopeMark:  "G",
+				LogoURL:    nil,
+				FaviconURL: nil,
+			},
+			Theme: readservice.PortalThemeResponse{
+				AccentLight:     nil,
+				AccentDark:      nil,
+				AccentSoftLight: nil,
+				AccentSoftDark:  nil,
+				AccentInkLight:  nil,
+				AccentInkDark:   nil,
+			},
+			Support: readservice.PortalSupportResponse{
+				DocsURL:   nil,
+				IssuesURL: nil,
+				ChatURL:   nil,
+				Links:     []readservice.PortalSupportLink{},
+			},
 		},
 		Gaggles: readservice.GagglePage{
 			Items: []readservice.Gaggle{{
