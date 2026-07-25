@@ -244,13 +244,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		labels = append(labels, trustLabel)
 	}
 	labels = append(labels, labelFilter.RequiredLabels()...)
+	// Keep exact predicate evaluation below so Limit remains a bound on
+	// candidates scanned, not on matches found after unbounded pagination.
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:     repo,
-		Labels:         labels,
-		LabelPredicate: labelFilter,
-		State:          "open",
-		Limit:          scanLimit,
-		OldestFirst:    true,
+		Repository:  repo,
+		Labels:      labels,
+		State:       "open",
+		Limit:       scanLimit,
+		OldestFirst: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")

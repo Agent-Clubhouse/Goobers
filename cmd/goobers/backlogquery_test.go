@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -23,6 +24,9 @@ func providerCmdEnv(t *testing.T, server *fakeGitHubServer, credCapability, runI
 
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, server.owner)
+	t.Setenv(executor.RepoNameEnvVar, server.repo)
 	if credCapability != "" {
 		t.Setenv(credCapability, "test-token")
 	}
