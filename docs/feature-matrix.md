@@ -223,10 +223,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-<<<<<<< HEAD
-- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`
-=======
-- Added: `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
->>>>>>> 514c31fa (feat(dsl): static fan-out/fan-in surface — parallels, @join, and validation)
+- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
 - Removed: none
 - Level changes: none
