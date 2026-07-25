@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 const tutorPolicyWorkflowBase = `apiVersion: goobers.dev/v1alpha1
@@ -271,5 +274,34 @@ func TestPRSelectRoutesOnlyLowRiskTutorChangesToAutomatedReview(t *testing.T) {
 	}
 	if selected["number"] != "11" {
 		t.Fatalf("selected PR = %q, want low-risk gate-tune PR 11", selected["number"])
+	}
+}
+
+func TestRemoteTutorClassificationFailsClosedAtGitHubFileLimit(t *testing.T) {
+	const fileLimit = 3000
+	files := make([]fakePRFile, fileLimit)
+	for i := range files {
+		files[i] = fakePRFile{
+			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%04d/instructions.md", i),
+			status: "modified",
+		}
+	}
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(10, "goobers/tutor/run-10", "main", "head", "base", false, nil, files)
+	server.compares["base...head"] = fakeCompare{mergeBaseSHA: "base", files: files[:300]}
+	provider := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) {
+		p.BaseURL = server.server.URL
+	})
+
+	_, err := classifyRemoteTutorChanges(
+		context.Background(),
+		provider,
+		providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+		"10",
+		"base",
+		"head",
+	)
+	if err == nil || !strings.Contains(err.Error(), "3000-file limit") {
+		t.Fatalf("classifyRemoteTutorChanges error = %v, want incomplete inventory failure", err)
 	}
 }

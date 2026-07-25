@@ -421,17 +421,24 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	}
 }
 
-func TestMergePRNeverAutoMergesHighRiskTutorChange(t *testing.T) {
+func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *testing.T) {
+	compareFiles := make([]fakePRFile, 300)
+	for i := range compareFiles {
+		compareFiles[i] = fakePRFile{
+			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
+			status: "modified",
+		}
+	}
+	pullFiles := append([]fakePRFile(nil), compareFiles...)
+	pullFiles = append(pullFiles, fakePRFile{
+		path: "selfhost/gaggles/goobers/skills/reviewer/SKILL.md", status: "modified",
+	})
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
 		headBranch: "goobers/tutor/run-1",
-		files: []fakePRFile{{
-			path: "selfhost/gaggles/goobers/skills/reviewer/SKILL.md", status: "modified",
-		}},
+		files:      pullFiles,
 		baseMovement: map[string][]fakePRFile{
-			"base456...head123": {{
-				path: "selfhost/gaggles/goobers/skills/reviewer/SKILL.md", status: "modified",
-			}},
+			"base456...head123": compareFiles,
 		},
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)

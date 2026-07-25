@@ -390,8 +390,19 @@ func classifyRemoteTutorChanges(
 	if comparison.MergeBaseSHA == "" {
 		return tutorChangeClassification{}, fmt.Errorf("provider comparison returned no merge-base SHA")
 	}
-	changes := make([]tutorFileChange, 0, len(comparison.Files))
-	for _, file := range comparison.Files {
+	files, err := provider.PullRequestFiles(ctx, repo, pullID)
+	if err != nil {
+		return tutorChangeClassification{}, fmt.Errorf("list pull request files: %w", err)
+	}
+	const githubPullRequestFileLimit = 3000
+	if len(files) >= githubPullRequestFileLimit {
+		return tutorChangeClassification{}, fmt.Errorf(
+			"pull request file inventory reached GitHub's %d-file limit and may be incomplete",
+			githubPullRequestFileLimit,
+		)
+	}
+	changes := make([]tutorFileChange, 0, len(files))
+	for _, file := range files {
 		change := tutorFileChange{Path: file.Path, PreviousPath: file.PreviousPath}
 		previousPath := file.Path
 		if file.PreviousPath != "" {
