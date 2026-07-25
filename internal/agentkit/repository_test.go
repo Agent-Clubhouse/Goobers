@@ -2,6 +2,7 @@ package agentkit
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -157,6 +158,87 @@ func TestUpdateRequiresAcknowledgementAndPreservesUserFiles(t *testing.T) {
 	}
 	if len(repeated.Changes) != 0 {
 		t.Fatalf("repeated update changes = %v", repeated.Changes)
+	}
+}
+
+func TestCleanUpgradeDoesNotRequireModifiedAcknowledgement(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	oldBundle := testBundle(t, "v1.2.3", "abc123")
+	newBundle := testBundle(t, "v2.0.0", "def456")
+	if _, err := repository.Install(oldBundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := repository.Check(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "upgrade-available" || containsString(report.Modified, InstalledManifestPath) {
+		t.Fatalf("clean upgrade check = %+v", report)
+	}
+	plan, err := repository.PlanUpdate(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ModifiedOwned) != 0 {
+		t.Fatalf("clean upgrade requires modified acknowledgement: %v", plan.ModifiedOwned)
+	}
+	if err := repository.ApplyUpdate(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	report, err = repository.Check(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "current" {
+		t.Fatalf("post-upgrade check = %+v", report)
+	}
+}
+
+func TestCleanUpgradeDeletesObsoleteOwnedAsset(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	oldBundle := testBundle(t, "v1.2.3", "abc123")
+	obsoletePath := InstalledRoot + "/obsolete.md"
+	obsolete := File{Path: obsoletePath, Data: []byte("obsolete product asset\n"), Mode: 0o644}
+	oldBundle.Files[obsoletePath] = obsolete
+	oldBundle.Manifest.Assets = append(oldBundle.Manifest.Assets, Asset{
+		Path:   "payload/" + obsoletePath,
+		SHA256: digest(obsolete.Data),
+		Size:   int64(len(obsolete.Data)),
+	})
+	var err error
+	oldBundle.ManifestJSON, err = marshalManifest(oldBundle.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Install(oldBundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+
+	newBundle := testBundle(t, "v2.0.0", "def456")
+	plan, err := repository.PlanUpdate(newBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundDelete bool
+	for _, change := range plan.Changes {
+		if change.Path == obsoletePath && change.Kind == ChangeDelete {
+			foundDelete = true
+		}
+	}
+	if !foundDelete {
+		t.Fatalf("obsolete asset deletion missing from changes: %+v", plan.Changes)
+	}
+	if len(plan.ModifiedOwned) != 0 {
+		t.Fatalf("clean obsolete asset requires modified acknowledgement: %v", plan.ModifiedOwned)
+	}
+	if err := repository.ApplyUpdate(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(obsoletePath))); !os.IsNotExist(err) {
+		t.Fatalf("obsolete asset still exists: %v", err)
 	}
 }
 
@@ -385,15 +467,23 @@ func TestInterruptedUpdateRecoversWithoutUserCollision(t *testing.T) {
 		t.Fatal("update plan did not add the recovery fixture")
 	}
 
+	releasePath := InstalledRoot + "/release.json"
+	releaseBeforePlan := readTestFile(t, root, releasePath)
 	retry, err := repository.PlanUpdate(newBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retry.Changes) != 0 || len(retry.UserCollisions) != 0 {
-		t.Fatalf("recovered update was not idempotent: %+v", retry)
+	if len(retry.Changes) == 0 || len(retry.UserCollisions) != 0 {
+		t.Fatalf("interrupted update plan = %+v", retry)
+	}
+	if got := readTestFile(t, root, releasePath); !bytes.Equal(got, releaseBeforePlan) {
+		t.Fatalf("planning resumed interrupted update: got %q, want %q", got, releaseBeforePlan)
+	}
+	if err := repository.ApplyUpdate(retry, false); err != nil {
+		t.Fatal(err)
 	}
 	if got := string(readTestFile(t, root, customSkill)); got != "# My skill\n" {
-		t.Fatalf("recovered update changed user skill to %q", got)
+		t.Fatalf("resumed update changed user skill to %q", got)
 	}
 	report, err := repository.Check(newBundle)
 	if err != nil {
@@ -401,6 +491,98 @@ func TestInterruptedUpdateRecoversWithoutUserCollision(t *testing.T) {
 	}
 	if report.State != "current" {
 		t.Fatalf("recovered update check = %+v", report)
+	}
+}
+
+func TestReadOnlyOperationsNeverResumeUntrustedUpdateTransaction(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	bundle := testBundle(t, "v1.2.3", "abc123")
+	if _, err := repository.Install(bundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
+	customContent := []byte("# My skill\n")
+	writeTestFile(t, root, customSkill, customContent)
+	transactionData, err := json.Marshal(updateTransaction{
+		Version: updateTransactionVersion,
+		Changes: []Change{{
+			Path: customSkill,
+			Kind: ChangeDelete,
+			Old:  customContent,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, updateTransactionPath, append(transactionData, '\n'))
+
+	report, err := repository.Check(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "current" {
+		t.Fatalf("check report = %+v", report)
+	}
+	if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
+		t.Fatalf("check applied untrusted transaction: %q", got)
+	}
+	if _, err := repository.PlanUpdate(bundle); err == nil {
+		t.Fatal("dry-run planning accepted an untrusted transaction")
+	}
+	if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
+		t.Fatalf("planning applied untrusted transaction: %q", got)
+	}
+}
+
+func TestInterruptedUpdateRejectsInventedSourceManifest(t *testing.T) {
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	currentBundle := testBundle(t, "v2.0.0", "def456")
+	if _, err := repository.Install(currentBundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
+	customContent := []byte("# My skill\n")
+	writeTestFile(t, root, customSkill, customContent)
+
+	inventedSource := testBundle(t, "v1.2.3", "abc123")
+	inventedSource.Manifest.Assets = append(inventedSource.Manifest.Assets, Asset{
+		Path:   "payload/" + customSkill,
+		SHA256: digest(customContent),
+		Size:   int64(len(customContent)),
+	})
+	inventedManifest, err := marshalManifest(inventedSource.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactionData, err := json.Marshal(updateTransaction{
+		Version: updateTransactionVersion,
+		Changes: []Change{
+			{
+				Path: customSkill,
+				Kind: ChangeDelete,
+				Old:  customContent,
+			},
+			{
+				Path: InstalledManifestPath,
+				Kind: ChangeModify,
+				Old:  inventedManifest,
+				New:  currentBundle.ManifestJSON,
+				Mode: 0o644,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, updateTransactionPath, append(transactionData, '\n'))
+
+	if _, err := repository.PlanUpdate(currentBundle); err == nil {
+		t.Fatal("interrupted update trusted an invented source ownership manifest")
+	}
+	if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
+		t.Fatalf("invented source manifest deleted user skill: %q", got)
 	}
 }
 
