@@ -3,6 +3,7 @@ package agentkit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -271,6 +272,60 @@ func TestUpdateRestoresMissingOwnedFileWithoutAcknowledgement(t *testing.T) {
 	}
 	if !bytes.Equal(readTestFile(t, root, missingPath), bundle.Files[missingPath].Data) {
 		t.Fatal("missing owned file was not restored")
+	}
+}
+
+func TestInterruptedMissingOwnedFileRepairResumes(t *testing.T) {
+	for _, repairApplied := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repair-applied-%t", repairApplied), func(t *testing.T) {
+			root := newTestRepository(t)
+			repository := openTestRepository(t, root)
+			bundle := testBundle(t, "v1.2.3", "abc123")
+			if _, err := repository.Install(bundle, "generic"); err != nil {
+				t.Fatal(err)
+			}
+			missingPath := InstalledRoot + "/adapters/copilot.md"
+			if err := os.Remove(filepath.Join(root, filepath.FromSlash(missingPath))); err != nil {
+				t.Fatal(err)
+			}
+
+			plan, err := repository.PlanUpdate(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.writeUpdateTransaction(plan.Changes); err != nil {
+				t.Fatal(err)
+			}
+			if repairApplied {
+				foundRepair := false
+				for _, change := range plan.Changes {
+					if change.Path == missingPath {
+						if err := repository.applyUpdateChange(change); err != nil {
+							t.Fatal(err)
+						}
+						foundRepair = true
+						break
+					}
+				}
+				if !foundRepair {
+					t.Fatal("missing owned file repair was not planned")
+				}
+			}
+
+			retry, err := repository.PlanUpdate(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ApplyUpdate(retry, false); err != nil {
+				t.Fatal(err)
+			}
+			if got := readTestFile(t, root, missingPath); !bytes.Equal(got, bundle.Files[missingPath].Data) {
+				t.Fatal("interrupted missing owned file repair was not completed")
+			}
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(updateTransactionPath))); !os.IsNotExist(err) {
+				t.Fatalf("completed update transaction still exists: %v", err)
+			}
+		})
 	}
 }
 
