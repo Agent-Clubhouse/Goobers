@@ -16,6 +16,60 @@ import (
 	"time"
 )
 
+// spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
+type spyGitRegistrar struct{ secrets [][]byte }
+
+func (s *spyGitRegistrar) Register(secret []byte) {
+	s.secrets = append(s.secrets, append([]byte(nil), secret...))
+}
+
+func (s *spyGitRegistrar) saw(v string) bool {
+	for _, b := range s.secrets {
+		if string(b) == v {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGitHubGitAuthEnvironmentScopesReadTokenAndRegistersSecret covers the
+// exported worktree-layer read-auth builder (MGV-11 #1286): it URL-scopes an
+// x-access-token http.extraheader, disables terminal prompts, and registers the
+// token (and its base64 auth form) for scrubbing. An empty token yields a
+// hardened env with no auth header (anonymous clone of a public repo still works).
+func TestGitHubGitAuthEnvironmentScopesReadTokenAndRegistersSecret(t *testing.T) {
+	reg := &spyGitRegistrar{}
+	const token = "read-token-xyz-000"
+	const url = "https://github.com/example/goobers.git"
+	env := GitHubGitAuthEnvironment(token, url, reg)
+	joined := strings.Join(env, "\n")
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+
+	if !strings.Contains(joined, "GIT_CONFIG_KEY_1=http."+url+"/.extraheader") {
+		t.Errorf("missing URL-scoped extraheader in %#v", env)
+	}
+	if !strings.Contains(joined, "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+auth) {
+		t.Errorf("missing x-access-token auth header in %#v", env)
+	}
+	if !strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") {
+		t.Errorf("missing terminal-prompt guard in %#v", env)
+	}
+	// The raw token never appears except inside the base64 auth value.
+	for _, e := range env {
+		if strings.Contains(e, token) {
+			t.Errorf("raw token leaked into env entry %q", e)
+		}
+	}
+	if !reg.saw(token) || !reg.saw(auth) {
+		t.Errorf("token/auth not registered for scrubbing: %#v", reg.secrets)
+	}
+
+	anon := GitHubGitAuthEnvironment("", "https://github.com/example/pub.git", reg)
+	if strings.Contains(strings.Join(anon, "\n"), "extraheader") {
+		t.Errorf("empty token should produce no auth header: %#v", anon)
+	}
+}
+
 func TestGitHubProviderUpdateBranchUsesExpectedHeadLease(t *testing.T) {
 	var requestBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

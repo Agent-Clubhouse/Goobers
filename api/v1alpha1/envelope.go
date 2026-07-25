@@ -19,7 +19,9 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-const StageContractVersion = "v1alpha2"
+// v1alpha3 adds InvocationEnvelope.AdditionalWorkspaces (read-only reference-repo
+// checkouts, MGV-11 #1286).
+const StageContractVersion = "v1alpha3"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -69,6 +71,13 @@ type InvocationEnvelope struct {
 	Workspace string `json:"workspace"`
 	// RepoRef is the target repository for this run.
 	RepoRef RepoRef `json:"repoRef"`
+	// AdditionalWorkspaces are read-only checkouts of the gaggle's reference
+	// repos (GaggleSpec.AdditionalRepos, MGV-11 #1286): the stage may READ them
+	// for cross-repo context, but no push credential is ever provisioned for
+	// them, so they are read-only by construction. Empty for a gaggle with no
+	// AdditionalRepos. Each is surfaced to the stage subprocess as
+	// GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<absolute path>.
+	AdditionalWorkspaces []AdditionalWorkspace `json:"additionalWorkspaces,omitempty"`
 	// Item is the backlog item / trigger payload that started the run. Nil for
 	// schedule/signal-triggered runs with no originating item. It is a bounded
 	// provider-neutral descriptor, not another stage's state; the authoritative,
@@ -88,6 +97,17 @@ type InvocationEnvelope struct {
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+}
+
+// AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
+// alongside its primary Workspace (MGV-11 #1286). Name is the reference repo's
+// name (from GaggleSpec.AdditionalRepos), Path is the absolute on-disk location
+// of its checkout. The stage may read Path but has no credential to push to it.
+type AdditionalWorkspace struct {
+	// Name is the reference repo's name (GaggleSpec.AdditionalRepos[i].Name).
+	Name string `json:"name"`
+	// Path is the absolute path to the reference repo's read-only checkout.
+	Path string `json:"path"`
 }
 
 // BacklogItem is a provider-neutral mirror of a unit of work. The backlog
