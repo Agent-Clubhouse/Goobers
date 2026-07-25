@@ -380,6 +380,96 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 	return true
 }
 
+// candidateRunStatuses translates options.Phase / options.Outcome into the
+// runs.status values a matching journal could possibly carry, so
+// listRunsIndexed can ask the index to skip candidates that runMatches would
+// reject anyway (DASH-18 continued: an unfiltered or stage-filtered list
+// still opens one journal per page row, but a Phase/Outcome-filtered list —
+// e.g. the Overview's "active runs" query — no longer has to open every
+// terminal run in history just to find the rare non-terminal ones, which is
+// what made ListRuns effectively hang once an instance accumulated tens of
+// thousands of runs).
+//
+// narrowed reports whether any narrowing applies at all; when false, the
+// caller must not touch RunListFilter.Statuses (nil means "no filter", not
+// "match nothing"). possible reports whether the combination can match any
+// row; when narrowed is true and possible is false, the caller can return an
+// empty page without any index or journal I/O.
+//
+// This is a pure optimization: runMatches still re-checks every candidate
+// against its hydrated journal, so a stale or not-yet-reconciled index row
+// can only cost an extra journal open, never wrongly hide a run.
+func candidateRunStatuses(options RunListOptions) (statuses []string, narrowed, possible bool) {
+	var set map[string]struct{}
+	intersect := func(next []string) {
+		if set == nil {
+			set = make(map[string]struct{}, len(next))
+			for _, status := range next {
+				set[status] = struct{}{}
+			}
+			return
+		}
+		for status := range set {
+			if !containsString(next, status) {
+				delete(set, status)
+			}
+		}
+	}
+	if options.Phase != "" {
+		intersect(phaseStatuses(options.Phase))
+		narrowed = true
+	}
+	// Outcome pushdown is only valid when it is being applied directly to the
+	// run's own phase — runMatches applies a Stage-scoped Outcome to that
+	// stage's attempts instead, which the runs.status column cannot answer.
+	if options.Stage == "" && options.Outcome != "" {
+		intersect(outcomeStatuses(options.Outcome))
+		narrowed = true
+	}
+	if !narrowed {
+		return nil, false, true
+	}
+	statuses = make([]string, 0, len(set))
+	for status := range set {
+		statuses = append(statuses, status)
+	}
+	return statuses, true, len(statuses) > 0
+}
+
+// phaseStatuses returns the runs.status values consistent with phase. A
+// non-terminal run has no recorded status (see insertRun), represented here
+// by the empty string.
+func phaseStatuses(phase journal.RunPhase) []string {
+	if phase == journal.PhaseRunning {
+		return []string{""}
+	}
+	return []string{string(phase)}
+}
+
+// outcomeStatuses returns the runs.status values consistent with a run-scoped
+// (non-Stage) outcome filter.
+func outcomeStatuses(outcome OutcomeFilter) []string {
+	switch outcome {
+	case OutcomeFinished:
+		return []string{
+			string(journal.PhaseCompleted),
+			string(journal.PhaseFailed),
+			string(journal.PhaseAborted),
+			string(journal.PhaseEscalated),
+		}
+	case OutcomeTerminal:
+		return []string{string(journal.PhaseCompleted), string(journal.PhaseFailed)}
+	case OutcomeSuccess:
+		return []string{string(journal.PhaseCompleted)}
+	case OutcomeFailure:
+		return []string{string(journal.PhaseFailed)}
+	case OutcomeOther:
+		return []string{string(journal.PhaseAborted), string(journal.PhaseEscalated)}
+	default:
+		return nil
+	}
+}
+
 func attemptStageFor(options RunListOptions) string {
 	if options.Stage != "" &&
 		(options.Outcome != "" ||
@@ -439,6 +529,14 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		return RunList{}, err
 	}
 
+	statuses, narrowed, possible := candidateRunStatuses(options)
+	if narrowed && !possible {
+		// Phase and Outcome together can't match anything (e.g. Phase=running
+		// with Outcome=success): every candidate would fail runMatches, so
+		// skip the index round-trip and journal opens entirely.
+		return paginateRuns(nil, limit)
+	}
+
 	observedAt := s.now().UTC()
 	attemptStage := attemptStageFor(options)
 	filter := rollup.RunListFilter{
@@ -447,6 +545,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		TriggerKind: string(options.Trigger),
 		Since:       options.Since,
 		Until:       options.Until,
+		Statuses:    statuses,
 	}
 
 	// Keyset the first index fetch from the caller's cursor; thereafter advance
