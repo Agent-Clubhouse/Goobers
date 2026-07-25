@@ -36,7 +36,7 @@ func readScheduleDemandState(schedulerDir string) (map[WorkflowIdentity]bool, er
 	}
 	outstanding := make(map[WorkflowIdentity]bool, len(state.Workflows))
 	for _, workflow := range state.Workflows {
-		identity := WorkflowIdentity{Gaggle: workflow.Gaggle, Workflow: workflow.Workflow}
+		identity := WorkflowIdentity(workflow)
 		if identity.Workflow == "" {
 			return nil, fmt.Errorf("localscheduler: invalid schedule demand for empty workflow")
 		}
@@ -59,10 +59,7 @@ func writeScheduleDemandState(schedulerDir string, outstanding map[WorkflowIdent
 		if !pending {
 			continue
 		}
-		state.Workflows = append(state.Workflows, scheduleDemandWorkflow{
-			Gaggle:   identity.Gaggle,
-			Workflow: identity.Workflow,
-		})
+		state.Workflows = append(state.Workflows, scheduleDemandWorkflow(identity))
 	}
 	sort.Slice(state.Workflows, func(i, j int) bool {
 		if state.Workflows[i].Gaggle == state.Workflows[j].Gaggle {
