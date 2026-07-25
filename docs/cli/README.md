@@ -174,9 +174,11 @@ query/claim one eligible backlog item (a workflow stage)
 ~~~text
 Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
 
-Query the provider for eligible backlog items — labeled with both
-trustLabel (SEC-047: required on public repos, since backlog content is
-untrusted input otherwise) and requireLabels. With --claim, claims
+Query the provider for eligible backlog items — labeled with trustLabel
+(SEC-047: required on public repos, since backlog content is untrusted
+input otherwise), requireLabels, excludeLabels, and the optional
+labelPredicate CEL expression. CEL supports string membership in `labels`
+combined with &&, ||, and !. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —

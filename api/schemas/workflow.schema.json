@@ -80,8 +80,13 @@
         },
         "selector": {
           "type": "object",
-          "description": "For backlog-item triggers, selector keys are required labels and values are ignored; full k8s-style selector matching remains V1.",
+          "description": "For backlog-item triggers, selector keys are required labels and values are ignored.",
           "additionalProperties": { "type": "string" }
+        },
+        "labelPredicate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL label-set predicate using only string membership in `labels` and boolean &&, ||, and !. ANDed with selector."
         },
         "priority": {
           "type": "integer",

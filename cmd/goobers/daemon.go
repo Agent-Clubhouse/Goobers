@@ -475,6 +475,10 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		backlogCounter, err := buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:          wf.Name,
 			WorkflowVersion:   machine.Def.Version,
@@ -484,7 +488,7 @@ func buildSchedulerDefinitions(
 			Schedules:         scheds,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota),
+			BacklogCounter:    backlogCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
 				branchNamespaces[wf.Spec.Gaggle], providerQuota,

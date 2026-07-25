@@ -271,15 +271,21 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   first stage — a built-in deterministic **`backlog-query`** stage kind — still
   performs the actual query and **claims** items (label/assignee marker + claim
   ledger) so concurrent runs never double-process (`WF-031`). A trigger
-  `selector`'s KEYS are applied as required GitHub labels; values are ignored
-  (GitHub labels are flat strings). On public repos, eligibility requires a
-  maintainer-applied trust label: backlog content is untrusted input (`SEC-047`).
+  `selector`'s KEYS remain required labels (values are ignored because GitHub
+  labels are flat strings). Gaggle backlogs, backlog-item triggers, and
+  `backlog-query` tasks may additionally declare a `labelPredicate`: restricted
+  CEL string-membership checks against `labels`, composed with `&&`, `||`, and
+  `!`. The CEL predicate is ANDed with legacy label inputs and evaluated exactly
+  after any provider-side label optimization. On public repos, eligibility
+  requires a maintainer-applied trust label: backlog content is untrusted input
+  (`SEC-047`).
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
   provider-quota / rate-limit-reset gating.
-- **Still prescriptive (V1):** true k8s-style selector matching (values, set
-  expressions), routing one item across multiple candidate workflows with a
+- **Still prescriptive (V1):** true k8s-style selector value semantics (the
+  shipped boolean label surface is CEL rather than k8s selectors), routing one
+  item across multiple candidate workflows with a
   priority single-winner election (`SCH-010` full form, `SCH-011`), dead-letter /
   unrouted-item surfacing (`SCH-012`), and an item priority field (`SCH-030`).
   None of these have runtime consumers.

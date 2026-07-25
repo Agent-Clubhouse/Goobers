@@ -3,6 +3,8 @@ package providers
 import (
 	"fmt"
 	"time"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 // ProviderKind identifies a concrete provider backend.
@@ -742,15 +744,22 @@ type CompareResult struct {
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.
 type ListWorkItemsRequest struct {
-	Repository RepositoryRef `json:"repository"`
-	Labels     []string      `json:"labels,omitempty"`
-	State      string        `json:"state,omitempty"`
-	Assignee   string        `json:"assignee,omitempty"`
+	Repository     RepositoryRef             `json:"repository"`
+	Labels         []string                  `json:"labels,omitempty"`
+	LabelPredicate *labelpredicate.Predicate `json:"-"`
+	State          string                    `json:"state,omitempty"`
+	Assignee       string                    `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
 	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
 	Limit        int        `json:"limit,omitempty"`
 	// Page selects a 1-based page for stable pagination; 0 means the first page.
 	Page int `json:"page,omitempty"`
+	// Cursor resumes a caller-driven bounded scan. Its provider-specific value
+	// comes from PageInfo.NextCursor.
+	Cursor string `json:"cursor,omitempty"`
+	// PageInfo receives raw-candidate pagination metadata. Providers populate it
+	// before applying exact predicates or dropping non-work-item API records.
+	PageInfo *ListWorkItemsPageInfo `json:"-"`
 	// OldestFirst, when set, asks the provider to return items in creation
 	// order (oldest filed first) rather than its own default. This matters
 	// whenever Limit truncates the result set: a FIFO consumer (#532) must
@@ -758,6 +767,18 @@ type ListWorkItemsRequest struct {
 	// once older ones drain — not the oldest, which GitHub's undocumented
 	// newest-first default would otherwise starve forever.
 	OldestFirst bool `json:"oldestFirst,omitempty"`
+}
+
+// ListWorkItemsPageInfo describes one bounded raw-candidate provider window.
+type ListWorkItemsPageInfo struct {
+	CandidateCount int
+	HasNext        bool
+	NextCursor     string
+}
+
+// MatchesLabelPredicate applies the request's exact client-side label filter.
+func (r ListWorkItemsRequest) MatchesLabelPredicate(labels []string) (bool, error) {
+	return r.LabelPredicate.Matches(labels)
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label
