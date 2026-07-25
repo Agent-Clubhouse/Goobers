@@ -34,9 +34,10 @@ Three properties this design holds fixed:
 
 1. **The agent process never holds a mutating credential** for capabilities routed
    through the proposal boundary.
-2. **Every mutation is journaled twice**: as the proposal artifact (what was asked,
-   by whom, from what evidence) and as the execution event (what was done, or why
-   refused). Fail closed, carry the cause.
+2. **Every mutation has a durable journal lifecycle**: the proposal artifact records
+   what was asked, by whom, and from what evidence; a fsynced pre-call barrier and a
+   terminal execution event record what was attempted and what was done or refused.
+   Recovery reconciles an unterminated call and never blindly replays it.
 3. **Adoption is per-capability and incremental** — no big-bang rewrite of the stage
    contract; un-migrated capabilities keep today's direct-injection behavior until
    migrated.
@@ -52,7 +53,9 @@ Three properties this design holds fixed:
   journal events, and refusal disposition.
 - Proposals use the existing `ResultEnvelope.artifacts` →
   `InvocationEnvelope.contextPointers` path. There is no new IPC mechanism and no
-  proposal body in scalar `outputs`.
+  proposal body in scalar `outputs`. A singular static `proposalInput` edge names the
+  producer; the runner fsyncs the exact producer attempt and artifact digest before
+  credentialing the executor, so paths and media metadata are not authorization.
 - `kind: apply-proposals` is built-in trusted Go code, not an arbitrary command. It
   is the only stage that receives a migrated writer credential. The producer still
   declares the canonical capability as proposal authority but receives no credential
@@ -84,12 +87,14 @@ Three properties this design holds fixed:
    verdict into a typed proposal after review. A workflow that needs human or agentic
    review of mutation intent may add an explicit proposal-review gate, but passing
    that gate never bypasses deterministic validation.
-4. **A proposal set preflights atomically, then executes with per-call guards.** One
-   preflight refusal prevents every mutation in the set. Freshness is re-checked
-   immediately before each provider call; a later mismatch stops the remaining
-   proposals but does not roll back confirmed issue writes. Merge, close, and push
-   cannot be batched with another proposal. Journaled idempotency keys prevent blind
-   replay.
+4. **A proposal set preflights atomically, then executes with durable per-call
+   guards.** One preflight refusal prevents every mutation in the set. Freshness is
+   re-checked immediately before each provider call, then an execution-started event
+   is fsynced before the call; a later mismatch stops the remaining proposals but
+   does not roll back confirmed issue writes. An unterminated call is reconciled
+   read-only and becomes ambiguous unless an exact effect or an enforceable provider
+   idempotency key proves a safe outcome. Merge, close, and push cannot be batched
+   with another proposal.
 
 #### TBH-1 migration
 
@@ -100,7 +105,7 @@ proposal-routed authority for the same capability.
 | Order | Surface | Migration |
 |---|---|---|
 | 1 | Merge and PR close | Extract the credentialed provider handlers from `merge-pr` and `apply-verdict` behind `apply-proposals`. Their deterministic verdict/SHA checks become proposal production or executor validation as appropriate; compatibility entrypoints remain only for workflow versions still on direct injection. |
-| 2 | Push | Agentic implementation/remediation stages commit without a push credential and propose the exact source SHA and run-branch ref. The deterministic push stage applies it after reachability, namespace, and remote-SHA checks; rebased remediation uses provider-native force-with-lease against that exact remote SHA, never unconditional force. |
+| 2 | Push | Agentic implementation/remediation stages commit without a push credential and propose the exact source SHA and run-branch ref. The deterministic push stage requires that SHA to equal the runner-pinned, reviewed current branch tip (and requires fast-forward ancestry in fast-forward mode), then applies it after namespace and remote-SHA checks; rebased remediation uses provider-native force-with-lease against that exact remote SHA, never unconditional force. |
 | 3 | Issue writes | Curation/nomination stages emit bounded create/edit/comment/label/state proposals; the executor confines every operation to `repoRef` and the claimed issue except for bounded creation in that repository. |
 
 Until a row is migrated, its canonical capability keeps today's direct-injection

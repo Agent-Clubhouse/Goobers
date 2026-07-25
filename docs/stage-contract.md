@@ -167,14 +167,23 @@ and invokes the provider.
 
 This is additive to the existing pointer-only contract:
 
-1. The producer writes one closed, typed proposal-set document under
-   `artifacts/<producer>/proposals/` and returns its ordinary `ArtifactPointer` in
+1. The producer writes one closed, typed proposal-set document and, on success,
+   returns exactly that one ordinary `ArtifactPointer` in
    `ResultEnvelope.artifacts`.
-2. The runner gives that pointer to the executor as an ordinary read-only
-   `contextPointer` named `proposals`.
-3. The executor resolves and digest-verifies the pointer before parsing it. There is
-   no `ResultEnvelope.proposals` field, side channel, shared directory, or embedded
-   proposal body in `outputs`.
+2. The executor's static `proposalInput.from` edge names that producer. On each
+   graph entry to the executor, the runner selects the successful producer attempt
+   for that edge and requires its result to contain exactly one artifact. It wraps
+   that pointer in the executor's `ContextPointer` named `proposals`; neither
+   artifact path nor media type selects the input.
+3. Before dispatch or writer-credential materialization, the runner appends and
+   fsyncs `proposal.input_bound`, pinning the producer stage/attempt and exact
+   artifact path/digest to this executor visit. Resume and infrastructure retry
+   reconstruct the same pointer from that event rather than selecting a newer
+   result. Re-running the producer creates a new attempt and a new graph entry, so
+   only then may a new binding be recorded.
+4. The executor resolves and digest-verifies the bound pointer before parsing it.
+   There is no `ResultEnvelope.proposals` field, side channel, shared directory, or
+   embedded proposal body in `outputs`.
 
 The media type is
 `application/vnd.goobers.mutation-proposals+json;version=1`. The artifact path and
@@ -191,7 +200,7 @@ actions, and kind-specific fields are validation errors. Its wire shape is:
 {
   "schema": "goobers.dev/mutation-proposals/v1alpha1",
   "runId": "8f7c...",
-  "producer": {"stage": "review", "attempt": 1},
+  "producer": {"stage": "prepare-merge-proposal", "attempt": 1},
   "proposals": [
     {
       "id": "merge-42",
@@ -290,9 +299,13 @@ these fail-closed rules:
   pinned compiled task and invocation is refused.
 - Proposal authority remains subject to the same workflow-level isolation as the
   corresponding direct capability. In the initial migration, the compiler admits
-  `repo:merge` only from the built-in deterministic adapter that consumes
-  merge-review's SHA-pinned verdict. Implementation and pr-remediation stages may
-  neither hold `github:pr:merge` nor propose a merge.
+  `repo:merge` only from a deterministic stage whose runner-owned `run.kind` is
+  `prepare-merge-proposal`; that adapter consumes merge-review's SHA-pinned verdict.
+  The corresponding close adapter is `prepare-pr-close-proposal`. Both kinds are
+  mutually exclusive with `run.command`, and an arbitrary deterministic command
+  cannot impersonate them. The stage's user-chosen `name` is not its adapter
+  identity. Implementation and pr-remediation stages may neither hold
+  `github:pr:merge` nor propose a merge.
 - The downstream executor declares every capability it may apply. It receives only
   those writer credentials, and only when it is the built-in `apply-proposals`
   executor; an arbitrary deterministic shell command cannot impersonate this kind.
@@ -300,8 +313,9 @@ these fail-closed rules:
   is pinned with the workflow definition, so a run never changes routing mode after
   it starts.
 
-The DSL implementation adds a built-in deterministic run kind, mutually exclusive
-with `run.command`:
+The DSL implementation adds runner-owned deterministic run kinds, mutually
+exclusive with `run.command`. The initial kinds are `prepare-merge-proposal`,
+`prepare-pr-close-proposal`, and the executor kind `apply-proposals`:
 
 ```yaml
 - name: apply
@@ -310,6 +324,10 @@ with `run.command`:
   run:
     kind: apply-proposals
     workspace: repo
+  proposalInput:
+    from: prepare-merge-proposal
+    kinds:
+      - repo:merge
   capabilities:
     - github:pr:merge
   next: applied
@@ -318,21 +336,33 @@ with `run.command`:
 `kind: apply-proposals` is runner-owned code, not a configurable executable. It uses
 a repository workspace only for operations such as `repo:push` that must verify a
 commit in the run branch; otherwise it may use scratch. The compiler requires
-exactly one reachable proposal producer, exactly one proposal pointer named
-`proposals`, and a declared executor capability for every proposal kind the producer
-is allowed to emit. Dynamic command selection and workflow-authored validator code
-are invalid.
+a singular `proposalInput` only on this run kind. Its closed shape is `from`, naming
+one stage, plus a non-empty, duplicate-free `kinds` allowlist. The named producer
+must dominate the executor in the compiled graph: every path entering the executor
+must have completed that exact stage successfully. Each listed kind must map to a
+canonical capability declared by both producer and executor. The runner enforces
+the producer result's one-artifact cardinality at runtime because artifact count is
+not compiler-visible; zero or multiple artifacts is a workflow contract error, and
+the executor is not dispatched or credentialed.
+
+The runner, not the producer, assigns the bound pointer's `ContextPointer.Name` as
+`proposals`. On resume it uses the exact `proposal.input_bound` record for that
+executor visit. A later producer result, an artifact path under `proposals/`, or a
+matching advisory media type cannot replace that binding. Dynamic source selection,
+command selection, and workflow-authored validator code are invalid.
 
 ### Validation and execution
 
 The executor treats proposal bytes as untrusted input and performs these checks in
 order:
 
-1. **Pointer and envelope:** contain the path, verify the digest, enforce the media
-   type and byte limit, parse with duplicate-key rejection, and validate the closed
-   schema and producer binding.
+1. **Pointer and envelope:** require the sole `ContextPointer` named `proposals` to
+   equal the fsynced `proposal.input_bound` path/digest and producer attempt, contain
+   the path, verify the digest, enforce the media type and byte limit, parse with
+   duplicate-key rejection, and validate the closed schema and producer binding.
 2. **Capability:** map every proposal kind to its canonical capability and require
-   that capability on both the producer attempt and executor stage.
+   the kind in `proposalInput.kinds` and its capability on both the producer attempt
+   and executor stage.
 3. **Run scope:** require the normalized repository to equal `repoRef`; require an
    item target to equal `InvocationEnvelope.item` or scope pins explicitly wired
    through `inputsFrom` from a preceding built-in deterministic selector; and reject
@@ -350,10 +380,12 @@ order:
    operations may be batched, with at most one existing-target operation per issue
    in a set so one operation cannot invalidate a later operation's `updatedAt` pin.
 6. **Preflight freshness:** compare every required SHA and provider state with its
-   preconditions before applying the set. For push, `sourceSha` must resolve to a
-   commit reachable from the run branch, and `remoteSha` must match the current
-   remote ref (or be absent for creation). For merge, the reviewed head and base
-   must both still match.
+   preconditions before applying the set. For push, `sourceSha` must equal the exact
+   runner-resolved tip of the current run/workspace branch pinned when
+   `proposal.input_bound` was recorded, and that branch must still have the same tip.
+   `remoteSha` must match the current remote ref (or be absent for creation);
+   `fast-forward` additionally requires `remoteSha` to be an ancestor of
+   `sourceSha`. For merge, the reviewed head and base must both still match.
 
 The limits and semantic validators are compiled Go code in the trusted executor.
 Workflow definitions cannot replace validators or raise limits. A later declarative
@@ -362,28 +394,59 @@ defaults.
 
 Preflight is set-atomic: the executor validates **every** proposal, including one
 freshness snapshot, before applying any. If preflight refuses one, none execute. Once
-preflight succeeds, proposals execute in artifact order. Immediately before each
-provider call the executor checks the journal idempotency key and re-checks that
-proposal's freshness pins. A changed precondition refuses that proposal and aborts
-the rest of the set, but cannot undo earlier confirmed issue writes. The executor
-records later unattempted proposals as `set-aborted`, never attempts compensating
-mutations, and never blindly replays an operation with an ambiguous outcome.
+preflight succeeds, proposals execute in artifact order. For each proposal, under
+the journal writer lock, the executor checks the idempotency key and re-checks the
+freshness pins. It then appends and fsyncs `proposal.execution_started` **before**
+making the provider call. That event is the durable call barrier and carries a
+fingerprint of the normalized typed request plus the provider idempotency key when
+the provider has an enforceable one. The executor then releases the journal writer
+lock before network I/O; the runner's executor lease prevents concurrent dispatch or
+recovery while that call remains live. After the call, the executor re-acquires the
+lock and appends and fsyncs the terminal event. Recovery first acquires the abandoned
+executor lease and then the journal lock, so it cannot race a live owner. A changed
+precondition refuses that proposal and aborts the rest of the set, but cannot undo
+earlier confirmed issue writes. The executor records later unattempted proposals as
+`set-aborted` and never attempts compensating mutations.
 
-An existing `proposal.applied` event makes that proposal a verified no-op during
-crash recovery, infrastructure redispatch, or an explicit rerun of the executor; an
-existing refusal or ambiguous outcome prevents automatic execution. Because the key
-belongs to the producer attempt, rerunning only the executor cannot bypass it.
-Explicit intervention must rerun the producer to create new intent and a new key.
-Provider operations should also use native idempotency and precondition mechanisms
-where available, but provider behavior is not a substitute for the journal key.
+Recovery inspects the complete lifecycle under the same writer lock:
+
+- `proposal.applied` makes the proposal a verified no-op. A refusal or ambiguous
+  terminal event prevents automatic execution.
+- `proposal.execution_started` without a terminal event **never causes the call to
+  be issued again blindly**, even when the provider operation appears not to have
+  happened. The executor may perform read-only reconciliation. It appends
+  `proposal.applied` only when the provider can bind a confirmed effect to the exact
+  journaled request identity, and appends `proposal.refused` when the provider can
+  conclusively prove rejection or non-execution.
+- A retry is permitted only when the provider contract enforces deduplication for
+  the exact journaled idempotency key or an equivalent compare-and-swap precondition;
+  it must reuse that key or precondition and the request fingerprint. `repo:push`
+  treats the exact journaled `remoteSha` (or ref-absent condition for creation) as
+  such a precondition: observing `sourceSha` at the ref reconciles the push as
+  applied, observing the original expected state permits the same conditional push,
+  and any other state is ambiguous. Without an enforceable mechanism, an outcome
+  that cannot be proven either way becomes `proposal.execution_ambiguous` and
+  escalates. This includes issue creation and commenting on providers that offer no
+  enforceable idempotency key.
+- When reconciliation refuses or marks one proposal ambiguous, it records every
+  later unattempted proposal in the set as `proposal.refused` with `set-aborted`
+  before returning the blocked result.
+
+Because the key belongs to the producer attempt, rerunning only the executor cannot
+bypass this lifecycle. Explicit intervention must rerun the producer to create new
+intent and a new key. Provider-native idempotency narrows ambiguous recovery; it
+does not replace the journal barrier.
 
 ### Journal and refusal contract
 
 Proposal artifacts continue to produce the ordinary `artifact.recorded` event. The
-executor additionally records one conformance-normative event per proposal:
+runner and executor additionally record these conformance-normative lifecycle
+events:
 
 | Event | Meaning |
 |---|---|
+| `proposal.input_bound` | Before credential materialization, pins one executor visit to the producer stage/attempt and exact proposal artifact path/digest. For push it also pins the runner-derived branch ref and exact tip SHA. |
+| `proposal.execution_started` | Fsynced immediately before a provider call. Carries the proposal identity, normalized target, typed-request fingerprint, and provider idempotency key when available. Its absence permits a first call; its unterminated presence requires reconciliation, never blind replay. |
 | `proposal.applied` | The provider confirmed the mutation. Carries producer stage/attempt, proposal artifact digest, proposal id/kind, normalized target identity, and provider external ref. |
 | `proposal.refused` | Validation or provider policy rejected the mutation before a confirmed effect. Carries the same identity plus a stable refusal code. |
 | `proposal.execution_ambiguous` | A request may have taken effect but confirmation failed. It is never retried automatically. |
