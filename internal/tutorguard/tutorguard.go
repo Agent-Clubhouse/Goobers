@@ -172,19 +172,30 @@ func ClassifyGateEdit(oldYAML, newYAML []byte, gateName string) (GateEditKind, e
 }
 
 // failsClosed reports whether the gate's failure branch still blocks: it
-// routes to "@abort" (this codebase's terminal-abort control target) and,
-// whatever it routes to, is distinct from the gate's own pass branch (a fail
-// branch that converges with pass no longer differentiates a failure from a
-// success).
+// routes somewhere distinct from the gate's own pass branch. A fail branch
+// converging with pass no longer differentiates a failure from a success —
+// the gate has been defeated regardless of what its target is named.
+//
+// This deliberately does NOT require the fail target to be the literal
+// "@abort" terminal: most real shipped gates route a failure to a named
+// repass/remediation state instead (e.g. implementation.yaml's `review` gate
+// fails to "park-needs-human", `local-gate` fails to "implement") — neither
+// aborts, but both still block the happy path exactly as surely as @abort
+// does. Treating only "@abort" as blocking would make failsClosed report
+// false for those gates even in their original, un-tampered state, so the
+// oldFailsClosed && !newFailsClosed loosened-detection could never fire for
+// them — a tutor redirecting exactly those gates' fail branch to converge
+// with pass would then classify as ordinary tuning and skip the
+// independent-proof requirement entirely (the metric-gaming path TUT-A3
+// exists to block, on the gate-repass-churn finding kind most likely to name
+// them).
 func failsClosed(g apiv1.Gate) bool {
 	fail, hasFail := g.Branches["fail"]
 	if !hasFail || fail == "" {
 		return false
 	}
-	if pass, hasPass := g.Branches["pass"]; hasPass && pass == fail {
-		return false
-	}
-	return fail == "@abort"
+	pass, hasPass := g.Branches["pass"]
+	return !hasPass || pass != fail
 }
 
 // gatesEqual does a structural, order-independent comparison via each gate's
