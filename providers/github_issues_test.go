@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 // recordingRecorder captures external-ref mutations for assertions.
@@ -957,6 +959,101 @@ func TestGitHubListWorkItemsFiltersAndPagination(t *testing.T) {
 	if gotQuery["assignee"] != "mona" || gotQuery["since"] != "2026-07-01T00:00:00Z" ||
 		gotQuery["page"] != "2" || gotQuery["per_page"] != "50" || gotQuery["labels"] != LabelReady {
 		t.Fatalf("query params not wired: %#v", gotQuery)
+	}
+}
+
+func TestGitHubListWorkItemsBoundsPredicateScanBeforeMatching(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
+			writeJSON(t, w, []map[string]interface{}{{
+				"id": 1, "number": 7, "title": "other", "state": "open",
+				"labels": []map[string]string{{"name": "other"}},
+			}})
+			return
+		}
+		writeJSON(t, w, []map[string]interface{}{{
+			"id": 2, "number": 8, "title": "wanted", "state": "open",
+			"labels": []map[string]string{{"name": "wanted"}},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = srv.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		LabelPredicate: predicate,
+		Limit:          1,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 0 || requests != 1 {
+		t.Fatalf("items = %#v, requests = %d; want one raw candidate scanned", items, requests)
+	}
+
+	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		LabelPredicate: predicate,
+		Limit:          1,
+		Page:           2,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems page 2: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "8" || requests != 2 {
+		t.Fatalf("items = %#v, requests = %d; want matching issue 8 from bounded page 2", items, requests)
+	}
+}
+
+func TestGitHubListWorkItemsPageInfoCountsRawPRCandidates(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("page") == "2" {
+			writeJSON(t, w, []map[string]interface{}{{
+				"id": 3, "number": 3, "title": "issue", "state": "open",
+			}})
+			return
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 1, "number": 1, "title": "pr 1", "state": "open", "pull_request": map[string]string{"url": "pr-1"}},
+			{"id": 2, "number": 2, "title": "pr 2", "state": "open", "pull_request": map[string]string{"url": "pr-2"}},
+		})
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = server.URL })
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+
+	firstPage := &ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, Limit: 2, PageInfo: firstPage,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems first page: %v", err)
+	}
+	if len(items) != 0 || firstPage.CandidateCount != 2 ||
+		!firstPage.HasNext || firstPage.NextCursor != "2" {
+		t.Fatalf("items = %#v, page info = %+v; want two raw PR candidates and a next cursor", items, firstPage)
+	}
+
+	secondPage := &ListWorkItemsPageInfo{}
+	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, Limit: 2, Cursor: firstPage.NextCursor, PageInfo: secondPage,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems second page: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "3" || requests != 2 || secondPage.HasNext {
+		t.Fatalf("items = %#v, requests = %d, page info = %+v; want issue 3 on final page", items, requests, secondPage)
 	}
 }
 

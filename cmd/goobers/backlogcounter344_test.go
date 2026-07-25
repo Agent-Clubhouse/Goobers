@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
@@ -37,7 +37,11 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers": "true"}}},
 		}}
-		if c := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, "", nil); c != nil {
+		c, err := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, "", nil)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		if c != nil {
 			t.Fatalf("expected nil for no repos, got %+v", c)
 		}
 	})
@@ -50,24 +54,35 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		}}
-		if c := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); c != nil {
+		c, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		if c != nil {
 			t.Fatalf("expected nil for a schedule-only workflow, got %+v", c)
 		}
 	})
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
-			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{
-				"goobers:ready":    "true",
-				"goobers:approved": "true",
-			}}},
+			Triggers: []apiv1.Trigger{{
+				Type: apiv1.TriggerBacklogItem,
+				Selector: map[string]string{
+					"goobers:ready":    "true",
+					"goobers:approved": "true",
+				},
+				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+			}},
 		}}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 		if err != nil {
 			t.Fatalf("NewResolver: %v", err)
 		}
 		quota := localscheduler.NewProviderQuotaState()
-		c := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
+		c, err := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
 		if c == nil {
 			t.Fatal("expected a non-nil counter for a backlog-item-triggered, repo-backed workflow")
 		}
@@ -86,6 +101,22 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 		if bc.quota == nil {
 			t.Fatal("provider quota observer was not wired")
+		}
+		matched, err := bc.labelPredicate.Matches([]string{"goobers:ready", "goobers:approved", "size:m"})
+		if err != nil || !matched {
+			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
+		}
+	})
+
+	t.Run("invalid predicate fails closed", func(t *testing.T) {
+		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+			Triggers: []apiv1.Trigger{{
+				Type:           apiv1.TriggerBacklogItem,
+				LabelPredicate: `labels.size() > 0`,
+			}},
+		}}
+		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
+			t.Fatal("buildBacklogCounter succeeded with an unsupported predicate")
 		}
 	})
 
@@ -120,6 +151,47 @@ func TestBuildBacklogCounter(t *testing.T) {
 			t.Fatalf("remediation counter scope = prefix %q gaggle %q", remediation.headPrefix, remediation.gaggle)
 		}
 	})
+}
+
+func TestBacklogCounterAppliesExactLabelPredicate(t *testing.T) {
+	t.Setenv("BACKLOG_TOK", "backlog-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	predicate, err := labelpredicate.Compile(
+		`("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+		[]string{"area:runner"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "acme", "web")
+	server.addIssue(1, "Small runner item", "area:runner", "size:s")
+	server.addIssue(2, "Windows medium item", "area:runner", "size:m", "platform:windows")
+	server.addIssue(3, "Large runner item", "area:runner", "size:l")
+	server.addIssue(4, "Small docs item", "area:docs", "size:s")
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	counter := &backlogCounter{
+		ref:            "acme/web",
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:         predicate.RequiredLabels(),
+		labelPredicate: predicate,
+		resolver:       resolver,
+		reg:            &backlogTestRegistrar{},
+	}
+	count, err := counter.EligibleCount(context.Background())
+	if err != nil {
+		t.Fatalf("EligibleCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want only the non-Windows small runner item", count)
+	}
 }
 
 // TestBacklogCounterResolvesTokenPerCallAndQueriesProvider mirrors
@@ -166,7 +238,7 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	}
 }
 
-func TestBacklogCounterPaginatesAndTracksProviderQuota(t *testing.T) {
+func TestBacklogCounterAdvancesBoundedPagesAndTracksProviderQuota(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 	if err != nil {
@@ -185,18 +257,24 @@ func TestBacklogCounterPaginatesAndTracksProviderQuota(t *testing.T) {
 		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
 		switch requests {
 		case 1:
-			if page != "" {
-				t.Fatalf("first request page = %q, want provider default", page)
+			if page != "1" {
+				t.Fatalf("first request page = %q, want 1", page)
 			}
 			w.Header().Set("X-RateLimit-Remaining", "9")
-			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2&per_page=100>; rel="next"`, r.Host, r.URL.Path))
-			_, _ = w.Write([]byte(`[{"number":1,"title":"pull request","state":"open","pull_request":{"url":"pr-url"}}]`))
+			_, _ = fmt.Fprint(w, "[")
+			for i := 1; i <= 100; i++ {
+				if i > 1 {
+					_, _ = fmt.Fprint(w, ",")
+				}
+				_, _ = fmt.Fprintf(w, `{"number":%d,"title":"other","state":"open"}`, i)
+			}
+			_, _ = fmt.Fprint(w, "]")
 		case 2:
 			if page != "2" {
 				t.Fatalf("second request page = %q, want 2", page)
 			}
 			w.Header().Set("X-RateLimit-Remaining", "8")
-			_, _ = w.Write([]byte(`[{"number":2,"title":"ready issue","state":"open"}]`))
+			_, _ = w.Write([]byte(`[{"number":101,"title":"wanted issue","state":"open","labels":[{"name":"wanted"}]}]`))
 		default:
 			t.Fatalf("unexpected request %d", requests)
 		}
@@ -213,28 +291,40 @@ func TestBacklogCounterPaginatesAndTracksProviderQuota(t *testing.T) {
 
 	quota := localscheduler.NewProviderQuotaState()
 	quota.Record(apiv1.ProviderGitHub, 10, resetAt)
-	admission := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
-	if admission.RemainingBefore != 10 || admission.RemainingAfter != 9 {
-		t.Fatalf("admission budget = %+v, want 10 remaining before and 9 after", admission)
+	firstAdmission := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
+	if firstAdmission.RemainingBefore != 10 || firstAdmission.RemainingAfter != 9 {
+		t.Fatalf("admission budget = %+v, want 10 remaining before and 9 after", firstAdmission)
+	}
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
 	}
 	counter := &backlogCounter{
-		ref:      "acme/web",
-		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-		resolver: resolver,
-		reg:      &backlogTestRegistrar{},
-		quota:    quota,
+		ref:            "acme/web",
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labelPredicate: predicate,
+		resolver:       resolver,
+		reg:            &backlogTestRegistrar{},
+		quota:          quota,
 	}
-	ctx := localscheduler.WithProviderPollBudget(context.Background(), admission)
-	count, err := counter.EligibleCount(ctx)
+	count, err := counter.EligibleCount(localscheduler.WithProviderPollBudget(context.Background(), firstAdmission))
 	if err != nil {
-		t.Fatalf("EligibleCount: %v", err)
+		t.Fatalf("EligibleCount page 1: %v", err)
+	}
+	if count != 0 || requests != 1 {
+		t.Fatalf("count=%d requests=%d, want one bounded nonmatching page", count, requests)
+	}
+	secondAdmission := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
+	count, err = counter.EligibleCount(localscheduler.WithProviderPollBudget(context.Background(), secondAdmission))
+	if err != nil {
+		t.Fatalf("EligibleCount page 2: %v", err)
 	}
 	if count != 1 || requests != 2 {
-		t.Fatalf("count=%d requests=%d, want the page-2 issue from two provider requests", count, requests)
+		t.Fatalf("count=%d requests=%d, want matching issue from the next bounded page", count, requests)
 	}
 	next := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
 	if next.RemainingBefore != 8 {
-		t.Fatalf("remaining quota before next poll = %d, want 8 after both paginated requests", next.RemainingBefore)
+		t.Fatalf("remaining quota before next poll = %d, want 8 after both bounded requests", next.RemainingBefore)
 	}
 }
 
@@ -292,7 +382,7 @@ func TestBacklogCounterRetriesTransientFailureWithinQuota(t *testing.T) {
 	}
 }
 
-func TestBacklogCounterStopsPaginationAtBudget(t *testing.T) {
+func TestBacklogCounterUsesOneBoundedPageWithinBudget(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 	if err != nil {
@@ -330,10 +420,12 @@ func TestBacklogCounterStopsPaginationAtBudget(t *testing.T) {
 		quota:    quota,
 	}
 	ctx := localscheduler.WithProviderPollBudget(context.Background(), admission)
-	_, err = counter.EligibleCount(ctx)
-	var budgetErr *localscheduler.ProviderPollBudgetError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("EligibleCount error = %v, want provider polling budget exhaustion", err)
+	count, err := counter.EligibleCount(ctx)
+	if err != nil {
+		t.Fatalf("EligibleCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want one item from the bounded page", count)
 	}
 	if requests != 1 {
 		t.Fatalf("provider requests = %d, want pagination stopped after the admitted page", requests)

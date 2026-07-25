@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -68,6 +69,7 @@ const (
 	errorPreviewAnnotation        WarningCode = "CFG004"
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
+	errorLabelPredicate           WarningCode = "CFG007"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -722,6 +724,7 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleBranchNamespace(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
+	ix.checkLabelPredicates(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -785,6 +788,74 @@ func (ix *index) crossCheck(r *Report) {
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 	}
+}
+
+func (ix *index) checkLabelPredicates(r *Report) {
+	for name, gaggle := range ix.gaggles {
+		expression := gaggle.Spec.Backlog.LabelPredicate
+		if expression == "" {
+			continue
+		}
+		if _, err := labelpredicate.Compile(expression, gaggle.Spec.Backlog.Labels, nil); err != nil {
+			r.add(errorLabelPredicate, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.labelPredicate is invalid: %v", err)
+		}
+	}
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, trigger := range workflow.Spec.Triggers {
+			if trigger.LabelPredicate == "" {
+				continue
+			}
+			required := make([]string, 0, len(trigger.Selector))
+			for label := range trigger.Selector {
+				required = append(required, label)
+			}
+			if _, err := labelpredicate.Compile(trigger.LabelPredicate, required, nil); err != nil {
+				r.add(errorLabelPredicate, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.triggers[%d].labelPredicate is invalid: %v", i, err)
+			}
+		}
+		for i, task := range workflow.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			expression, ok := task.Inputs["labelPredicate"]
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(expression) == "" {
+				r.add(errorLabelPredicate, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: CEL expression must not be blank", i)
+				continue
+			}
+			if _, err := labelpredicate.Compile(
+				expression,
+				splitLabelInput(task.Inputs["requireLabels"]),
+				splitLabelInput(task.Inputs["excludeLabels"]),
+			); err != nil {
+				r.add(errorLabelPredicate, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+func isBacklogQueryTask(task apiv1.Task) bool {
+	return task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		filepath.Base(task.Run.Command[0]) == "goobers" &&
+		task.Run.Command[1] == "backlog-query"
+}
+
+func splitLabelInput(value string) []string {
+	var labels []string
+	for _, label := range strings.Split(value, ",") {
+		if label = strings.TrimSpace(label); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
 }
 
 func (ix *index) allowPreviewFeatures(r *Report) bool {

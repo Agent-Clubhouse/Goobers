@@ -153,9 +153,9 @@ type Scheduler struct {
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
 	// pendingScheduleDemand retains demand that a due scheduled poll found but
-	// concurrency limits could not admit yet. Reconcile installs a repoll marker
-	// after a previously fired schedule so current unclaimed demand is recovered
-	// without persisting a count that may become stale while the daemon is down.
+	// concurrency limits could not admit yet. A durable outstanding marker lets
+	// Reconcile repoll current demand without replaying fully consumed firings or
+	// persisting a count that may become stale while the daemon is down.
 	pendingScheduleDemand map[WorkflowIdentity]scheduledDemand
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
@@ -321,6 +321,10 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 	s.reconciledRuns = runs
 	s.mu.Unlock()
 
+	outstandingScheduleDemand, err := readScheduleDemandState(s.log.Dir())
+	if err != nil {
+		return err
+	}
 	events, err := journal.ReadInstanceLog(s.log.Dir())
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile trigger history: %w", err)
@@ -360,13 +364,6 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 	}
 	s.conditions.ReconcileWorkflowBudgets(starts)
 	last := ReconstructLastEval(fired, identities, now)
-	recoverScheduleDemand := make(map[WorkflowIdentity]bool)
-	for _, record := range fired {
-		identity, ok := resolveWorkflowIdentity(record.Gaggle, record.Workflow, identities)
-		if ok && s.workflows[identity].ScheduleDemandCounter != nil {
-			recoverScheduleDemand[identity] = true
-		}
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -378,7 +375,7 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		at := last[identity]
 		ts.LastEval = at
 		s.triggers[identity] = ts
-		if recoverScheduleDemand[identity] {
+		if outstandingScheduleDemand[identity] && s.workflows[identity].ScheduleDemandCounter != nil {
 			s.pendingScheduleDemand[identity] = scheduledDemand{
 				repoll: true,
 			}
@@ -812,6 +809,15 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	if err := s.persistTriggerEvaluationsLocked(evaluations); err != nil {
 		return err
 	}
+	outstandingScheduleDemand := make(map[WorkflowIdentity]bool, len(pendingScheduleDemand))
+	for identity, pending := range pendingScheduleDemand {
+		if pending.remaining > 0 || pending.repoll {
+			outstandingScheduleDemand[identity] = true
+		}
+	}
+	if err := writeScheduleDemandState(s.log.Dir(), outstandingScheduleDemand); err != nil {
+		return err
+	}
 
 	s.conditions.SetOpenPRCounter(openPRs)
 	s.workflows = workflows
@@ -920,9 +926,12 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 
 func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
 	if poll.schedule {
+		identity := entryIdentity(poll.candidate.entry)
+		if !s.persistScheduleDemand(identity, ready > 0) {
+			ready = 0
+		}
 		poll.candidate.scheduleRemaining = ready
 		poll.candidate.scheduleDemand = ready > 0
-		identity := entryIdentity(poll.candidate.entry)
 		s.mu.Lock()
 		if ready > 0 {
 			s.pendingScheduleDemand[identity] = scheduledDemand{
@@ -941,23 +950,52 @@ func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
 func (s *Scheduler) consumePendingScheduleDemand(entry WorkflowEntry) {
 	identity := entryIdentity(entry)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	pending, ok := s.pendingScheduleDemand[identity]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	pending.remaining--
 	if pending.remaining <= 0 {
 		delete(s.pendingScheduleDemand, identity)
-		return
+	} else {
+		s.pendingScheduleDemand[identity] = pending
 	}
-	s.pendingScheduleDemand[identity] = pending
+	s.mu.Unlock()
+	s.persistScheduleDemand(identity, pending.remaining > 0)
 }
 
 func (s *Scheduler) clearPendingScheduleDemand(entry WorkflowEntry) {
+	identity := entryIdentity(entry)
 	s.mu.Lock()
-	delete(s.pendingScheduleDemand, entryIdentity(entry))
+	delete(s.pendingScheduleDemand, identity)
 	s.mu.Unlock()
+	s.persistScheduleDemand(identity, false)
+}
+
+func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding bool) bool {
+	state, err := readScheduleDemandState(s.log.Dir())
+	if err == nil {
+		if outstanding {
+			state[identity] = true
+		} else {
+			delete(state, identity)
+		}
+		err = writeScheduleDemandState(s.log.Dir(), state)
+	}
+	if err == nil {
+		return true
+	}
+	s.journalEvent(journal.Event{
+		Type:     journal.EventError,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Error: &journal.ErrorDetail{
+			Code:    "schedule_demand_persist_failed",
+			Message: err.Error(),
+		},
+	})
+	return false
 }
 
 func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {

@@ -1947,13 +1947,34 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		values.Set("sort", "created")
 		values.Set("direction", "asc")
 	}
-	if req.Page > 0 {
-		// An explicit Page means the caller drives pagination itself: honor it
-		// as a single-page read (its own per_page, no Link following).
-		if req.Limit > 0 {
-			values.Set("per_page", strconv.Itoa(req.Limit))
+	pageSize := 30
+	if req.Limit > 0 {
+		pageSize = min(req.Limit, 100)
+		values.Set("per_page", strconv.Itoa(pageSize))
+	}
+	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
+	if callerPaged {
+		// Page/Cursor means the caller drives pagination itself: honor it as a
+		// single-page read (its own per_page, no Link following).
+		page := req.Page
+		offset := 0
+		if page < 1 {
+			page = 1
+		} else {
+			offset = (page - 1) * pageSize
 		}
-		values.Set("page", strconv.Itoa(req.Page))
+		if req.Cursor != "" {
+			offset, err = strconv.Atoi(req.Cursor)
+			if err != nil || offset < 0 {
+				return nil, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
+			}
+			for pageSize > 1 && offset%pageSize != 0 {
+				pageSize--
+			}
+			values.Set("per_page", strconv.Itoa(pageSize))
+			page = offset/pageSize + 1
+		}
+		values.Set("page", strconv.Itoa(page))
 		endpoint, err = addQuery(endpoint, values)
 		if err != nil {
 			return nil, err
@@ -1962,31 +1983,51 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
 		}
-		return issuesToWorkItems(issues, req.Limit), nil
+		if req.PageInfo != nil {
+			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.HasNext = len(issues) == pageSize
+			req.PageInfo.NextCursor = ""
+			if req.PageInfo.HasNext {
+				req.PageInfo.NextCursor = strconv.Itoa(offset + len(issues))
+			}
+		}
+		return issuesToWorkItems(issues, req)
 	}
 
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
 	}
-	// Follow pagination and accumulate up to Limit NON-PR items. The issues
-	// endpoint also returns pull requests (excluded — PRs are the repo
-	// provider's surface, #13); filtering them out of a single Limit-sized page
-	// silently returned fewer than Limit real issues (#139).
+	// Limit bounds raw issue-endpoint candidates before exact predicate
+	// evaluation. This keeps selective predicates from expanding a nominally
+	// bounded poll into an unbounded repository scan.
 	var items []WorkItem
+	scanned := 0
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var issues []githubIssue
 		if err := json.Unmarshal(page, &issues); err != nil {
 			return fmt.Errorf("decode issues page: %w", err)
 		}
 		for _, issue := range issues {
+			if req.Limit > 0 && scanned >= req.Limit {
+				return errStopPaging
+			}
+			scanned++
 			if issue.PullRequest != nil {
 				continue
 			}
-			items = append(items, mapGitHubIssue(issue))
-			if req.Limit > 0 && len(items) >= req.Limit {
-				return errStopPaging
+			item := mapGitHubIssue(issue)
+			matched, err := req.MatchesLabelPredicate(item.Labels)
+			if err != nil {
+				return err
 			}
+			if !matched {
+				continue
+			}
+			items = append(items, item)
+		}
+		if req.Limit > 0 && scanned >= req.Limit {
+			return errStopPaging
 		}
 		return nil
 	}); err != nil {
@@ -1997,18 +2038,26 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 
 // issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
 // requests, and truncates to limit (0 = no cap).
-func issuesToWorkItems(issues []githubIssue, limit int) []WorkItem {
+func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
 	items := make([]WorkItem, 0, len(issues))
 	for _, issue := range issues {
 		if issue.PullRequest != nil {
 			continue
 		}
-		items = append(items, mapGitHubIssue(issue))
-		if limit > 0 && len(items) >= limit {
+		item := mapGitHubIssue(issue)
+		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		items = append(items, item)
+		if req.Limit > 0 && len(items) >= req.Limit {
 			break
 		}
 	}
-	return items
+	return items, nil
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.
