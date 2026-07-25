@@ -54,6 +54,7 @@ _goobers_completion()
             'post-merge:post-merge fan-out + close the referenced issue (a workflow stage)'
             'telemetry-query:emit versioned candidate findings (a connector stage)'
             'docs-churn:emit the docs-drift churn digest since the watermark (a connector stage)'
+            'ios-simulator-test:run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)'
             'pr-select:select one eligible open PR for merge-review (a workflow stage)'
             'gather-sibling-context:load other open PRs as review evidence (a workflow stage)'
             'gather-implement-context:load first-pass implementation review and hot-file context (a workflow stage)'
