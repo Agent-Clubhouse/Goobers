@@ -63,6 +63,12 @@ type guidedRemoteCreate struct {
 	Token      string
 }
 
+type guidedSourcePreparation struct {
+	validationRoot         string
+	cloneAfterConfirmation bool
+	cleanup                func()
+}
+
 type guidedInitResult struct {
 	SourceRoot    string
 	ConfigRepo    string
@@ -135,22 +141,50 @@ func runGuidedInit(
 			}
 		}
 	} else {
-		if err := prepareGuidedSource(source, stdout, github); err != nil {
-			return nil, guidedInitResult{}, 2, err
+		preparation, prepareErr := prepareGuidedSource(source, stdout, stderr, github)
+		if prepareErr != nil {
+			return nil, guidedInitResult{}, 2, prepareErr
 		}
-		if code := validateGuidedSource(source.Root, stdout, stderr); code != 0 {
+		if preparation.cleanup != nil {
+			defer preparation.cleanup()
+		}
+		if code := validateGuidedSource(preparation.validationRoot, stdout, stderr); code != 0 {
 			return nil, guidedInitResult{}, code, fmt.Errorf("existing config source failed validation")
 		}
-		cfg, err = instance.LoadGuidedSourceConfig(source.Root)
+		cfg, err = instance.LoadGuidedSourceConfig(preparation.validationRoot)
 		if err != nil {
 			return nil, guidedInitResult{}, 2, fmt.Errorf("load config source: %w", err)
 		}
-		result, err = promptExistingSourceTarget(p, source, cfg)
+		result, err = promptExistingSourceTarget(p, source, preparation.validationRoot, cfg)
 		if err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
 		if err := confirmGuidedMapping(p, root, result); err != nil {
 			return nil, guidedInitResult{}, 2, err
+		}
+		if preparation.cloneAfterConfirmation {
+			if err := cloneGuidedSource(source, source.Root, github); err != nil {
+				return nil, guidedInitResult{}, 2, err
+			}
+			if code := validateGuidedSource(source.Root, stdout, stderr); code != 0 {
+				return nil, guidedInitResult{}, code, fmt.Errorf("existing config source failed validation")
+			}
+			cfg, err = instance.LoadGuidedSourceConfig(source.Root)
+			if err != nil {
+				return nil, guidedInitResult{}, 2, fmt.Errorf("load config source: %w", err)
+			}
+			finalResult, err := guidedResultForExistingSource(
+				source,
+				source.Root,
+				cfg,
+				result.TargetRepo,
+			)
+			if err != nil {
+				return nil, guidedInitResult{}, 2, err
+			}
+			if finalResult != result {
+				return nil, guidedInitResult{}, 2, fmt.Errorf("GitHub config source changed after mapping confirmation")
+			}
 		}
 	}
 
@@ -241,22 +275,52 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 	}
 }
 
-func prepareGuidedSource(source guidedSourceSelection, stdout io.Writer, github guidedGitHubOperations) error {
+func prepareGuidedSource(
+	source guidedSourceSelection,
+	stdout, stderr io.Writer,
+	github guidedGitHubOperations,
+) (guidedSourcePreparation, error) {
 	if source.Mode != guidedSourceExistingGitHub {
-		return nil
+		return guidedSourcePreparation{validationRoot: source.Root}, nil
 	}
 	entries, err := os.ReadDir(source.Root)
 	switch {
 	case err == nil && len(entries) > 0:
 		pf(stdout, "Using existing config repository checkout at %s without modifying it.\n", source.Root)
-		return nil
+		return guidedSourcePreparation{validationRoot: source.Root}, nil
 	case err != nil && !os.IsNotExist(err):
-		return fmt.Errorf("inspect config source checkout %s: %w", source.Root, err)
+		return guidedSourcePreparation{}, fmt.Errorf("inspect config source checkout %s: %w", source.Root, err)
 	}
 
+	stagingRoot, err := os.MkdirTemp("", "goobers-config-source-*")
+	if err != nil {
+		return guidedSourcePreparation{}, fmt.Errorf("create temporary config source checkout: %w", err)
+	}
+	cleanup := func() {
+		if err := os.RemoveAll(stagingRoot); err != nil {
+			pf(stderr, "warning: remove temporary config source checkout %s: %v\n", stagingRoot, err)
+		}
+	}
+	if err := cloneGuidedSource(source, stagingRoot, github); err != nil {
+		cleanup()
+		return guidedSourcePreparation{}, err
+	}
+	pf(stdout, "Staged %s/%s in a temporary checkout before writing %s.\n", source.Owner, source.Name, source.Root)
+	return guidedSourcePreparation{
+		validationRoot:         stagingRoot,
+		cloneAfterConfirmation: true,
+		cleanup:                cleanup,
+	}, nil
+}
+
+func cloneGuidedSource(
+	source guidedSourceSelection,
+	destination string,
+	github guidedGitHubOperations,
+) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := github.Clone(ctx, source.Owner, source.Name, source.Root); err != nil {
+	if err := github.Clone(ctx, source.Owner, source.Name, destination); err != nil {
 		return fmt.Errorf("clone GitHub config repository %s/%s: %w", source.Owner, source.Name, err)
 	}
 	return nil
@@ -326,6 +390,7 @@ GitHub config repository to create:
 func promptExistingSourceTarget(
 	p guidedPrompter,
 	source guidedSourceSelection,
+	validationRoot string,
 	cfg *instance.Config,
 ) (guidedInitResult, error) {
 	if len(cfg.Repos) == 0 || cfg.Repos[0].Provider != "github" {
@@ -336,7 +401,20 @@ func promptExistingSourceTarget(
 	if err != nil {
 		return guidedInitResult{}, err
 	}
-	owner, name, err := parseGitHubRepo(selected)
+	return guidedResultForExistingSource(source, validationRoot, cfg, selected)
+}
+
+func guidedResultForExistingSource(
+	source guidedSourceSelection,
+	validationRoot string,
+	cfg *instance.Config,
+	selectedTarget string,
+) (guidedInitResult, error) {
+	if len(cfg.Repos) == 0 || cfg.Repos[0].Provider != "github" {
+		return guidedInitResult{}, fmt.Errorf("guided setup requires the config source template to declare a GitHub target repository")
+	}
+	target := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
+	owner, name, err := parseGitHubRepo(selectedTarget)
 	if err != nil {
 		return guidedInitResult{}, err
 	}
@@ -348,7 +426,7 @@ func promptExistingSourceTarget(
 		)
 	}
 
-	set, report, err := instance.LoadConfigDir(source.Root)
+	set, report, err := instance.LoadConfigDir(validationRoot)
 	if err != nil {
 		return guidedInitResult{}, fmt.Errorf("load existing config source: %w (report: %+v)", err, report)
 	}

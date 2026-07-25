@@ -98,9 +98,16 @@ func TestGuidedInitClonesExistingGitHubSourceDistinctFromTarget(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("runGuidedInit = result %+v code %d err %v, stdout=%q stderr=%q", result, code, err, stdout.String(), stderr.String())
 	}
-	if len(remote.cloneCalls) != 1 ||
-		remote.cloneCalls[0] != "config-org/fleet-config -> "+checkout {
+	if len(remote.cloneCalls) != 2 ||
+		remote.cloneCalls[1] != "config-org/fleet-config -> "+checkout {
 		t.Fatalf("clone calls = %v", remote.cloneCalls)
+	}
+	stagingRoot := strings.TrimPrefix(remote.cloneCalls[0], "config-org/fleet-config -> ")
+	if stagingRoot == remote.cloneCalls[0] || stagingRoot == checkout {
+		t.Fatalf("preflight clone destination = %q", stagingRoot)
+	}
+	if _, err := os.Stat(stagingRoot); !os.IsNotExist(err) {
+		t.Fatalf("temporary checkout was not removed: %v", err)
 	}
 	if result.ConfigRepo != "https://github.com/config-org/fleet-config" ||
 		result.TargetRepo != "https://github.com/app-org/widget-service" {
@@ -123,8 +130,72 @@ func TestGuidedInitClonesExistingGitHubSourceDistinctFromTarget(t *testing.T) {
 	); err != nil || code != 0 {
 		t.Fatalf("reuse checkout: code %d err %v, stdout=%q stderr=%q", code, err, stdout.String(), stderr.String())
 	}
-	if len(remote.cloneCalls) != 1 {
+	if len(remote.cloneCalls) != 2 {
 		t.Fatalf("existing checkout was cloned over: %v", remote.cloneCalls)
+	}
+}
+
+func TestGuidedInitDeclinedGitHubExistingLeavesDestinationUntouched(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		createEmpty bool
+	}{
+		{name: "absent"},
+		{name: "empty", createEmpty: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			checkout := filepath.Join(base, "fleet-config")
+			if test.createEmpty {
+				if err := os.Mkdir(checkout, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			remote := &fakeGuidedGitHubOperations{
+				clone: func(_, _ string, destination string) error {
+					return instance.InitGuidedSource(destination, guidedSourceTestOptions())
+				},
+			}
+			input := strings.NewReader(strings.Join([]string{
+				guidedSourceExistingGitHub,
+				"config-org/fleet-config",
+				checkout,
+				"",
+				"no",
+			}, "\n") + "\n")
+			var stdout, stderr bytes.Buffer
+			instanceRoot := filepath.Join(base, "instance")
+
+			res, _, code, err := runGuidedInit(
+				instanceRoot,
+				input,
+				&stdout,
+				&stderr,
+				remote,
+			)
+			if err == nil || code != 2 || res != nil || !strings.Contains(err.Error(), "cancelled before writing") {
+				t.Fatalf("runGuidedInit = res %+v code %d err %v, stdout=%q stderr=%q", res, code, err, stdout.String(), stderr.String())
+			}
+			if len(remote.cloneCalls) != 1 ||
+				remote.cloneCalls[0] == "config-org/fleet-config -> "+checkout {
+				t.Fatalf("clone calls = %v", remote.cloneCalls)
+			}
+			stagingRoot := strings.TrimPrefix(remote.cloneCalls[0], "config-org/fleet-config -> ")
+			if _, statErr := os.Stat(stagingRoot); !os.IsNotExist(statErr) {
+				t.Fatalf("temporary checkout was not removed: %v", statErr)
+			}
+			if test.createEmpty {
+				entries, readErr := os.ReadDir(checkout)
+				if readErr != nil || len(entries) != 0 {
+					t.Fatalf("declined mapping changed empty destination: entries=%v err=%v", entries, readErr)
+				}
+			} else if _, statErr := os.Stat(checkout); !os.IsNotExist(statErr) {
+				t.Fatalf("declined mapping created destination: %v", statErr)
+			}
+			if _, statErr := os.Stat(instanceRoot); !os.IsNotExist(statErr) {
+				t.Fatalf("declined mapping created instance: %v", statErr)
+			}
+		})
 	}
 }
 
