@@ -98,7 +98,10 @@ checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
 are never overwritten. Set the referenced credential environment variables at
 runtime and author the workforce in the selected configuration source; the
 instance records that source in `workflowSource` while runtime state remains
-outside it. The `quickstart@v1` template is intentionally limited to a
+outside it. After later source edits, stop the daemon and run
+`goobers config materialize ./my-instance` before restarting; this validates
+and reapplies the recorded desired state without touching runtime state. The
+`quickstart@v1` template is intentionally limited to a
 disposable first success and omits production remediation, escalation, CI, and
 merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts

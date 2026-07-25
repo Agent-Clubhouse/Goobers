@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -62,6 +63,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"docs/requirements/goober.md",
 		"View journal telemetry:",
 		"`goobers trace` / `goobers telemetry`",
+		"goobers config materialize " + strconv.Quote(root),
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("guided init stdout lacks %q:\n%s", want, stdout.String())

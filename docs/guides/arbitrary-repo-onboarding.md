@@ -137,8 +137,18 @@ variable names. Journals, scheduler data, workcopies, credential values, and
 Guided setup validates the source, materializes its definitions into the fresh
 instance, validates the instance, and prints the exact
 `config-repo -> instance/gaggle -> target-repo/backlog` mapping.
+For later changes, author the checked-in source, stop the daemon, and run
+`goobers config materialize "$GOOBERS_INSTANCE"` before restarting. The command
+validates the recorded source, applies `instance.yaml.example`, `manifest.yaml`,
+and `gaggles/` to the runtime instance, and leaves journals, scheduler data,
+workcopies, credential values, and telemetry untouched.
 
 ## 4. Review the generated desired state
+
+Make all workforce and instance-setting edits under
+`$GOOBERS_CONFIG_SOURCE`; do not edit the materialized runtime copy. If the
+source is a GitHub checkout, pull the desired revision before editing or
+materializing it.
 
 Search for placeholders before proceeding:
 
@@ -195,14 +205,19 @@ forbid self-approval.
 ## 6. Validate before any live cycle
 
 ```sh
+goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
+goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"
 goobers validate --check-harness "$GOOBERS_INSTANCE"
 ```
 
-Fix every error before starting the daemon. Typical foreign-layout failures
-are a manifest gaggle with no matching directory, a workflow or goober whose
-`spec.gaggle` still names the template, a missing instructions file, an
-unknown capability, or a stale workflow name in `spec.workflows`.
+The materialize command validates the source again and replaces only
+`instance.yaml` and `config/`; running the explicit source validation first
+keeps failures easy to diagnose. Fix every error before starting the daemon.
+Typical foreign-layout failures are a manifest gaggle with no matching
+directory, a workflow or goober whose `spec.gaggle` still names the template,
+a missing instructions file, an unknown capability, or a stale workflow name
+in `spec.workflows`.
 
 Validation checks definitions and harness availability. The earlier `gh repo
 view` confirms network access to the target; the first implementation's
@@ -295,10 +310,13 @@ exhausts a primary or secondary rate limit, status reports when dispatch can
 resume; the scheduler waits rather than spinning requests. Most scheduled
 ticks should eventually be `no-work` once the backlog drains.
 
-`instance.yaml` is read at startup. Restart after changing repositories,
-credentials, timezone, or instance run conditions. Definition edits under
-`config/` also require a restart unless `up --watch-config` was explicitly
-enabled.
+Author repositories, credential locators, timezone, and instance run
+conditions in `$GOOBERS_CONFIG_SOURCE/instance.yaml.example`; author workforce
+definitions under `$GOOBERS_CONFIG_SOURCE/gaggles/` and its `manifest.yaml`.
+Stop the daemon, validate the source, run
+`goobers config materialize "$GOOBERS_INSTANCE"`, and restart after changing
+either. `up --watch-config` watches only the materialized runtime copy and is
+not a substitute for applying the checked-in source.
 
 ## 9. Stop safely
 
@@ -323,8 +341,9 @@ against another repository, repeat this guide with a separate instance root.
 
 Multiple gaggles can safely share the configured repository. For example, add a
 documentation gaggle with its own workflow names, budget, isolation identity,
-and non-overlapping backlog labels. Update `instance.yaml` without adding a
-second `repos` entry:
+and non-overlapping backlog labels. Update
+`$GOOBERS_CONFIG_SOURCE/instance.yaml.example` without adding a second `repos`
+entry:
 
 ```yaml
 apiVersion: goobers.dev/v1alpha1
@@ -351,7 +370,8 @@ runConditions:
     widget-docs-implementation: 2
 ```
 
-Duplicate the first gaggle directory as `config/gaggles/widget-docs/`, then:
+Duplicate the first gaggle directory as
+`$GOOBERS_CONFIG_SOURCE/gaggles/widget-docs/`, then:
 
 1. Change the copied gaggle's directory, `metadata.name`,
    `spec.isolation.namespace`, `spec.isolation.identityRef`, every
@@ -369,7 +389,7 @@ Duplicate the first gaggle directory as `config/gaggles/widget-docs/`, then:
    `goober` values, the review gate's `agentic.goober`, and each goober's
    `spec.workflows` references.
 3. Leave the existing repository/backlog connections unchanged and add
-   `widget-docs` to `config/manifest.yaml`:
+   `widget-docs` to `$GOOBERS_CONFIG_SOURCE/manifest.yaml`:
 
    ```yaml
    spec:
@@ -397,7 +417,8 @@ Duplicate the first gaggle directory as `config/gaggles/widget-docs/`, then:
    | `widget-docs` | `"area:docs"` | `"goobers:ready,area:docs"` |
 
    Apply exactly one routing area to each approved issue.
-6. Re-run both validation commands and restart the daemon.
+6. Stop the daemon, run the source validation, materialization, and both
+   instance validation commands from section 6, then restart it.
 
 `goobers status` includes a `GAGGLE` column, and each run identity and telemetry
 record carries its gaggle. Instance-level `maxParallelRuns` applies across all

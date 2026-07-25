@@ -1,25 +1,28 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS CONFIG" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers config \- inspect instance configuration and compare workflow definitions
+goobers config \- inspect, materialize, and compare instance configuration
 .SH SYNOPSIS
 \fBgoobers config\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect instance configuration and compare workflow definitions.
+Inspect, materialize, and compare instance configuration.
 
 Subcommands:
-  show   render the effective instance config (secrets redacted)
-  diff   compare active workflows with the shipped canonical workflows
+  show         render the effective instance config (secrets redacted)
+  materialize  apply the recorded checked-in source to the runtime instance
+  diff         compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` or `goobers config diff -h` for details.
+Run `goobers config show -h`, `goobers config materialize -h`, or
+`goobers config diff -h` for details.
 Default path is ".".
 .fi
 .SH EXAMPLES
 .nf
 goobers config show
+goobers config materialize ./instance
 goobers config diff ./instance
 .fi
 .SH SEE ALSO

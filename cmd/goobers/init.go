@@ -163,8 +163,9 @@ Onboarding mapping:
   backlog:       %s
   mapping:       %s -> %s -> %s
 
-Source validation and instance startup:
+After editing the checked-in source, validate and materialize it before startup:
   goobers validate --source-tree %s
+  goobers config materialize %s
   goobers up %s
 `,
 		result.ConfigRepo,
@@ -176,6 +177,7 @@ Source validation and instance startup:
 		filepath.Join(abs, instance.GagglesDirName, result.Gaggle),
 		result.TargetRepo,
 		strconv.Quote(result.SourceRoot),
+		strconv.Quote(abs),
 		strconv.Quote(abs),
 	)
 	if result.RemoteCreated {

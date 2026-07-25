@@ -2,6 +2,7 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -161,6 +162,148 @@ func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, er
 	return initWithSeed(root, &runtimeConfig, func(dir string) error {
 		return copyGuidedSourceDefinitions(dir, sourceAbs)
 	})
+}
+
+// MaterializeWorkflowSource replaces an instance's declarative configuration
+// with the validated local source recorded in instance.yaml.
+func MaterializeWorkflowSource(root string) (string, error) {
+	layout := NewLayout(root)
+	runtimeConfig, err := LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return "", err
+	}
+	if runtimeConfig.WorkflowSource == nil {
+		return "", fmt.Errorf("instance has no workflowSource; run guided setup or configure a local source")
+	}
+	source := *runtimeConfig.WorkflowSource
+	if source.Kind != WorkflowSourceKindLocalDir {
+		return "", fmt.Errorf("materialize workflowSource: kind %q is not supported; use %q", source.Kind, WorkflowSourceKindLocalDir)
+	}
+	if err := CheckGuidedSourceInstancePaths(root, source.Path); err != nil {
+		return "", err
+	}
+	sourceRoot, err := filepath.Abs(source.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve config source: %w", err)
+	}
+	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		return "", fmt.Errorf("load config source instance template: %w", err)
+	}
+	materializedConfig := *sourceConfig
+	materializedConfig.WorkflowSource = &source
+	if err := materializedConfig.Validate(); err != nil {
+		return "", fmt.Errorf("config source instance template: %w", err)
+	}
+	if _, report, err := LoadConfigDir(sourceRoot); err != nil {
+		return "", fmt.Errorf("load config source definitions: %w (report: %+v)", err, report)
+	}
+
+	stagingRoot, err := os.MkdirTemp(root, ".config-materialize-")
+	if err != nil {
+		return "", fmt.Errorf("create config materialization staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stagingRoot) }()
+
+	if err := WriteConfig(filepath.Join(stagingRoot, ConfigFileName), &materializedConfig); err != nil {
+		return "", err
+	}
+	stagedConfigDir := filepath.Join(stagingRoot, ConfigDirName)
+	if err := copyGuidedSourceDefinitions(stagedConfigDir, sourceRoot); err != nil {
+		return "", fmt.Errorf("stage config source definitions: %w", err)
+	}
+	if _, report, err := LoadConfigDir(stagedConfigDir); err != nil {
+		return "", fmt.Errorf("validate staged config source definitions: %w (report: %+v)", err, report)
+	}
+	if err := installMaterializedConfig(layout, stagingRoot); err != nil {
+		return "", err
+	}
+	return sourceRoot, nil
+}
+
+func installMaterializedConfig(layout Layout, stagingRoot string) error {
+	backupRoot, err := os.MkdirTemp(layout.Root, ".config-materialize-backup-")
+	if err != nil {
+		return fmt.Errorf("create config materialization backup directory: %w", err)
+	}
+	backupConfigFile := filepath.Join(backupRoot, ConfigFileName)
+	backupConfigDir := filepath.Join(backupRoot, ConfigDirName)
+
+	if err := os.Rename(layout.ConfigFile(), backupConfigFile); err != nil {
+		_ = os.RemoveAll(backupRoot)
+		return fmt.Errorf("back up %s: %w", ConfigFileName, err)
+	}
+	if err := os.Rename(layout.ConfigDir(), backupConfigDir); err != nil {
+		rollbackErr := wrapMaterializeRollbackError(os.Rename(backupConfigFile, layout.ConfigFile()))
+		return errors.Join(
+			fmt.Errorf("back up %s: %w", ConfigDirName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+
+	stagedConfigFile := filepath.Join(stagingRoot, ConfigFileName)
+	if err := os.Rename(stagedConfigFile, layout.ConfigFile()); err != nil {
+		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
+		return errors.Join(
+			fmt.Errorf("install %s: %w", ConfigFileName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+	if err := os.Rename(filepath.Join(stagingRoot, ConfigDirName), layout.ConfigDir()); err != nil {
+		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
+		return errors.Join(
+			fmt.Errorf("install %s: %w", ConfigDirName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+	if err := os.RemoveAll(backupRoot); err != nil {
+		return fmt.Errorf("remove config materialization backup %s: %w", backupRoot, err)
+	}
+	return nil
+}
+
+func rollbackMaterializedConfig(layout Layout, backupConfigFile, backupConfigDir string) error {
+	var rollbackErrors []error
+	if err := os.Remove(layout.ConfigFile()); err != nil && !os.IsNotExist(err) {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.RemoveAll(layout.ConfigDir()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.Rename(backupConfigFile, layout.ConfigFile()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.Rename(backupConfigDir, layout.ConfigDir()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := errors.Join(rollbackErrors...); err != nil {
+		return fmt.Errorf("roll back config materialization: %w", err)
+	}
+	return nil
+}
+
+func wrapMaterializeRollbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("roll back config materialization: %w", err)
+}
+
+func removeMaterializeBackup(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove config materialization backup %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeMaterializeBackupAfterRollback(path string, rollbackErr error) error {
+	if rollbackErr != nil {
+		return nil
+	}
+	return removeMaterializeBackup(path)
 }
 
 // CheckGuidedSourceInstancePaths requires the desired-state source and runtime

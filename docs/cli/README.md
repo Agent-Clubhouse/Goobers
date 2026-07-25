@@ -23,8 +23,9 @@
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
 | [`goobers completion powershell`](#goobers-completion-powershell) | generate a PowerShell completion script |
 | [`goobers completion zsh`](#goobers-completion-zsh) | generate a zsh completion script |
-| [`goobers config`](#goobers-config) | inspect instance configuration and compare workflow definitions |
+| [`goobers config`](#goobers-config) | inspect, materialize, and compare instance configuration |
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
+| [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
@@ -383,18 +384,20 @@ Generate a shell completion script. Source the output in the target shell.
 
 ## `goobers config`
 
-inspect instance configuration and compare workflow definitions
+inspect, materialize, and compare instance configuration
 
 ~~~text
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect instance configuration and compare workflow definitions.
+Inspect, materialize, and compare instance configuration.
 
 Subcommands:
-  show   render the effective instance config (secrets redacted)
-  diff   compare active workflows with the shipped canonical workflows
+  show         render the effective instance config (secrets redacted)
+  materialize  apply the recorded checked-in source to the runtime instance
+  diff         compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` or `goobers config diff -h` for details.
+Run `goobers config show -h`, `goobers config materialize -h`, or
+`goobers config diff -h` for details.
 Default path is ".".
 ~~~
 
@@ -402,6 +405,7 @@ Default path is ".".
 
 ~~~console
 $ goobers config show
+$ goobers config materialize ./instance
 $ goobers config diff ./instance
 ~~~
 
@@ -430,6 +434,34 @@ Exit codes: 0 = structurally identical (informational tuning is allowed),
 ~~~console
 $ goobers config diff ./instance
 $ goobers config diff --against ./selfhost ./instance
+~~~
+
+## `goobers config materialize`
+
+apply the recorded checked-in source to the runtime instance
+
+~~~text
+Usage: goobers config materialize [instance-root]
+
+Validate and apply the checked-in local config source recorded in
+<instance-root>/instance.yaml. The source's instance.yaml.example becomes
+the runtime instance.yaml (with workflowSource retained), and manifest.yaml
+plus gaggles/ replace the runtime config/ tree. Journals, scheduler data,
+workcopies, credential values, and telemetry remain untouched.
+
+Stop the daemon before materializing, then restart it to use the new
+definitions. GitHub-backed guided sources use their local checkout, so pull
+the desired revision into that checkout first.
+
+Exit codes: 0 = materialized, 1 = invalid source or apply error, 2 = usage
+error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config materialize
+$ goobers config materialize ./instance
 ~~~
 
 ## `goobers config show`
