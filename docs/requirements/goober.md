@@ -77,6 +77,11 @@ Remote URLs cannot contain query strings or fragments; credentials must use
 `spec.tools`; an omitted tool is unavailable, and an empty list denies all
 external MCP tools.
 
+The scoped Copilot home intentionally excludes ambient OAuth and BYOK
+credentials. A Copilot invocation with external MCP servers therefore requires
+a resolver-materialized `agent:model` credential; MCP-free invocations may
+continue to use the CLI's stored authentication.
+
 ## Invocation contract (runtime)
 
 1. A workflow task targets a goober. The runner prepares an ephemeral run environment

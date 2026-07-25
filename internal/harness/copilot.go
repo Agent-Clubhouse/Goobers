@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
@@ -279,6 +280,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	harnessOptions, err := normalizeCopilotConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+	}
+	if len(req.MCPServers) > 0 {
+		if err := c.requireMCPModelCredential(ctx, req); err != nil {
+			return Outcome{}, err
+		}
 	}
 
 	prompt := renderPrompt(req)
@@ -561,4 +567,18 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		env = append(env, envVar+"="+token)
 	}
 	return env, nil
+}
+
+func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunRequest) error {
+	modelCapability := string(capability.AgentModel)
+	if c.EnvCapabilities[modelCapability] == "" {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require an environment binding for %s", modelCapability)
+	}
+	if req.Credentials == nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential", modelCapability)
+	}
+	if _, err := req.Credentials.Token(ctx, modelCapability); err != nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential: %w", modelCapability, err)
+	}
+	return nil
 }

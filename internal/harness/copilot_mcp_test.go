@@ -12,11 +12,51 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 )
+
+func mcpTestInjector(t *testing.T, registrar credentials.SecretRegistrar, capabilityTokens ...string) *credentials.Injector {
+	t.Helper()
+	if len(capabilityTokens)%2 != 0 {
+		t.Fatal("mcpTestInjector requires capability/token pairs")
+	}
+	refs := make([]credentials.TokenRef, 0, len(capabilityTokens)/2)
+	grants := make([]credentials.Grant, 0, len(capabilityTokens)/2)
+	for i := 0; i < len(capabilityTokens); i += 2 {
+		envName := fmt.Sprintf("GOOBERS_TEST_MCP_TOKEN_%d", i/2)
+		refName := fmt.Sprintf("mcp-token-%d", i/2)
+		t.Setenv(envName, capabilityTokens[i+1])
+		refs = append(refs, credentials.TokenRef{Name: refName, Env: envName})
+		grants = append(grants, credentials.Grant{Capability: capabilityTokens[i], Ref: refName})
+	}
+	resolver, err := credentials.NewResolver(refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, registrar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return injector
+}
+
+func mcpTestCredentials(t *testing.T, capabilityTokens ...string) *credentials.Set {
+	t.Helper()
+	injector := mcpTestInjector(t, noopRegistrar{}, capabilityTokens...)
+	capabilities := make([]string, 0, len(capabilityTokens)/2)
+	for i := 0; i < len(capabilityTokens); i += 2 {
+		capabilities = append(capabilities, capabilityTokens[i])
+	}
+	set, err := injector.Materialize(context.Background(), capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
 
 func environmentValue(env []string, name string) (string, bool) {
 	for _, entry := range env {
@@ -147,8 +187,32 @@ func TestPrepareCopilotMCPLeavesOmittedToolUnreachable(t *testing.T) {
 	}
 }
 
-func TestCopilotAdapterMCPDoesNotCopyAmbientAuthentication(t *testing.T) {
+func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
+	invoked := false
+	adapter := &CopilotAdapter{
+		Command:                        []string{"copilot"},
+		Runner:                         &fakeProcessRunner{act: func(ProcessRequest) error { invoked = true; return nil }},
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	workspace := t.TempDir()
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "external MCP servers require a materialized agent:model credential") {
+		t.Fatalf("Run error = %v, want missing materialized agent:model credential", err)
+	}
+	if invoked {
+		t.Fatal("Copilot process ran without materialized model authentication")
+	}
+}
+
+func TestCopilotAdapterMCPUsesMaterializedModelAuthenticationWithoutCopyingAmbientAuthentication(t *testing.T) {
 	const ambientAuthCanary = "AMBIENT-AUTH-CANARY-732"
+	const modelToken = "SCOPED-MODEL-TOKEN-732"
 	for _, profileSource := range []string{"USERPROFILE", "HOMEDRIVE/HOMEPATH"} {
 		t.Run(profileSource, func(t *testing.T) {
 			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
@@ -199,8 +263,8 @@ func TestCopilotAdapterMCPDoesNotCopyAmbientAuthentication(t *testing.T) {
 					if !os.IsNotExist(err) {
 						return err
 					}
-					if _, ok := environmentValue(req.Env, "COPILOT_MODEL_TOKEN"); ok {
-						return fmt.Errorf("agent:model token was injected without a grant")
+					if token, ok := environmentValue(req.Env, "COPILOT_MODEL_TOKEN"); !ok || token != modelToken {
+						return fmt.Errorf("materialized agent:model token = %q, %v", token, ok)
 					}
 					rawMCP, err := os.ReadFile(filepath.Join(scopedHome, "mcp-config.json"))
 					if err != nil {
@@ -226,11 +290,12 @@ func TestCopilotAdapterMCPDoesNotCopyAmbientAuthentication(t *testing.T) {
 			}
 			workspace := t.TempDir()
 			_, err := adapter.Run(context.Background(), RunRequest{
-				Envelope:       testEnvelope(workspace),
+				Envelope:       testEnvelope(workspace, "agent:model"),
 				Workspace:      workspace,
 				CompletionPath: DefaultResultPath,
 				MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
 				Tools:          []string{"reachability"},
+				Credentials:    mcpTestCredentials(t, "agent:model", modelToken),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -252,16 +317,19 @@ func TestCopilotAdapterScopesMCPServersToOneInvocation(t *testing.T) {
 		},
 	}
 	adapter := &CopilotAdapter{
-		Command:           []string{"copilot"},
-		Runner:            runner,
-		ExtraEnvAllowlist: []string{"COPILOT_HOME", workspaceMCPCaseVariant},
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+		ExtraEnvAllowlist:              []string{"COPILOT_HOME", workspaceMCPCaseVariant},
 	}
 	workspace := t.TempDir()
 	req := RunRequest{
-		Envelope:       testEnvelope(workspace),
+		Envelope:       testEnvelope(workspace, "agent:model"),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
 		MCPServers:     []apiv1.MCPServer{{Name: "local-context", Command: "context-server"}},
+		Credentials:    mcpTestCredentials(t, "agent:model", "scoped-model-token"),
 	}
 	if _, err := adapter.Run(context.Background(), req); err != nil {
 		t.Fatal(err)
@@ -315,8 +383,15 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	}
 	recorder := &fakeRecorder{}
 	executor, err := NewExecutor(
-		&CopilotAdapter{Command: []string{"copilot"}, Runner: runner},
-		testInjector(t, "REPO_TOKEN_ENV", secret, registry),
+		&CopilotAdapter{
+			Command:         []string{"copilot"},
+			Runner:          runner,
+			EnvCapabilities: map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
+		},
+		mcpTestInjector(t, registry,
+			"repo:read", secret,
+			"agent:model", "scoped-model-token",
+		),
 		recorder,
 		recorder,
 		recorder,
@@ -353,7 +428,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "repo:read")); err != nil {
+	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "repo:read", "agent:model")); err != nil {
 		t.Fatal(err)
 	}
 	span.Event("mcp.request", attribute.String("authorization", "Bearer "+secret))

@@ -24,6 +24,7 @@ const (
 	mcpClientHelperEnv = "GOOBERS_MCP_CLIENT_HELPER"
 	stdioMCPMarkerArg  = "goobers-mcp-stdio"
 	stdioMCPTokenEnv   = "STDIO_MCP_TOKEN"
+	mcpModelToken      = "opaque-model-token"
 	stdioMCPSecret     = "opaque-stdio-mcp-secret"
 	remoteMCPSecret    = "opaque-remote-mcp-secret"
 )
@@ -137,17 +138,19 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.
 		PromptFlag:        "-test.paniconexit0",
 		ExtraArgs:         []string{"--resume"},
 		Runner:            ExecProcessRunner{},
+		EnvCapabilities:   map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
 		ExtraEnvAllowlist: []string{"COPILOT_HOME", copilotPluginDirOnlyEnv, mcpClientHelperEnv},
 	}
 	stdioMarker := filepath.Join(t.TempDir(), "stdio-calls")
 	first, err := adapter.Run(context.Background(), RunRequest{
-		Envelope:       testEnvelope(workspace, "contents:read", "github:issues:write"),
+		Envelope:       testEnvelope(workspace, "agent:model", "contents:read", "github:issues:write"),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
 		Timeout:        30 * time.Second,
 		Tools:          []string{"reachability"},
-		Credentials: twoTokenCredentials(
+		Credentials: mcpTestCredentials(
 			t,
+			"agent:model", mcpModelToken,
 			"contents:read", stdioMCPSecret,
 			"github:issues:write", remoteMCPSecret,
 		),
