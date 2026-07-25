@@ -181,12 +181,12 @@ _goobers_completion()
             ;;
         completion)
             if (( COMP_CWORD == 2 )); then
-                candidates="bash zsh fish"
+                candidates="bash zsh fish powershell"
             fi
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors export prune"
+                candidates="stats errors export prune compact"
             fi
             ;;
         journal)
