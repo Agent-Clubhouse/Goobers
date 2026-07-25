@@ -63,6 +63,7 @@ type agentToolkitAsset struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
 }
 
 type agentToolkitAdapter struct {
@@ -314,6 +315,7 @@ func newAgentToolkitPayloadAsset(path string, data []byte, mode fs.FileMode) age
 			Path:   path,
 			SHA256: fmt.Sprintf("%x", sum),
 			Size:   int64(len(data)),
+			Mode:   fmt.Sprintf("%04o", mode.Perm()),
 		},
 		data: append([]byte(nil), data...),
 		mode: mode,

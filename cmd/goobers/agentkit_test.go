@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -118,15 +119,60 @@ func TestAgentKitCLIInstallPreservesUserInstructions(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("install: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "Preserved existing CLAUDE.md") || !strings.Contains(stdout, "Next steps:") {
+	if !strings.Contains(stdout, "Added the claude adapter reference to existing CLAUDE.md") ||
+		!strings.Contains(stdout, "Next steps:") {
 		t.Fatalf("install stdout = %q", stdout)
 	}
 	got, err := os.ReadFile(instruction)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != userContent {
-		t.Fatalf("user instruction changed to %q", got)
+	if !strings.HasPrefix(string(got), userContent) ||
+		!strings.Contains(string(got), ".goobers/agent-toolkit/adapters/claude.md") {
+		t.Fatalf("user instruction and managed reference = %q", got)
+	}
+}
+
+func TestAgentKitCLIRendersAndRepairsPermissionDrift(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission bits are not supported on Windows")
+	}
+
+	root := cliAgentKitRepository(t)
+	code, _, stderr := runArgs(t, "agent-kit", "install", root)
+	if code != 0 {
+		t.Fatalf("install: code=%d stderr=%q", code, stderr)
+	}
+	const executable = ".goobers/agent-toolkit/config-examples/gaggles/acme-web/scripts/check-todos.sh"
+	fullPath := filepath.Join(root, filepath.FromSlash(executable))
+	if err := os.Chmod(fullPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "agent-kit", "check", root)
+	if code != 1 || stderr != "" || !strings.Contains(stdout, executable) {
+		t.Fatalf("check: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runArgs(t, "agent-kit", "update", root)
+	if code != 0 || stderr != "" ||
+		!strings.Contains(stdout, "old mode 0644\nnew mode 0755") ||
+		!strings.Contains(stdout, "--write --replace-modified") {
+		t.Fatalf("dry-run update: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, _, stderr = runArgs(t, "agent-kit", "update", "--write", root)
+	if code != 1 || !strings.Contains(stderr, "--replace-modified") {
+		t.Fatalf("unacknowledged update: code=%d stderr=%q", code, stderr)
+	}
+	code, _, stderr = runArgs(t, "agent-kit", "update", "--write", "--replace-modified", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("write update: code=%d stderr=%q", code, stderr)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("updated executable mode = %04o", info.Mode().Perm())
 	}
 }
 

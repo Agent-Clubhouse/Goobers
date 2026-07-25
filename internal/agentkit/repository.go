@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -24,7 +25,10 @@ type Repository struct {
 
 const (
 	updateTransactionPath    = ".goobers/.agent-toolkit-update.json"
-	updateTransactionVersion = 1
+	updateTransactionVersion = 2
+
+	instructionReferenceBegin = "<!-- goobers:agent-toolkit:begin -->"
+	instructionReferenceEnd   = "<!-- goobers:agent-toolkit:end -->"
 )
 
 type updateTransaction struct {
@@ -36,6 +40,7 @@ type updateTransaction struct {
 type InstallResult struct {
 	Installed          bool
 	InstructionCreated bool
+	InstructionUpdated bool
 	InstructionPath    string
 	Reference          string
 }
@@ -66,11 +71,12 @@ const (
 
 // Change is one reviewable product-owned file update.
 type Change struct {
-	Path string
-	Kind ChangeKind
-	Old  []byte
-	New  []byte
-	Mode fs.FileMode
+	Path    string
+	Kind    ChangeKind
+	Old     []byte
+	New     []byte
+	OldMode fs.FileMode
+	Mode    fs.FileMode
 }
 
 // UpdatePlan contains changes and ownership conditions for an update.
@@ -80,6 +86,12 @@ type UpdatePlan struct {
 	UserCollisions []string
 
 	interruptedTransactionDigest string
+}
+
+type repositoryFile struct {
+	data   []byte
+	mode   fs.FileMode
+	exists bool
 }
 
 // OpenRepository validates an unambiguous, symlink-free repository root.
@@ -176,11 +188,42 @@ func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, erro
 		Reference:       reference,
 	}
 	if os.IsNotExist(instructionErr) {
-		created, err := r.createFile(adapter.InstructionTarget, []byte("# Goobers agent toolkit\n\n"+reference+"\n"), 0o644)
+		content := []byte("# Goobers agent toolkit\n\n" + instructionReferenceBlock(reference))
+		created, err := r.createFile(adapter.InstructionTarget, content, 0o644)
 		if err != nil {
 			return InstallResult{}, fmt.Errorf("write agent toolkit instruction reference: %w", err)
 		}
 		result.InstructionCreated = created
+		if created {
+			return result, nil
+		}
+		instructionInfo, err = os.Lstat(instructionPath)
+		switch {
+		case err != nil:
+			return InstallResult{}, fmt.Errorf("inspect agent toolkit instruction target after concurrent creation: %w", err)
+		case instructionInfo.Mode()&os.ModeSymlink != 0:
+			return InstallResult{}, fmt.Errorf("agent toolkit instruction target %s is a symbolic link", adapter.InstructionTarget)
+		case !instructionInfo.Mode().IsRegular():
+			return InstallResult{}, fmt.Errorf("agent toolkit instruction target %s is not a regular file", adapter.InstructionTarget)
+		}
+	}
+
+	instruction, exists, err := r.readFile(adapter.InstructionTarget)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	if !exists {
+		return InstallResult{}, fmt.Errorf("agent toolkit instruction target %s disappeared during installation", adapter.InstructionTarget)
+	}
+	updated, changed, err := addInstructionReference(instruction, reference)
+	if err != nil {
+		return InstallResult{}, fmt.Errorf("update agent toolkit instruction reference: %w", err)
+	}
+	if changed {
+		if err := r.writeFile(adapter.InstructionTarget, updated, instructionInfo.Mode().Perm()); err != nil {
+			return InstallResult{}, fmt.Errorf("write agent toolkit instruction reference: %w", err)
+		}
+		result.InstructionUpdated = true
 	}
 	return result, nil
 }
@@ -262,16 +305,16 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 	sort.Strings(currentPaths)
 	for _, installedPath := range currentPaths {
 		file := bundle.Files[installedPath]
-		actual, exists, err := r.readFile(installedPath)
+		state, err := r.readFileState(installedPath)
 		if err != nil {
 			return UpdatePlan{}, err
 		}
-		_, previouslyOwned := oldAssets[installedPath]
-		if !previouslyOwned && exists {
+		oldAsset, previouslyOwned := oldAssets[installedPath]
+		if !previouslyOwned && state.exists {
 			plan.UserCollisions = append(plan.UserCollisions, installedPath)
 			continue
 		}
-		if !exists {
+		if !state.exists {
 			plan.Changes = append(plan.Changes, Change{
 				Path: installedPath,
 				Kind: ChangeAdd,
@@ -280,18 +323,25 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 			})
 			continue
 		}
-		if bytes.Equal(actual, file.Data) {
+		if bytes.Equal(state.data, file.Data) && requiredModeMatches(state.mode, file.Mode) {
 			continue
 		}
 		plan.Changes = append(plan.Changes, Change{
-			Path: installedPath,
-			Kind: ChangeModify,
-			Old:  actual,
-			New:  append([]byte(nil), file.Data...),
-			Mode: file.Mode,
+			Path:    installedPath,
+			Kind:    ChangeModify,
+			Old:     state.data,
+			New:     append([]byte(nil), file.Data...),
+			OldMode: state.mode.Perm(),
+			Mode:    file.Mode,
 		})
-		if previouslyOwned && digest(actual) != oldAssets[installedPath].SHA256 {
-			plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
+		if previouslyOwned {
+			oldMode, err := parseAssetMode(oldAsset.Mode)
+			if err != nil {
+				return UpdatePlan{}, err
+			}
+			if digest(state.data) != oldAsset.SHA256 || !requiredModeMatches(state.mode, oldMode) {
+				plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
+			}
 		}
 	}
 
@@ -304,19 +354,24 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		if _, stillOwned := bundle.Files[installedPath]; stillOwned {
 			continue
 		}
-		actual, exists, err := r.readFile(installedPath)
+		state, err := r.readFileState(installedPath)
 		if err != nil {
 			return UpdatePlan{}, err
 		}
-		if !exists {
+		if !state.exists {
 			continue
 		}
 		plan.Changes = append(plan.Changes, Change{
-			Path: installedPath,
-			Kind: ChangeDelete,
-			Old:  actual,
+			Path:    installedPath,
+			Kind:    ChangeDelete,
+			Old:     state.data,
+			OldMode: state.mode.Perm(),
 		})
-		if digest(actual) != oldAssets[installedPath].SHA256 {
+		oldMode, err := parseAssetMode(oldAssets[installedPath].Mode)
+		if err != nil {
+			return UpdatePlan{}, err
+		}
+		if digest(state.data) != oldAssets[installedPath].SHA256 || !requiredModeMatches(state.mode, oldMode) {
 			plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
 		}
 	}
@@ -388,17 +443,26 @@ func (r *Repository) validateUpdateChanges(changes []Change, recovering bool) er
 		if change.Path == InstalledManifestPath && change.Kind != ChangeModify {
 			return fmt.Errorf("agent toolkit manifest update must be a modification")
 		}
-		actual, exists, err := r.readFile(change.Path)
+		state, err := r.readFileState(change.Path)
 		if err != nil {
 			return err
 		}
 		switch change.Kind {
 		case ChangeAdd:
-			if exists && (!recovering || !bytes.Equal(actual, change.New)) {
+			complete := state.exists &&
+				bytes.Equal(state.data, change.New) &&
+				requiredModeMatches(state.mode, change.Mode)
+			if state.exists && (!recovering || !complete) {
 				return fmt.Errorf("%s appeared after update planning; refusing to overwrite it", change.Path)
 			}
 		case ChangeModify:
-			if !exists || (!bytes.Equal(actual, change.Old) && (!recovering || !bytes.Equal(actual, change.New))) {
+			original := state.exists &&
+				bytes.Equal(state.data, change.Old) &&
+				requiredModeMatches(state.mode, change.OldMode)
+			complete := state.exists &&
+				bytes.Equal(state.data, change.New) &&
+				requiredModeMatches(state.mode, change.Mode)
+			if !original && (!recovering || !complete) {
 				return fmt.Errorf("%s changed after update planning; refusing to overwrite it", change.Path)
 			}
 			if change.Path == InstalledManifestPath {
@@ -407,10 +471,13 @@ func (r *Repository) validateUpdateChanges(changes []Change, recovering bool) er
 				}
 			}
 		case ChangeDelete:
-			if exists && !bytes.Equal(actual, change.Old) {
+			original := state.exists &&
+				bytes.Equal(state.data, change.Old) &&
+				requiredModeMatches(state.mode, change.OldMode)
+			if state.exists && !original {
 				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
 			}
-			if !recovering && !exists {
+			if !recovering && !state.exists {
 				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
 			}
 		default:
@@ -510,35 +577,48 @@ func (r *Repository) planInterruptedUpdate(
 		target, targetOwned := bundle.Files[change.Path]
 		switch change.Kind {
 		case ChangeAdd:
-			if !targetOwned || len(change.Old) != 0 ||
+			if !targetOwned || len(change.Old) != 0 || change.OldMode != 0 ||
 				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
 				return UpdatePlan{}, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition or owned-file restoration", change.Path)
 			}
 		case ChangeModify:
 			if !previouslyOwned || !targetOwned ||
-				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
+				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode ||
+				change.OldMode != change.OldMode.Perm() {
 				return UpdatePlan{}, fmt.Errorf("interrupted update modification %s is not an exact manifest-owned current-bundle change", change.Path)
 			}
-			if digest(change.Old) != oldAsset.SHA256 {
+			oldMode, err := parseAssetMode(oldAsset.Mode)
+			if err != nil {
+				return UpdatePlan{}, err
+			}
+			if digest(change.Old) != oldAsset.SHA256 || !requiredModeMatches(change.OldMode, oldMode) {
 				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
 			}
 		case ChangeDelete:
-			if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 {
+			if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 ||
+				change.OldMode != change.OldMode.Perm() {
 				return UpdatePlan{}, fmt.Errorf("interrupted update deletion %s is not an obsolete manifest-owned asset", change.Path)
 			}
-			if digest(change.Old) != oldAsset.SHA256 {
+			oldMode, err := parseAssetMode(oldAsset.Mode)
+			if err != nil {
+				return UpdatePlan{}, err
+			}
+			if digest(change.Old) != oldAsset.SHA256 || !requiredModeMatches(change.OldMode, oldMode) {
 				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
 			}
 		default:
 			return UpdatePlan{}, fmt.Errorf("unsupported interrupted agent toolkit update change %q", change.Kind)
 		}
 		if manifestAlreadyUpdated {
-			actual, exists, err := r.readFile(change.Path)
+			state, err := r.readFileState(change.Path)
 			if err != nil {
 				return UpdatePlan{}, err
 			}
-			complete := change.Kind == ChangeDelete && !exists ||
-				change.Kind != ChangeDelete && exists && bytes.Equal(actual, change.New)
+			complete := change.Kind == ChangeDelete && !state.exists ||
+				change.Kind != ChangeDelete &&
+					state.exists &&
+					bytes.Equal(state.data, change.New) &&
+					requiredModeMatches(state.mode, change.Mode)
 			if !complete {
 				return UpdatePlan{}, fmt.Errorf(
 					"interrupted update has an incomplete asset change after its manifest was installed: %s",
@@ -599,14 +679,14 @@ func (r *Repository) resumeUpdate(changes []Change) error {
 }
 
 func (r *Repository) applyUpdateChange(change Change) error {
-	actual, exists, err := r.readFile(change.Path)
+	state, err := r.readFileState(change.Path)
 	if err != nil {
 		return err
 	}
 	switch change.Kind {
 	case ChangeAdd:
-		if exists {
-			if bytes.Equal(actual, change.New) {
+		if state.exists {
+			if bytes.Equal(state.data, change.New) && requiredModeMatches(state.mode, change.Mode) {
 				return nil
 			}
 			return fmt.Errorf("%s changed during update recovery; refusing to overwrite it", change.Path)
@@ -619,20 +699,24 @@ func (r *Repository) applyUpdateChange(change Change) error {
 			return fmt.Errorf("%s appeared during update recovery; refusing to overwrite it", change.Path)
 		}
 	case ChangeModify:
-		if exists && bytes.Equal(actual, change.New) {
+		if state.exists &&
+			bytes.Equal(state.data, change.New) &&
+			requiredModeMatches(state.mode, change.Mode) {
 			return nil
 		}
-		if !exists || !bytes.Equal(actual, change.Old) {
+		if !state.exists ||
+			!bytes.Equal(state.data, change.Old) ||
+			!requiredModeMatches(state.mode, change.OldMode) {
 			return fmt.Errorf("%s changed during update recovery; refusing to overwrite it", change.Path)
 		}
 		if err := r.writeFile(change.Path, change.New, change.Mode); err != nil {
 			return err
 		}
 	case ChangeDelete:
-		if !exists {
+		if !state.exists {
 			return nil
 		}
-		if !bytes.Equal(actual, change.Old) {
+		if !bytes.Equal(state.data, change.Old) || !requiredModeMatches(state.mode, change.OldMode) {
 			return fmt.Errorf("%s changed during update recovery; refusing to delete it", change.Path)
 		}
 		fullPath, err := r.securePath(change.Path)
@@ -667,15 +751,19 @@ func (r *Repository) check(bundle Bundle, installed Manifest) (CheckReport, erro
 		if err != nil {
 			return CheckReport{}, err
 		}
-		data, exists, err := r.readFile(installedPath)
+		state, err := r.readFileState(installedPath)
 		if err != nil {
 			return CheckReport{}, err
 		}
-		if !exists {
+		if !state.exists {
 			report.Missing = append(report.Missing, installedPath)
 			continue
 		}
-		if digest(data) != asset.SHA256 {
+		requiredMode, err := parseAssetMode(asset.Mode)
+		if err != nil {
+			return CheckReport{}, err
+		}
+		if digest(state.data) != asset.SHA256 || !requiredModeMatches(state.mode, requiredMode) {
 			report.Modified = append(report.Modified, installedPath)
 		}
 	}
@@ -722,6 +810,9 @@ func (r *Repository) installBundle(bundle Bundle) error {
 		}
 		if err := os.WriteFile(stagedPath, file.Data, file.Mode); err != nil {
 			return fmt.Errorf("stage agent toolkit asset %s: %w", installedPath, err)
+		}
+		if err := os.Chmod(stagedPath, file.Mode); err != nil {
+			return fmt.Errorf("set staged agent toolkit asset mode %s: %w", installedPath, err)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(staging, "manifest.json"), bundle.ManifestJSON, 0o644); err != nil {
@@ -784,18 +875,30 @@ func (r *Repository) readCommittedManifest() ([]byte, error) {
 }
 
 func (r *Repository) readFile(relative string) ([]byte, bool, error) {
+	state, err := r.readFileState(relative)
+	return state.data, state.exists, err
+}
+
+func (r *Repository) readFileState(relative string) (repositoryFile, error) {
 	fullPath, err := r.securePath(relative)
 	if err != nil {
-		return nil, false, err
+		return repositoryFile{}, err
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return repositoryFile{}, nil
+		}
+		return repositoryFile{}, fmt.Errorf("inspect agent toolkit path %s: %w", relative, err)
+	}
+	if !info.Mode().IsRegular() {
+		return repositoryFile{}, fmt.Errorf("agent toolkit path %s is not a regular file", relative)
 	}
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("read agent toolkit path %s: %w", relative, err)
+		return repositoryFile{}, fmt.Errorf("read agent toolkit path %s: %w", relative, err)
 	}
-	return data, true, nil
+	return repositoryFile{data: data, mode: info.Mode().Perm(), exists: true}, nil
 }
 
 func (r *Repository) writeFile(relative string, data []byte, mode fs.FileMode) error {
@@ -868,6 +971,9 @@ func (r *Repository) createFile(relative string, data []byte, mode fs.FileMode) 
 			_ = os.Remove(fullPath)
 		}
 	}()
+	if err := file.Chmod(mode); err != nil {
+		return false, fmt.Errorf("set agent toolkit path mode %s: %w", relative, err)
+	}
 	if _, err := file.Write(data); err != nil {
 		return false, fmt.Errorf("write agent toolkit path %s: %w", relative, err)
 	}
@@ -969,6 +1075,38 @@ func sameManifestRelease(installed, current Manifest) bool {
 
 func semanticManifestDrift(installed, current Manifest) bool {
 	return sameManifestRelease(installed, current) && !manifestsMatch(installed, current)
+}
+
+func instructionReferenceBlock(reference string) string {
+	return instructionReferenceBegin + "\n" + reference + "\n" + instructionReferenceEnd + "\n"
+}
+
+func addInstructionReference(content []byte, reference string) ([]byte, bool, error) {
+	if bytes.Contains(content, []byte(reference)) {
+		return content, false, nil
+	}
+	begin := bytes.Index(content, []byte(instructionReferenceBegin))
+	end := bytes.Index(content, []byte(instructionReferenceEnd))
+	if begin >= 0 || end >= 0 {
+		return nil, false, fmt.Errorf("existing managed reference block is incomplete or locally modified")
+	}
+
+	updated := append([]byte(nil), content...)
+	if len(updated) > 0 && updated[len(updated)-1] != '\n' {
+		updated = append(updated, '\n')
+	}
+	if len(updated) > 0 && !bytes.HasSuffix(updated, []byte("\n\n")) {
+		updated = append(updated, '\n')
+	}
+	updated = append(updated, instructionReferenceBlock(reference)...)
+	return updated, true, nil
+}
+
+func requiredModeMatches(actual, required fs.FileMode) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return actual.Perm()&0o111 == required.Perm()&0o111
 }
 
 func compactStrings(values []string) []string {

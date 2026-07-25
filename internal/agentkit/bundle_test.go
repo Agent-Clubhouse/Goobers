@@ -37,7 +37,9 @@ func TestBuildMatchesReleaseToolkitLayout(t *testing.T) {
 			t.Errorf("manifest asset %q has no bundled file", asset.Path)
 			continue
 		}
-		if int64(len(file.Data)) != asset.Size || digest(file.Data) != asset.SHA256 {
+		if int64(len(file.Data)) != asset.Size ||
+			digest(file.Data) != asset.SHA256 ||
+			formatAssetMode(file.Mode) != asset.Mode {
 			t.Errorf("manifest metadata does not match %q", asset.Path)
 		}
 	}
@@ -46,6 +48,12 @@ func TestBuildMatchesReleaseToolkitLayout(t *testing.T) {
 	}
 	if _, err := DecodeManifest(bundle.ManifestJSON); err != nil {
 		t.Fatalf("decode generated manifest: %v", err)
+	}
+	const executable = "payload/" + InstalledRoot + "/config-examples/gaggles/acme-web/scripts/check-todos.sh"
+	for _, asset := range bundle.Manifest.Assets {
+		if asset.Path == executable && asset.Mode != "0755" {
+			t.Fatalf("executable asset mode = %q, want 0755", asset.Mode)
+		}
 	}
 }
 
