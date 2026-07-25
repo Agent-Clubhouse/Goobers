@@ -79,7 +79,7 @@ func isTutorBranch(head, namespace string) bool {
 
 func classifyTutorChanges(changes []tutorFileChange) (tutorChangeClassification, error) {
 	if len(changes) == 0 {
-		return tutorChangeClassification{}, fmt.Errorf("Tutor PR has no changed files")
+		return tutorChangeClassification{}, fmt.Errorf("tutor PR has no changed files")
 	}
 	types := map[tutorChangeType]bool{}
 	for _, change := range changes {
