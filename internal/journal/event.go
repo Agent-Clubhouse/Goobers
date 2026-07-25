@@ -139,13 +139,21 @@ const (
 type Event struct {
 	// Schema is the envelope version. Normative (readers branch on it).
 	Schema string `json:"schema"`
-	// Seq is the monotonic per-run sequence number (from 1). Normative — the
-	// ordering key; at tier 3, events order by (Branch, Seq).
+	// Seq is the monotonic per-run sequence number (from 1). The ordering key;
+	// events order by (Branch, Seq) at every tier. Normative WITHIN a branch —
+	// including the root branch and every run that never forks. Its absolute
+	// value is EXCLUDED from conformance ACROSS distinct non-zero branches,
+	// because branch interleaving is a scheduling artefact: two conformant
+	// runners may interleave differently and still be equivalent (ARCHITECTURE
+	// §3.3, design/static-fan-out-fan-in.md §6.2).
 	Seq uint64 `json:"seq"`
 	// Type is the event kind. Normative.
 	Type EventType `json:"type"`
-	// Branch is the parallel-branch id. 0 at tiers 1–2; reserved for tier-3
-	// parallel branches. Normative (secondary ordering key).
+	// Branch is the parallel-branch id, normative at every tier as the primary
+	// ordering key. 0 is the run's ROOT branch — every run that never forks
+	// carries 0 on every event. Declared parallel branches number from 1 in
+	// declaration order, so a branch id is deterministic and reproducible across
+	// runs and runners.
 	Branch int `json:"branch"`
 	// Time is when the event was recorded. EXCLUDED from conformance.
 	Time time.Time `json:"time"`
