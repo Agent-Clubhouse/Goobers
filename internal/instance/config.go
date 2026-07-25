@@ -155,6 +155,8 @@ type PortalConfig struct {
 	Support PortalSupportConfig `json:"support,omitempty" yaml:"support,omitempty"`
 }
 
+// PortalBrandConfig holds the per-instance brand identity (name, tagline,
+// scope mark, logo, favicon) surfaced in the portal for co-branding (CBR).
 type PortalBrandConfig struct {
 	Name       string `json:"name,omitempty" yaml:"name,omitempty"`
 	Tagline    string `json:"tagline,omitempty" yaml:"tagline,omitempty"`
@@ -163,6 +165,8 @@ type PortalBrandConfig struct {
 	FaviconURL string `json:"faviconUrl,omitempty" yaml:"faviconUrl,omitempty"`
 }
 
+// PortalThemeConfig holds the per-instance accent color overrides (light and
+// dark variants) applied to the portal for co-branding (CBR).
 type PortalThemeConfig struct {
 	AccentLight     string `json:"accentLight,omitempty" yaml:"accentLight,omitempty"`
 	AccentDark      string `json:"accentDark,omitempty" yaml:"accentDark,omitempty"`
@@ -172,6 +176,8 @@ type PortalThemeConfig struct {
 	AccentInkDark   string `json:"accentInkDark,omitempty" yaml:"accentInkDark,omitempty"`
 }
 
+// PortalSupportConfig holds the per-instance support channels (docs, issues,
+// chat, and extra links) rendered in the portal sidebar for co-branding (CBR).
 type PortalSupportConfig struct {
 	DocsURL   string              `json:"docsUrl,omitempty" yaml:"docsUrl,omitempty"`
 	IssuesURL string              `json:"issuesUrl,omitempty" yaml:"issuesUrl,omitempty"`
@@ -179,6 +185,8 @@ type PortalSupportConfig struct {
 	Links     []PortalSupportLink `json:"links,omitempty" yaml:"links,omitempty"`
 }
 
+// PortalSupportLink is a single labeled support URL shown in the portal's
+// support footer (CBR).
 type PortalSupportLink struct {
 	Label string `json:"label" yaml:"label"`
 	URL   string `json:"url" yaml:"url"`

@@ -181,7 +181,7 @@ _goobers_completion()
             ;;
         completion)
             if (( COMP_CWORD == 2 )); then
-                candidates="bash zsh fish"
+                candidates="bash zsh fish powershell"
             fi
             ;;
         telemetry)
