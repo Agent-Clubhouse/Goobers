@@ -62,6 +62,34 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeStreamUsesWholeAgentTreeUsage(t *testing.T) {
+	stream := `{"type":"result","subtype":"success","result":"finished","usage":{"input_tokens":10,"output_tokens":2},"modelUsage":{"claude-opus-4-6":{"inputTokens":30,"outputTokens":5},"claude-sonnet-4-6":{"inputTokens":70,"outputTokens":15}}}`
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, nil, 1<<20, 0)
+	if !ok {
+		t.Fatal("convertClaudeStreams returned false")
+	}
+	if got := capture.metrics[telemetry.AttrGenAIUsageInputTokens]; got != 100 {
+		t.Fatalf("input tokens = %v, want 100", got)
+	}
+	if got := capture.metrics[telemetry.AttrGenAIUsageOutputTokens]; got != 20 {
+		t.Fatalf("output tokens = %v, want 20", got)
+	}
+}
+
+func TestConvertClaudeStreamFallsBackToTopLevelUsage(t *testing.T) {
+	stream := `{"type":"result","subtype":"success","result":"finished","usage":{"input_tokens":10,"output_tokens":2}}`
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, nil, 1<<20, 0)
+	if !ok {
+		t.Fatal("convertClaudeStreams returned false")
+	}
+	if got := capture.metrics[telemetry.AttrGenAIUsageInputTokens]; got != 10 {
+		t.Fatalf("input tokens = %v, want 10", got)
+	}
+	if got := capture.metrics[telemetry.AttrGenAIUsageOutputTokens]; got != 2 {
+		t.Fatalf("output tokens = %v, want 2", got)
+	}
+}
+
 func TestConvertClaudeStreamBoundsCanonicalTranscript(t *testing.T) {
 	longText := strings.Repeat("x", 2000)
 	stream := `{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"` +

@@ -272,7 +272,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 						invocationResult = append(invocationResult, event)
 					}
 				}
-				accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, native.TotalCostUSD)
+				modelTotals := claudeUsageAccumulator{}
 				names := make([]string, 0, len(native.ModelUsage))
 				for name := range native.ModelUsage {
 					names = append(names, name)
@@ -286,7 +286,14 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 						models[name] = accumulator
 					}
 					accumulateClaudeUsage(accumulator, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
+					accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens, nil)
 				}
+				if modelTotals.hasInput || modelTotals.hasOutput {
+					accumulateClaudeUsageTotals(&aggregate, modelTotals)
+				} else {
+					accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, nil)
+				}
+				accumulateClaudeUsage(&aggregate, nil, nil, native.TotalCostUSD)
 			}
 			for _, event := range events {
 				if event.Role == "assistant" && event.Content != "" {
@@ -512,6 +519,17 @@ func accumulateClaudeUsage(accumulator *claudeUsageAccumulator, input, output *i
 	if cost != nil {
 		accumulator.costUSD += *cost
 		accumulator.hasCost = true
+	}
+}
+
+func accumulateClaudeUsageTotals(accumulator *claudeUsageAccumulator, usage claudeUsageAccumulator) {
+	if usage.hasInput {
+		accumulator.inputTokens += usage.inputTokens
+		accumulator.hasInput = true
+	}
+	if usage.hasOutput {
+		accumulator.outputTokens += usage.outputTokens
+		accumulator.hasOutput = true
 	}
 }
 
