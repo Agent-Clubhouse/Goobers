@@ -118,6 +118,8 @@ func HumanGateSignal(gateName string) string {
 	return "gate:" + gateName
 }
 
+const temporalHumanGateUnsupported = "engine: human gates require occurrence-bound Temporal signals and are not supported yet"
+
 // Run is the engine's Temporal workflow function. It walks the pinned definition
 // as a state machine: tasks invoke activities to produce result envelopes; gates
 // evaluate and branch. It performs no wall-clock reads or randomness — all side
@@ -135,6 +137,11 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	)
 	if err != nil {
 		return RunResult{}, err
+	}
+	for _, g := range in.Spec.Gates {
+		if g.Evaluator == apiv1.EvaluatorHuman {
+			return RunResult{}, fmt.Errorf("%s: gate %q", temporalHumanGateUnsupported, g.Name)
+		}
 	}
 	rec, err := newRunJournal(ctx, in, m)
 	if err != nil {

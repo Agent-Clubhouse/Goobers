@@ -711,6 +711,7 @@ type walkSeed struct {
 	lastResult      apiv1.ResultEnvelope
 	workspaceBranch string
 	branchRecorded  bool
+	humanDecision   *HumanGateDecision
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -865,6 +866,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	// "the run's own branch", resolved per stage in createStageWorkspace.
 	workspaceBranch := seed.workspaceBranch
 	branchRecorded := seed.branchRecorded
+	humanDecision := seed.humanDecision
 	steps := 0
 
 	for {
@@ -1018,14 +1020,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 				branchRecorded = true
 			}
-			// The machine remains at this gate until its evaluator records a
-			// verdict. Persist that wait before dispatch so observers can
-			// distinguish it from an active stage.
-			if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
-				return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
-			}
-			if g.Evaluator == apiv1.EvaluatorHuman {
+			if g.Evaluator == apiv1.EvaluatorHuman && humanDecision == nil {
+				// A human gate executes nothing. Its durable pause is the
+				// checkpoint an external decision must explicitly resolve.
+				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+					return Result{}, fmt.Errorf("runner: journal pause at human gate %q: %w", g.Name, err)
+				}
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
+			}
+			if g.Evaluator != apiv1.EvaluatorHuman {
+				// The machine remains at this gate until its evaluator records
+				// a verdict. Persist that wait before dispatch so observers can
+				// distinguish it from an active stage.
+				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+					return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
+				}
 			}
 
 			var instructionAddendum string
@@ -1034,7 +1043,17 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				rerun = nil
 			}
 			retryClass, knownOutcome, retryable := retryFailureClass(g, lastResult)
-			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch, knownOutcome)
+			var gr gate.Result
+			var err, removeErr error
+			if g.Evaluator == apiv1.EvaluatorHuman {
+				if humanDecision.Gate != g.Name {
+					return Result{}, fmt.Errorf("runner: human decision for gate %q reached gate %q", humanDecision.Gate, g.Name)
+				}
+				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision, humanDecision.Actor)
+				humanDecision = nil
+			} else {
+				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch, knownOutcome)
+			}
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
 				return stalledResult, stalledErr
 			}
@@ -1115,9 +1134,12 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 		return "", res, false, err
 	case workflow.TerminalComplete:
 		// #849: a non-pass gate must not hide an unresolved stage failure,
-		// while a passing gate has affirmatively cleared that same result.
+		// while a passing gate or explicit human decision has affirmatively
+		// cleared that same result.
 		subject, _ := machine.Task(lastStage)
-		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
+		gateDef, _ := machine.Gate(gr.Gate)
+		clearedFailure := gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !clearedFailure {
 			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
 			return "", res, false, err
 		}
@@ -3147,7 +3169,7 @@ func machineUsesRepo(machine *workflow.Machine) bool {
 		}
 	}
 	for _, g := range machine.Def.Spec.Gates {
-		if g.Evaluator != apiv1.EvaluatorAutomated {
+		if g.Evaluator == apiv1.EvaluatorAgentic {
 			return true
 		}
 	}

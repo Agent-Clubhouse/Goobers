@@ -56,22 +56,30 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsHumanGate(t *testing.T) {
+func TestCompileAllowsHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Start:  "approval",
 		Gates: []apiv1.Gate{{
 			Name:      "approval",
 			Evaluator: apiv1.EvaluatorHuman,
-			Human:     &apiv1.HumanGate{Approvers: []string{"maintainers"}},
+			Human:     &apiv1.HumanGate{},
 			Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
 		}},
 	}
 
-	_, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec})
-	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("expected actionable human-gate rejection, got %v", err)
+	if _, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("compile human gate: %v", err)
+	}
+	spec.Gates[0].Human.Approvers = []string{"maintainers"}
+	if _, err := compileAcknowledged(Definition{Name: "restricted-human-approval", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("compile restricted human gate: %v", err)
+	}
+	spec.Gates[0].Human.TimeoutSeconds = 60
+	spec.Gates[0].Human.OnTimeout = "reject"
+	if _, err := compileAcknowledged(Definition{Name: "timed-human-approval", Version: 1, Spec: spec}); err == nil ||
+		!strings.Contains(err.Error(), "human timeout behavior is not supported yet") {
+		t.Fatalf("timed human gate error = %v, want fail-closed timeout rejection", err)
 	}
 }
 

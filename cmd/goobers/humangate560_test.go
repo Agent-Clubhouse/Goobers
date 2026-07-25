@@ -32,8 +32,6 @@ spec:
         fail: "@abort"
 `
 
-const humanGateUnsupportedMessage = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-
 func humanGateInstance(t *testing.T) string {
 	t.Helper()
 	root := initDemo(t)
@@ -44,37 +42,29 @@ func humanGateInstance(t *testing.T) string {
 	return root
 }
 
-func TestValidateRejectsHumanGate(t *testing.T) {
+func TestValidateAcceptsHumanGate(t *testing.T) {
 	root := humanGateInstance(t)
 
 	code, stdout, stderr := runArgs(t, "validate", root)
-	if code != 1 {
-		t.Fatalf("validate: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("validate: code = %d, want 0; stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "INVALID workflow") || !strings.Contains(stdout, humanGateUnsupportedMessage) {
-		t.Fatalf("validate stdout = %q, want compile rejection %q", stdout, humanGateUnsupportedMessage)
+	if !strings.Contains(stdout, "OK: instance.yaml valid; config/ valid") {
+		t.Fatalf("validate stdout = %q, want valid human-gate workflow", stdout)
 	}
 }
 
-func TestDaemonRejectsHumanGateBeforeStarting(t *testing.T) {
+func TestDaemonAcceptsHumanGateAtStartup(t *testing.T) {
 	root := humanGateInstance(t)
 
-	// The daemon must reject the unsupported human gate at startup and return 1.
-	// A bounded context is a safety net: if that rejection ever regressed, the
-	// daemon would otherwise idle forever here with no per-op deadline (#798) —
-	// the timeout turns that into a fast, legible failure instead of a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("up: code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("up: code = %d, want 0; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), `compile workflow "default-implement"`) ||
-		!strings.Contains(stderr.String(), humanGateUnsupportedMessage) {
-		t.Fatalf("up stderr = %q, want compile rejection %q", stderr.String(), humanGateUnsupportedMessage)
-	}
-	if strings.Contains(stdout.String(), "daemon started") {
-		t.Fatalf("daemon started with an unsupported human gate: stdout = %q", stdout.String())
+	if !strings.Contains(stdout.String(), "daemon started") {
+		t.Fatalf("daemon did not start with human gate: stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }

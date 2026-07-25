@@ -36,6 +36,22 @@ type ResumeInput struct {
 	// RepoRef is the target repository every stage worktree branches from —
 	// the same value originally passed to Start.
 	RepoRef apiv1.RepoRef
+	// HumanDecision resolves the latest durable human-gate pause. Nil performs
+	// ordinary crash recovery and leaves a paused human gate awaiting input.
+	HumanDecision *HumanGateDecision
+}
+
+// HumanGateDecision is an explicit outcome submitted for one paused human
+// gate. PauseSeq binds the decision to the durable gate.paused occurrence so a
+// delayed request cannot resolve a later visit to the same gate. Actor is the
+// authenticated principal supplying the decision and is required when the gate
+// restricts approvers. Decision must exactly match one of that gate's configured
+// branch keys.
+type HumanGateDecision struct {
+	Gate     string
+	PauseSeq uint64
+	Decision string
+	Actor    string
 }
 
 // ResumeFromTerminalInput describes an explicit human action that reopens an
@@ -76,7 +92,13 @@ type ResumeFromTerminalInput struct {
 // the exact transition (taskOutcome) a live walk would have taken, so the
 // walk actually resumes at the RIGHT next state.
 //
-// A gate-state resume evaluates against the REAL subject:
+// A paused human-gate resume requires a decision bound to the durable
+// gate.paused sequence; ordinary crash resume supplies none and remains paused.
+// If gate.evaluated was fsynced before a crash, its recorded transition is
+// replayed independently of state.json and an exact decision retry is
+// idempotent. Any other stale or mismatched decision fails closed.
+//
+// An automated/agentic gate-state resume evaluates against the REAL subject:
 // lastFinishedSubject reconstructs the last finished stage's full result
 // (status, outputs, artifacts — journaled on stage.finished for exactly this)
 // instead of walk's in-memory-only lastStage/lastResult defaulting to a zero
@@ -91,6 +113,22 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	if in.HumanDecision != nil {
+		decision := *in.HumanDecision
+		decision.Gate = strings.TrimSpace(decision.Gate)
+		decision.Decision = strings.TrimSpace(decision.Decision)
+		decision.Actor = strings.TrimSpace(decision.Actor)
+		if decision.Gate == "" {
+			return Result{}, fmt.Errorf("runner: human decision gate is required")
+		}
+		if decision.PauseSeq == 0 {
+			return Result{}, fmt.Errorf("runner: human decision pause sequence is required")
+		}
+		if decision.Decision == "" {
+			return Result{}, fmt.Errorf("runner: human decision is required")
+		}
+		in.HumanDecision = &decision
 	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
@@ -226,6 +264,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, err
 		}
+		if in.HumanDecision != nil {
+			return res, fmt.Errorf("runner: run %q is %s and no longer awaiting a human gate decision", in.RunID, phase)
+		}
 		return res, nil
 	}
 
@@ -258,6 +299,31 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
 			fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
 	}
+	humanProgress := latestHumanGateProgress(events, in.Machine)
+	if in.HumanDecision == nil && humanProgress.waiting {
+		return Result{Phase: journal.PhaseRunning, FinalState: humanProgress.gate}, nil
+	}
+	if in.HumanDecision != nil {
+		if humanProgress.decided {
+			if in.HumanDecision.Gate != humanProgress.gate ||
+				in.HumanDecision.PauseSeq != humanProgress.pauseSeq ||
+				in.HumanDecision.Decision != humanProgress.decision {
+				return Result{}, fmt.Errorf("runner: human gate %q pause %d already recorded decision %q", humanProgress.gate, humanProgress.pauseSeq, humanProgress.decision)
+			}
+		} else if !humanProgress.waiting {
+			return Result{}, fmt.Errorf("runner: run %q is not awaiting a human gate decision", in.RunID)
+		} else if in.HumanDecision.Gate != humanProgress.gate || in.HumanDecision.PauseSeq != humanProgress.pauseSeq {
+			return Result{}, fmt.Errorf("runner: run %q is awaiting human gate %q pause %d, not %q pause %d",
+				in.RunID, humanProgress.gate, humanProgress.pauseSeq, in.HumanDecision.Gate, in.HumanDecision.PauseSeq)
+		}
+		g, ok := in.Machine.Gate(humanProgress.gate)
+		if !ok || g.Evaluator != apiv1.EvaluatorHuman {
+			return Result{}, fmt.Errorf("runner: paused gate %q is not a human gate", humanProgress.gate)
+		}
+		if err := gate.ValidateHumanDecision(g, in.HumanDecision.Decision, in.HumanDecision.Actor); err != nil {
+			return Result{}, fmt.Errorf("runner: %w", err)
+		}
+	}
 	rerun, seedEvents, err := pendingRerun(events, in.Machine)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
@@ -272,6 +338,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
 	seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+	if humanProgress.waiting {
+		seed.humanDecision = in.HumanDecision
+	}
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
 	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
@@ -306,6 +375,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
+	if humanProgress.waiting || humanProgress.decided {
+		// The event log is authoritative when gate.paused or gate.evaluated
+		// was fsynced but the corresponding checkpoint was lost or stale.
+		startState = humanProgress.gate
+	}
 	var completedGate *gate.Result
 	resumedGateTransition := false
 	if rerun == nil {
@@ -314,16 +388,24 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = retryTarget
 			resumedGateTransition = true
 		} else if g, isGate := in.Machine.Gate(startState); isGate {
-			gr, retry, completed, rerr := resumeCompletedRetry(jr, segment, g, lastStage, lastResult)
-			if rerr != nil {
-				return Result{}, fmt.Errorf("runner: restore completed retry decision for gate %q: %w", g.Name, rerr)
-			}
-			if completed {
-				resumedGateTransition = true
-				if retry {
-					startState = gr.Target
-				} else {
+			if g.Evaluator == apiv1.EvaluatorHuman {
+				if evaluated, ok := latestCompletedGateEvaluation(segment, g.Name); ok {
+					gr := gateResultFromEvent(evaluated)
+					resumedGateTransition = true
 					completedGate = &gr
+				}
+			} else {
+				gr, retry, completed, rerr := resumeCompletedRetry(jr, segment, g, lastStage, lastResult)
+				if rerr != nil {
+					return Result{}, fmt.Errorf("runner: restore completed retry decision for gate %q: %w", g.Name, rerr)
+				}
+				if completed {
+					resumedGateTransition = true
+					if retry {
+						startState = gr.Target
+					} else {
+						completedGate = &gr
+					}
 				}
 			}
 		}
@@ -412,6 +494,46 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	return result, nil
 }
 
+type humanGateProgress struct {
+	gate     string
+	decision string
+	pauseSeq uint64
+	waiting  bool
+	decided  bool
+}
+
+func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) humanGateProgress {
+	var decidedGate, decision string
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		switch event.Type {
+		case journal.EventGateEvaluated:
+			g, ok := machine.Gate(event.Gate)
+			if !ok || g.Evaluator != apiv1.EvaluatorHuman {
+				return humanGateProgress{}
+			}
+			decidedGate, decision = g.Name, event.Verdict
+		case journal.EventGatePaused:
+			g, ok := machine.Gate(event.Gate)
+			if !ok || g.Evaluator != apiv1.EvaluatorHuman {
+				return humanGateProgress{}
+			}
+			if decidedGate != "" {
+				if decidedGate != g.Name {
+					return humanGateProgress{}
+				}
+				return humanGateProgress{gate: g.Name, decision: decision, pauseSeq: event.Seq, decided: true}
+			}
+			return humanGateProgress{gate: g.Name, pauseSeq: event.Seq, waiting: true}
+		case journal.EventGateStarted,
+			journal.EventStageStarted, journal.EventStageFinished,
+			journal.EventRunResumed, journal.EventRunFinished:
+			return humanGateProgress{}
+		}
+	}
+	return humanGateProgress{}
+}
+
 func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == journal.EventRunResumed {
@@ -443,13 +565,7 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 	if !retryable {
 		return gate.Result{}, false, false, nil
 	}
-	result := gate.Result{
-		Gate:      evaluated.Gate,
-		Outcome:   evaluated.Verdict,
-		Target:    evaluated.Target,
-		Attempt:   gateRepassAttempt(evaluated),
-		Escalated: evaluated.Escalated,
-	}
+	result := gateResultFromEvent(evaluated)
 	if hasRetryDecisionAfter(events, evaluated) {
 		if result.Outcome == gate.OutcomePass || result.Escalated {
 			return result, false, true, nil
@@ -469,6 +585,16 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 		result.Target = target
 	}
 	return result, retry, true, nil
+}
+
+func gateResultFromEvent(evaluated journal.Event) gate.Result {
+	return gate.Result{
+		Gate:      evaluated.Gate,
+		Outcome:   evaluated.Verdict,
+		Target:    evaluated.Target,
+		Attempt:   gateRepassAttempt(evaluated),
+		Escalated: evaluated.Escalated,
+	}
 }
 
 func latestCompletedGateEvaluation(events []journal.Event, gateName string) (journal.Event, bool) {

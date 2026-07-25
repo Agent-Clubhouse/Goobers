@@ -80,13 +80,10 @@ func TestWorkflowShowSurfacesValidationWarnings(t *testing.T) {
 }
 
 // workflowDOTFixture is workflowShowFixture's gate swapped from human to
-// automated (#706: human gates are rejected at compile time until durable
-// pause/resume ships, and --dot now compiles the workflow to build its
-// graph projection — unlike the plain text DAG above, which reads
-// wf.Spec directly and never compiles, so workflowShowFixture's human gate
-// stays valid for TestWorkflowShowPrintsTextDAG). Same node/edge topology
-// (pass/fail branches to the same targets), so the expected DOT output is
-// unaffected by the swap — DOT rendering has no evaluator-specific text.
+// automated so the fixture remains focused on graph projection. It has the
+// same node/edge topology (pass/fail branches to the same targets), so the
+// expected DOT output is unaffected by the swap — DOT rendering has no
+// evaluator-specific text.
 const workflowDOTFixture = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:

@@ -20,16 +20,22 @@ Goal ladder (PO):
 
 ## 2. Current state (grounded)
 
-- **Human gates are not implemented.** `internal/gate/evaluate.go:118` returns
-  `"human evaluator is not supported at V0 (GT-003, ships V1)"`. So #168 is unbuilt; the portal's
-  `HumanGatePanel` + mock `GateApprovalRequest` are speculative UI ahead of the engine.
+- **Human gates are implemented at the runner seam.** Reaching one durably records
+  `gate.paused`; `Runner.Resume` accepts an explicit gate-scoped decision and records the
+  selected configured branch as `gate.evaluated`. Decisions bind to the paused event's sequence
+  so a delayed request cannot resolve a later visit to the same gate. A restart with no decision
+  remains paused, and an unknown, mismatched, stale, or unauthorized decision fails closed.
+  Configured approvers are enforced against the submitted actor identity. The CLI/API approval
+  surface remains separate work (#170); configured timeout behavior is rejected until the runner
+  can enforce it durably.
 - **Automated/agentic escalation works:** bounded repass budget (`DefaultMaxRepasses = 3`) → on exceed,
   the gate branch is overridden to `@escalate` (`internal/gate/evaluate.go`), and `EscalationNotifier`
   posts a **comment on the driving issue/PR** (`internal/gate/escalate.go`) — that's the *entire* surface.
 - Phases are `running/completed/failed/aborted/escalated` (`internal/journal/state.go`).
   `@escalate` → `PhaseEscalated`, retries-exhausted → `PhaseFailed`. The runner exposes a durable,
   human-triggered `ResumeFromTerminal` primitive for those two phases; the CLI/API action surface that
-  invokes it remains separate work. Crash-`Resume` still only restarts interrupted running segments.
+  invokes it remains separate work. Crash-`Resume` restarts interrupted running segments and preserves
+  unresolved human-gate pauses without advancing them.
 - The higher-level intervention actions remain unimplemented: no `goobers approve`/`approvals` (#170),
   no instruction addendum, no gate-verdict override, no checkout/drive, no access-control seam (#172).
   The failure *cause* is journaled as an `EventError` but there's no summarized "why it escalated"
@@ -52,9 +58,10 @@ milestone #14 DASH-6; this milestone owns the read model + CLI).
 
 ## 4. Tier 2 — Minor fixes to unblock (build now)
 
-Light-touch, **recorded**, one-off interventions that do not mutate the workflow definition. All of these
-require the **durable pause/resume** engine capability (#168) and a **CLI action surface** (#170), routed
-through the (future) access-control seam (#172). The dashboard calls these same actions (API-first, #14).
+Light-touch, **recorded**, one-off interventions that do not mutate the workflow definition. The durable
+pause/resume engine capability (#168) is available; these actions still require a **CLI action surface**
+(#170), routed through the (future) access-control seam (#172). The dashboard calls these same actions
+(API-first, #14).
 
 - **Rerun a stage with an instruction addendum**: re-execute a single stage of an escalated run with an
   explicit **one-off addendum** appended to the agent's instructions — e.g. an implement stage gets
@@ -65,7 +72,8 @@ through the (future) access-control seam (#172). The dashboard calls these same 
   outcome to `pass` (or another branch), recorded as an explicit override event with rationale.
 - **Resume semantics**: after a tier-2 action, the run leaves its terminal state and continues from the
   targeted stage/branch, re-pinned appropriately. This is the first case of *human-triggered* resume,
-  distinct from crash-resume — the engine work in #168 must generalize resume to cover it.
+  distinct from crash-resume; the runner now provides both explicit human-gate decisions and
+  `ResumeFromTerminal`.
 
 **Recording is a first-class requirement**, not a nicety: every tier-2 action is an auditable journal
 event so the play-by-play (and the Tutor, and telemetry) can see that a human intervened and how.
