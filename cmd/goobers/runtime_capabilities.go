@@ -117,6 +117,10 @@ func init() {
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
 			withExamples("goobers lint", "goobers lint --check-harness --check-repos"),
+		command("fix", apicontract.ActionConfigTime, runFix).
+			withSynopsis(synopsisByID["fix"]).
+			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
+			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance"),
 		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
