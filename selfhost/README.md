@@ -66,8 +66,9 @@ config itself, not left to operator discretion:
   the run's git diff and refuses (fail-closed, no PR opened) to touch anything
   outside it — platform code, CI, and credentials are unreachable through it.
   Since Tutor PRs land in this same repo as platform code, `.github/CODEOWNERS`
-  owns `/selfhost/` so a maintainer must review before merge. Structural
-  credential scoping rides #35. See
+  owns `/selfhost/`. Persona/gate-tune changes may follow normal merge-review;
+  workflow structure, skill body, and validation changes require a maintainer
+  and are never auto-merged. Structural credential scoping rides #35. See
   [`docs/guides/tutor-write-boundary.md`](../docs/guides/tutor-write-boundary.md).
 
 ## Tokens and scopes

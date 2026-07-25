@@ -19,6 +19,7 @@ _goobers_completion()
             'agent-kit:install, inspect, or update the release-matched agent toolkit'
             'validate:validate an instance or checked-in config source tree'
             'lint:lint config via the single authoritative validation engine (alias for validate)'
+            'fix:mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)'
             'doctor:preflight a Kubernetes cluster against the documented infra shape'
             'config:inspect, materialize, and compare instance configuration'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'

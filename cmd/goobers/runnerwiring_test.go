@@ -394,7 +394,7 @@ func TestValidationAutomatedChecksGolden(t *testing.T) {
 	}
 }
 
-func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
+func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		spec apiv1.GooberSpec
@@ -426,6 +426,31 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 			},
 			want: `reasoningEffort value "high" is not supported by model "claude-sonnet-4.5"`,
 		},
+		{
+			name: "undeclared MCP credential",
+			spec: apiv1.GooberSpec{
+				MCPServers: []apiv1.MCPServer{{
+					Name: "context",
+					URL:  "https://mcp.example.test",
+					CredentialRefs: []apiv1.MCPCredentialRef{{
+						Capability: "contents:read",
+						Header:     "Authorization",
+					}},
+				}},
+			},
+			want: `capability "contents:read" is not declared`,
+		},
+		{
+			name: "unsupported MCP harness",
+			spec: apiv1.GooberSpec{
+				Harness: apiv1.HarnessClaudeCode,
+				MCPServers: []apiv1.MCPServer{{
+					Name:    "context",
+					Command: "context-server",
+				}},
+			},
+			want: `mcpServers are only supported by harness "copilot"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := compiledMachines(
@@ -436,6 +461,40 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+	const gooberName = "coder"
+	spec := apiv1.GooberSpec{
+		Harness: apiv1.HarnessClaudeCode,
+		MCPServers: []apiv1.MCPServer{{
+			Name:    "context",
+			Command: "context-server",
+		}},
+	}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(t.TempDir()),
+		&instance.Config{},
+		map[string]apiv1.GooberSpec{gooberName: spec},
+		map[string]string{gooberName: "instructions"},
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		apiv1.RepoRef{},
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+
+	_, err = cfg.NewAgentic(gooberName, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
+		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -277,6 +278,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
 	}
+	if len(req.MCPServers) > 0 {
+		if err := c.requireMCPModelCredential(ctx, req); err != nil {
+			return Outcome{}, err
+		}
+	}
 
 	prompt := renderPrompt(req)
 	// Also write the rendered prompt to the workspace for human debugging —
@@ -331,6 +337,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
 		argv = append(argv, "--log-dir", confinement.logDir)
+	}
+	if len(req.MCPServers) > 0 {
+		env, err = prepareCopilotMCP(ctx, req, env)
+		if err != nil {
+			return Outcome{}, err
+		}
+		argv = append(argv, "--disable-builtin-mcps")
 	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
@@ -497,4 +510,18 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
 	}, req)
+}
+
+func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunRequest) error {
+	modelCapability := string(capability.AgentModel)
+	if c.EnvCapabilities[modelCapability] == "" {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require an environment binding for %s", modelCapability)
+	}
+	if req.Credentials == nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential", modelCapability)
+	}
+	if _, err := req.Credentials.Token(ctx, modelCapability); err != nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential: %w", modelCapability, err)
+	}
+	return nil
 }

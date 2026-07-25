@@ -517,13 +517,10 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 }
 
 // TestSelectRemediationPRPriority is #596's headline acceptance:
-// selectRemediationCandidates prioritizes needs-remediation, then failing CI,
-// and only falls back to a crowned lander behind its base when neither stronger
-// signal is present anywhere in the PR set. Unlike a single-winner selector,
-// it returns every PR at the winning tier (see the "multiple needs-remediation
-// PRs" case below) — claimEligiblePullRequest needs the whole tier to preserve
-// exactly-once selection across concurrent runs; see selectRemediationCandidates'
-// own doc comment.
+// selectRemediationCandidates orders needs-remediation before failing CI and
+// returns both strong tiers so concurrent runs can claim through the whole
+// eligible set. It only falls back to a crowned lander behind its base when
+// neither stronger signal is present anywhere in the PR set.
 func TestSelectRemediationPRPriority(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -560,14 +557,14 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantPriority: remediationPriorityFailingCI,
 		},
 		{
-			name: "needs remediation wins over failing CI and behind base",
+			name: "needs remediation precedes failing CI and behind base",
 			prs: []providers.PullRequestSummary{
 				{Number: 10},
 				{Number: 20, CheckState: providers.CheckStateFailing},
 				{Number: 30, Labels: []string{needsRemediationLabel}},
 			},
 			behind:       map[int]bool{10: true},
-			wantNumbers:  []int{30},
+			wantNumbers:  []int{30, 20},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{
@@ -576,7 +573,7 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 				{Number: 40, Labels: []string{needsRemediationLabel}},
 				{Number: 20, Labels: []string{needsRemediationLabel}},
 			},
-			wantNumbers:  []int{40, 20},
+			wantNumbers:  []int{20, 40},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{
@@ -661,6 +658,45 @@ func TestSelectRemediationCandidatesNoneEligible(t *testing.T) {
 	}
 	if len(candidates) != 0 || priority != remediationPriorityNone {
 		t.Fatalf("candidates = %v, priority = %d, want none", candidates, priority)
+	}
+}
+
+func TestRemediationCandidatesFillClaimCapacity(t *testing.T) {
+	prs := []providers.PullRequestSummary{
+		{Number: 30, CheckState: providers.CheckStatePassing},
+		{Number: 20, CheckState: providers.CheckStateFailing},
+		{Number: 10, Labels: []string{needsRemediationLabel}},
+	}
+	candidates, priority, err := selectRemediationCandidates(prs, nil, func(providers.PullRequestSummary) (bool, error) {
+		t.Fatal("behind-base probe should not run when strong candidates exist")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priority != remediationPriorityNeedsRemediation {
+		t.Fatalf("priority = %d, want %d", priority, remediationPriorityNeedsRemediation)
+	}
+
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	first, err := claimPullRequestInOrder(root, candidates, "run-1", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := claimPullRequestInOrder(root, candidates, "run-2", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := claimPullRequestInOrder(root, candidates, "run-3", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.Number != 10 || second == nil || second.Number != 20 {
+		t.Fatalf("claims = first %+v second %+v, want priority-ordered PRs 10 then 20", first, second)
+	}
+	if third != nil {
+		t.Fatalf("third claim = %+v, want passing PR #30 excluded", third)
 	}
 }
 
@@ -834,7 +870,7 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
-	if _, err := claimPullRequest(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("claim PR: %v", err)
 	}
 	t.Chdir(wt.Path)

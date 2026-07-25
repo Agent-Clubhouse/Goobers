@@ -48,6 +48,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.harness.copilot` | 1.4 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 1.4 | ga | supported | dev |
 | `goober.spec.instructions` | 1.4 | ga | supported | dev |
+| `goober.spec.mcpServers` | 1.4 | ga | supported | dev |
 | `goober.spec.model` | 1.4 | ga | supported | dev |
 | `goober.spec.role` | 1.4 | ga | supported | dev |
 | `goober.spec.scaleFactor` | 1.4 | ga | supported | dev |
@@ -116,6 +117,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `gate.evaluator.agentic.retry.backoff` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.retry.maxAttempts` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.timeoutSeconds` | 2.0 | ga | supported | dev |
+| `gate.evaluator.agentic.workspace` | 2.0 | preview | supported | dev |
 | `gate.evaluator.automated` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 2.0 | ga | supported | dev |
@@ -148,6 +150,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.harness.copilot` | 2.0 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 2.0 | ga | supported | dev |
 | `goober.spec.instructions` | 2.0 | ga | supported | dev |
+| `goober.spec.mcpServers` | 2.0 | ga | supported | dev |
 | `goober.spec.model` | 2.0 | ga | supported | dev |
 | `goober.spec.role` | 2.0 | ga | supported | dev |
 | `goober.spec.scaleFactor` | 2.0 | ga | supported | dev |
@@ -164,6 +167,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.scratch` | 2.0 | ga | supported | dev |
 | `stage.shell` | 2.0 | ga | supported | dev |
+| `stage.workspace` | 2.0 | preview | supported | dev |
+| `stage.workspace.repo-readonly` | 2.0 | preview | supported | dev |
 | `task.agentic` | 2.0 | ga | supported | dev |
 | `task.capabilities` | 2.0 | ga | supported | dev |
 | `task.continueOnError` | 2.0 | ga | supported | dev |
@@ -211,6 +216,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: none
+- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`
 - Removed: none
 - Level changes: none
