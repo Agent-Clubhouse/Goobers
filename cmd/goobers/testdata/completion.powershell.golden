@@ -11,6 +11,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'lint'
         'doctor'
         'config'
+        'speech'
         'up'
         'service'
         'worker'
