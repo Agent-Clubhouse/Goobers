@@ -15,8 +15,9 @@ import (
 
 const (
 	// DefaultResultBundle is the xcresult bundle path used when none is specified.
-	DefaultResultBundle = "ios-simulator.xcresult"
-	maxDiagnosticLength = 2048
+	DefaultResultBundle      = "ios-simulator.xcresult"
+	minimumXcodeMajorVersion = 16
+	maxDiagnosticLength      = 2048
 )
 
 // Options configures an XCUITest invocation and simulator selection.
@@ -154,6 +155,17 @@ func Run(ctx context.Context, options Options, tools ToolRunner) Report {
 		return failedReport(result, "xcode_unavailable", commandError("xcodebuild -version", versionOutput, err))
 	}
 	result.XcodeVersion = formatXcodeVersion(versionOutput)
+	xcodeMajor, err := parseXcodeMajorVersion(versionOutput)
+	if err != nil {
+		return failedReport(result, "xcode_version_unsupported", fmt.Sprintf("determine Xcode version: %v", err))
+	}
+	if xcodeMajor < minimumXcodeMajorVersion {
+		return failedReport(result, "xcode_version_unsupported", fmt.Sprintf(
+			"Xcode %d or newer is required for xcresult parsing (found %s)",
+			minimumXcodeMajorVersion,
+			result.XcodeVersion,
+		))
+	}
 
 	runtimesOutput, err := tools.Run(ctx, "xcrun", "simctl", "list", "runtimes", "available", "--json")
 	if err != nil {
@@ -331,6 +343,23 @@ func formatXcodeVersion(output []byte) string {
 		return lines[0] + " (" + strings.TrimPrefix(lines[1], "Build version ") + ")"
 	}
 	return strings.Join(lines, " ")
+}
+
+func parseXcodeMajorVersion(output []byte) (int, error) {
+	lines := nonEmptyLines(string(output))
+	if len(lines) == 0 {
+		return 0, fmt.Errorf("xcodebuild -version returned no output")
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) < 2 || fields[0] != "Xcode" {
+		return 0, fmt.Errorf("unrecognized xcodebuild version %q", lines[0])
+	}
+	majorText, _, _ := strings.Cut(fields[1], ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil {
+		return 0, fmt.Errorf("parse xcodebuild version %q: %w", fields[1], err)
+	}
+	return major, nil
 }
 
 func formatRuntime(runtime simulatorRuntime) string {

@@ -57,6 +57,9 @@ func TestIOSSimulatorWorkflowUsesXCResultStageAndGate(t *testing.T) {
 	if task.Inputs["resultFile"] != "ios-simulator-result.json" || task.Next != "xcuitest-gate" {
 		t.Fatalf("stage result/gate contract = inputs %v next %q", task.Inputs, task.Next)
 	}
+	if !task.ContinueOnError {
+		t.Fatal("run-xcuitest must continue to its gate after a parsed test failure")
+	}
 	if len(wf.Spec.Gates) != 1 || wf.Spec.Gates[0].Automated == nil ||
 		wf.Spec.Gates[0].Automated.Check != "status-equals" {
 		t.Fatalf("gates = %+v, want status-equals xcresult gate", wf.Spec.Gates)

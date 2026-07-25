@@ -24,6 +24,69 @@ import (
 )
 
 func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
+	result, events := runIOSSimulatorWorkflow(t, "run-ios-simulator-green", false)
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q (%s: %s), want completed", result.Phase, result.FailureStage, result.FailureMessage)
+	}
+
+	var sawStage, sawGate bool
+	for _, event := range events {
+		if event.Type == journal.EventStageFinished && event.Stage == "run-xcuitest" {
+			sawStage = true
+			if event.Status != string(apiv1.ResultSuccess) {
+				t.Fatalf("run-xcuitest status = %q, want success", event.Status)
+			}
+			for _, key := range []string{"xcodeVersion", "simulatorRuntime", "simulatorName"} {
+				value, _ := event.Outputs[key].(string)
+				if strings.TrimSpace(value) == "" {
+					t.Errorf("run-xcuitest output %q = %v, want recorded local tool version", key, event.Outputs[key])
+				}
+			}
+		}
+		if event.Type == journal.EventGateEvaluated && event.Gate == "xcuitest-gate" {
+			sawGate = true
+			if event.Verdict != gate.OutcomePass {
+				t.Fatalf("xcuitest-gate verdict = %q, want pass", event.Verdict)
+			}
+		}
+	}
+	if !sawStage || !sawGate {
+		t.Fatalf("journal missing stage/gate terminal evidence: stage=%t gate=%t", sawStage, sawGate)
+	}
+}
+
+func TestIntegrationIOSSimulatorWorkflowFailsGateWithXCResultDiagnostics(t *testing.T) {
+	result, events := runIOSSimulatorWorkflow(t, "run-ios-simulator-failing", true)
+	if result.Phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q (%s: %s), want aborted by failed gate", result.Phase, result.FailureStage, result.FailureMessage)
+	}
+
+	var sawStage, sawGate bool
+	for _, event := range events {
+		if event.Type == journal.EventStageFinished && event.Stage == "run-xcuitest" {
+			sawStage = true
+			if event.Status != string(apiv1.ResultFailure) {
+				t.Fatalf("run-xcuitest status = %q, want failure", event.Status)
+			}
+			if event.Error == nil || event.Error.Code != "ios_tests_failed" ||
+				!strings.Contains(event.Error.Message, "deliberate XCUITest failure") {
+				t.Fatalf("run-xcuitest error = %+v, want parsed xcresult failure diagnostic", event.Error)
+			}
+		}
+		if event.Type == journal.EventGateEvaluated && event.Gate == "xcuitest-gate" {
+			sawGate = true
+			if event.Verdict != gate.OutcomeFail {
+				t.Fatalf("xcuitest-gate verdict = %q, want fail", event.Verdict)
+			}
+		}
+	}
+	if !sawStage || !sawGate {
+		t.Fatalf("journal missing failed stage/gate evidence: stage=%t gate=%t", sawStage, sawGate)
+	}
+}
+
+func runIOSSimulatorWorkflow(t *testing.T, runID string, failingTest bool) (runner.Result, []journal.Event) {
+	t.Helper()
 	testdep.RequireEnv(t, "GOOBERS_IOS_SIMULATOR_E2E")
 	testdep.Require(t, "xcodebuild")
 	testdep.Require(t, "xcrun")
@@ -44,7 +107,7 @@ func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
 		t.Fatalf("new worktree manager: %v", err)
 	}
 	runsDir := filepath.Join(instanceRoot, "runs")
-	fixtureRepo := newIOSSimulatorFixtureRepo(t)
+	fixtureRepo := newIOSSimulatorFixtureRepo(t, failingTest)
 	goobersBinary := buildGoobersBinary(t)
 
 	resolver, err := credentials.NewResolver(nil)
@@ -75,7 +138,6 @@ func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
 		t.Fatalf("new runner: %v", err)
 	}
 
-	const runID = "run-ios-simulator-1"
 	result, err := localRunner.Start(context.Background(), runner.StartInput{
 		RunID:                runID,
 		Machine:              machine,
@@ -87,9 +149,6 @@ func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start iOS simulator workflow: %v", err)
 	}
-	if result.Phase != journal.PhaseCompleted {
-		t.Fatalf("phase = %q (%s: %s), want completed", result.Phase, result.FailureStage, result.FailureMessage)
-	}
 
 	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
@@ -99,33 +158,10 @@ func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read run journal: %v", err)
 	}
-	var sawStage, sawGate bool
-	for _, event := range events {
-		if event.Type == journal.EventStageFinished && event.Stage == "run-xcuitest" {
-			sawStage = true
-			if event.Status != string(apiv1.ResultSuccess) {
-				t.Fatalf("run-xcuitest status = %q, want success", event.Status)
-			}
-			for _, key := range []string{"xcodeVersion", "simulatorRuntime", "simulatorName"} {
-				value, _ := event.Outputs[key].(string)
-				if strings.TrimSpace(value) == "" {
-					t.Errorf("run-xcuitest output %q = %v, want recorded local tool version", key, event.Outputs[key])
-				}
-			}
-		}
-		if event.Type == journal.EventGateEvaluated && event.Gate == "xcuitest-gate" {
-			sawGate = true
-			if event.Verdict != gate.OutcomePass {
-				t.Fatalf("xcuitest-gate verdict = %q, want pass", event.Verdict)
-			}
-		}
-	}
-	if !sawStage || !sawGate {
-		t.Fatalf("journal missing stage/gate terminal evidence: stage=%t gate=%t", sawStage, sawGate)
-	}
+	return result, events
 }
 
-func newIOSSimulatorFixtureRepo(t *testing.T) string {
+func newIOSSimulatorFixtureRepo(t *testing.T, failingTest bool) string {
 	t.Helper()
 	work := t.TempDir()
 	runSkeletonGit(t, work, "init", "-b", "main")
@@ -133,6 +169,22 @@ func newIOSSimulatorFixtureRepo(t *testing.T) string {
 	runSkeletonGit(t, work, "config", "user.name", "fixture")
 	if err := os.CopyFS(work, os.DirFS("testdata/iossimulator")); err != nil {
 		t.Fatalf("copy iOS fixture: %v", err)
+	}
+	if failingTest {
+		path := filepath.Join(work, "GoobersIOSUITests", "SmokeUITests.swift")
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read XCUITest fixture: %v", err)
+		}
+		const marker = "        let app = XCUIApplication()"
+		replacement := "        XCTFail(\"deliberate XCUITest failure\")\n" + marker
+		updated := strings.Replace(string(source), marker, replacement, 1)
+		if updated == string(source) {
+			t.Fatalf("XCUITest fixture marker %q not found", marker)
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			t.Fatalf("write failing XCUITest fixture: %v", err)
+		}
 	}
 	runSkeletonGit(t, work, "add", "-A")
 	runSkeletonGit(t, work, "commit", "-m", "seed iOS app")

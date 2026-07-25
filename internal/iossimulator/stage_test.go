@@ -91,6 +91,28 @@ func TestRunReturnsTestFailureWithXCResultDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunRejectsXcode15BeforeSimulatorOrTestInvocation(t *testing.T) {
+	tools := &scriptedTools{t: t, calls: []scriptedCall{
+		{name: "xcodebuild", args: []string{"-version"}, output: "Xcode 15.4\nBuild version 15F31d\n"},
+	}}
+
+	report := Run(context.Background(), Options{
+		Project: "GoobersIOS.xcodeproj", Scheme: "GoobersIOS",
+	}, tools)
+
+	if report.Result.ErrorCode != "xcode_version_unsupported" || report.Result.Passed {
+		t.Fatalf("result = %+v, want unsupported Xcode failure", report.Result)
+	}
+	for _, want := range []string{"Xcode 16 or newer", "Xcode 15.4 (15F31d)"} {
+		if !strings.Contains(report.Result.ErrorMessage, want) {
+			t.Errorf("error %q does not contain %q", report.Result.ErrorMessage, want)
+		}
+	}
+	if len(tools.calls) != 0 {
+		t.Fatalf("commands ran after Xcode version rejection: %+v", tools.calls)
+	}
+}
+
 func TestRunFailsClearlyWhenRequestedSimulatorIsUnavailable(t *testing.T) {
 	tools := &scriptedTools{t: t, calls: []scriptedCall{
 		{name: "xcodebuild", args: []string{"-version"}, output: "Xcode 26.0\nBuild version 17A400\n"},
