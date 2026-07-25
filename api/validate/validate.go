@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -365,7 +366,46 @@ func (v *Validator) ValidateEnvelope(name string, jsonBytes []byte) error {
 	return v.ValidateJSON(file, jsonBytes)
 }
 
-var docSep = regexp.MustCompile(`(?m)^---\s*$`)
+var (
+	docSep          = regexp.MustCompile(`(?m)^---\s*$`)
+	yamlLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
+)
+
+type yamlDocument struct {
+	content    string
+	lineOffset int
+}
+
+func splitYAMLDocuments(raw string) []yamlDocument {
+	separators := docSep.FindAllStringIndex(raw, -1)
+	documents := make([]yamlDocument, 0, len(separators)+1)
+	start, lineOffset := 0, 0
+	for _, separator := range separators {
+		documents = append(documents, yamlDocument{
+			content:    raw[start:separator[0]],
+			lineOffset: lineOffset,
+		})
+		lineOffset += strings.Count(raw[start:separator[1]], "\n")
+		start = separator[1]
+	}
+	return append(documents, yamlDocument{
+		content:    raw[start:],
+		lineOffset: lineOffset,
+	})
+}
+
+func offsetYAMLLineNumbers(message string, lineOffset int) string {
+	if lineOffset == 0 {
+		return message
+	}
+	return yamlLinePattern.ReplaceAllStringFunc(message, func(match string) string {
+		line, err := strconv.Atoi(strings.TrimPrefix(match, "line "))
+		if err != nil {
+			return match
+		}
+		return fmt.Sprintf("line %d", line+lineOffset)
+	})
+}
 
 // typeMeta is the minimal shape needed to dispatch a document to its schema.
 type typeMeta struct {
@@ -421,13 +461,14 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
-		for _, seg := range docSep.Split(string(raw), -1) {
-			if strings.TrimSpace(seg) == "" {
+		for _, document := range splitYAMLDocuments(string(raw)) {
+			if strings.TrimSpace(document.content) == "" {
 				continue
 			}
-			jb, err := yaml.YAMLToJSON([]byte(seg))
+			jb, err := yaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
-				r.add(errorInvalidYAML, Error, rel, "", "", "invalid YAML: %v", err)
+				r.add(errorInvalidYAML, Error, rel, "", "", "invalid YAML: %s",
+					offsetYAMLLineNumbers(err.Error(), document.lineOffset))
 				continue
 			}
 			var tm typeMeta
