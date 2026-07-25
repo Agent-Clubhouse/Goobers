@@ -62,7 +62,7 @@ func TestMain(m *testing.M) {
 	// dispatcher instead of handing stage arguments to testing's flag parser.
 	if os.Getenv("GOOBERS_RUN_ID") != "" && len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "validate", "backlog-query", "push-branch", "open-pr", demoProviderCommand:
+		case "validate", "backlog-query", "docs-churn", "push-branch", "open-pr", demoProviderCommand:
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		}
 	}
