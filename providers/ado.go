@@ -524,7 +524,8 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if err != nil {
 		return nil, err
 	}
-	if req.Limit > 0 {
+	boundedScan := req.Cursor != "" || req.PageInfo != nil
+	if boundedScan && req.Limit > 0 {
 		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(req.Limit)}})
 		if err != nil {
 			return nil, err
@@ -535,7 +536,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		return nil, err
 	}
 	refs := wiql.WorkItems
-	if req.Limit > 0 {
+	if boundedScan && req.Limit > 0 {
 		refs = refs[:min(req.Limit, len(refs))]
 	}
 	if req.PageInfo != nil {
@@ -558,6 +559,9 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		}
 		if hasAllLabels(item.Labels, req.Labels) && matched {
 			items = append(items, item)
+			if !boundedScan && req.Limit > 0 && len(items) >= req.Limit {
+				break
+			}
 		}
 	}
 	return items, nil

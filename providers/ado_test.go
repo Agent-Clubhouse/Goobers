@@ -63,6 +63,51 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
+	getRequests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "" {
+			t.Fatalf("$top = %q, want no raw candidate limit", got)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"workItems": []map[string]int{{"id": 1}, {"id": 2}},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		getRequests++
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		tags := "other"
+		numericID := 1
+		if id == "2" {
+			tags = "wanted"
+			numericID = 2
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.Title": id,
+				"System.Tags":  tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Labels:     []string{"wanted"},
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
+		t.Fatalf("items = %#v, GET requests = %d; want matching second work item", items, getRequests)
+	}
+}
+
 func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
 	if err != nil {

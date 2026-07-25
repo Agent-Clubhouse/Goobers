@@ -1998,21 +1998,17 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	if err != nil {
 		return nil, err
 	}
-	// Limit bounds raw issue-endpoint candidates before exact predicate
-	// evaluation. This keeps selective predicates from expanding a nominally
-	// bounded poll into an unbounded repository scan.
+	// Preserve the legacy contract for ordinary calls: Limit counts returned
+	// issues, not raw records from GitHub's mixed issues-and-pull-requests API.
+	// Callers that need a bounded raw scan opt into the PageInfo/Cursor path
+	// above.
 	var items []WorkItem
-	scanned := 0
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var issues []githubIssue
 		if err := json.Unmarshal(page, &issues); err != nil {
 			return fmt.Errorf("decode issues page: %w", err)
 		}
 		for _, issue := range issues {
-			if req.Limit > 0 && scanned >= req.Limit {
-				return errStopPaging
-			}
-			scanned++
 			if issue.PullRequest != nil {
 				continue
 			}
@@ -2025,9 +2021,9 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 				continue
 			}
 			items = append(items, item)
-		}
-		if req.Limit > 0 && scanned >= req.Limit {
-			return errStopPaging
+			if req.Limit > 0 && len(items) >= req.Limit {
+				return errStopPaging
+			}
 		}
 		return nil
 	}); err != nil {
