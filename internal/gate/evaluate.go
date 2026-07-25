@@ -73,12 +73,12 @@ type Result struct {
 	VerdictArtifact *apiv1.ArtifactPointer
 }
 
-// Evaluator dispatches a gate to its configured evaluator (automated or
-// agentic — human gates are V1, GT-003), resolves the outcome to a branch via
-// the compiled machine, enforces the bounded-repass budget, and journals the
-// verdict. It is safe for reuse across every gate evaluation within a single
-// run; it is NOT safe for concurrent use (a run advances one state at a time)
-// and MUST NOT be shared across runs (repass counts are per-run state).
+// Evaluator dispatches automated and agentic gates and resolves explicit human
+// decisions, maps outcomes to branches via the compiled machine, enforces the
+// bounded-repass budget, and journals the verdict. It is safe for reuse across
+// every gate evaluation within a single run; it is NOT safe for concurrent use
+// (a run advances one state at a time) and MUST NOT be shared across runs
+// (repass counts are per-run state).
 type Evaluator struct {
 	// Automated evaluates automated gates. Required if any gate in the
 	// workflow is evaluator=automated.
@@ -189,7 +189,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		}
 	case apiv1.EvaluatorHuman:
-		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
+		return Result{}, fmt.Errorf("gate %q: human evaluator requires an explicit decision", g.Name)
 	default:
 		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
@@ -276,6 +276,27 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	}
 
 	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
+}
+
+// EvaluateHuman applies an explicit human decision to a human gate. The
+// decision must exactly match a configured branch; unknown values fail closed.
+// Human gates execute nothing, so there is no pre-dispatch gate.started marker.
+func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision string) (Result, error) {
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		return Result{}, fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
+	}
+	if decision == "" {
+		return Result{}, fmt.Errorf("gate %q: human decision is required", g.Name)
+	}
+	target, ok := wf.BranchTarget(g, decision)
+	if !ok {
+		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, decision)
+	}
+	r := Result{Gate: g.Name, Outcome: decision, Target: target}
+	if _, err := recordVerdict(e.Journal, r, ""); err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
+	}
+	return r, nil
 }
 
 // EvaluateKnownOutcome applies the gate's branch and repass policy to an

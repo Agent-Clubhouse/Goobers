@@ -727,11 +727,34 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 	}
 }
 
-func TestEvaluatorHumanGateNotSupportedAtV0(t *testing.T) {
-	g := apiv1.Gate{Name: "approve", Evaluator: apiv1.EvaluatorHuman, Human: &apiv1.HumanGate{}, Branches: map[string]string{"approved": "done"}}
-	ev := &Evaluator{}
+func TestEvaluatorHumanGateRequiresExplicitDecision(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "approve",
+		Evaluator: apiv1.EvaluatorHuman,
+		Human:     &apiv1.HumanGate{},
+		Branches:  map[string]string{"pass": "done", "needs-changes": "implement", "reject": wf.TargetAbort},
+	}
+	run := newTestJournal(t)
+	ev := &Evaluator{Journal: run}
+
 	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err == nil {
-		t.Fatal("want error: human gates are not supported at V0")
+		t.Fatal("Evaluate without a human decision succeeded")
+	}
+	if _, err := ev.EvaluateHuman(g, "unknown"); err == nil {
+		t.Fatal("EvaluateHuman accepted a decision with no branch")
+	}
+
+	got, err := ev.EvaluateHuman(g, "needs-changes")
+	if err != nil {
+		t.Fatalf("EvaluateHuman: %v", err)
+	}
+	if got.Outcome != "needs-changes" || got.Target != "implement" || got.Attempt != 0 || got.Escalated {
+		t.Fatalf("EvaluateHuman = %+v, want needs-changes branch to implement", got)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Type != journal.EventGateEvaluated ||
+		events[0].Verdict != "needs-changes" || events[0].Target != "implement" {
+		t.Fatalf("human gate events = %+v, want one gate.evaluated verdict", events)
 	}
 }
 
