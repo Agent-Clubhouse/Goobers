@@ -77,6 +77,8 @@ type UpdatePlan struct {
 	Changes        []Change
 	ModifiedOwned  []string
 	UserCollisions []string
+
+	interruptedTransactionDigest string
 }
 
 // OpenRepository validates an unambiguous, symlink-free repository root.
@@ -124,9 +126,6 @@ func OpenRepository(target string) (*Repository, error) {
 
 // Install places a bundle and adds a harness reference without replacing user files.
 func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, error) {
-	if err := r.recoverUpdate(); err != nil {
-		return InstallResult{}, err
-	}
 	adapter, ok := bundle.Adapter(harness)
 	if !ok {
 		return InstallResult{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
@@ -195,9 +194,6 @@ func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, erro
 
 // Check compares installed assets and identity with the supplied bundle.
 func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
-	if err := r.recoverUpdate(); err != nil {
-		return CheckReport{}, err
-	}
 	manifest, manifestData, err := r.readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		return CheckReport{
@@ -219,7 +215,7 @@ func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
 	if err != nil {
 		return CheckReport{}, err
 	}
-	if report.UpdateAvailable || !bytes.Equal(manifestData, canonical) {
+	if semanticManifestDrift(manifest, bundle.Manifest) || !bytes.Equal(manifestData, canonical) {
 		report.Modified = append(report.Modified, InstalledManifestPath)
 		sort.Strings(report.Modified)
 		if report.State == "current" {
@@ -231,9 +227,6 @@ func (r *Repository) Check(bundle Bundle) (CheckReport, error) {
 
 // PlanUpdate computes product-owned changes without mutating the repository.
 func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
-	if err := r.recoverUpdate(); err != nil {
-		return UpdatePlan{}, err
-	}
 	installed, manifestData, err := r.readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		return UpdatePlan{}, fmt.Errorf("agent toolkit manifest is missing; install into an empty target or restore the manifest before updating")
@@ -241,8 +234,15 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 	if err != nil {
 		return UpdatePlan{}, err
 	}
+	transactionData, transactionExists, err := r.readFile(updateTransactionPath)
+	if err != nil {
+		return UpdatePlan{}, err
+	}
+	if transactionExists {
+		return r.planInterruptedUpdate(bundle, installed, manifestData, transactionData)
+	}
 
-	semanticManifestDrift := !manifestsMatch(installed, bundle.Manifest)
+	manifestDrift := semanticManifestDrift(installed, bundle.Manifest)
 	oldAssets := make(map[string]Asset, len(installed.Assets))
 	for _, asset := range installed.Assets {
 		installedPath, err := InstalledAssetPath(asset.Path)
@@ -298,7 +298,7 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		oldPaths = append(oldPaths, installedPath)
 	}
 	sort.Strings(oldPaths)
-	if !semanticManifestDrift {
+	if !manifestDrift {
 		for _, installedPath := range oldPaths {
 			if _, stillOwned := bundle.Files[installedPath]; stillOwned {
 				continue
@@ -326,7 +326,7 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 		if err != nil {
 			return UpdatePlan{}, err
 		}
-		if semanticManifestDrift || !bytes.Equal(manifestData, canonical) {
+		if manifestDrift || !bytes.Equal(manifestData, canonical) {
 			plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
 		}
 		plan.Changes = append(plan.Changes, Change{
@@ -344,9 +344,6 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 
 // ApplyUpdate writes a plan after enforcing its ownership acknowledgements.
 func (r *Repository) ApplyUpdate(plan UpdatePlan, replaceModified bool) error {
-	if err := r.recoverUpdate(); err != nil {
-		return err
-	}
 	if len(plan.UserCollisions) > 0 {
 		return fmt.Errorf("update would overwrite user-owned files: %s", strings.Join(plan.UserCollisions, ", "))
 	}
@@ -355,6 +352,19 @@ func (r *Repository) ApplyUpdate(plan UpdatePlan, replaceModified bool) error {
 	}
 	if len(plan.Changes) == 0 {
 		return nil
+	}
+	if plan.interruptedTransactionDigest != "" {
+		transactionData, exists, err := r.readFile(updateTransactionPath)
+		if err != nil {
+			return err
+		}
+		if !exists || digest(transactionData) != plan.interruptedTransactionDigest {
+			return fmt.Errorf("interrupted agent toolkit update changed after planning; refusing to resume it")
+		}
+		if err := r.validateUpdateChanges(plan.Changes, true); err != nil {
+			return err
+		}
+		return r.resumeUpdate(plan.Changes)
 	}
 	if err := r.validateUpdatePlan(plan); err != nil {
 		return err
@@ -414,25 +424,141 @@ func (r *Repository) validateUpdateChanges(changes []Change, recovering bool) er
 	return nil
 }
 
-func (r *Repository) recoverUpdate() error {
-	data, exists, err := r.readFile(updateTransactionPath)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
+func (r *Repository) planInterruptedUpdate(
+	bundle Bundle,
+	installed Manifest,
+	manifestData, transactionData []byte,
+) (UpdatePlan, error) {
 	var transaction updateTransaction
-	if err := json.Unmarshal(data, &transaction); err != nil {
-		return fmt.Errorf("decode interrupted agent toolkit update: %w", err)
+	if err := json.Unmarshal(transactionData, &transaction); err != nil {
+		return UpdatePlan{}, fmt.Errorf("decode interrupted agent toolkit update: %w", err)
 	}
 	if transaction.Version != updateTransactionVersion || len(transaction.Changes) == 0 {
-		return fmt.Errorf("interrupted agent toolkit update has an unsupported transaction")
+		return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update has an unsupported transaction")
+	}
+
+	sourceManifest := installed
+	sourceManifestData := manifestData
+	manifestAlreadyUpdated := false
+	var manifestChange *Change
+	for index := range transaction.Changes {
+		change := &transaction.Changes[index]
+		if change.Path != InstalledManifestPath {
+			continue
+		}
+		if manifestChange != nil {
+			return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update contains duplicate manifest changes")
+		}
+		manifestChange = change
+	}
+	if manifestChange != nil {
+		if manifestChange.Kind != ChangeModify ||
+			!bytes.Equal(manifestChange.New, bundle.ManifestJSON) ||
+			manifestChange.Mode != 0o644 {
+			return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update does not target the current bundle manifest")
+		}
+		var err error
+		sourceManifest, err = DecodeManifest(manifestChange.Old)
+		if err != nil {
+			return UpdatePlan{}, fmt.Errorf("decode interrupted agent toolkit source manifest: %w", err)
+		}
+		sourceManifestData = manifestChange.Old
+		if !bytes.Equal(manifestData, manifestChange.Old) &&
+			!bytes.Equal(manifestData, manifestChange.New) {
+			return UpdatePlan{}, fmt.Errorf("installed manifest changed during the interrupted agent toolkit update")
+		}
+		manifestAlreadyUpdated = bytes.Equal(manifestData, manifestChange.New)
+	} else if !bytes.Equal(manifestData, bundle.ManifestJSON) {
+		return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update omits the required manifest change")
+	}
+
+	oldAssets := make(map[string]Asset, len(sourceManifest.Assets))
+	for _, asset := range sourceManifest.Assets {
+		installedPath, err := InstalledAssetPath(asset.Path)
+		if err != nil {
+			return UpdatePlan{}, err
+		}
+		oldAssets[installedPath] = asset
+	}
+
+	plan := UpdatePlan{
+		Changes:                      transaction.Changes,
+		interruptedTransactionDigest: digest(transactionData),
+	}
+	if semanticManifestDrift(sourceManifest, bundle.Manifest) {
+		plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
+	}
+	canonicalSource, err := marshalManifest(sourceManifest)
+	if err != nil {
+		return UpdatePlan{}, err
+	}
+	if !bytes.Equal(sourceManifestData, canonicalSource) {
+		plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
+	}
+
+	seen := make(map[string]struct{}, len(transaction.Changes))
+	for _, change := range transaction.Changes {
+		if change.Path != InstalledRoot && !strings.HasPrefix(change.Path, InstalledRoot+"/") {
+			return UpdatePlan{}, fmt.Errorf("interrupted update path %q is outside the agent toolkit root", change.Path)
+		}
+		if _, duplicate := seen[change.Path]; duplicate {
+			return UpdatePlan{}, fmt.Errorf("interrupted update contains duplicate change for %s", change.Path)
+		}
+		seen[change.Path] = struct{}{}
+		if change.Path == InstalledManifestPath {
+			continue
+		}
+
+		oldAsset, previouslyOwned := oldAssets[change.Path]
+		target, targetOwned := bundle.Files[change.Path]
+		switch change.Kind {
+		case ChangeAdd:
+			if previouslyOwned || !targetOwned || len(change.Old) != 0 ||
+				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
+				return UpdatePlan{}, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition", change.Path)
+			}
+		case ChangeModify:
+			if !previouslyOwned || !targetOwned ||
+				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
+				return UpdatePlan{}, fmt.Errorf("interrupted update modification %s is not an exact manifest-owned current-bundle change", change.Path)
+			}
+			if digest(change.Old) != oldAsset.SHA256 {
+				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
+			}
+		case ChangeDelete:
+			if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 {
+				return UpdatePlan{}, fmt.Errorf("interrupted update deletion %s is not an obsolete manifest-owned asset", change.Path)
+			}
+			if semanticManifestDrift(sourceManifest, bundle.Manifest) {
+				return UpdatePlan{}, fmt.Errorf("interrupted update cannot delete assets claimed by a locally modified manifest")
+			}
+			if digest(change.Old) != oldAsset.SHA256 {
+				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
+			}
+		default:
+			return UpdatePlan{}, fmt.Errorf("unsupported interrupted agent toolkit update change %q", change.Kind)
+		}
+		if manifestAlreadyUpdated {
+			actual, exists, err := r.readFile(change.Path)
+			if err != nil {
+				return UpdatePlan{}, err
+			}
+			complete := change.Kind == ChangeDelete && !exists ||
+				change.Kind != ChangeDelete && exists && bytes.Equal(actual, change.New)
+			if !complete {
+				return UpdatePlan{}, fmt.Errorf(
+					"interrupted update has an incomplete asset change after its manifest was installed: %s",
+					change.Path,
+				)
+			}
+		}
 	}
 	if err := r.validateUpdateChanges(transaction.Changes, true); err != nil {
-		return fmt.Errorf("validate interrupted agent toolkit update: %w", err)
+		return UpdatePlan{}, fmt.Errorf("validate interrupted agent toolkit update: %w", err)
 	}
-	return r.resumeUpdate(transaction.Changes)
+	sort.Strings(plan.ModifiedOwned)
+	plan.ModifiedOwned = compactStrings(plan.ModifiedOwned)
+	return plan, nil
 }
 
 func (r *Repository) writeUpdateTransaction(changes []Change) error {
@@ -783,6 +909,26 @@ func (r *Repository) removeEmptyParents(directory string) {
 
 func manifestsMatch(installed, current Manifest) bool {
 	return reflect.DeepEqual(installed, current)
+}
+
+func semanticManifestDrift(installed, current Manifest) bool {
+	sameRelease := installed.SchemaVersion == current.SchemaVersion &&
+		installed.BundleVersion == current.BundleVersion &&
+		installed.Producer == current.Producer
+	return sameRelease && !manifestsMatch(installed, current)
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	compacted := values[:1]
+	for _, value := range values[1:] {
+		if value != compacted[len(compacted)-1] {
+			compacted = append(compacted, value)
+		}
+	}
+	return compacted
 }
 
 func digest(data []byte) string {
