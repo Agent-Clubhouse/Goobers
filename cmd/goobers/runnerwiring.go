@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1748,6 +1749,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
+		// a real daemon run. Left nil in every runner-package test and any
+		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
+		// this is the one place that actually wants a host PATH check.
+		LookPathFunc: exec.LookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
