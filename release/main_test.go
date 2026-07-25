@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -282,16 +283,28 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), supportSnapshotFile) {
 		t.Errorf("SHA256SUMS missing the support snapshot:\n%s", sums)
 	}
+	toolkitName := agentToolkitArchiveName("v1.2.3")
+	if !strings.Contains(string(sums), toolkitName) {
+		t.Errorf("SHA256SUMS missing the agent toolkit:\n%s", sums)
+	}
+	toolkitEntries := readAgentToolkitArchive(t, filepath.Join(out, toolkitName))
+	var toolkitManifest agentToolkitManifest
+	if err := json.Unmarshal(toolkitEntries["manifest.json"], &toolkitManifest); err != nil {
+		t.Fatalf("decode agent toolkit manifest: %v", err)
+	}
+	if toolkitManifest.Producer != (agentToolkitProducer{Version: "v1.2.3", Commit: "deadbee"}) {
+		t.Errorf("agent toolkit producer = %+v", toolkitManifest.Producer)
+	}
 	// The intermediate binary was cleaned up, leaving only release assets.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 6 {
+	if len(entries) != 7 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want archive, installer, checksums, release notes, feature snapshot, and support snapshot", names)
+		t.Errorf("dist has %v, want binary archive, agent toolkit, installer, checksums, release notes, feature snapshot, and support snapshot", names)
 	}
-	for _, name := range []string{installScriptFile, releaseNotesFile, featureSnapshotFile, supportSnapshotFile} {
+	for _, name := range []string{installScriptFile, releaseNotesFile, featureSnapshotFile, supportSnapshotFile, toolkitName} {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("missing release metadata %s: %v", name, err)
 		}

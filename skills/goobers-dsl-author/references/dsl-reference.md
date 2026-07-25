@@ -1,8 +1,8 @@
 # Goobers DSL authoring reference
 
 This is a portable checklist, not a replacement for the schemas in the target
-Goobers release. Links resolve when this skill is used from its source
-checkout.
+Goobers release. Links resolve from either a source checkout or the mirrored
+layout in a release-owned agent toolkit.
 
 ## Source map
 
@@ -23,6 +23,7 @@ Every definition is a Kubernetes-style resource:
 ```yaml
 apiVersion: goobers.dev/v1alpha1
 kind: Gaggle | Goober | Workflow
+dslVersion: "release-supported version" # Workflow only
 metadata:
   name: lowercase-dns-style-name
 spec: {}
@@ -30,7 +31,8 @@ spec: {}
 
 Definition schemas reject unknown fields. `metadata.name` starts and ends with
 a lowercase letter or digit and otherwise uses lowercase letters, digits, and
-hyphens.
+hyphens. Workflows should explicitly select a DSL version listed by the
+toolkit's `release.json` or `goobers versions --json`.
 
 ### Manifest and local instance
 
@@ -191,10 +193,16 @@ Use only the target release's registry. The current set is:
 | `repo:read` | Read-only target-repository checkout. |
 | `repo:push` | Push the run branch to the target repository. |
 | `github:issues:write` | Query, create, label, close, or comment on GitHub issues. |
+| `github:milestones:write` | Assign existing GitHub milestones to selected issues. |
+| `github:issues:approve` | Apply the trusted `goobers:approved` issue label. |
 | `github:pr:write` | Open, inspect, update, or close GitHub pull requests. |
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
 | `github:pr:merge` | Merge a GitHub pull request. |
+| `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
+| `ado:code:read` | Inspect Azure Repos code and pull requests read-only. |
+| `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
+| `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
@@ -213,6 +221,7 @@ referenced goober's capability list.
   sources required by the generated capabilities; it has no named
   `connections` field.
 - Gaggle, goober, and workflow references agree exactly.
+- Every workflow has an explicit `dslVersion` supported by the target release.
 - Every `start`, `next`, and branch target exists or is a reserved terminal.
 - Every task and gate is reachable from `start`.
 - Trigger fields match the trigger type; schedules parse.
