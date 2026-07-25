@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,22 @@ const DefaultMaxSteps = 10000
 // `failed` run's FailureStage reads as the preflight rather than mis-attributing
 // the missing toolchain to the workflow's first stage.
 const toolchainPreflightState = "runtime-preflight"
+
+// ciCommandPreflightState is the synthetic failing-state name recorded when a
+// run fails the #1380 ciCommand preflight — the local-ci stage's configured
+// command names an executable that PATH cannot resolve on this host (a
+// missing `make` on a bring-your-own Windows runner, most commonly). Same
+// shape as toolchainPreflightState: a distinct FailureStage so a `failed` run
+// reads as "this could never have started" rather than a buried, repeatedly
+// retried stage failure.
+const ciCommandPreflightState = "ci-command-preflight"
+
+// localCIStageName is the well-known deterministic stage name that runs a
+// gaggle's local CI-equivalent (instance.LocalCIStageName's runtime-side
+// twin — duplicated as a literal here rather than imported, matching the
+// existing local-ci literal-string convention already used by
+// cmd/goobers/openprbody.go and this package's own tests).
+const localCIStageName = "local-ci"
 
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
@@ -254,6 +271,14 @@ type Config struct {
 	// RequiredCapabilities never invokes it, so the default is inert until a
 	// gaggle/stage opts in.
 	ToolchainVerifier ToolchainVerifier
+	// LookPathFunc resolves an executable name to a full path, exactly like
+	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
+	// separator is tried directly, PATH is not consulted, matching what
+	// exec.Command itself does when the stage later actually runs it).
+	// Optional — nil defaults to exec.LookPath. Tests override this to
+	// simulate a missing executable without depending on the host's real
+	// PATH.
+	LookPathFunc func(string) (string, error)
 	// Failed handles the instance-level consequence of a run reaching terminal
 	// PhaseFailed (#1054): leaving a human-visible trace (a comment carrying the
 	// terminal cause + run id) on the driving item, so a systematic infra fault
@@ -350,6 +375,7 @@ type Runner struct {
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
 	toolchains           ToolchainVerifier
+	lookPath             func(string) (string, error)
 }
 
 // New validates cfg and returns a ready Runner.
@@ -371,10 +397,15 @@ func New(cfg Config) (*Runner, error) {
 	if toolchains == nil {
 		toolchains = toolchain.DefaultVerifier()
 	}
+	lookPath := cfg.LookPathFunc
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
 	return &Runner{
 		cfg:               cfg,
 		maxSteps:          maxSteps,
 		toolchains:        toolchains,
+		lookPath:          lookPath,
 		heartbeatInterval: StageHeartbeatInterval,
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
@@ -543,6 +574,16 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 				span.Fail(err)
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, toolchainPreflightState, 0, err)
 			}
+		}
+
+		// #1380: fail fast when the local-ci stage's configured ciCommand names
+		// an executable PATH cannot resolve on this host (e.g. no GNU Make on a
+		// bring-your-own Windows runner) — before any stage executes, and before
+		// a repass/remediation cycle burns its budget repeatedly rediscovering
+		// an environment gap no code change can fix.
+		if err := checkCICommandPreflight(r.lookPath, in.Machine); err != nil {
+			span.Fail(err)
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, ciCommandPreflightState, 0, err)
 		}
 
 		seed := walkSeed{}
@@ -3160,6 +3201,41 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 // pattern).
 func MachineUsesRepo(machine *workflow.Machine) bool {
 	return machineUsesRepo(machine)
+}
+
+// ciCommandExecutable returns the configured local-ci stage's command
+// executable (Command[0]) — the effective gaggle ciCommand, already resolved
+// into the compiled machine by instance.ApplyGaggleCICommand — or "" if the
+// machine declares no local-ci stage or that stage carries no command.
+func ciCommandExecutable(machine *workflow.Machine) string {
+	for _, task := range machine.Def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Name != localCIStageName {
+			continue
+		}
+		if task.Run == nil || len(task.Run.Command) == 0 {
+			return ""
+		}
+		return task.Run.Command[0]
+	}
+	return ""
+}
+
+// checkCICommandPreflight resolves the local-ci stage's configured executable
+// through lookPath before any stage runs (#1380). A workflow with no local-ci
+// stage, or one whose command is empty, has nothing to check. A name
+// containing a path separator is tried directly by lookPath (exec.LookPath's
+// own documented behavior) — matching exactly what exec.Command does when
+// the stage later actually executes it, so this preflight can never diverge
+// from the real run.
+func checkCICommandPreflight(lookPath func(string) (string, error), machine *workflow.Machine) error {
+	name := ciCommandExecutable(machine)
+	if name == "" {
+		return nil
+	}
+	if _, err := lookPath(name); err != nil {
+		return fmt.Errorf("ciCommand executable %q not found: %w — install it on this runner, or configure a different ciCommand in the gaggle's spec", name, err)
+	}
+	return nil
 }
 
 func machineUsesRepo(machine *workflow.Machine) bool {
