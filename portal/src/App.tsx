@@ -115,6 +115,11 @@ function Portal({
     }
   }, [config, theme]);
 
+  // approve/override/rerun (HITL-7/#469): registered now so the UI surface
+  // participates in the CLI/API/UI runtime-mutation parity check alongside
+  // the daemon's stub routes, but each handler is itself a stub — no
+  // intervention UI exists yet, and the underlying gate-resolution/rerun
+  // wiring is #466/#468's scope, not this seam's.
   const { navigate } = bindUIActions({
     navigate: (nextRoute: Route) => {
       const nextHash = routeHash(nextRoute);
@@ -123,6 +128,15 @@ function Portal({
       } else {
         window.location.hash = nextHash;
       }
+    },
+    approve: () => {
+      console.warn("goobers: approve is not implemented yet (HITL-7/#469)");
+    },
+    override: () => {
+      console.warn("goobers: override is not implemented yet (HITL-7/#469)");
+    },
+    rerun: () => {
+      console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
     },
   });
 
