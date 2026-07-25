@@ -83,6 +83,13 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"candidates (never drops one — an all-contested cycle still claims FIFO)\n" +
 	"and falls back to FIFO on any provider error. Disable with input\n" +
 	"deprioritizeContestedFiles=false.\n\n" +
+	"selectionPriority (#1335) is an opt-in, ordered comma-separated label\n" +
+	"list (highest priority first, e.g. \"security,bug\") applied before FIFO:\n" +
+	"eligible items carrying an earlier-listed label claim ahead of items\n" +
+	"carrying only a later one or none at all; FIFO still breaks ties within\n" +
+	"a priority tier. An item carrying more than one listed label ranks by\n" +
+	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
+	"preserves plain FIFO exactly.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -134,6 +141,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
+	// selectionPriority is #1335's opt-in priority contract: an ordered label
+	// list, highest priority first. Empty (the default) preserves #350's
+	// plain FIFO claim order unchanged — priority is strictly additive.
+	selectionPriority := splitLabelList(providerInput("selectionPriority", ""))
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
@@ -345,11 +356,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// client-side, provider-independent, pins a deterministic FIFO default
 	// (oldest-filed-first, the starvation-safe choice) so a future provider
 	// API change — or a provider whose own default happens to differ from
-	// GitHub's — can't silently flip claim order again. A fuller
-	// configurable priority mechanism (native-field or label-list ranking,
-	// configurable tie-break) is tracked separately; this is the
-	// unconditional baseline every claim order now starts from.
-	sortEligibleFIFO(eligible)
+	// GitHub's — can't silently flip claim order again. selectionPriority
+	// (#1335) is the opt-in priority tier layered on top of that baseline:
+	// FIFO still breaks ties within a tier, and an unconfigured
+	// selectionPriority ranks every item identically, so behavior is
+	// byte-identical to plain FIFO until an operator opts in.
+	sortEligibleFIFO(eligible, selectionPriority)
 
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	if !*claim {
@@ -811,8 +823,20 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 // A non-numeric ID (a future provider whose IDs don't work this way) falls
 // back to a stable lexical compare rather than leaving that item's relative
 // position to whatever order the provider happened to return it in.
-func sortEligibleFIFO(items []providers.WorkItem) {
+// sortEligibleFIFO orders items by opt-in priority tier (priorityLabels,
+// #1335: an ordered label list, highest priority first), then ascending by
+// numeric ID within a tier — the starvation-safe FIFO baseline every claim
+// order still falls back to for tie-breaking. An item carrying more than one
+// priorityLabels entry ranks by whichever entry appears earliest in
+// priorityLabels, a deterministic precedence rather than an ambiguous one.
+// priorityLabels empty (the default) ranks every item identically, so an
+// unconfigured instance's claim order is byte-identical to plain FIFO.
+func sortEligibleFIFO(items []providers.WorkItem, priorityLabels []string) {
 	sort.SliceStable(items, func(i, j int) bool {
+		ri, rj := itemPriorityRank(items[i], priorityLabels), itemPriorityRank(items[j], priorityLabels)
+		if ri != rj {
+			return ri < rj
+		}
 		ni, iOK := parseWorkItemID(items[i].ID)
 		nj, jOK := parseWorkItemID(items[j].ID)
 		if iOK && jOK {
@@ -820,6 +844,19 @@ func sortEligibleFIFO(items []providers.WorkItem) {
 		}
 		return items[i].ID < items[j].ID
 	})
+}
+
+// itemPriorityRank reports item's priority tier: the index of the first
+// (highest-priority) entry in priorityLabels that item carries, or
+// len(priorityLabels) — the lowest tier — if item carries none, including
+// when priorityLabels itself is empty.
+func itemPriorityRank(item providers.WorkItem, priorityLabels []string) int {
+	for i, label := range priorityLabels {
+		if item.HasLabel(label) {
+			return i
+		}
+	}
+	return len(priorityLabels)
 }
 
 func parseWorkItemID(id string) (int64, bool) {
