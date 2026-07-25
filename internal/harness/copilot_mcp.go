@@ -130,7 +130,7 @@ func copyCopilotConfig(sourceHome, targetHome string) error {
 		}
 		return fmt.Errorf("read config.json: %w", err)
 	}
-	data, err = removeCopilotPluginRegistrations(data)
+	data, err = sanitizeCopilotConfig(data)
 	if err != nil {
 		return fmt.Errorf("sanitize config.json: %w", err)
 	}
@@ -140,15 +140,22 @@ func copyCopilotConfig(sourceHome, targetHome string) error {
 	return nil
 }
 
-func removeCopilotPluginRegistrations(data []byte) ([]byte, error) {
+func sanitizeCopilotConfig(data []byte) ([]byte, error) {
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal(trimLeadingJSONComments(data), &config); err != nil {
 		return nil, err
 	}
-	if _, ok := config["installedPlugins"]; !ok {
+	changed := false
+	for _, key := range []string{"installedPlugins", "trustedFolders"} {
+		if _, ok := config[key]; !ok {
+			continue
+		}
+		delete(config, key)
+		changed = true
+	}
+	if !changed {
 		return data, nil
 	}
-	delete(config, "installedPlugins")
 	return json.Marshal(config)
 }
 

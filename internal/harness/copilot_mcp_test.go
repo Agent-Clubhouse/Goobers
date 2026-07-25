@@ -114,7 +114,7 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 	}
 }
 
-func TestCopyCopilotConfigRemovesPluginRegistrations(t *testing.T) {
+func TestCopyCopilotConfigRemovesAmbientExtensionState(t *testing.T) {
 	sourceHome := t.TempDir()
 	targetHome := t.TempDir()
 	config := []byte(`// Copilot CLI managed configuration
@@ -122,6 +122,7 @@ func TestCopyCopilotConfigRemovesPluginRegistrations(t *testing.T) {
   "oauthToken": "stored-auth",
   "model": "stored-model",
   "provider": {"type": "byok", "endpoint": "https://models.example.test"},
+  "trustedFolders": ["/ambient/trusted-workspace"],
   "installedPlugins": [
     {"name": "ambient-tools", "cache_path": "/ambient/plugins/tools"}
   ]
@@ -137,8 +138,11 @@ func TestCopyCopilotConfigRemovesPluginRegistrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(got, []byte("installedPlugins")) || bytes.Contains(got, []byte("/ambient/plugins/tools")) {
-		t.Fatalf("scoped Copilot config retained ambient plugin state: %s", got)
+	if bytes.Contains(got, []byte("installedPlugins")) ||
+		bytes.Contains(got, []byte("/ambient/plugins/tools")) ||
+		bytes.Contains(got, []byte("trustedFolders")) ||
+		bytes.Contains(got, []byte("/ambient/trusted-workspace")) {
+		t.Fatalf("scoped Copilot config retained ambient extension state: %s", got)
 	}
 	var preserved struct {
 		OAuthToken string          `json:"oauthToken"`

@@ -35,6 +35,7 @@ type testCopilotMCPConfig struct {
 type testCopilotConfig struct {
 	OAuthToken       string                       `json:"oauthToken"`
 	InstalledPlugins []testCopilotInstalledPlugin `json:"installedPlugins"`
+	TrustedFolders   []string                     `json:"trustedFolders"`
 }
 
 type testCopilotInstalledPlugin struct {
@@ -87,6 +88,18 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 	ambientPlugin := newTestRemoteMCPServer(t, "ambient-plugin-reachable", "", &ambientPluginCalls)
 	defer ambientPlugin.Close()
 
+	var ambientWorkspaceCalls atomic.Int32
+	ambientWorkspace := newTestRemoteMCPServer(t, "ambient-workspace-reachable", "", &ambientWorkspaceCalls)
+	defer ambientWorkspace.Close()
+
+	workspace := t.TempDir()
+	writeTestCopilotMCPConfigFile(t, filepath.Join(workspace, ".mcp.json"), map[string]testCopilotMCPServer{
+		"ambient-workspace": {
+			Type:  "http",
+			URL:   ambientWorkspace.URL,
+			Tools: []string{"*"},
+		},
+	})
 	ambientHome := filepath.Join(t.TempDir(), "ambient-copilot")
 	if err := os.MkdirAll(ambientHome, 0o700); err != nil {
 		t.Fatal(err)
@@ -106,10 +119,15 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 			Tools: []string{"*"},
 		},
 	})
-	writeTestCopilotConfig(t, ambientHome, []testCopilotInstalledPlugin{{
-		Name:      "ambient-tools",
-		CachePath: pluginCache,
-	}})
+	writeTestCopilotConfig(
+		t,
+		ambientHome,
+		[]testCopilotInstalledPlugin{{
+			Name:      "ambient-tools",
+			CachePath: pluginCache,
+		}},
+		[]string{workspace},
+	)
 	t.Setenv("COPILOT_HOME", ambientHome)
 	t.Setenv(copilotPluginDirOnlyEnv, "false")
 	t.Setenv(mcpClientHelperEnv, "1")
@@ -122,7 +140,6 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 		ExtraEnvAllowlist: []string{"COPILOT_HOME", copilotPluginDirOnlyEnv, mcpClientHelperEnv},
 	}
 	stdioMarker := filepath.Join(t.TempDir(), "stdio-calls")
-	workspace := t.TempDir()
 	first, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace, "contents:read", "github:issues:write"),
 		Workspace:      workspace,
@@ -174,6 +191,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 	if got := ambientPluginCalls.Load(); got != 0 {
 		t.Fatalf("ambient plugin tool calls during scoped invocation = %d, want 0", got)
 	}
+	if got := ambientWorkspaceCalls.Load(); got != 0 {
+		t.Fatalf("ambient workspace tool calls during scoped invocation = %d, want 0", got)
+	}
 	assertStdioMCPCalls(t, stdioMarker, 1)
 
 	workspace = t.TempDir()
@@ -199,6 +219,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 	if got := ambientPluginCalls.Load(); got != 1 {
 		t.Fatalf("ambient plugin tool calls after MCP-free invocation = %d, want 1", got)
 	}
+	if got := ambientWorkspaceCalls.Load(); got != 0 {
+		t.Fatalf("ambient workspace tool calls after MCP-free invocation = %d, want 0", got)
+	}
 	assertStdioMCPCalls(t, stdioMarker, 1)
 }
 
@@ -223,10 +246,11 @@ func TestCopilotMCPClientHelper(t *testing.T) {
 	if scoped != pluginDirOnly {
 		t.Fatalf("scoped home = %v, %s = %q", scoped, copilotPluginDirOnlyEnv, os.Getenv(copilotPluginDirOnlyEnv))
 	}
-	plugins, err := readTestCopilotInstalledPlugins(home)
+	copilotConfig, err := readTestCopilotConfig(home)
 	if err != nil {
 		t.Fatal(err)
 	}
+	plugins := copilotConfig.InstalledPlugins
 	if scoped && len(plugins) != 0 {
 		t.Fatalf("scoped invocation inherited ambient plugins: %#v", plugins)
 	}
@@ -245,6 +269,25 @@ func TestCopilotMCPClientHelper(t *testing.T) {
 				}
 				config.MCPServers[name] = server
 			}
+		}
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(copilotConfig.TrustedFolders, workingDir) {
+		servers, err := readTestCopilotMCPConfig(filepath.Join(workingDir, ".mcp.json"))
+		if err != nil {
+			t.Fatalf("load trusted workspace MCP config: %v", err)
+		}
+		if config.MCPServers == nil {
+			config.MCPServers = make(map[string]testCopilotMCPServer)
+		}
+		for name, server := range servers {
+			if _, exists := config.MCPServers[name]; exists {
+				t.Fatalf("duplicate MCP server %q", name)
+			}
+			config.MCPServers[name] = server
 		}
 	}
 
@@ -571,11 +614,17 @@ func writeTestCopilotMCPConfigFile(t *testing.T, path string, servers map[string
 	}
 }
 
-func writeTestCopilotConfig(t *testing.T, home string, plugins []testCopilotInstalledPlugin) {
+func writeTestCopilotConfig(
+	t *testing.T,
+	home string,
+	plugins []testCopilotInstalledPlugin,
+	trustedFolders []string,
+) {
 	t.Helper()
 	data, err := json.Marshal(testCopilotConfig{
 		OAuthToken:       "stored-auth",
 		InstalledPlugins: plugins,
+		TrustedFolders:   trustedFolders,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -585,19 +634,19 @@ func writeTestCopilotConfig(t *testing.T, home string, plugins []testCopilotInst
 	}
 }
 
-func readTestCopilotInstalledPlugins(home string) ([]testCopilotInstalledPlugin, error) {
+func readTestCopilotConfig(home string) (testCopilotConfig, error) {
 	data, err := os.ReadFile(filepath.Join(home, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return testCopilotConfig{}, nil
 		}
-		return nil, err
+		return testCopilotConfig{}, err
 	}
 	var config testCopilotConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
+		return testCopilotConfig{}, err
 	}
-	return config.InstalledPlugins, nil
+	return config, nil
 }
 
 func readTestCopilotMCPConfig(path string) (map[string]testCopilotMCPServer, error) {
