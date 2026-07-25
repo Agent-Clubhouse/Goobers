@@ -82,8 +82,8 @@ generate:
 manifests:
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
-## docs: Regenerate the committed CLI reference (docs/cli) + man pages (docs/man)
-## from the command registry, and the feature matrix (docs/feature-matrix.md)
+## docs: Regenerate the committed CLI reference (docs/cli), man pages (docs/man),
+## and shell completions (docs/completion) from the command registry, and the feature matrix (docs/feature-matrix.md)
 ## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and
 ## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
 ## from this, so run it after any CLI help or DSL-feature change.

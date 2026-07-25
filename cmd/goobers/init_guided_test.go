@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/version"
 )
 
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
@@ -83,6 +84,26 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		path := filepath.Join(root, "config", "gaggles", "widget-service", "workflows", name+".yaml")
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("selected workflow %q not scaffolded: %v", name, err)
+		}
+	}
+}
+
+func TestDocumentationURLPinsStableReleaseBuilds(t *testing.T) {
+	originalVersion := version.Version
+	t.Cleanup(func() { version.Version = originalVersion })
+
+	for _, test := range []struct {
+		version string
+		ref     string
+	}{
+		{version: "dev", ref: "main"},
+		{version: "db438b0", ref: "main"},
+		{version: "v1.2.3", ref: "v1.2.3"},
+	} {
+		version.Version = test.version
+		want := "https://github.com/Agent-Clubhouse/Goobers/blob/" + test.ref + "/docs/concepts/README.md"
+		if got := documentationURL("docs/concepts/README.md"); got != want {
+			t.Errorf("documentationURL with version %q = %q, want %q", test.version, got, want)
 		}
 	}
 }
