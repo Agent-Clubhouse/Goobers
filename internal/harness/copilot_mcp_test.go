@@ -187,6 +187,22 @@ func TestPrepareCopilotMCPLeavesOmittedToolUnreachable(t *testing.T) {
 	}
 }
 
+func TestPrepareCopilotMCPRejectsWildcardToolBeforeMaterialization(t *testing.T) {
+	workspace := t.TempDir()
+	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+		Tools:      []string{"*"},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "must be an explicit tool name") {
+		t.Fatalf("prepareCopilotMCP error = %v, want wildcard rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))); !os.IsNotExist(statErr) {
+		t.Fatalf("wildcard MCP policy reached materialization: %v", statErr)
+	}
+}
+
 func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
 	invoked := false
 	adapter := &CopilotAdapter{

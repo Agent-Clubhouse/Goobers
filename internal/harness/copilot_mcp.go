@@ -37,7 +37,7 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	if len(req.MCPServers) == 0 {
 		return env, nil
 	}
-	if err := mcpconfig.Validate(req.MCPServers, req.Envelope.Capabilities); err != nil {
+	if err := mcpconfig.Validate(req.MCPServers, req.Envelope.Capabilities, req.Tools); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
 	}
 

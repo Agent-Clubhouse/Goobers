@@ -12,9 +12,17 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 )
 
-// Validate checks MCP server shape and ensures every credential reference is
-// backed by a capability declared for the current scope.
-func Validate(servers []apiv1.MCPServer, declaredCapabilities []string) error {
+// Validate checks MCP server shape, tool policy, and ensures every credential
+// reference is backed by a capability declared for the current scope.
+func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
+	if len(servers) > 0 {
+		for i, tool := range tools {
+			if strings.Contains(tool, "*") {
+				return fmt.Errorf("tools[%d] %q must be an explicit tool name when mcpServers are configured", i, tool)
+			}
+		}
+	}
+
 	declared := make(map[string]bool, len(declaredCapabilities))
 	for _, value := range declaredCapabilities {
 		declared[value] = true

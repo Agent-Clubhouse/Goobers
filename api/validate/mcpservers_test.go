@@ -122,3 +122,37 @@ func TestValidateDirRejectsUndeclaredMCPCredential(t *testing.T) {
 		t.Fatalf("undeclared MCP credential was not rejected:\n%s", issues)
 	}
 }
+
+func TestValidateDirRejectsWildcardMCPTool(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.WriteString(`
+  tools: ["*"]
+  mcpServers:
+    - name: issue-context
+      command: context-server
+`)
+	closeErr := f.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := joinIssues(report)
+	if !report.HasErrors() || !strings.Contains(issues, `tools[0] "*" must be an explicit tool name`) {
+		t.Fatalf("wildcard MCP tool was not rejected:\n%s", issues)
+	}
+}

@@ -29,7 +29,7 @@ func TestValidate(t *testing.T) {
 		},
 	}
 	capabilities := []string{"contents:read", "github:issues:write"}
-	if err := Validate(valid, capabilities); err != nil {
+	if err := Validate(valid, capabilities, []string{"reachability"}); err != nil {
 		t.Fatalf("Validate valid config: %v", err)
 	}
 
@@ -37,8 +37,15 @@ func TestValidate(t *testing.T) {
 		name    string
 		servers []apiv1.MCPServer
 		caps    []string
+		tools   []string
 		want    string
 	}{
+		{
+			name:    "wildcard tool selector",
+			servers: []apiv1.MCPServer{{Name: "local", Command: "server"}},
+			tools:   []string{"reachability", "*"},
+			want:    "must be an explicit tool name",
+		},
 		{
 			name:    "duplicate server",
 			servers: append(append([]apiv1.MCPServer(nil), valid...), valid[0]),
@@ -140,7 +147,7 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(tc.servers, tc.caps)
+			err := Validate(tc.servers, tc.caps, tc.tools)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Validate error = %v, want %q", err, tc.want)
 			}
@@ -161,7 +168,7 @@ func TestValidate(t *testing.T) {
 					Header:     "Authorization",
 				}},
 			}
-			if err := Validate([]apiv1.MCPServer{server}, []string{"contents:read"}); err != nil {
+			if err := Validate([]apiv1.MCPServer{server}, []string{"contents:read"}, nil); err != nil {
 				t.Fatalf("Validate loopback credential endpoint: %v", err)
 			}
 		})
@@ -170,7 +177,7 @@ func TestValidate(t *testing.T) {
 	if err := Validate([]apiv1.MCPServer{{
 		Name: "public-remote",
 		URL:  "http://mcp.example.test",
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("Validate credential-free HTTP endpoint: %v", err)
 	}
 }

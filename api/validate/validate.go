@@ -649,7 +649,7 @@ func (ix *index) crossCheck(r *Report) {
 			}
 			r.add(Error, file, "Goober", g.Name, "%s", message)
 		}
-		if err := mcpconfig.Validate(g.Spec.MCPServers, g.Spec.Capabilities); err != nil {
+		if err := mcpconfig.Validate(g.Spec.MCPServers, g.Spec.Capabilities, g.Spec.Tools); err != nil {
 			r.add(Error, file, "Goober", g.Name, "spec.%v", err)
 		}
 		if g.Spec.Instructions != "" {

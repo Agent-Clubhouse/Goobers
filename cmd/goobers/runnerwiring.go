@@ -1796,7 +1796,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
 			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
 		}
-		if err := mcpconfig.Validate(spec.MCPServers, spec.Capabilities); err != nil {
+		if err := mcpconfig.Validate(spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
 			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
