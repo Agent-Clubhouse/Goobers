@@ -99,7 +99,7 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	if len(cfg.Repos) == 0 {
 		return statusPRLabelCounts{}, errors.New("no target repository configured")
 	}
-	resolver, _, err := buildCredentials(cfg, "", "")
+	resolver, _, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}

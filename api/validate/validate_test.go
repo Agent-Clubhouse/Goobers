@@ -567,6 +567,48 @@ func TestCompilerChecksSurfaceInValidate(t *testing.T) {
 	}
 }
 
+// TestReadOnlyReferenceReposValidateCleanly proves a gaggle that reads distinct
+// reference repos (MGV-10, #1285) — a read-write Project plus read-only
+// AdditionalRepos under the same owner — passes validation end-to-end.
+func TestReadOnlyReferenceReposValidateCleanly(t *testing.T) {
+	report, err := newV(t).ValidateDir("testdata/config-additional-repos")
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("expected config-additional-repos to validate cleanly, got:\n%s", joinIssues(report))
+	}
+}
+
+// TestReadOnlyReferenceRepoMustNotBeProject asserts the MGV-10 (#1285) coherence
+// check: a repo cannot be both the gaggle's read-write Project and a read-only
+// AdditionalRepos reference, and a reference repo must not be listed twice.
+func TestReadOnlyReferenceRepoMustNotBeProject(t *testing.T) {
+	ix := newIndex()
+	ix.gaggles["site"] = apiv1.Gaggle{
+		Spec: apiv1.GaggleSpec{
+			Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "site"},
+			AdditionalRepos: []apiv1.RepoRef{
+				{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "site"},    // == Project
+				{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"}, // fine
+				{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"}, // duplicate
+			},
+		},
+	}
+	report := &Report{}
+	ix.checkGaggleAdditionalRepos(report)
+
+	all := joinIssues(report)
+	for _, want := range []string{
+		"same repository as spec.project",
+		"repeats repository",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("expected an error mentioning %q; full report:\n%s", want, all)
+		}
+	}
+}
+
 func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	ix := newIndex()
 	ix.gaggles["example"] = apiv1.Gaggle{}

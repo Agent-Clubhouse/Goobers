@@ -362,15 +362,17 @@ func buildSchedulerDefinitions(
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
+	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
+		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
 	}
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 		)
 		if err != nil {
 			return nil, err
@@ -387,7 +389,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg, "", "")
+	credResolver, _, err := buildCredentials(cfg, "", "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +524,7 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
+		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo,
 	)
 }
 
@@ -555,10 +557,11 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	additionalRepos []apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo,
 	)
 	if err != nil {
 		return nil, nil, err
