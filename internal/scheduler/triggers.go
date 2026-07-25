@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -57,15 +59,16 @@ func (s ScheduleTrigger) Watch(ctx context.Context, out chan<- Event) error {
 }
 
 // BacklogPollTrigger lists matching backlog items on each tick and emits one
-// Event per item. Label matching is the routing mechanism: only items carrying
-// all of Labels are considered for this workflow.
+// Event per item. LabelPredicate is evaluated exactly after the provider query;
+// Labels remain a provider-side optimization and legacy configuration surface.
 type BacklogPollTrigger struct {
-	WorkflowName string
-	Provider     providers.BacklogProvider
-	Repo         providers.RepositoryRef
-	Labels       []string
-	Ticks        <-chan time.Time
-	Limit        int
+	WorkflowName   string
+	Provider       providers.BacklogProvider
+	Repo           providers.RepositoryRef
+	Labels         []string
+	LabelPredicate *labelpredicate.Predicate
+	Ticks          <-chan time.Time
+	Limit          int
 }
 
 // Name identifies the trigger.
@@ -82,16 +85,24 @@ func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
 				return nil
 			}
 			items, err := b.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-				Repository: b.Repo,
-				Labels:     b.Labels,
-				State:      "open",
-				Limit:      b.Limit,
+				Repository:     b.Repo,
+				Labels:         b.Labels,
+				LabelPredicate: b.LabelPredicate,
+				State:          "open",
+				Limit:          b.Limit,
 			})
 			if err != nil {
 				return err
 			}
 			for i := range items {
 				item := items[i]
+				matched, err := b.LabelPredicate.Matches(item.Labels)
+				if err != nil {
+					return fmt.Errorf("evaluate backlog label predicate: %w", err)
+				}
+				if !matched {
+					continue
+				}
 				ev := Event{WorkflowName: b.WorkflowName, Item: &item, Reason: "backlog-item", DedupeKey: dedupeKey(item)}
 				if err := send(ctx, out, ev); err != nil {
 					return err

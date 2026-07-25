@@ -527,7 +527,11 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		if err != nil {
 			return nil, err
 		}
-		if hasAllLabels(item.Labels, req.Labels) {
+		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if hasAllLabels(item.Labels, req.Labels) && matched {
 			items = append(items, item)
 			if req.Limit > 0 && len(items) >= req.Limit {
 				break

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 // recordingRecorder captures external-ref mutations for assertions.
@@ -957,6 +959,45 @@ func TestGitHubListWorkItemsFiltersAndPagination(t *testing.T) {
 	if gotQuery["assignee"] != "mona" || gotQuery["since"] != "2026-07-01T00:00:00Z" ||
 		gotQuery["page"] != "2" || gotQuery["per_page"] != "50" || gotQuery["labels"] != LabelReady {
 		t.Fatalf("query params not wired: %#v", gotQuery)
+	}
+}
+
+func TestGitHubListWorkItemsAppliesPredicateAcrossPages(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
+			writeJSON(t, w, []map[string]interface{}{{
+				"id": 1, "number": 7, "title": "other", "state": "open",
+				"labels": []map[string]string{{"name": "other"}},
+			}})
+			return
+		}
+		writeJSON(t, w, []map[string]interface{}{{
+			"id": 2, "number": 8, "title": "wanted", "state": "open",
+			"labels": []map[string]string{{"name": "wanted"}},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = srv.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		LabelPredicate: predicate,
+		Limit:          1,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "8" || requests != 2 {
+		t.Fatalf("items = %#v, requests = %d; want matching issue 8 after two pages", items, requests)
 	}
 }
 

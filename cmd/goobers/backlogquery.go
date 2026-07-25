@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -57,9 +58,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 }
 
 const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
-	"Query the provider for eligible backlog items — labeled with both\n" +
-	"trustLabel (SEC-047: required on public repos, since backlog content is\n" +
-	"untrusted input otherwise) and requireLabels. With --claim, claims\n" +
+	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
+	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
+	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
+	"labelPredicate CEL expression. CEL supports string membership in `labels`\n" +
+	"combined with &&, ||, and !. With --claim, claims\n" +
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
@@ -134,6 +137,11 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
+	labelFilter, err := labelpredicate.Compile(providerInput("labelPredicate", ""), requireLabels, excludeLabels)
+	if err != nil {
+		pf(stderr, "error: invalid labelPredicate: %v\n", err)
+		return 1
+	}
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
@@ -235,13 +243,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)
 	}
-	labels = append(labels, requireLabels...)
+	labels = append(labels, labelFilter.RequiredLabels()...)
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repo,
-		Labels:      labels,
-		State:       "open",
-		Limit:       scanLimit,
-		OldestFirst: true,
+		Repository:     repo,
+		Labels:         labels,
+		LabelPredicate: labelFilter,
+		State:          "open",
+		Limit:          scanLimit,
+		OldestFirst:    true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
@@ -255,17 +264,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		if trustLabel != "" && !item.HasLabel(trustLabel) {
 			continue
 		}
-		hasRequiredLabels := true
-		for _, label := range requireLabels {
-			if !item.HasLabel(label) {
-				hasRequiredLabels = false
-				break
-			}
+		matched, matchErr := labelFilter.Matches(item.Labels)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
 		}
-		if !hasRequiredLabels {
-			continue
-		}
-		if hasAnyLabel(item.Labels, excludeLabels) {
+		if !matched {
 			continue
 		}
 		// Defense-in-depth state re-verify (#947): the provider query above
@@ -551,8 +555,11 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if len(claimed) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
-	if hasAnyLabel(requireLabels, []string{providers.LabelReady}) {
+	if labelFilter.ReferencesLabel(providers.LabelReady) {
 		for i := range claimed {
+			if !claimed[i].HasLabel(providers.LabelReady) {
+				continue
+			}
 			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
 				ctx, repo, claimed[i].ID, providers.LabelReady,
 			)

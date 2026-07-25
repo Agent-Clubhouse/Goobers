@@ -172,6 +172,43 @@ func TestBacklogQueryLabelLists(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryAppliesExactLabelPredicate(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Small runner item", "trusted", "area:runner", "size:s")
+	server.addIssue(8, "Windows medium item", "trusted", "area:runner", "size:m", "platform:windows")
+	server.addIssue(9, "Large runner item", "trusted", "area:runner", "size:l")
+	server.addIssue(10, "Small docs item", "trusted", "area:docs", "size:s")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "area:runner")
+	t.Setenv("GOOBERS_INPUT_LABELPREDICATE", `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "7\tSmall runner item") || strings.Contains(stdout, "8\t") ||
+		strings.Contains(stdout, "9\t") || strings.Contains(stdout, "10\t") {
+		t.Fatalf("stdout = %q, want only issue 7", stdout)
+	}
+}
+
+func TestBacklogQueryRejectsInvalidLabelPredicate(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_LABELPREDICATE", `labels.size() > 0`)
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", root)
+	if code != 1 || !strings.Contains(stderr, "invalid labelPredicate") {
+		t.Fatalf("code = %d, stderr = %q, want fail-closed predicate validation", code, stderr)
+	}
+}
+
 func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

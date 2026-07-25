@@ -103,6 +103,12 @@ spec:
                     description: ConnectionRef names the connection (credentials)
                       used to reach the backlog.
                     type: string
+                  labelPredicate:
+                    description: |-
+                      LabelPredicate is a CEL expression over the item's label set. The only
+                      supported operations are string membership in `labels` and boolean
+                      composition with &&, ||, and !. It is ANDed with Labels.
+                    type: string
                   labels:
                     description: |-
                       Query/labels narrow which items this gaggle considers work. Routing of an
