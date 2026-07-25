@@ -206,6 +206,7 @@ func runTraceWithFactories(
 			Timeline:      timeline,
 			TerminalCause: terminal,
 			Escalation:    escalation,
+			Outcome:       detail.Outcome,
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 		}
@@ -236,6 +237,9 @@ func runTraceWithFactories(
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
 		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
+	}
+	if detail.Outcome != nil && detail.Outcome.Gate != "" {
+		pf(stdout, "outcome:  gate=%s verdict=%s target=%s\n", detail.Outcome.Gate, detail.Outcome.Verdict, detail.Outcome.Target)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -337,15 +341,16 @@ func traceEventsTerminal(events []readservice.RunEvent) bool {
 }
 
 type traceJSONResult struct {
-	Identity      journal.RunIdentity  `json:"identity"`
-	Phase         journal.RunPhase     `json:"phase"`
-	State         *journal.State       `json:"state,omitempty"`
-	Repasses      int                  `json:"repasses"`
-	Timeline      []traceTimelineStage `json:"timeline"`
-	TerminalCause *traceTerminalCause  `json:"terminalCause,omitempty"`
-	Escalation    *escalationSummary   `json:"escalation,omitempty"`
-	Events        []traceJSONEvent     `json:"events"`
-	Spans         []rollup.SpanSummary `json:"spans"`
+	Identity      journal.RunIdentity     `json:"identity"`
+	Phase         journal.RunPhase        `json:"phase"`
+	State         *journal.State          `json:"state,omitempty"`
+	Repasses      int                     `json:"repasses"`
+	Timeline      []traceTimelineStage    `json:"timeline"`
+	TerminalCause *traceTerminalCause     `json:"terminalCause,omitempty"`
+	Escalation    *escalationSummary      `json:"escalation,omitempty"`
+	Outcome       *readservice.RunOutcome `json:"outcome,omitempty"`
+	Events        []traceJSONEvent        `json:"events"`
+	Spans         []rollup.SpanSummary    `json:"spans"`
 }
 
 type traceJSONEvent struct {
