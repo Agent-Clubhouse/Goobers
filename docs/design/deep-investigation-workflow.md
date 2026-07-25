@@ -24,9 +24,10 @@ planner.
 
 The load-bearing rule is:
 
-> **The fix is not validated unless the immutable harness and symptom oracle that
-> demonstrated the baseline defect run against the fixed revision and no longer
-> observe that defect under the declared validation budget.**
+> **The fix is not validated unless the runner seals the harness and symptom
+> oracle that demonstrated the baseline defect, executes them against source
+> snapshots attested to the base and fixed revisions, and no longer observes that
+> defect under the declared validation budget.**
 
 Unit and regression tests remain useful supplementary evidence, but cannot replace
 that reproduction-gated end-to-end check.
@@ -131,9 +132,6 @@ entries:
   - name: reproduction.bundle
     path: .goobers/out/reproduction-bundle.tar
     mediaType: application/x-tar
-  - name: reproduction.baseline
-    path: .goobers/out/reproduction-baseline.json
-    mediaType: application/json
 ```
 
 `name` is a unique semantic key and `path` is a workspace-relative regular file.
@@ -233,20 +231,93 @@ gate a concrete consumer of the same runner-authored positional pointers as late
 stages.
 
 The artifact resolver does not by itself attest repository state. #1482 also owns
-a narrow read-only run-revision verifier for `fix-produced` and
-`reproduction-cleared`. The runner binds it to the pinned base revision and active
-run branch; it exposes only the branch head, commit reachability on that branch,
-and the SHA-256 digest and emptiness of the canonical `base...HEAD` diff. It uses
-the runner's managed repository service and does not give the gate a worktree or
-arbitrary filesystem access.
+a narrow read-only run-revision verifier for `fix-produced`,
+`reproduction-cleared`, and `evidence-complete`. The runner binds it to the pinned
+base revision and active run branch; it exposes only the branch head, commit
+reachability on that branch, and the SHA-256 digest and emptiness of the canonical
+`base...HEAD` diff. It uses the runner's managed repository service and does not
+give the gate a worktree or arbitrary filesystem access.
 
 `fix-produced` requires the scalar `fixRevision` and the revision and diff digest
 recorded in `fix.report` to match that verifier, including a non-empty diff.
 `reproduction-cleared` compares `validation.result` and the already verified
-`fix.report` to the same branch head and diff digest. The agent may propose those
-values, but neither gate trusts them without the runner-owned comparison. Later
-stages have no `repo:push`, so the attested head cannot change between those
-checks.
+`fix.report` to the same branch head and diff digest. `evidence-complete` repeats
+that comparison after `emit-evidence` and couples a matching attestation to the
+terminal success transition. The agent may propose revision values, but no gate
+trusts them without the runner-owned comparison.
+
+### 3.3 Sealed revision execution
+
+Removing `repo:push` credentials is not a repository-integrity boundary. An agent
+can still edit tracked files, change a staged harness, create local commits, or
+restore modified bytes before an after-the-fact verifier runs. Branch metadata
+therefore cannot prove which bytes a harness executed.
+
+#1482 must add a runner-owned **sealed revision executor** for the authoritative
+baseline and validation runs. This is a stage finalizer, not an agent tool or a
+sixth workflow stage. It runs after the agent adapter has exited and the runner
+has terminated the adapter's complete process tree, but before the stage result
+and artifact set are committed:
+
+1. For `reproduce`, the runner freezes the staged `reproduction.bundle` into a
+   runner-private, digest-verified input. For `validate-reproduction`, it resolves
+   the already journaled `reproduction.bundle` pointer. The agent cannot replace
+   either frozen input during execution.
+2. The runner resolves the requested commit from its managed Git object store and
+   materializes a detached source snapshot. The baseline target is the pinned base
+   revision. The validation target is `fixRevision`, after the run-revision
+   verifier confirms that it is still the active run-branch head and that its
+   canonical diff digest matches the accepted `fix.report`.
+3. The runner records the commit and tree object IDs and a canonical SHA-256
+   source-snapshot digest over every materialized path, file mode, and byte
+   sequence. The executor exposes the source snapshot, frozen harness, immutable
+   run inputs, and fixtures read-only. Only declared runtime scratch, build-cache,
+   capture, and artifact-staging roots are writable; the process working
+   directory is one of those scratch roots, never the source tree.
+4. The runner launches the bundle's pinned entrypoint under an OS enforcement
+   policy that denies writes to the source snapshot and bundle. The agent and its
+   descendants are not concurrent with this run. If the platform cannot enforce
+   those mounts or access rules, or the workload requires in-place source
+   generation, the finalizer fails closed rather than falling back to a writable
+   checkout. Pre- and post-execution digests are also compared as defense in
+   depth, but write denial is the control that prevents modify-then-restore.
+5. The runner captures the actual argv, sanitized environment dimensions,
+   policy version, budget consumed, harness-health controls, oracle observations,
+   source and harness digests, exit status, and semantic references to raw
+   captures in a runner-authored execution record. Agent-authored summaries may
+   add bounded context, but cannot override those fields.
+
+For `reproduce`, `reproduction.baseline` is the sealed executor's record. For
+`validate-reproduction`, `validation.result` is its record. Those names are
+reserved: an agent staging manifest that supplies either name is rejected. The
+finalizer adds the reserved record and its captured attachments to the candidate
+artifact set, and #1484's publisher validates and lifts the complete set
+atomically. No partial pointers are published if execution or final publication
+fails.
+
+An adapter must return provisional `success` before its finalizer runs. The
+finalizer then derives the committed stage status and domain error code from the
+sealed execution: baseline not established becomes
+`blocked`/`REPRODUCTION_NOT_ESTABLISHED`, a post-fix symptom becomes
+`failure`/`ORIGINAL_SYMPTOM_PERSISTS`, and only the admission conditions in
+sections 4.1 and 4.4 become `success`. An adapter `blocked` or `failure` remains
+terminal and cannot be upgraded by the finalizer.
+
+An agent may run exploratory commands in its disposable worktree while developing
+the harness or preparing validation context, but those runs are never admissible
+evidence. Only the finalizer can author the baseline and validation records
+consumed by the gates.
+
+Once `fix-produced` passes, the runner persists the accepted `(baseRevision,
+fixRevision, diffDigest)` tuple in workflow state. Later stages receive no
+writable checkout of the active run branch: validation receives only the sealed,
+detached snapshot, and `emit-evidence` uses a scratch workspace. The verifier
+checks the tuple immediately before and after sealed validation and again after
+evidence emission. The final check and successful run transition occur under the
+managed repository's run-branch ref lock; a mismatch or concurrent ref update
+fails `evidence-complete`. This repeated runner attestation, rather than missing
+credentials or agent-reported hashes, binds the successful run to the reviewed
+revision.
 
 ## 4. Stage contracts
 
@@ -274,17 +345,19 @@ mutation authority.
 - artifact-set entry `reproduction.bundle`: a self-contained harness containing a
   manifest, launch/cleanup entrypoints, fixtures or workload definition, fixed
   seeds where applicable, and the machine-evaluable symptom oracle;
-- artifact-set entry `reproduction.baseline`: a result recording the exact base
-  revision, sanitized environment, invocation, attempts/load/duration, harness
-  health signals, symptom observations, and semantic references to raw baseline
-  evidence entries in the same artifact set;
+- runner-authored artifact-set entry `reproduction.baseline`: the sealed-execution
+  record from section 3.3, including the exact base source-snapshot digest,
+  sanitized environment, invocation, attempts/load/duration, harness health
+  signals, symptom observations, and semantic references to raw baseline evidence
+  entries in the same artifact set;
 - optional `reproduction.attachment.<id>` entries such as logs or fixture
   snapshots.
 
 **Terminal outcomes**
 
-- `success` only when the harness completed its workload and the oracle observed
-  the claimed symptom under the declared baseline budget;
+- `success` only when the sealed finalizer completed the harness workload against
+  the pinned base snapshot and the oracle observed the claimed symptom under the
+  declared baseline budget;
 - `blocked` with `REPRODUCTION_NOT_ESTABLISHED` when the bounded, safe attempts did
   not reproduce the symptom or the required environment is unavailable; this
   escalates with all attempted-run evidence and does not advance;
@@ -293,8 +366,9 @@ mutation authority.
 
 The `reproduction-established` gate reads `reproduce.artifact[0]`, resolves the
 `reproduction.bundle` and `reproduction.baseline` entries and any baseline
-evidence they reference, verifies every pointer/digest, and requires a healthy
-harness run plus at least one oracle-confirmed baseline symptom before admitting
+evidence they reference, verifies every pointer/digest, and requires the
+runner-authored source, bundle, oracle, and execution attestations plus a healthy
+harness run and at least one oracle-confirmed baseline symptom before admitting
 `instrument`.
 
 ### 4.2 `instrument`
@@ -386,14 +460,17 @@ capture, not source editing.
 - `instrument.artifact[0]`, `implement-fix.artifact[0]`, their indexed payload
   pointers, and scalar `fixRevision`; required semantic entries are
   `diagnosis.report` and `fix.report`;
-- a fresh worktree at `fixRevision`.
+- the runner-owned sealed, detached source snapshot at `fixRevision`; the active
+  run branch and the validation agent's exploratory worktree are not mounted into
+  the authoritative execution.
 
 **Capabilities:** `repo:read`, `agent:model`.
 
 **Outputs**
 
-- artifact-set entry `validation.result`: the reproduced baseline count/rate,
-  bundle and oracle digests, fixed revision and canonical diff digest, sanitized
+- runner-authored artifact-set entry `validation.result`: the sealed-execution
+  record containing the reproduced baseline count/rate, bundle and oracle
+  digests, fixed revision, source-snapshot and canonical diff digests, sanitized
   environment, actual invocation, completed validation budget, harness health
   signals, post-fix symptom count/rate, and pass/fail decision;
 - `validation.attachment.<id>` entries for raw validation logs/metrics and any
@@ -403,9 +480,10 @@ capture, not source editing.
 
 **Terminal outcomes**
 
-- `success` only when the original bundle and oracle are unchanged, the harness
-  health checks and workload complete, and the oracle observes zero instances of
-  the original symptom across the declared validation budget;
+- `success` only when the sealed finalizer ran the original bundle and oracle
+  unchanged against the attested `fixRevision`, the harness health checks and
+  workload complete, and the oracle observes zero instances of the original
+  symptom across the declared validation budget;
 - `failure` with `ORIGINAL_SYMPTOM_PERSISTS` when the original symptom appears even
   once, regardless of unit-test results;
 - `blocked` when the baseline environment cannot be recreated safely or the
@@ -420,14 +498,19 @@ states that bound and its confidence. It must also prove the harness did useful
 work, so a no-op, early exit, disabled workload, or broken oracle cannot pass.
 
 The `reproduction-cleared` gate reads `validate-reproduction.artifact[0]` and its
-`validation.result` entry rather than an agent's prose. It verifies matching
-digests, matching environment dimensions, a fixed revision and diff digest that
-match both `fix.report` and the run-revision verifier, a completed budget, healthy
-controls, and zero symptom observations. Only then may `emit-evidence` run.
+runner-authored `validation.result` entry rather than an agent's prose. It
+verifies matching bundle, oracle, and environment digests; source-snapshot
+digests bound respectively to the pinned base and accepted fix trees; a fixed
+revision and diff digest that match both `fix.report` and the run-revision
+verifier before and after execution; a completed budget; healthy controls; and
+zero symptom observations. Only then may `emit-evidence` run.
 
 ### 4.5 `emit-evidence`
 
 **Kind:** agentic, using an evidence-packager goober.
+
+**Workspace:** scratch. This stage receives artifact pointers and scalars but no
+repository checkout or managed-repository path.
 
 **Inputs**
 
@@ -455,8 +538,11 @@ controls, and zero symptom observations. Only then may `emit-evidence` run.
   required evidence is a contract failure.
 
 The `evidence-complete` gate resolves `investigation.evidence` through
-`emit-evidence.artifact[0]` and performs schema and pointer validation. A pass
-completes the run; a failure escalates with the already durable stage artifacts.
+`emit-evidence.artifact[0]` and performs schema and pointer validation. It then
+re-runs the run-revision verifier under the run-branch ref lock and requires the
+head and canonical diff digest to match the accepted fix tuple and
+`validation.result`. A pass completes the run in that locked transition; a
+failure escalates with the already durable stage artifacts.
 
 ## 5. Harness and sandbox affordances
 
@@ -487,7 +573,10 @@ agent into an unbounded host debugger.
 - **Disposable writable roots:** agent and harness writes stay in the stage
   worktree, stage telemetry directory, and declared artifact staging roots.
   OS-native sandboxing follows ADR 0001 where enabled and fails closed when the
-  configured mechanism or a required profiling affordance is unavailable.
+  configured mechanism or a required profiling affordance is unavailable. The
+  authoritative baseline and validation finalizers use section 3.3's stricter
+  sealed execution roots; exploratory worktree execution cannot substitute for
+  them.
 - **Redaction before durability:** dumps and traces can contain credentials,
   request bodies, paths, or user data. Every payload is scrubbed before digesting
   under SEC-041. Evidence that cannot be safely scrubbed is not emitted and the
@@ -518,6 +607,7 @@ environment:
 reproduction:
   harness: <ArtifactPointer>
   baseline: <ArtifactPointer>
+  sourceSnapshotDigest: sha256:<hex>
   oracleDigest: sha256:<hex>
   symptom: <bounded description>
 diagnosis:
@@ -526,8 +616,10 @@ diagnosis:
   evidence: [<EvidenceRef>, ...]
 fix:
   report: <ArtifactPointer>
+  diffDigest: sha256:<hex>
 validation:
   result: <ArtifactPointer>
+  sourceSnapshotDigest: sha256:<hex>
   harnessDigest: sha256:<hex>
   oracleDigest: sha256:<hex>
   completedAttempts: <integer>
@@ -548,13 +640,14 @@ captureContext: {<comparison key>: <scalar value>}
 ```
 
 Required fields are the subject revisions, sanitized comparison environment,
-reproduction harness and baseline, oracle digest, diagnosis report with at least
-one supporting evidence reference, fix report, and validation result. The
-`attachments` array is optional and heterogeneous. No particular attachment kind
-is mandatory: an investigation may emit a goroutine dump, a runtime trace, a CPU
-profile, several kinds, or none when other causal evidence is sufficient. Listed
-attachments must resolve and verify; absent optional kinds do not create empty
-placeholder artifacts.
+reproduction harness and runner-authored baseline, baseline and validation
+source-snapshot digests, oracle digest, diagnosis report with at least one
+supporting evidence reference, fix report and canonical diff digest, and the
+runner-authored validation result. The `attachments` array is optional and
+heterogeneous. No particular attachment kind is mandatory: an investigation may
+emit a goroutine dump, a runtime trace, a CPU profile, several kinds, or none when
+other causal evidence is sufficient. Listed attachments must resolve and verify;
+absent optional kinds do not create empty placeholder artifacts.
 
 The schema reuses the stage contract's pointer fields (`path`, `digest`, optional
 `mediaType` and `size`). It does not embed absolute paths, secret-bearing
@@ -566,11 +659,11 @@ layers to reason about them without changing stage handoffs.
 
 | Producer | Runtime handles and semantic entries | Admission condition |
 |---|---|---|
-| `reproduce` | `reproduce.artifact[0]` indexes `reproduction.bundle`, `reproduction.baseline`, and optional attachments. | Baseline harness is healthy and its oracle observed the symptom. |
+| `reproduce` | `reproduce.artifact[0]` indexes `reproduction.bundle`, runner-authored `reproduction.baseline`, and optional attachments. | The sealed base snapshot and bundle attestations match; the baseline harness is healthy and its oracle observed the symptom. |
 | `instrument` | `instrument.artifact[0]` indexes `diagnosis.report`, `diagnosis.evidence`, and optional attachments. | Root cause, causal evidence, rejected alternatives, and fix altitude are recorded. |
 | `implement-fix` | `implement-fix.artifact[0]` indexes `fix.report`; scalar `fixRevision` and the committed run branch travel separately. | The diff is non-empty and tied to the diagnosed invariant. |
-| `validate-reproduction` | `validate-reproduction.artifact[0]` indexes `validation.result` and optional attachments. | The original digests match, the workload completed, and the original symptom count is zero. |
-| `emit-evidence` | `emit-evidence.artifact[0]` indexes `investigation.evidence`. | Schema validates and every listed pointer resolves with its digest. |
+| `validate-reproduction` | `validate-reproduction.artifact[0]` indexes runner-authored `validation.result` and optional attachments. | The sealed fixed snapshot, accepted fix tuple, and original digests match; the workload completed and the original symptom count is zero. |
+| `emit-evidence` | `emit-evidence.artifact[0]` indexes `investigation.evidence`. | Schema and pointers validate, then the run branch is re-attested to the accepted fix tuple under the final ref lock. |
 
 The gates are deterministic contract checks, not additional investigation stages.
 They never replace an artifact with evaluator prose. If a semantic assertion such
@@ -603,7 +696,9 @@ never assumes a semantic name was installed directly into `ContextPointer.Name`.
   evidence and is surfaced with the terminal run.
 - A crash resumes from the last completed stage through normal journal replay.
   Stage-local processes are recreated from the bundle; they are never adopted as
-  hidden recovered state.
+  hidden recovered state. A partially completed sealed finalizer publishes no
+  artifact set and is rerun as a new attempt against the same resolved commit and
+  frozen bundle.
 - Stage 5 produces the canonical successful-investigation manifest. Earlier-stage
   normalized indices and payload artifacts are already durable individually, so
   failure before stage 5 does not discard the reproduction or diagnostics that
@@ -613,7 +708,7 @@ never assumes a semantic name was installed directly into `ContextPointer.Name`.
 
 | Issue | Owns | Explicitly does not own |
 |---|---|---|
-| #1482 | The static workflow definition, five goober roles/prompts, five workflow-specific artifact-aware checks built on #1484's resolver, the narrow run-revision verifier used by the repository-sensitive checks, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, self-reported artifact pointers, or an ad hoc workflow-local artifact transport. |
+| #1482 | The static workflow definition, five goober roles/prompts, five workflow-specific artifact-aware checks built on #1484's resolver, the narrow run-revision verifier used by the repository-sensitive checks, the sealed revision executor and runner-owned reproduce/validate finalizers from section 3.3, the final ref-locked attestation, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, treating a writable worktree or missing `repo:push` as revision attestation, self-reported execution records or artifact pointers, or an ad hoc workflow-local artifact transport. |
 | #1483 | Provisioning and documenting the `hard` triage label, the explicit manual start path, and mutual exclusion with ordinary implementation claims. | Inferring `hard` automatically or changing the five-stage graph. |
 | #1484 | The versioned evidence schema; the `inputs.artifactManifestFile` agentic multi-file lifting primitive and normalized slot-0 index defined in section 3.1; automated-gate pointer projection, read-only resolver, and artifact-aware check seam from section 3.2; runner-authored pointer validation; optional attachment-kind support; redaction-safe durable emission; and manifest/payload retention behavior. | Investigation reasoning, workflow-specific admission predicates, routing, or requiring every diagnostic artifact kind. |
 
