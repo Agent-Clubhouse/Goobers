@@ -7,6 +7,7 @@ github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API h
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
 github.com/goobers/goobers/internal/credentials.WriteAskpassScript # Credential helper retained for isolated Git consumers.
+github.com/goobers/goobers/internal/credentials.writeAskpassFile # Askpass file writer reached only via WriteAskpassScript (isolated Git-consumer seam).
 github.com/goobers/goobers/internal/credentials.GitEnv # Credential environment helper retained for isolated Git consumers.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
@@ -17,7 +18,6 @@ github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema 
 github.com/goobers/goobers/internal/telemetry/query.HasCapability # Query capability helper retained for external query integrations.
 github.com/goobers/goobers/internal/telemetry/query.MaterializeArtifact # Query artifact helper retained for external query integrations.
 github.com/goobers/goobers/internal/telemetry/query.NotConfiguredSource.Query # Explicit unconfigured project-query implementation retained for optional integrations.
-github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Rollup repair entrypoint retained for maintenance tooling.
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper retained for provider webhook integrations.
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
@@ -30,12 +30,6 @@ github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuni
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
 
 # Build-time generators exercised by drift tests and make docs.
-github.com/goobers/goobers/cmd/goobers.docsRootLong # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderCLIDocs # CLI documentation generator entrypoint invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.collectDocCommands # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.docDisplayName # CLI documentation generator helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.writeCLIDocs # CLI documentation writer invoked by make docs through the drift test.
-github.com/goobers/goobers/cmd/goobers.isGeneratedDocFile # CLI documentation pruning helper invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
 github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
@@ -43,18 +37,6 @@ github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delt
 github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
-github.com/goobers/goobers/internal/clidocs.Command.Name # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.FullName # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.Slug # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Command.ManFile # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Sort # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.ManPage # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.ManIndex # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.Reference # CLI documentation rendering API retained for the build-time generator.
-github.com/goobers/goobers/internal/clidocs.anchor # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.roffEscapeInline # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.roffPreformatted # CLI documentation rendering helper reachable through generator tests.
-github.com/goobers/goobers/internal/clidocs.mdEscapeCell # CLI documentation rendering helper reachable through generator tests.
 
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
@@ -95,7 +77,6 @@ github.com/goobers/goobers/internal/httpapi.withHeartbeatInterval # Event-stream
 github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/journal.WithClock # Journal clock option retained for deterministic persistence tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 github.com/goobers/goobers/internal/sandbox.newNative # Native sandbox constructor retained for platform policy tests.
@@ -119,6 +100,9 @@ github.com/goobers/goobers/internal/instance.NewGitSource # Git-backed config so
 github.com/goobers/goobers/internal/instance.NewWorkflowGitSource # Workflow-source constructor retained for team-tier config repository authentication.
 github.com/goobers/goobers/internal/instance.workflowSourceTokenSource.Token # Dedicated config repository credential source retained for team-tier workflow sync.
 github.com/goobers/goobers/internal/instance.GitSource.Resolve # Git-backed config source implementation retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.Warnings # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.isSymlinkPrivilegeError # Windows symlink-privilege fallback helper for the team-tier Git config source.
+github.com/goobers/goobers/internal/instance.isWindowsSymlinkPrivilegeError # Windows symlink-privilege fallback helper for the team-tier Git config source.
 github.com/goobers/goobers/internal/instance.GitSource.materializeRevision # Git-backed config source helper retained for team-tier configuration.
 github.com/goobers/goobers/internal/instance.normalizeGitSourceRef # Git-backed config source helper retained for team-tier configuration.
 github.com/goobers/goobers/internal/instance.GitSource.refreshMirror # Git-backed config source helper retained for team-tier configuration.
