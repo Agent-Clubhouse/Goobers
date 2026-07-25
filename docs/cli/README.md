@@ -965,18 +965,19 @@ conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 Usage: goobers merge-pr [path]
 
 Merge a pull request, but only when every independent conjunct holds:
-verdict=pass, CI green, not a draft, and the SHA-pin still matches the
-PR's live head/base (never a bare self-approval). Declared inputs:
-pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
-(required for the default commit message; supplied by apply-verdict), advisoryMode
-(default false — report only, no merge attempted), mergeMethod
-(merge/squash/rebase; default squash), commitMessage (default: PR
-title + review rationale + referenced issues), resultFile (default
-merge-result.json). Successful merges also report headBranch and
-branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated
-(merged or not — see the result file's "merged" field), 1 = business
-error (missing capability/config, malformed inputs, provider failure),
-2 = usage/IO error.
+verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
+live head/base, and — for a sibling-overlap PR — completed single-lander
+election evidence (elected:true, #1071) — never a bare self-approval.
+Declared inputs: pullNumber, verdict, headSha, baseSha (all required),
+verdictAuthor (required for the default commit message; supplied by
+apply-verdict), advisoryMode (default false — report only, no merge
+attempted), mergeMethod (merge/squash/rebase; default squash),
+commitMessage (default: PR title + review rationale + referenced
+issues), resultFile (default merge-result.json). Successful merges
+also report headBranch and branchCleanup (deleted, skipped-stacked, or
+failed). Exit codes: 0 = evaluated (merged or not — see the result
+file's "merged" field), 1 = business error (missing capability/config,
+malformed inputs, provider failure), 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1913,8 +1914,9 @@ path "."). --source-tree validates a checked-in config source tree
 using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
-token and verifies authenticated git access. Exit codes: 0 = valid,
-1 = validation errors, 2 = usage/IO error.
+token, verifies authenticated git access, and (GitHub only) warns when
+a repository is larger than the checkout-size threshold. Exit codes:
+0 = valid, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
 **Examples**

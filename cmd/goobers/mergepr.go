@@ -19,9 +19,10 @@ import (
 // runMergePR implements the `goobers merge-pr` built-in stage kind (issue
 // #360): the provider-level conjunctive auto-merge action `merge-review`
 // drives. It merges a PR only when EVERY independent conjunct holds —
-// verdict=pass, CI green, not a draft, and the SHA-pin (headSha/baseSha)
-// still matches the PR's LIVE state — never a bare self-approval, and never
-// trusting a caller-supplied "still valid" claim instead of re-polling
+// verdict=pass, CI green, not a draft, the SHA-pin (headSha/baseSha) still
+// matches the PR's LIVE state, and — for a sibling-overlap PR — completed
+// single-lander election evidence (#1071) — never a bare self-approval, and
+// never trusting a caller-supplied "still valid" claim instead of re-polling
 // (docs/design/v0/pr-lifecycle-loop.md §7/D6).
 //
 // A PR missing any one conjunct is a normal, expected outcome (the PR just
@@ -34,18 +35,19 @@ import (
 // merge attempt that should have succeeded but didn't) is a business error.
 const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"Merge a pull request, but only when every independent conjunct holds:\n" +
-	"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n" +
-	"PR's live head/base (never a bare self-approval). Declared inputs:\n" +
-	"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n" +
-	"(required for the default commit message; supplied by apply-verdict), advisoryMode\n" +
-	"(default false — report only, no merge attempted), mergeMethod\n" +
-	"(merge/squash/rebase; default squash), commitMessage (default: PR\n" +
-	"title + review rationale + referenced issues), resultFile (default\n" +
-	"merge-result.json). Successful merges also report headBranch and\n" +
-	"branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated\n" +
-	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
-	"error (missing capability/config, malformed inputs, provider failure),\n" +
-	"2 = usage/IO error.\n"
+	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
+	"live head/base, and — for a sibling-overlap PR — completed single-lander\n" +
+	"election evidence (elected:true, #1071) — never a bare self-approval.\n" +
+	"Declared inputs: pullNumber, verdict, headSha, baseSha (all required),\n" +
+	"verdictAuthor (required for the default commit message; supplied by\n" +
+	"apply-verdict), advisoryMode (default false — report only, no merge\n" +
+	"attempted), mergeMethod (merge/squash/rebase; default squash),\n" +
+	"commitMessage (default: PR title + review rationale + referenced\n" +
+	"issues), resultFile (default merge-result.json). Successful merges\n" +
+	"also report headBranch and branchCleanup (deleted, skipped-stacked, or\n" +
+	"failed). Exit codes: 0 = evaluated (merged or not — see the result\n" +
+	"file's \"merged\" field), 1 = business error (missing capability/config,\n" +
+	"malformed inputs, provider failure), 2 = usage/IO error.\n"
 
 // ciReadyForMerge reports whether the PR's CI permits a merge. A non-passing
 // aggregate CheckState normally blocks — but the check-state this codebase
@@ -211,6 +213,16 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 				reasons = append(reasons, tutorManualReviewReason(classification))
 			}
 		}
+		// #1071: GitHub's native merge queue must never be a second, self-
+		// arbitrating merge authority for a sibling-overlap PR. The canonical
+		// pinned pass verdict (the same trusted comment structuredMergeCommitMessage
+		// reads below) is the durable, SHA-keyed evidence of whether single-lander
+		// election actually crowned this PR; refuse to land whenever it's an
+		// overlap-cluster member apply-verdict has NOT (yet, or no longer) elected —
+		// a normal, fail-closed refusal, never a caller-supplied claim.
+		if pinned, ok := pinnedPassVerdict(poll, verdictAuthor); ok && pinned.OverlapCluster && !pinned.Elected {
+			reasons = append(reasons, "sibling-overlap PR has no completed election evidence (elected:true) for the current head/base — refusing native-queue landing (#1071)")
+		}
 		if advisoryMode {
 			reasons = append(reasons, "advisory mode: no merge attempted")
 		}
@@ -321,13 +333,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictAuthor string) (string, string, error) {
-	title := strings.TrimSpace(poll.Title)
-	if title == "" {
-		return "", "", fmt.Errorf("pull request title is empty")
-	}
-
-	var verdict *apiv1.Verdict
+// pinnedPassVerdict finds the trusted merge-review sticky comment carrying a
+// pass verdict pinned to poll's LIVE head/base SHA — the same authoritative,
+// re-pollable source structuredMergeCommitMessage builds its commit message
+// from and the sibling-overlap election conjunct (#1071) checks before
+// landing. Only the first trusted merge-review status comment is ever
+// inspected (mirroring reconcileMergeReviewStatusCommentAs's single-canonical-
+// comment invariant); a parse failure or a pin mismatch is "not found", never
+// an error — an unusual but normal outcome the caller reports as a refusal.
+func pinnedPassVerdict(poll providers.PullRequestPollResult, verdictAuthor string) (apiv1.Verdict, bool) {
 	for _, comment := range poll.CommentsSince {
 		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, verdictAuthor) {
 			continue
@@ -339,11 +353,21 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 		if candidate.Decision == apiv1.VerdictPass &&
 			candidate.HeadSHA != "" && candidate.HeadSHA == poll.HeadSHA &&
 			candidate.BaseSHA != "" && candidate.BaseSHA == poll.BaseSHA {
-			verdict = &candidate
+			return candidate, true
 		}
 		break
 	}
-	if verdict == nil {
+	return apiv1.Verdict{}, false
+}
+
+func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictAuthor string) (string, string, error) {
+	title := strings.TrimSpace(poll.Title)
+	if title == "" {
+		return "", "", fmt.Errorf("pull request title is empty")
+	}
+
+	verdict, ok := pinnedPassVerdict(poll, verdictAuthor)
+	if !ok {
 		return "", "", fmt.Errorf("canonical merge-review status is not a pass verdict pinned to the current head and base")
 	}
 
