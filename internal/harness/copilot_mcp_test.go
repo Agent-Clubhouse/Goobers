@@ -14,6 +14,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func environmentValue(env []string, name string) (string, bool) {
@@ -279,6 +281,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "mcp-secret-test",
 		SpanExporter: exporter,
+		Scrubber:     scrubber,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -294,6 +297,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "repo:read")); err != nil {
 		t.Fatal(err)
 	}
+	span.Event("mcp.request", attribute.String("authorization", "Bearer "+secret))
 	span.Succeed("done")
 	if err := client.Flush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -302,6 +306,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	if len(recorder.spans) != 1 || bytes.Contains(recorder.spans[0].data, []byte(secret)) {
 		t.Fatalf("MCP credential leaked into journal-bound span: %#v", recorder.spans)
 	}
+	sawScrubbedTelemetryCredential := false
 	for _, recorded := range exporter.Spans() {
 		for _, attr := range recorded.Attributes() {
 			if strings.Contains(attr.Value.Emit(), secret) {
@@ -313,8 +318,14 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 				if strings.Contains(attr.Value.Emit(), secret) {
 					t.Fatalf("MCP credential leaked into telemetry event attribute %q", attr.Key)
 				}
+				if attr.Key == "authorization" && strings.Contains(attr.Value.Emit(), journal.Redacted) {
+					sawScrubbedTelemetryCredential = true
+				}
 			}
 		}
+	}
+	if !sawScrubbedTelemetryCredential {
+		t.Fatal("registry-backed MCP credential did not traverse the scrubbed telemetry path")
 	}
 	home, ok := environmentValue(runner.lastReq.Env, "COPILOT_HOME")
 	if !ok {
