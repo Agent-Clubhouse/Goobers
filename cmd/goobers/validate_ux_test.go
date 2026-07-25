@@ -171,13 +171,13 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		return nil
 	}
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "ado",
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
 		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
 	}
