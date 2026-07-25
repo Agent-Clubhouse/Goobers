@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -80,6 +81,7 @@ func TestCheckReportsModifiedMissingAndUpgrade(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 
 	modifiedPath := InstalledRoot + "/README.md"
 	missingPath := InstalledRoot + "/adapters/claude.md"
@@ -113,6 +115,7 @@ func TestUpdateRequiresAcknowledgementAndPreservesUserFiles(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 
 	modifiedPath := InstalledRoot + "/README.md"
 	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
@@ -169,6 +172,7 @@ func TestCleanUpgradeDoesNotRequireModifiedAcknowledgement(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 
 	report, err := repository.Check(newBundle)
 	if err != nil {
@@ -216,6 +220,7 @@ func TestCleanUpgradeDeletesObsoleteOwnedAsset(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 
 	newBundle := testBundle(t, "v2.0.0", "def456")
 	plan, err := repository.PlanUpdate(newBundle)
@@ -276,6 +281,7 @@ func TestUpdateRefusesUserOwnedCollision(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 
 	const collisionPath = InstalledRoot + "/future.md"
 	writeTestFile(t, root, collisionPath, []byte("user content\n"))
@@ -369,56 +375,74 @@ func TestModifiedManifestRequiresAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestSemanticManifestDriftCannotClaimUserSkill(t *testing.T) {
-	root := newTestRepository(t)
-	repository := openTestRepository(t, root)
-	bundle := testBundle(t, "v1.2.3", "abc123")
-	if _, err := repository.Install(bundle, "generic"); err != nil {
-		t.Fatal(err)
+func TestManifestDriftCannotClaimUserSkill(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{name: "asset inventory", mutate: func(*Manifest) {}},
+		{
+			name: "producer identity and asset inventory",
+			mutate: func(manifest *Manifest) {
+				manifest.Producer = Producer{Version: "v9.9.9", Commit: "forged"}
+			},
+		},
 	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := newTestRepository(t)
+			repository := openTestRepository(t, root)
+			bundle := testBundle(t, "v1.2.3", "abc123")
+			if _, err := repository.Install(bundle, "generic"); err != nil {
+				t.Fatal(err)
+			}
+			commitTestManifest(t, root)
 
-	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
-	customContent := []byte("# My skill\n")
-	writeTestFile(t, root, customSkill, customContent)
-	manifest := bundle.Manifest
-	manifest.Assets = append(manifest.Assets, Asset{
-		Path:   "payload/" + customSkill,
-		SHA256: digest(customContent),
-		Size:   int64(len(customContent)),
-	})
-	manifestData, err := marshalManifest(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, root, InstalledManifestPath, manifestData)
+			customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
+			customContent := []byte("# My skill\n")
+			writeTestFile(t, root, customSkill, customContent)
+			manifest := bundle.Manifest
+			test.mutate(&manifest)
+			manifest.Assets = append(manifest.Assets, Asset{
+				Path:   "payload/" + customSkill,
+				SHA256: digest(customContent),
+				Size:   int64(len(customContent)),
+			})
+			manifestData, err := marshalManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, root, InstalledManifestPath, manifestData)
 
-	report, err := repository.Check(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !containsString(report.Modified, InstalledManifestPath) {
-		t.Fatalf("semantic manifest drift not reported as modified: %+v", report)
-	}
-	plan, err := repository.PlanUpdate(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !containsString(plan.ModifiedOwned, InstalledManifestPath) {
-		t.Fatalf("semantic manifest drift not acknowledged: %v", plan.ModifiedOwned)
-	}
-	for _, change := range plan.Changes {
-		if change.Path == customSkill {
-			t.Fatalf("user-created skill was treated as an owned change: %+v", change)
-		}
-	}
-	if err := repository.ApplyUpdate(plan, false); err == nil {
-		t.Fatal("semantic manifest drift was replaced without acknowledgement")
-	}
-	if err := repository.ApplyUpdate(plan, true); err != nil {
-		t.Fatal(err)
-	}
-	if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
-		t.Fatalf("user-created skill changed to %q", got)
+			report, err := repository.Check(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsString(report.Modified, InstalledManifestPath) {
+				t.Fatalf("manifest drift not reported as modified: %+v", report)
+			}
+			plan, err := repository.PlanUpdate(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsString(plan.ModifiedOwned, InstalledManifestPath) {
+				t.Fatalf("manifest drift not acknowledged: %v", plan.ModifiedOwned)
+			}
+			for _, change := range plan.Changes {
+				if change.Path == customSkill {
+					t.Fatalf("user-created skill was treated as an owned change: %+v", change)
+				}
+			}
+			if err := repository.ApplyUpdate(plan, false); err == nil {
+				t.Fatal("manifest drift was replaced without acknowledgement")
+			}
+			if err := repository.ApplyUpdate(plan, true); err != nil {
+				t.Fatal(err)
+			}
+			if got := readTestFile(t, root, customSkill); !bytes.Equal(got, customContent) {
+				t.Fatalf("user-created skill changed to %q", got)
+			}
+		})
 	}
 }
 
@@ -443,6 +467,7 @@ func TestInterruptedUpdateRecoversWithoutUserCollision(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	commitTestManifest(t, root)
 	customSkill := InstalledRoot + "/skills/my-skill/SKILL.md"
 	writeTestFile(t, root, customSkill, []byte("# My skill\n"))
 
@@ -593,7 +618,7 @@ func TestRepositoryRejectsTraversalAndSymlinkEscapes(t *testing.T) {
 		t.Fatal("parent traversal target was accepted")
 	}
 
-	link := filepath.Join(t.TempDir(), "repo-link")
+	link := filepath.Join(resolvedTestTempDir(t), "repo-link")
 	if err := os.Symlink(root, link); err != nil {
 		if runtime.GOOS == "windows" {
 			t.Skipf("symlink unavailable: %v", err)
@@ -602,6 +627,15 @@ func TestRepositoryRejectsTraversalAndSymlinkEscapes(t *testing.T) {
 	}
 	if _, err := OpenRepository(link); err == nil {
 		t.Fatal("symbolic-link repository target was accepted")
+	}
+
+	intermediateRoot := resolvedTestTempDir(t)
+	intermediateLink := filepath.Join(intermediateRoot, "link")
+	if err := os.Symlink(filepath.Dir(root), intermediateLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRepository(filepath.Join(intermediateLink, filepath.Base(root))); err == nil {
+		t.Fatal("repository target with an intermediate symbolic link was accepted")
 	}
 
 	escapeRoot := newTestRepository(t)
@@ -665,11 +699,39 @@ func TestInstallDoesNotFollowPredictableTemporarySymlink(t *testing.T) {
 
 func newTestRepository(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	root := resolvedTestTempDir(t)
+	runTestGit(t, root, "init", "--quiet")
+	return root
+}
+
+func resolvedTestTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func commitTestManifest(t *testing.T, root string) {
+	t.Helper()
+	runTestGit(t, root, "add", "--", InstalledManifestPath)
+	runTestGit(t, root, "commit", "--quiet", "-m", "install agent toolkit")
+}
+
+func runTestGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	gitArgs := []string{
+		"-C", root,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgSign=false",
+		"-c", "user.name=Agent Kit Test",
+		"-c", "user.email=agent-kit@example.invalid",
+	}
+	command := exec.Command("git", append(gitArgs, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
 }
 
 func openTestRepository(t *testing.T, root string) *Repository {

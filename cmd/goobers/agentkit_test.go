@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,6 +25,8 @@ func TestAgentKitCLIInstallCheckAndUpdate(t *testing.T) {
 	if _, err := repository.Install(oldBundle, "generic"); err != nil {
 		t.Fatal(err)
 	}
+	runAgentKitTestGit(t, root, "add", "--", agentkit.InstalledManifestPath)
+	runAgentKitTestGit(t, root, "commit", "--quiet", "-m", "install agent toolkit")
 
 	code, stdout, stderr := runArgs(t, "agent-kit", "check", root)
 	if code != 1 || stderr != "" {
@@ -146,9 +149,25 @@ func TestAgentKitCLIRejectsUnsafeTargetAndFlags(t *testing.T) {
 
 func cliAgentKitRepository(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
+	runAgentKitTestGit(t, root, "init", "--quiet")
 	return root
+}
+
+func runAgentKitTestGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	gitArgs := []string{
+		"-C", root,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgSign=false",
+		"-c", "user.name=Agent Kit Test",
+		"-c", "user.email=agent-kit@example.invalid",
+	}
+	command := exec.Command("git", append(gitArgs, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
 }
