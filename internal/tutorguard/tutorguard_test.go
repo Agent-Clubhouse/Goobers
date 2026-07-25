@@ -3,6 +3,8 @@ package tutorguard
 import (
 	"errors"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestParseFindingMarkdownExtractsFrontMatter(t *testing.T) {
@@ -213,5 +215,88 @@ func TestClassifyGateEditRejectsMalformedYAML(t *testing.T) {
 	}
 	if _, err := ClassifyGateEdit([]byte(workflowFixture), []byte("not: [valid"), "local-ci-gate"); err == nil {
 		t.Fatal("expected an error for malformed new YAML")
+	}
+}
+
+// repassLoopWorkflowFixture mirrors the real shipped shape most likely to be
+// named by a gate-repass-churn finding: a gate whose fail branch routes to a
+// named repass/remediation state (implementation.yaml's `review` gate fails
+// to "park-needs-human", `local-gate` fails to "implement"), never to the
+// literal "@abort" terminal. A failsClosed() that only recognized "@abort"
+// as blocking would report false for this gate even pre-edit, making the
+// loosened-detection dead code for exactly this — the most common — shape.
+const repassLoopWorkflowFixture = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: example
+spec:
+  gaggle: goobers
+  triggers:
+    - type: manual
+  start: implement
+  tasks:
+    - name: implement
+      type: deterministic
+      goal: implement it
+      run:
+        command: ["true"]
+      next: review-gate
+    - name: push-branch
+      type: deterministic
+      goal: push it
+      run:
+        command: ["true"]
+  gates:
+    - name: review-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: push-branch
+        fail: implement
+`
+
+func TestClassifyGateEditLoosenedRepassLoopFailBranchConvergedWithPass(t *testing.T) {
+	// The exact bypass QA/Dev-7 flagged: redirecting a repass-loop gate's
+	// fail branch to converge with its own pass branch defeats the gate
+	// (every outcome now proceeds) without ever touching "@abort" — this
+	// must classify as loosened, not tuning.
+	newYAML := mustReplace(t, repassLoopWorkflowFixture, "fail: implement", "fail: push-branch")
+	kind, err := ClassifyGateEdit([]byte(repassLoopWorkflowFixture), []byte(newYAML), "review-gate")
+	if err != nil {
+		t.Fatalf("ClassifyGateEdit: %v", err)
+	}
+	if kind != GateEditLoosened {
+		t.Fatalf("kind = %q, want loosened (repass-loop gate defeated by fail/pass convergence)", kind)
+	}
+	if !kind.RequiresIndependentProof() {
+		t.Error("RequiresIndependentProof() = false for loosened, want true")
+	}
+}
+
+func TestClassifyGateEditTuningRepassLoopUnrelatedFieldChange(t *testing.T) {
+	// A repass-loop gate whose fail branch still differs from pass (still
+	// blocking) after an unrelated field change is ordinary tuning, exactly
+	// like the @abort-style gate case.
+	newYAML := mustReplace(t, repassLoopWorkflowFixture, "check: status-equals", "check: output-numeric-lte")
+	kind, err := ClassifyGateEdit([]byte(repassLoopWorkflowFixture), []byte(newYAML), "review-gate")
+	if err != nil {
+		t.Fatalf("ClassifyGateEdit: %v", err)
+	}
+	if kind != GateEditTuning {
+		t.Fatalf("kind = %q, want tuning", kind)
+	}
+	if kind.RequiresIndependentProof() {
+		t.Error("RequiresIndependentProof() = true for tuning, want false")
+	}
+}
+
+func TestFailsClosedTrueForNonAbortRepassTarget(t *testing.T) {
+	// Direct regression guard for the bug itself: a gate whose fail branch
+	// names a repass/remediation state (not "@abort") must still read as
+	// failing closed, since it blocks the happy path exactly as surely.
+	g := apiv1.Gate{Branches: map[string]string{"pass": "push-branch", "fail": "implement"}}
+	if !failsClosed(g) {
+		t.Error("failsClosed() = false for a non-@abort but pass-distinct fail target, want true")
 	}
 }
