@@ -87,9 +87,9 @@ func completionContract(req RunRequest) (string, string) {
 // captured transcript are recorded and digested by the runner, never
 // self-reported here. These fields are described conditionally/out-of-band
 // instead of shown inline.
-const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "summary": "...", "metrics": {...}}
+const resultShapeHint = `{"status": "success"|"failure"|"blocked"|"no-work", "outputs": {...}, "summary": "...", "metrics": {...}}
 
-On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success. Do not populate "artifacts" or "transcript" — the runner records and digests them.
+Use "no-work" only when the task completed without error but found nothing to act on; the runner then completes the workflow without running downstream stages. On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success and no-work. Do not populate "artifacts" or "transcript" — the runner records and digests them.
 
 On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected.`
 

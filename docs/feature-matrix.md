@@ -44,6 +44,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.capabilities` | 1.4 | ga | supported | dev |
 | `goober.spec.displayName` | 1.4 | ga | supported | dev |
 | `goober.spec.gaggle` | 1.4 | ga | supported | dev |
+| `goober.spec.harness.claude-code` | 1.4 | ga | supported | dev |
 | `goober.spec.harness.copilot` | 1.4 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 1.4 | ga | supported | dev |
 | `goober.spec.instructions` | 1.4 | ga | supported | dev |
@@ -143,6 +144,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.capabilities` | 2.0 | ga | supported | dev |
 | `goober.spec.displayName` | 2.0 | ga | supported | dev |
 | `goober.spec.gaggle` | 2.0 | ga | supported | dev |
+| `goober.spec.harness.claude-code` | 2.0 | ga | supported | dev |
 | `goober.spec.harness.copilot` | 2.0 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 2.0 | ga | supported | dev |
 | `goober.spec.instructions` | 2.0 | ga | supported | dev |

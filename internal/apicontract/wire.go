@@ -293,7 +293,7 @@ func newWireFixtures() wireFixtures {
 				DisplayName:  "Implementer",
 				Role:         "coder",
 				Status:       readservice.DefinitionStatusConfigured,
-				Harness:      apiv1.HarnessCopilot,
+				Harness:      apiv1.HarnessClaudeCode,
 				Skills:       []string{"go"},
 				Capabilities: []string{"repo:push"},
 				Workflows:    []readservice.WorkflowReference{{Gaggle: "core", Name: "implementation"}},

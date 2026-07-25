@@ -17,11 +17,12 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]\n\n" +
 	"stats:  run/stage outcomes, curation actions, and ready-pool health\n" +
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
 	"prune:   remove terminal runs outside the configured retention bounds\n" +
+	"prune-orphans: report or delete old run directories that lack run.yaml\n" +
 	"compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)\n"
 
 func runTelemetry(args []string, stdout, stderr io.Writer) int {

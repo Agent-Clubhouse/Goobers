@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Version:
-> `v1alpha3` (`api/v1alpha1.StageContractVersion`).
+> `v1alpha4` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -108,7 +108,7 @@ The runner hands the stage an `InvocationEnvelope`:
 
 The stage returns a `ResultEnvelope`:
 
-- `status` — one of `success`, `failure`, `blocked`.
+- `status` — one of `success`, `failure`, `blocked`, `no-work`.
 - `artifacts[]` — its produced outputs. The stage writes bytes into the run
   journal (`api/v1alpha1.WriteArtifact`) and returns an `ArtifactPointer` for
   each. Downstream stages receive these as `contextPointers`.
@@ -162,6 +162,7 @@ pipeline.
 | `success` | advance the state machine to the next stage/gate |
 | `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked `goobers:needs-human` with its ready/claimed markers removed (#539's convention). If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
+| `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
@@ -258,12 +259,14 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha3` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha4` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
   optional `additionalWorkspaces` invocation field — read-only reference-repo
-  checkouts for a gaggle's `additionalRepos` (MGV-11 #1286).
+  checkouts for a gaggle's `additionalRepos` (MGV-11 #1286); `v1alpha4` admits
+  `no-work` through the closed result schema for both deterministic and agentic
+  stage producers.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

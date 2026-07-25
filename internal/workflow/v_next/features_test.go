@@ -547,7 +547,15 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FeaturesForGoober: %v", err)
 	}
-	got := featureIDs(append(workflowFeatures, gooberFeatures...))
+	claudeGoober := goober
+	claudeGoober.Harness = apiv1.HarnessClaudeCode
+	claudeGoober.Model = ""
+	claudeGoober.HarnessOptions = nil
+	claudeFeatures, err := FeaturesForGoober(claudeGoober)
+	if err != nil {
+		t.Fatalf("FeaturesForGoober (claude-code): %v", err)
+	}
+	got := featureIDs(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...))
 	want := expectedCurrentDSLFeatureIDs()
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
@@ -723,6 +731,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.role",
 		"goober.spec.displayName",
 		"goober.spec.instructions",
+		"goober.spec.harness.claude-code",
 		"goober.spec.harness.copilot",
 		"goober.spec.model",
 		"goober.spec.harnessOptions",
