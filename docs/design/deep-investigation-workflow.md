@@ -114,7 +114,9 @@ surface is insufficient for a harness plus a variable set of dumps, traces, or
 profiles.
 
 Therefore #1484 must add **manifest-driven agentic artifact-set lifting** before
-#1482 implements this workflow. Each deep-investigation task declares:
+#1482 implements this workflow. Each artifact-producing deep-investigation task
+declares `artifactManifestFile` instead of the legacy `artifactFile`; declaring
+both is invalid:
 
 ```yaml
 inputs:
@@ -139,19 +141,22 @@ The manifest may list zero or more stage-appropriate attachment entries. The
 agentic result must leave `artifacts` empty; the staging manifest is a request for
 the runner to lift bytes, not an `ArtifactPointer` source. For a task using
 `artifactManifestFile`, the harness rejects a completion that self-reports any
-artifact pointer instead of appending it to the runner-authored set.
+artifact pointer rather than merging untrusted pointers with the runner-authored
+set. The staging manifest itself is control input and is not lifted or exposed
+downstream.
 
 The #1484 primitive validates the manifest and every path with the existing
 containment and symlink rules, applies artifact size and count bounds, scrubs each
 payload before digesting, and rejects duplicate names, missing files, directories,
-unsupported media, or unsafe payloads. It then:
+unsupported media, or unsafe payloads. Validation covers the complete set before
+publication; a failure publishes no `ResultEnvelope.Artifacts`. It then:
 
 1. sorts entries by semantic `name`, lifts each payload, and authors its
    `ArtifactPointer`;
 2. writes a normalized, runner-authored `artifact-set.json` containing each
    semantic name, its pointer, and its one-based `slot`;
-3. returns the normalized index as result artifact 0 and the payload pointers in
-   slot order as the remaining result artifacts.
+3. returns exactly the normalized index as result artifact 0 followed by the
+   payload pointers in slot order.
 
 The normalized index has this shape:
 
@@ -168,18 +173,80 @@ entries:
 
 Downstream runtime handles consequently remain the existing
 `<stage>.artifact[i]` names. `<stage>.artifact[0]` is always the normalized index;
-an index entry with `slot: 2` must exactly match `<stage>.artifact[2]` by path and
-digest. Consumers fail closed on a missing index, an unknown required semantic
-name, a slot mismatch, or a digest mismatch. Semantic names used below are keys
-inside that index, never promised `ContextPointer.Name` values. This convention
-supports optional attachments without depending on their count or inventing a
-new context naming contract.
+slots are unique and contiguous from 1 through the number of sorted payloads; and
+an index entry with `slot: 2` must exactly match `<stage>.artifact[2]` in every
+`ArtifactPointer` field. The V0 runner already carries every artifact from every
+completed producer into later task and agentic-gate invocations, preserving result
+order as `<stage>.artifact[i]`, and reconstructs the same order from the journal on
+resume. Section 3.2 assigns the equivalent projection for automated gates to
+#1484.
+
+The static workflow declares no per-attachment data-flow edge and does not need to
+predict an optional attachment count: a consumer reads slot 0, looks up a semantic
+key, and selects the positional context pointer named by its slot. Consumers fail
+closed on a missing or malformed index, a duplicate or out-of-range slot, an
+unknown required semantic name, or any pointer mismatch. Semantic names used below
+are keys inside that index, never promised `ContextPointer.Name` values. This
+convention supports optional attachments without inventing a new context naming
+contract.
 
 Before the final evidence manifest, structured payloads refer to another payload
 as `{producerStage, name}`, not by copying or predicting an `ArtifactPointer`.
 `emit-evidence` resolves those semantic references through the normalized indices
 and writes the corresponding runner-authored pointers into the canonical schema
 in section 6.
+
+### 3.2 Artifact-aware deterministic gates
+
+The shipped automated-gate evaluator is a pure function over the subject result's
+scalar status and outputs. It receives no context pointers or worktree and cannot
+resolve the artifact sets required by this workflow. #1484 must therefore add an
+artifact-aware automated-check seam as part of the artifact-set primitive, before
+#1482 defines these gates:
+
+1. automated-gate dispatch includes the accumulated upstream
+   `ContextPointer` values in its invocation envelope, using the same positional
+   names and order supplied to later agentic stages;
+2. the evaluator receives a read-only, current-run artifact resolver that applies
+   the existing containment, size, and digest checks directly against the journal;
+   it receives no worktree or general filesystem access;
+3. a reusable artifact-set resolver loads `<producer>.artifact[0]`, validates the
+   normalized index, verifies every indexed pointer against the corresponding
+   positional context pointer, and returns a semantic-name lookup over only those
+   verified payloads;
+4. artifact-aware checks form a separate registered check type, leaving the
+   existing scalar `CheckFunc` registry pure and backward compatible.
+
+#1482 registers the five workflow-specific `pass`/`fail` checks on that seam:
+`reproduction-established`, `cause-established`, `fix-produced`,
+`reproduction-cleared`, and `evidence-complete`. Each parses only the bounded
+structured payloads named in its stage contract and applies the admission
+condition stated below. A malformed set, absent required name, pointer mismatch,
+schema violation, or false admission predicate returns `fail` and follows the
+gate's explicit escalation branch. A transient journal read failure is an
+evaluator error governed by the gate's infrastructure retry policy.
+
+Artifact bytes are never flattened into scalar `inputs` or `outputs`, and the
+runner does not attest an agent-authored boolean in place of checking the evidence.
+This preserves deterministic gates and the envelope contract while making every
+gate a concrete consumer of the same runner-authored positional pointers as later
+stages.
+
+The artifact resolver does not by itself attest repository state. #1482 also owns
+a narrow read-only run-revision verifier for `fix-produced` and
+`reproduction-cleared`. The runner binds it to the pinned base revision and active
+run branch; it exposes only the branch head, commit reachability on that branch,
+and the SHA-256 digest and emptiness of the canonical `base...HEAD` diff. It uses
+the runner's managed repository service and does not give the gate a worktree or
+arbitrary filesystem access.
+
+`fix-produced` requires the scalar `fixRevision` and the revision and diff digest
+recorded in `fix.report` to match that verifier, including a non-empty diff.
+`reproduction-cleared` compares `validation.result` and the already verified
+`fix.report` to the same branch head and diff digest. The agent may propose those
+values, but neither gate trusts them without the runner-owned comparison. Later
+stages have no `repo:push`, so the attested head cannot change between those
+checks.
 
 ## 4. Stage contracts
 
@@ -286,8 +353,9 @@ fix-altitude rationale before admitting `implement-fix`.
 
 - a committed product change on the run branch;
 - scalar `fixRevision` naming the resulting commit;
-- artifact-set entry `fix.report` mapping each material change to the diagnosed
-  causal chain and documenting any retained regression test or production-safe
+- artifact-set entry `fix.report` recording `fixRevision`, the canonical
+  `base...HEAD` diff digest, mapping each material change to the diagnosed causal
+  chain, and documenting any retained regression test or production-safe
   instrumentation.
 
 **Terminal outcomes**
@@ -300,10 +368,11 @@ fix-altitude rationale before admitting `implement-fix`.
 - `failure` for an implementation error after infrastructure retries are
   exhausted.
 
-The `fix-produced` gate reads `implement-fix.artifact[0]`, verifies the commit
-exists on the run branch, the diff is non-empty, and `fix.report` cites the
-diagnosed invariant and evidence. It does not claim the fix works; that belongs
-only to the next stage.
+The `fix-produced` gate reads `implement-fix.artifact[0]`, uses the run-revision
+verifier from section 3.2 to attest the branch head and non-empty diff, and
+requires the scalar and `fix.report` revision/digest to match it.
+`fix.report` must also cite the diagnosed invariant and evidence. The gate does
+not claim the fix works; that belongs only to the next stage.
 
 ### 4.4 `validate-reproduction`
 
@@ -324,9 +393,9 @@ capture, not source editing.
 **Outputs**
 
 - artifact-set entry `validation.result`: the reproduced baseline count/rate,
-  bundle and oracle digests, fixed revision, sanitized environment, actual
-  invocation, completed validation budget, harness health signals, post-fix
-  symptom count/rate, and pass/fail decision;
+  bundle and oracle digests, fixed revision and canonical diff digest, sanitized
+  environment, actual invocation, completed validation budget, harness health
+  signals, post-fix symptom count/rate, and pass/fail decision;
 - `validation.attachment.<id>` entries for raw validation logs/metrics and any
   post-fix diagnostics;
 - optional `validation.supplemental.<id>` entries for ordinary unit, integration,
@@ -352,9 +421,9 @@ work, so a no-op, early exit, disabled workload, or broken oracle cannot pass.
 
 The `reproduction-cleared` gate reads `validate-reproduction.artifact[0]` and its
 `validation.result` entry rather than an agent's prose. It verifies matching
-digests, matching environment dimensions, the fixed revision, a completed budget,
-healthy controls, and zero symptom observations. Only then may `emit-evidence`
-run.
+digests, matching environment dimensions, a fixed revision and diff digest that
+match both `fix.report` and the run-revision verifier, a completed budget, healthy
+controls, and zero symptom observations. Only then may `emit-evidence` run.
 
 ### 4.5 `emit-evidence`
 
@@ -510,8 +579,10 @@ and its result belongs in a structured artifact.
 
 Every gate starts from the producer's slot-0 normalized index and verifies that
 each referenced payload pointer is also present under the declared positional
-runtime handle. It never assumes a semantic name was installed directly into
-`ContextPointer.Name`.
+runtime handle through section 3.2's read-only artifact-set resolver. Optional
+payload handles are discovered from the index delivered with the producer's
+complete artifact list, not enumerated in the static workflow definition. A gate
+never assumes a semantic name was installed directly into `ContextPointer.Name`.
 
 ## 8. Failure, retry, and escalation
 
@@ -542,9 +613,9 @@ runtime handle. It never assumes a semantic name was installed directly into
 
 | Issue | Owns | Explicitly does not own |
 |---|---|---|
-| #1482 | The static workflow definition, five goober roles/prompts, deterministic contract gates, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, self-reported artifact pointers, or an ad hoc workflow-local artifact transport. |
+| #1482 | The static workflow definition, five goober roles/prompts, five workflow-specific artifact-aware checks built on #1484's resolver, the narrow run-revision verifier used by the repository-sensitive checks, harness execution/cleanup behavior, budgets, and workflow contract tests, built only after #1484's artifact-set primitive lands. | Automatic classification/routing, self-reported artifact pointers, or an ad hoc workflow-local artifact transport. |
 | #1483 | Provisioning and documenting the `hard` triage label, the explicit manual start path, and mutual exclusion with ordinary implementation claims. | Inferring `hard` automatically or changing the five-stage graph. |
-| #1484 | The versioned evidence schema; the `inputs.artifactManifestFile` agentic multi-file lifting primitive and normalized slot-0 index defined in section 3.1; runner-authored pointer validation; optional attachment-kind support; redaction-safe durable emission; and manifest/payload retention behavior. | Investigation reasoning, workflow routing, or requiring every diagnostic artifact kind. |
+| #1484 | The versioned evidence schema; the `inputs.artifactManifestFile` agentic multi-file lifting primitive and normalized slot-0 index defined in section 3.1; automated-gate pointer projection, read-only resolver, and artifact-aware check seam from section 3.2; runner-authored pointer validation; optional attachment-kind support; redaction-safe durable emission; and manifest/payload retention behavior. | Investigation reasoning, workflow-specific admission predicates, routing, or requiring every diagnostic artifact kind. |
 
 The required landing order is #1484's schema and artifact-set primitive, then
 #1482's workflow against that shipped contract, then #1483 enabling the manual
