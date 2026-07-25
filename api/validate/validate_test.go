@@ -146,6 +146,21 @@ func TestLabelPredicatesValidatedAtConfigLoad(t *testing.T) {
 			taskExpression: `"size:s" in`,
 			want:           "spec.tasks[0].inputs.labelPredicate is invalid",
 		},
+		{
+			name:             "blank gaggle expression",
+			gaggleExpression: " \t",
+			want:             "spec.backlog.labelPredicate is invalid",
+		},
+		{
+			name:              "blank trigger expression",
+			triggerExpression: " \t",
+			want:              "spec.triggers[0].labelPredicate is invalid",
+		},
+		{
+			name:           "blank backlog-query input",
+			taskExpression: " \t",
+			want:           "spec.tasks[0].inputs.labelPredicate is invalid",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
