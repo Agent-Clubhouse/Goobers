@@ -258,11 +258,6 @@ type DeterministicRun struct {
 	// the runner's minimal base environment and capability-scoped credentials.
 	// +optional
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
-	// Image optionally selects the command's container image. The V0 local
-	// runner executes commands directly and does not honor this field;
-	// validation emits VER003 when set.
-	// +optional
-	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 	// Network selects the command's network access. Empty inherits the host
 	// network. "none" denies network access to the command and its descendants.
 	// +kubebuilder:validation:Enum=none

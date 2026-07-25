@@ -59,12 +59,6 @@ func CheckWarnings(def Definition) []string {
 				task.Name,
 			))
 		}
-		if task.Run != nil && strings.TrimSpace(task.Run.Image) != "" {
-			warnings = append(warnings, fmt.Sprintf(
-				`task %q: run.image is not honored by the local runner`,
-				task.Name,
-			))
-		}
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 			continue
 		}

@@ -29,13 +29,13 @@ The Go bias lives in exactly three places, none of them the executor:
    resolve deps even with the binary on PATH.
 3. **There is no toolchain provisioning** — a stage is a bare host subprocess
    (`shell.go:275`, `SysProcAttr{Setsid:true}`); the SDK must already be on the daemon host's
-   `PATH` (the "host-PATH gambling" #735 names). The dead `DeterministicRun.Image` field
-   (`api/v1alpha1/workflow_types.go:200`) is honored by nobody but the validator's VER003 warning
-   (`internal/workflow/checks.go:48`).
+   `PATH` (the "host-PATH gambling" #735 names). `run.image` is rejected rather than
+   pretending the subprocess is containerized; proper container execution is tracked in
+   [#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494).
 
 So making **C#/.NET first-class** is: a per-gaggle CI command (#1009, approved), a toolchain-aware
 env allowlist (#736), a declarative provisioning story (#735), a reference .NET gaggle that
-proves it green — plus, optionally, containers (#734) and a kind registry (#737) as the durable
+proves it green — plus, optionally, containers (#1494) and a kind registry (#737) as the durable
 substrate. **No target-repo Go assumptions are hardcoded in Go source** (verified: the only
 `go build`/`GOOS` sites are the daemon building *itself* and host-OS checks, e.g.
 `internal/version/version.go`, `internal/sandbox/native_other.go:11`).
@@ -71,7 +71,7 @@ substrate. **No target-repo Go assumptions are hardcoded in Go source** (verifie
 | Per-gaggle CI command on `GaggleSpec` | ❌ Go string in YAML | **#1009 (approved/ready)** | land it — foundation |
 | Toolchain env passthrough (`DOTNET_ROOT`, `NUGET_PACKAGES`, …) + gaggle-configurable | ❌ Go-only, `procenv.go:27` | #736 (unapproved) | **promote + implement (.NET first)** |
 | Declarative runtime provisioning (`requires.runtime: {dotnet: "8.0"}`) | ❌ host-PATH gambling | #735 (unapproved sketch) | **promote + design the .NET path** |
-| Containerized stage execution (revive dead `Image`) | ❌ dead field | #734 (unapproved) | escape hatch — sequence after env/provisioning |
+| Containerized stage execution | ❌ not implemented | [#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494) | escape hatch — sequence after env/provisioning |
 | Registrable stage-kind seam | ❌ hardcoded 2-kind switch `dispatch.go:50` | #737 (unapproved) | enables `container`/remote kinds; refactor-only |
 | **Reference .NET gaggle + green Windows CI** | ❌ nothing owns it | **NEW (capstone)** | **the "first-class" proof** |
 | Apple/Swift validated target + simulator | ❌ | #740 | ladder rung, macOS-host-bound |
@@ -103,7 +103,7 @@ with a clear diagnostic**, not scheduling-then-failing-at-run. A runner that *li
 scheduler prevents. No installation is performed. This is the **near-term, statically-configured
 slice of the #1087 runner-requirement contract**: **RRQ-1 (new issue)** owns the
 runner-capability-claim + schedule-time match; #735 owns the requirement declaration.
-Container-provisioned toolchains (revive `Image` #734 + kind-registry #737) are the durable
+Container-provisioned toolchains ([#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494) + kind-registry #737) are the durable
 follow-on but are **out of scope this sprint** — captured as a forward exploration issue on
 prepopulated container stages (§8).
 
@@ -149,7 +149,7 @@ PLY-7 (Apple)** — one mechanism serves `dotnet`, `xcode`, and `os=windows`. Pl
 | PLY-2 | #736 | Toolchain env allowlist (.NET first) + gaggle-configurable | Low-Med | in sprint |
 | PLY-3 | #735 | Declared runtime requirement (consumed by RRQ-1's schedule match) | Med | in sprint |
 | PLY-4 | *(new)* | Reference .NET/C# gaggle validated on a provisioned host; cloud CI pinning soft | Med | **new — the first-class proof** |
-| PLY-5 | #734 | Containerized stage execution (revive `Image`) | Med-High | **deferred** (see §8 forward issue) |
+| PLY-5 | [#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494) | Containerized stage execution | Med-High | **deferred** (see §8 forward issue) |
 | PLY-6 | #737 | Registrable stage-kind seam (refactor-only) | Low | substrate for PLY-5 (deferred) |
 | PLY-7 | #740 | Apple: iOS simulator + 1 Swift/Obj-C target, validated on local Xcode host | Med | laddered, real e2e this sprint |
 | PLY-8 | #742 | Android: emulator flavor, 1 target | Med | laddered (stretch) |
@@ -165,7 +165,7 @@ PLY-7 (Apple)** — one mechanism serves `dotnet`, `xcode`, and `os=windows`. Pl
    gaggle builds and ships green with schedule-time fail-closed — the sprint's first-class outcome.
 3. **Ladder (one target each, same capability model):** PLY-7 (#740 Apple, validated on the local
    Xcode host) and PLY-8 (#742 Android) — both consume RRQ-1 for correct host scheduling.
-4. **Deferred (forward issue, §8):** PLY-6 (#737 kind registry) → PLY-5 (#734 containers) —
+4. **Deferred (forward issue, §8):** PLY-6 (#737 kind registry) → PLY-5 (#1494 containers) —
    prepopulated container stages are a later investment, not this sprint.
 
 ## 8. Resolved decisions (PO, 2026-07-20)
@@ -185,7 +185,7 @@ PLY-7 (Apple)** — one mechanism serves `dotnet`, `xcode`, and `os=windows`. Pl
 
 ### Forward exploration (later, not this sprint)
 - **Prepopulated container stages** — container stages seeded with the right branch/code/runtime
-  (composes #734 image execution + #737 kind registry + #735 declarations). Filed as a Future
+  (composes #1494 container execution + #737 kind registry + #735 declarations). Filed as a Future
   exploration issue; the durable answer to hermetic, version-pinned toolchains beyond preinstall.
 - **Reference .NET target — RESOLVED (don't over-invest):** version is **incidental** (pin *a*
   current one, e.g. .NET 10; PO doesn't care) — the reference is a disposable smoke test, the

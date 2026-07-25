@@ -754,10 +754,8 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 // checkGaggleCheckout surfaces every declared repo checkout block as a VER003
 // compatibility notice (#649): checkout.sparse is accepted by the schema so a
 // definition can be authored ahead of the runner honoring it, but the local
-// runner still materializes full worktrees — the same accepted-but-inert
-// contract task.run.image carries ("run.image is not honored by the local
-// runner"). A warning, never an error: deleting the declaration would delete
-// the very cones a sparse-capable runner needs.
+// runner still materializes full worktrees. A warning, never an error: deleting
+// the declaration would delete the very cones a sparse-capable runner needs.
 func (ix *index) checkGaggleCheckout(r *Report) {
 	for name, g := range ix.gaggles {
 		file := ix.gaggleFile[name]
