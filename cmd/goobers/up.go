@@ -484,20 +484,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
-	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
-	opts = append(opts, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
 		return daemonstate.Refresh(lockPath, tickAt)
 	}))
-	// #353: start the open-PR-count refresher and wire it as the MaxOpenPRs cap's
-	// counter. Runs on its own interval/context under the daemon's WaitGroup, so
-	// Admit reads a cached count (never a network call under the tick lock) and
-	// shutdown drains it with every other background loop. Nil when no workflow
-	// opts into the cap.
-	if setup.OpenPRRefresher != nil {
-		opts = append(opts, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
-	}
-
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
 	if err != nil {
@@ -884,6 +873,20 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}
 	return 0
+}
+
+func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {
+	options := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(
+		setup.RunConditions.MaxParallelRuns,
+		setup.RunConditions.WorkflowBudgets,
+		setup.RunConditions.WorkflowDailyBudgets,
+	))
+	// The refresher is nil when no workflow opts into MaxOpenPRs.
+	if setup.OpenPRRefresher != nil {
+		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
+	}
+	options = append(options, additionalOptions...)
+	return localscheduler.New(setup.Entries, setup.InstanceLog, options...)
 }
 
 func publishDaemonAPIAddress(path, address string) error {
