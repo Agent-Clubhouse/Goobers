@@ -1808,6 +1808,115 @@ func TestGitHubProviderDetectMergePolicyRequiresBranch(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderGetRepoPolicyReportsLiveSettings proves the three
+// declared-manifest facts issue #916 needs: the repo-level allowed merge
+// methods (squash-only here, the #877 scenario), the merge-queue requirement
+// from the same rules-for-branch response DetectMergePolicy reads, and the
+// required-status-checks contexts from a "required_status_checks"-typed
+// rule's Parameters — none of which DetectMergePolicy itself parses.
+func TestGitHubProviderGetRepoPolicyReportsLiveSettings(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		w.Header().Set("X-OAuth-Scopes", "repo, workflow")
+		writeJSON(t, w, map[string]interface{}{
+			"allow_merge_commit": false,
+			"allow_squash_merge": true,
+			"allow_rebase_merge": false,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, []map[string]interface{}{
+			{"type": "merge_queue"},
+			{
+				"type": "required_status_checks",
+				"parameters": map[string]interface{}{
+					"required_status_checks": []map[string]interface{}{
+						{"context": "make ci"},
+						{"context": "lint"},
+					},
+				},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("GetRepoPolicy returned error: %v", err)
+	}
+	if len(result.AllowedMergeMethods) != 1 || result.AllowedMergeMethods[0] != MergeMethodSquash {
+		t.Fatalf("AllowedMergeMethods = %v, want [squash]", result.AllowedMergeMethods)
+	}
+	if result.MergeQueuePolicy != MergePolicyMergeQueue {
+		t.Fatalf("MergeQueuePolicy = %q, want %q", result.MergeQueuePolicy, MergePolicyMergeQueue)
+	}
+	if len(result.RequiredStatusChecks) != 2 || result.RequiredStatusChecks[0] != "lint" || result.RequiredStatusChecks[1] != "make ci" {
+		t.Fatalf("RequiredStatusChecks = %v, want [lint, make ci] (sorted)", result.RequiredStatusChecks)
+	}
+	if result.TokenScope != TokenScopeAvailable {
+		t.Fatalf("TokenScope = %q, want %q", result.TokenScope, TokenScopeAvailable)
+	}
+	if len(result.TokenScopes) != 2 || result.TokenScopes[0] != "repo" || result.TokenScopes[1] != "workflow" {
+		t.Fatalf("TokenScopes = %v, want [repo workflow]", result.TokenScopes)
+	}
+}
+
+// TestGitHubProviderGetRepoPolicyTokenScopeUnavailable proves the accepted
+// V1 contract's fail-closed half: when GitHub sends no X-OAuth-Scopes header
+// (fine-grained PAT / GitHub App installation tokens never send it), scope
+// is reported unavailable — never inferred from the header's absence being
+// treated as "no scopes granted".
+func TestGitHubProviderGetRepoPolicyTokenScopeUnavailable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"allow_merge_commit": true,
+			"allow_squash_merge": true,
+			"allow_rebase_merge": true,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("GetRepoPolicy returned error: %v", err)
+	}
+	if result.TokenScope != TokenScopeUnavailable {
+		t.Fatalf("TokenScope = %q, want %q", result.TokenScope, TokenScopeUnavailable)
+	}
+	if len(result.TokenScopes) != 0 {
+		t.Fatalf("TokenScopes = %v, want none", result.TokenScopes)
+	}
+	if len(result.AllowedMergeMethods) != 3 {
+		t.Fatalf("AllowedMergeMethods = %v, want all three allowed", result.AllowedMergeMethods)
+	}
+	if result.MergeQueuePolicy != MergePolicyDirect {
+		t.Fatalf("MergeQueuePolicy = %q, want %q", result.MergeQueuePolicy, MergePolicyDirect)
+	}
+}
+
+func TestGitHubProviderGetRepoPolicyRequiresBranch(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	if _, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+	}); err == nil {
+		t.Fatal("expected an error for a missing branch")
+	}
+}
+
 // graphQLStub serves the /graphql endpoint the enqueue path uses, routing
 // by whether the request carries the mutation or the lookup query, and
 // recording every request body so a test can assert what went on the wire.

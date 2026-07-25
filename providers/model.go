@@ -555,6 +555,44 @@ type RepoMergePolicyResult struct {
 	Policy MergePolicy `json:"policy"`
 }
 
+// TokenScopeStatus reports whether a provider could introspect its own
+// token's granted scopes (issue #916). GitHub only exposes this for classic
+// PATs (the X-OAuth-Scopes response header) — fine-grained PATs and GitHub
+// App installation tokens never send it. Per the accepted V1 contract, an
+// unavailable scope is reported as such and never inferred from a failed
+// call.
+type TokenScopeStatus string
+
+// Supported token-scope introspection outcomes.
+const (
+	TokenScopeAvailable   TokenScopeStatus = "available"
+	TokenScopeUnavailable TokenScopeStatus = "unavailable"
+)
+
+// RepoPolicyRequest asks a provider to report req.Branch's live
+// conformance-relevant settings (issue #916, Tier 4 of #903) — the facts
+// `goobers doctor --repo` diffs against a declared instance-config manifest.
+type RepoPolicyRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Branch     string        `json:"branch"`
+}
+
+// RepoPolicyResult reports req.Branch's live conformance-relevant settings.
+// AllowedMergeMethods lists every merge method the repo currently permits
+// (a repo-level setting, not branch-scoped); a single-entry list is the
+// repo's de facto required method, matching the "squash-only ruleset
+// conflicting with the requested merge method" scenario (#877) the issue
+// cites. MergeQueuePolicy reuses DetectMergePolicy's enum. RequiredStatusChecks
+// lists Branch's required-status-checks rule contexts, empty when none is
+// configured.
+type RepoPolicyResult struct {
+	AllowedMergeMethods  []MergeMethod    `json:"allowedMergeMethods"`
+	MergeQueuePolicy     MergePolicy      `json:"mergeQueuePolicy"`
+	RequiredStatusChecks []string         `json:"requiredStatusChecks"`
+	TokenScope           TokenScopeStatus `json:"tokenScope"`
+	TokenScopes          []string         `json:"tokenScopes,omitempty"`
+}
+
 // EnqueuePullRequestRequest adds a pull request to its repo's merge queue
 // (issue #758) — the enqueue-policy counterpart to MergePullRequestRequest.
 // Like MergePullRequest, this performs no conjunct checking of its own; the
