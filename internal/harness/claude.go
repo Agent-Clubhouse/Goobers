@@ -198,6 +198,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      initialCapture,
 	})
+	invocationResults := []ProcessResult{result}
 	prompts := []string{prompt}
 	var payload []byte
 	var completionErr error
@@ -227,6 +228,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
 					StdoutCapture:      recoveryCapture,
 				})
+				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if recoveryErr != nil {
 					runErr = recoveryErr
@@ -243,7 +245,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
-	if native, ok := convertClaudeStream(claudeStreamWithTerminalResults(result, captures...), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
+	if native, ok := convertClaudeStreams(claudeInvocationStreams(invocationResults, captures, req.MaxTranscriptBytes), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
 		out.Metrics = native.metrics
 		out.ModelUsage = native.modelUsage
 		if len(native.data) > 0 {

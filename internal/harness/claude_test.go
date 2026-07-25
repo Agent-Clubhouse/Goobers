@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -216,7 +217,7 @@ func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing
 }
 
 func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
-	const limit = 512
+	const limit = 4096
 	workspace := t.TempDir()
 	recovery := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -247,8 +248,28 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 	if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 160 {
 		t.Fatalf("combined input token metric = %v, want 160", got)
 	}
+	if !out.TranscriptTruncated || out.TranscriptDroppedBytes <= 0 {
+		t.Fatalf("truncation = %v, dropped = %d; want truncated recovery", out.TranscriptTruncated, out.TranscriptDroppedBytes)
+	}
 	if !bytes.Contains(out.Transcript, []byte("recovered terminal output")) {
 		t.Fatalf("transcript lost recovery terminal output:\n%s", out.Transcript)
+	}
+	initialPrompt := runner.reqs[0].Command[slices.Index(runner.reqs[0].Command, "-p")+1]
+	recoveryPrompt := runner.reqs[1].Command[slices.Index(runner.reqs[1].Command, "-p")+1]
+	var orderedContent []string
+	for _, line := range bytes.Split(bytes.TrimSpace(out.Transcript), []byte("\n")) {
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode canonical event: %v\n%s", err, line)
+		}
+		switch event.Content {
+		case initialPrompt, "done", recoveryPrompt, "recovered terminal output":
+			orderedContent = append(orderedContent, event.Content)
+		}
+	}
+	want := []string{initialPrompt, "done", recoveryPrompt, "recovered terminal output"}
+	if !slices.Equal(orderedContent, want) {
+		t.Fatalf("prompt/result order = %q, want %q\n%s", orderedContent, want, out.Transcript)
 	}
 }
 

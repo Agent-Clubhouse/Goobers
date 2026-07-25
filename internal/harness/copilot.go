@@ -430,6 +430,25 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 }
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
+	firstTranscript, secondTranscript, dropped := retainedProcessTranscripts(first, second, limit)
+
+	transcript := append([]byte(nil), firstTranscript...)
+	if len(firstTranscript) > 0 && len(secondTranscript) > 0 {
+		transcript = append(transcript, '\n')
+	}
+	transcript = append(transcript, secondTranscript...)
+	if dropped > 0 {
+		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
+	}
+	return ProcessResult{
+		Transcript:             transcript,
+		ExitCode:               second.ExitCode,
+		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
+		TranscriptDroppedBytes: dropped,
+	}
+}
+
+func retainedProcessTranscripts(first, second ProcessResult, limit int64) ([]byte, []byte, int64) {
 	if limit <= 0 {
 		limit = DefaultMaxTranscriptBytes
 	}
@@ -452,20 +471,7 @@ func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult
 		int64(len(firstTranscript)) - firstRetained +
 		int64(len(secondTranscript)) - secondRetained
 
-	transcript := append([]byte(nil), firstTranscript[:firstRetained]...)
-	if firstRetained > 0 && secondRetained > 0 {
-		transcript = append(transcript, '\n')
-	}
-	transcript = append(transcript, secondTranscript[:secondRetained]...)
-	if dropped > 0 {
-		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
-	}
-	return ProcessResult{
-		Transcript:             transcript,
-		ExitCode:               second.ExitCode,
-		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
-		TranscriptDroppedBytes: dropped,
-	}
+	return firstTranscript[:firstRetained], secondTranscript[:secondRetained], dropped
 }
 
 func processTranscriptBytes(result ProcessResult) []byte {

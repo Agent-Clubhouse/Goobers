@@ -125,32 +125,41 @@ func (c *claudeTerminalCapture) Result() []byte {
 	return append([]byte(nil), c.result...)
 }
 
-func claudeStreamWithTerminalResults(result ProcessResult, captures ...*claudeTerminalCapture) io.Reader {
-	results := make([][]byte, 0, len(captures))
-	captured := make(map[string]int, len(captures))
-	for _, capture := range captures {
-		if capture == nil {
-			continue
-		}
-		terminal := capture.Result()
-		if len(terminal) == 0 {
-			continue
-		}
-		results = append(results, terminal)
-		captured[string(terminal)]++
+func claudeInvocationStreams(results []ProcessResult, captures []*claudeTerminalCapture, limit int64) []io.Reader {
+	retained := make([][]byte, len(results))
+	for i, result := range results {
+		retained[i] = processTranscriptBytes(result)
+	}
+	if len(results) == 2 {
+		retained[0], retained[1], _ = retainedProcessTranscripts(results[0], results[1], limit)
 	}
 
-	raw := processTranscriptBytes(result)
-	if len(results) == 0 {
+	streams := make([]io.Reader, len(results))
+	for i, raw := range retained {
+		var capture *claudeTerminalCapture
+		if i < len(captures) {
+			capture = captures[i]
+		}
+		streams[i] = claudeStreamWithTerminalResult(raw, capture)
+	}
+	return streams
+}
+
+func claudeStreamWithTerminalResult(raw []byte, capture *claudeTerminalCapture) io.Reader {
+	if capture == nil {
+		return bytes.NewReader(raw)
+	}
+	terminal := capture.Result()
+	if len(terminal) == 0 {
 		return bytes.NewReader(raw)
 	}
 
 	var stream bytes.Buffer
+	removed := false
 	for len(raw) > 0 {
 		line, rest, found := bytes.Cut(raw, []byte{'\n'})
-		key := string(bytes.TrimSpace(line))
-		if captured[key] > 0 {
-			captured[key]--
+		if !removed && bytes.Equal(bytes.TrimSpace(line), terminal) {
+			removed = true
 		} else {
 			_, _ = stream.Write(line)
 			if found {
@@ -162,16 +171,14 @@ func claudeStreamWithTerminalResults(result ProcessResult, captures ...*claudeTe
 		}
 		raw = rest
 	}
-	for _, terminal := range results {
-		if stream.Len() > 0 {
-			data := stream.Bytes()
-			if data[len(data)-1] != '\n' {
-				_ = stream.WriteByte('\n')
-			}
+	if stream.Len() > 0 {
+		data := stream.Bytes()
+		if data[len(data)-1] != '\n' {
+			_ = stream.WriteByte('\n')
 		}
-		_, _ = stream.Write(terminal)
-		_ = stream.WriteByte('\n')
 	}
+	_, _ = stream.Write(terminal)
+	_ = stream.WriteByte('\n')
 	return bytes.NewReader(stream.Bytes())
 }
 
@@ -209,13 +216,14 @@ func readClaudeStreamLine(reader *bufio.Reader) ([]byte, int64, error) {
 }
 
 func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {
-	reader := bufio.NewReaderSize(r, 64*1024)
+	return convertClaudeStreams([]io.Reader{r}, prompts, limit, alreadyDropped)
+}
+
+func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyDropped int64) (transcriptCapture, bool) {
 	buf := newTranscriptBuffer(limit)
 	converted := false
-	promptIndex := 0
 	var streamDropped int64
-	var finalOutput *transcriptEvent
-	var finalResult []transcriptEvent
+	var floor []transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
 
@@ -226,95 +234,96 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 				return false
 			}
 			_, _ = buf.Write(encoded)
-			if event.Role == "assistant" && event.Content != "" {
-				captured := event
-				finalOutput = &captured
-			}
 		}
 		return true
 	}
-	writePrompt := func() bool {
-		if promptIndex >= len(prompts) {
-			return true
-		}
-		ok := writeEvents(transcriptEvent{Role: "user", Content: prompts[promptIndex]})
-		promptIndex++
-		return ok
-	}
 
-	for {
-		line, dropped, err := readClaudeStreamLine(reader)
-		streamDropped += dropped
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return transcriptCapture{}, false
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var native claudeStreamMessage
-		if json.Unmarshal(line, &native) != nil {
-			continue
-		}
-		events, recognized := convertClaudeMessage(native)
-		if !recognized {
-			continue
-		}
-		if !converted || native.Type == "system" && native.Subtype == "init" {
-			if !writePrompt() {
+	for streamIndex, stream := range streams {
+		var invocationOutput *transcriptEvent
+		var invocationResult []transcriptEvent
+		if streamIndex < len(prompts) {
+			if !writeEvents(transcriptEvent{Role: "user", Content: prompts[streamIndex]}) {
 				return transcriptCapture{}, false
 			}
 		}
-		if native.Type == "result" {
-			finalResult = finalResult[:0]
+
+		reader := bufio.NewReaderSize(stream, 64*1024)
+		for {
+			line, dropped, err := readClaudeStreamLine(reader)
+			streamDropped += dropped
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return transcriptCapture{}, false
+			}
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var native claudeStreamMessage
+			if json.Unmarshal(line, &native) != nil {
+				continue
+			}
+			events, recognized := convertClaudeMessage(native)
+			if !recognized {
+				continue
+			}
+			if native.Type == "result" {
+				invocationResult = invocationResult[:0]
+				for _, event := range events {
+					if event.Content != "" {
+						invocationResult = append(invocationResult, event)
+					}
+				}
+				accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, native.TotalCostUSD)
+				names := make([]string, 0, len(native.ModelUsage))
+				for name := range native.ModelUsage {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					usage := native.ModelUsage[name]
+					accumulator := models[name]
+					if accumulator == nil {
+						accumulator = &claudeUsageAccumulator{}
+						models[name] = accumulator
+					}
+					accumulateClaudeUsage(accumulator, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
+				}
+			}
 			for _, event := range events {
-				if event.Content != "" {
-					finalResult = append(finalResult, event)
+				if event.Role == "assistant" && event.Content != "" {
+					captured := event
+					invocationOutput = &captured
 				}
 			}
-			accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, native.TotalCostUSD)
-			names := make([]string, 0, len(native.ModelUsage))
-			for name := range native.ModelUsage {
-				names = append(names, name)
+			if !writeEvents(events...) {
+				return transcriptCapture{}, false
 			}
-			sort.Strings(names)
-			for _, name := range names {
-				usage := native.ModelUsage[name]
-				accumulator := models[name]
-				if accumulator == nil {
-					accumulator = &claudeUsageAccumulator{}
-					models[name] = accumulator
-				}
-				accumulateClaudeUsage(accumulator, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
-			}
+			converted = true
 		}
-		if !writeEvents(events...) {
+
+		if streamIndex < len(prompts) {
+			floor = append(floor, transcriptEvent{Role: "user", Content: prompts[streamIndex]})
+		}
+		if len(invocationResult) > 0 {
+			floor = append(floor, invocationResult...)
+		} else if invocationOutput != nil {
+			floor = append(floor, *invocationOutput)
+		}
+	}
+	for promptIndex := len(streams); promptIndex < len(prompts); promptIndex++ {
+		if !writeEvents(transcriptEvent{Role: "user", Content: prompts[promptIndex]}) {
 			return transcriptCapture{}, false
 		}
-		converted = true
+		floor = append(floor, transcriptEvent{Role: "user", Content: prompts[promptIndex]})
 	}
 	if !converted {
 		return transcriptCapture{}, false
 	}
 	alreadyDropped += streamDropped
 
-	for promptIndex < len(prompts) {
-		if !writePrompt() {
-			return transcriptCapture{}, false
-		}
-	}
-	floor := make([]transcriptEvent, 0, len(finalResult)+2)
-	if len(prompts) > 0 {
-		floor = append(floor, transcriptEvent{Role: "user", Content: prompts[0]})
-	}
-	if len(finalResult) > 0 {
-		floor = append(floor, finalResult...)
-	} else if finalOutput != nil {
-		floor = append(floor, *finalOutput)
-	}
 	if alreadyDropped > 0 && !buf.Truncated() {
 		marker, err := marshalTranscriptEvents(transcriptEvent{
 			Role:      "system",
