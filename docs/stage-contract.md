@@ -213,7 +213,11 @@ actions, and kind-specific fields are validation errors. Its wire shape is:
         "headSha": "0123456789abcdef...",
         "baseSha": "fedcba9876543210..."
       },
-      "arguments": {"method": "squash"},
+      "arguments": {
+        "method": "squash",
+        "commitTitle": "Harden mutation proposal authorization",
+        "commitMessage": "Apply the reviewed trust-boundary contract."
+      },
       "reason": "The pinned review verdict passed.",
       "evidence": [
         {
@@ -260,10 +264,42 @@ proposal kinds:
 
 | Proposal kind | Required canonical capability | Closed kind-specific shape |
 |---|---|---|
-| `repo:merge` | `github:pr:merge` | `target.pullRequest`; `preconditions.headSha` and `baseSha`; `arguments.method` in `merge`, `squash`, `rebase`. |
-| `github:pr:close` | `github:pr:write` | `target.pullRequest`; `preconditions.headSha`; empty `arguments`. |
+| `repo:merge` | `github:pr:merge` | `target.pullRequest`; `preconditions.headSha` and `baseSha`; `arguments.method` in `merge`, `squash`, `rebase`, required bounded `commitMessage`, and optional bounded `commitTitle`. |
+| `github:pr:close` | `github:pr:write` | `target.pullRequest`; `preconditions.headSha`; required bounded `arguments.comment`. |
 | `repo:push` | `repo:push` | `target.ref` as a full `refs/heads/...` ref; `preconditions.sourceSha` and `remoteSha` (omitted only when creating the ref); `arguments.mode` in `fast-forward`, `force-with-lease`. |
 | `github:issues:write` | `github:issues:write` | `arguments.action: create` selects bounded creation; otherwise `arguments.operations` is a bounded ordered list of existing-target issue-write operations. Existing targets carry `target.issue` and `preconditions.updatedAt`; creation omits both and uses empty preconditions. |
+
+`prepare-merge-proposal` is the only initial producer for `repo:merge`. It
+copies a workflow-pinned commit message when one was declared; otherwise it
+deterministically synthesizes `commitTitle` and `commitMessage` from the current
+PR title, closing references, and the trusted merge-review status comment pinned
+to `headSha` and `baseSha`. `commitMessage` contains 1 byte to 16 KiB;
+`commitTitle`, when present, contains 1–512 UTF-8 bytes. An agent-supplied scalar
+output or free-form provider payload cannot populate either field.
+
+The merge proposal means "land this reviewed head", not "call one particular
+GitHub endpoint." Under the target's landing lease, `apply-proposals` detects the
+live repository policy exactly as the current merge adapter does. For
+`direct-merge`, it sends the proposal's method and the commit fields the
+provider supports with the atomic expected-head guard. GitHub ignores commit
+title/message for direct `rebase`, so the executor retains them in the proposal
+audit record but does not forward them for that method. For
+`merge-queue-enqueue`, it sends the same atomic expected head OID; the repository
+ruleset selects the merge method and GitHub accepts no commit-title/message
+override, so those proposal fields are likewise not sent. A successful direct
+call records `outcome: merged`; a successful enqueue records `outcome: enqueued`
+and advances to the existing queue watcher. Queue merge, eviction, timeout,
+branch cleanup, and remediation routing remain downstream typed adapter
+outcomes; enqueue is never reported as an inline merge.
+
+`prepare-pr-close-proposal` derives its required comment from the same objective
+moot/duplicate/superseded fact and reviewer rationale used by the current close
+adapter. The comment is at most 16 KiB. Execution is a two-operation proposal:
+post the explanation first (operation 0), then close the PR (operation 1). This
+preserves the mandatory audit trail if close succeeds. If close is rejected
+after the comment is confirmed, the proposal terminates
+`proposal.partially_applied`; the executor never represents that outcome as a
+clean refusal.
 
 The `github:issues:write` kind has two closed shapes. Creation uses
 `arguments.action: create` with required `title` and `body` and optional `labels`.
@@ -280,11 +316,11 @@ and the operation variants are:
 
 Each operation object contains only `action` and the fields admitted by its selected
 variant. For `arguments.operations`, `target.issue` and `preconditions.updatedAt`
-are required. `title` is at most 512 UTF-8 bytes, each `body` at most 16 KiB, and
-each `labels` list contains at most 32 unique values of at most 100 UTF-8 bytes
-each. Empty edits, empty comments, duplicate labels, unknown actions, and fields
-irrelevant to the selected action are refused. Provider-specific limits may be
-stricter but never broaden these bounds.
+are required. Issue titles are at most 512 UTF-8 bytes, issue bodies and issue/PR
+comments are at most 16 KiB, and each `labels` list contains at most 32 unique
+values of at most 100 UTF-8 bytes each. Empty edits, empty comments, duplicate
+labels, unknown actions, and fields irrelevant to the selected action are refused.
+Provider-specific limits may be stricter but never broaden these bounds.
 
 Issue labels that carry a trust or eligibility decision are reserved. The executor
 derives the reserved set from the canonical `goobers:approved` label plus every
@@ -356,6 +392,30 @@ compiled workflow version cannot mix them with split routing. Migrating the rout
 therefore includes converting every current PR command entrypoint to one of the
 closed built-in adapters; it cannot leave an old command path credentialed.
 
+`github:issues:write` likewise uses `split`, because the canonical capability
+currently backs both agent-authored issue intent and runner bookkeeping whose
+ordering is part of the scheduler or PR-lifecycle contract. Migration assigns
+every existing operation to exactly one of these routes:
+
+| Route | Operations and preserved contract |
+|---|---|
+| `github:issues:write` proposals | Agentic curation and nomination create/edit/comment/label/state intents. These are the only initial agent-produced issue mutations; reserved trust labels remain excluded. |
+| Claim adapter | Backlog claim/release, expired/terminal claim cleanup, and orphaned-claim reconciliation. It owns the claim-ledger lock and provider claim epoch as one runner operation: reserve in the ledger, publish the provider breadcrumb, settle the server-assigned winner, roll back a losing provisional ledger reservation, and only then expose the claimed item. Release posts the release breadcrumb and removes the provider marker before freeing the ledger entry, preserving retry ownership if provider cleanup fails. These steps are not decomposed into independently replayable proposals. |
+| Backlog metadata adapter | Ready/stale/tracking/status drift reconciliation and closed-unmerged requeue. Its closed inputs are the trusted label policy, ledger snapshot, provider item/child state, and selected item IDs; it cannot perform arbitrary edits or comments. |
+| Issue disposition adapter | Implementation close-out and parking, scheduler/gate escalation notification, post-merge issue closure, queue outcome routing, and other run-terminal status/claim-marker bookkeeping. It preserves each command's fixed operation ordering, comments, and status vocabulary. |
+| PR-lifecycle bookkeeping adapter | Merge-review verdict labels/status comments, queue eviction/timeout remediation, merge-refusal demotion, post-merge fan-out/unparking/healing, remediation checkpoint/escalation, update-behind/rebase/push-remediated cleanup, and finding responses. It is target-scoped to the selected PR and any trusted selector outputs already admitted by the run. |
+
+Read-only issue/PR consumers use broker-held read handles and receive no writer
+token. Milestone assignment remains on its separately admitted canonical
+capability. The compiler recognizes the closed runner-owned adapter kind and
+method set for each row; a workflow-authored command cannot select a raw
+`UpdateWorkItem`-style handle. The implementation issue for this migration must
+inventory shipped workflows, examples, scheduler/gate hooks, terminal cleanup,
+and compatibility entrypoints and reject the new routing version if any
+`github:issues:write` provider mutation is unassigned. Older workflow versions
+remain pinned to direct injection until that inventory and all adapters land
+together; curation/nomination alone are not a completed capability migration.
+
 The DSL implementation adds runner-owned deterministic run kinds, mutually
 exclusive with `run.command`. The initial kinds are `prepare-merge-proposal`,
 `prepare-pr-close-proposal`, and the executor kind `apply-proposals`:
@@ -421,92 +481,126 @@ order:
    set, 64 KiB per serialized proposal, and the text/list limits above. A merge,
    close, or push proposal must be the set's sole proposal; only bounded issue
    proposals may be batched, with at most one existing-target proposal per issue in
-   a set. That proposal may contain up to eight ordered operations; its conditional
-   version chain below prevents an earlier operation from silently invalidating the
-   freshness authority for a later one.
-6. **Preflight freshness:** compare every required SHA and provider state with its
-   preconditions before applying the set and obtain a provider conditional token or
-   compare-and-swap primitive for every remote freshness pin. For push, `sourceSha`
-   must equal the exact runner-resolved tip of the current run/workspace branch
-   pinned when `proposal.input_bound` was recorded, and that branch must still have
-   the same tip. `remoteSha` must match the current remote ref (or be absent for
-   creation); `fast-forward` additionally requires `remoteSha` to be an ancestor of
-   `sourceSha`. For merge, the reviewed head and base must both still match. For
-   issue writes, the provider version token obtained by the executor must identify
-   the same resource version as `updatedAt`.
+   a set. That proposal may contain up to eight ordered operations; the executor
+   refreshes its observational guard after each confirmed operation before
+   attempting the next.
+6. **Preflight guards:** acquire the runner's normalized target mutation leases in
+   stable target order, then compare every required SHA and provider state with the
+   proposal. For push, `sourceSha` must equal the exact runner-resolved tip of the
+   current run/workspace branch pinned when `proposal.input_bound` was recorded,
+   and that branch must still have the same tip. `remoteSha` must match the current
+   remote ref (or the ref must be absent for creation); `fast-forward` additionally
+   requires `remoteSha` to be an ancestor of `sourceSha`. For merge, `headSha` must
+   match; when the live base differs from `baseSha`, the trusted adapter compares
+   the base delta with the PR's changed files and refuses on intersection or an
+   indeterminate comparison. Close requires the live head to match `headSha`.
+   Existing-target issue writes require the provider's current `updatedAt` to
+   match the proposal.
 
 The limits and semantic validators are compiled Go code in the trusted executor.
 Workflow definitions cannot replace validators or raise limits. A later declarative
 constraint language requires its own design review and must only narrow these
 defaults.
 
-Every remote freshness pin is also an atomic provider-call precondition, not merely
-a read immediately before an unconditional write. Merge must condition atomically
-on both reviewed SHAs, PR close on the pinned head SHA, issue mutation on the
-resource version corresponding to `updatedAt`, and push on the exact remote SHA or
-ref-absent condition. The push sends the immutable `sourceSha` object, not a mutable
-local branch name. The provider must evaluate the condition and mutation as one
-operation. If its API cannot enforce every required condition, the executor refuses
-the proposal with `conditional-mutation-unsupported` before recording an execution
-start; the executor lease and a last-moment provider read are not substitutes.
-Provider rejection of an enforced condition is `stale-precondition`.
+Guards have two explicit classes:
+
+- An **authority guard** prevents the call from applying a different immutable
+  object than the one authorized. It must be atomic with the provider mutation.
+  The initial authority guards are merge/enqueue `headSha` and push `remoteSha`
+  (or ref absence). The push sends immutable `sourceSha`, not a mutable branch
+  name. If a provider cannot enforce a required authority guard, the executor
+  refuses `conditional-mutation-unsupported`.
+- An **observational freshness guard** detects stale intent but is not the source
+  of mutation authority. The target allowlist, producer/executor capability
+  checks, and closed typed request provide that authority. The initial
+  observational guards are merge `baseSha`, close `headSha`, and issue
+  `updatedAt`, because GitHub offers no compare-and-swap parameter on the
+  corresponding close, issue edit/comment/label, or base-revision operation.
+  The executor checks them under the shared target lease immediately before the
+  narrow provider call and records that the guard mode was `observed`. A human
+  or external integration can still race that read; the call therefore uses
+  field-specific add/remove, state-only, or comment endpoints and never replaces
+  unrelated provider state from the snapshot.
+
+This is a provider-profiled contract, not a lowest-common-denominator fiction:
+
+| GitHub operation | Guard profile |
+|---|---|
+| Direct merge | `headSha` is an atomic authority guard through the merge endpoint's expected SHA; base freshness is observed with the delta-intersection check. |
+| Merge-queue enqueue | `headSha` is an atomic authority guard through `expectedHeadOid`; base freshness and live queue policy are observed under the landing lease. |
+| PR close | `headSha` is observational; comment and close endpoints have no conditional resource version. |
+| Existing-target issue write | `updatedAt` is observational; edit, comment, label, and state endpoints have no conditional resource version. |
+| Push | remote SHA/ref absence is an atomic authority guard through the git ref update or force-with-lease primitive. |
+
+A new provider declares the same profile per operation. It may strengthen an
+observational guard to atomic, but may not weaken an authority guard. Rejection
+of either a last-moment observation or an atomic provider condition is
+`stale-precondition`.
 
 Preflight is set-atomic: the executor validates **every** proposal, including one
-freshness snapshot, before applying any. If preflight refuses one, none execute. Once
-preflight succeeds, proposals execute in artifact order, and an existing-target
-issue proposal executes its operations in listed order. For each provider call,
-under the journal writer lock, the executor checks the call key and re-checks the
-freshness pins. It then appends and fsyncs `proposal.execution_started` **before**
-making the call. That event is the durable call barrier and carries the proposal
-identity, operation index (`0` for a single-call proposal), atomic conditional
-token fingerprint, normalized typed-request fingerprint, and provider idempotency
-key when the provider has an enforceable one. The executor then releases the
-journal writer lock before network I/O; the runner's executor lease prevents
-concurrent dispatch or recovery while that call remains live.
+freshness snapshot, before applying any. If preflight refuses one, none execute.
+The target leases are shared by proposal execution and every runner-owned direct
+adapter, so two Goobers paths cannot pass the same observation concurrently; they
+do not claim to lock out provider users or other integrations.
 
-The provider call carries the journaled condition. On success, the executor
-re-acquires the lock and appends `proposal.operation_applied`, including the
-provider-returned version token needed for the next issue operation. The first
-operation in an issue proposal conditions on the version matched to
-`preconditions.updatedAt`; each later operation conditions on the exact version
-returned by the preceding confirmed operation. An external mutation between calls
-therefore fails the next compare-and-swap instead of being overwritten. After every
-operation is confirmed, the executor appends `proposal.applied` for the whole
-proposal. Recovery first acquires the abandoned executor lease and then the journal
-lock, so it cannot race a live owner.
+Once preflight succeeds, proposals execute in artifact order, and a multi-operation
+proposal executes in listed order. Immediately before each call, the executor
+re-checks that operation's observed guards while retaining the target lease and
+prepares its atomic authority condition where applicable. Under the journal writer
+lock it checks the call key, then appends and fsyncs
+`proposal.execution_started`. That durable barrier carries the proposal identity,
+operation index, normalized target, guard mode and guard fingerprint, normalized
+typed-request fingerprint, and provider idempotency key when available. The
+executor releases the journal writer lock before network I/O but retains the
+target/executor lease.
 
-A changed condition refuses the current proposal and aborts the rest of the set,
-but cannot undo earlier confirmed operations. The executor records later
-unattempted operations and proposals as `set-aborted` and never attempts
-compensating mutations. A producer that requires an explanatory comment plus a
-label or state change can therefore carry them in one issue proposal without
-sharing a stale `updatedAt` across independent proposals.
+On success, the executor re-acquires the journal lock and appends
+`proposal.operation_applied` with the confirmed external ref/effect. If another
+issue operation follows, it also refreshes the item and records the returned or
+newly observed `updatedAt`; that exact value is the next operation's observational
+guard. This catches provider changes visible between operations and, together with
+narrow field-specific endpoints, avoids stale full-resource replacement without
+claiming unavailable GitHub compare-and-swap semantics. After every operation is
+confirmed, the executor appends `proposal.applied`; for merge it includes the
+`merged` or `enqueued` outcome. Recovery first acquires the abandoned executor
+lease and target lease, then the journal lock, so it cannot race a live owner.
+
+A changed guard before any confirmed effect records `proposal.refused`. A changed
+guard or definitive provider rejection after one or more
+`proposal.operation_applied` events records `proposal.partially_applied`, including
+the confirmed operation count, failed operation index/code, and remaining
+unattempted count. The executor records later proposals in the set as
+`proposal.refused` with `set-aborted` and never attempts compensating mutations.
+The close comment/close sequence and compound issue operations therefore leave a
+truthful recovery trail when only a prefix completed.
 
 Recovery inspects the complete lifecycle under the same writer lock:
 
-- `proposal.applied` makes the proposal a verified no-op. A refusal or ambiguous
-  terminal event prevents automatic execution.
+- `proposal.applied` makes the proposal a verified no-op. A refused, partially
+  applied, or ambiguous terminal event prevents automatic execution.
 - `proposal.operation_applied` makes that operation a verified no-op and supplies
-  the conditional version for the next operation. `proposal.execution_started`
+  the next observed version when another operation follows.
+  `proposal.execution_started`
   without a matching operation event or terminal proposal event **never causes the
   call to be issued again blindly**, even when the provider operation appears not
   to have happened. The executor may perform read-only reconciliation. It appends
   `proposal.operation_applied` only when the provider can bind a confirmed effect
-  to the exact journaled request identity, and appends `proposal.refused` when the
-  provider can conclusively prove rejection or non-execution.
+  to the exact journaled request identity. When the provider conclusively proves
+  rejection or non-execution, it appends `proposal.refused` if no earlier operation
+  was confirmed and `proposal.partially_applied` otherwise.
 - A retry is permitted only when the provider contract enforces deduplication for
-  the exact derived call key or an equivalent compare-and-swap precondition; it must
-  reuse that key or precondition and the request fingerprint. `repo:push` treats the
-  exact journaled `remoteSha` (or ref-absent condition for creation) as such a
-  precondition: observing `sourceSha` at the ref reconciles the push as applied,
-  observing the original expected state permits the same conditional push, and any
-  other state is ambiguous. Without an enforceable mechanism, an outcome that
-  cannot be proven either way becomes `proposal.execution_ambiguous` and escalates.
-  This includes issue creation and commenting on providers that offer no enforceable
-  idempotency key.
-- When reconciliation refuses or marks one proposal ambiguous, it records every
-  later unattempted proposal in the set as `proposal.refused` with `set-aborted`
-  before returning the blocked result.
+  the exact derived call key or an equivalent atomic authority precondition; it
+  must reuse that key/condition and request fingerprint. `repo:push` treats the
+  exact journaled `remoteSha` (or ref-absent condition for creation) this way:
+  observing `sourceSha` at the ref reconciles the push as applied, observing the
+  original expected state permits the same conditional push, and any other state
+  is ambiguous. Without an enforceable mechanism, an outcome that cannot be proven
+  either way becomes `proposal.execution_ambiguous` and escalates, carrying the
+  count of earlier confirmed operations. This includes issue creation and
+  commenting on providers that offer no enforceable idempotency key.
+- When reconciliation reaches any refused, partially applied, or ambiguous
+  terminal state, it records every later unattempted proposal in the set as
+  `proposal.refused` with `set-aborted` before returning the blocked result.
 
 Because the key belongs to the producer attempt, rerunning only the executor cannot
 bypass this lifecycle. Explicit intervention must rerun the producer to create new
@@ -522,11 +616,12 @@ events:
 | Event | Meaning |
 |---|---|
 | `proposal.input_bound` | Before credential materialization, pins one executor visit to the producer stage/attempt and exact proposal artifact path/digest. For push it also pins the runner-derived branch ref and exact tip SHA. |
-| `proposal.execution_started` | Fsynced immediately before each provider call. Carries the proposal identity, operation index, normalized target, conditional-token and typed-request fingerprints, and provider idempotency key when available. Its absence permits a first call; its unterminated presence requires reconciliation, never blind replay. |
-| `proposal.operation_applied` | The provider confirmed one call. Carries its operation index, external ref, and, when another operation follows, the returned conditional version it must use. |
-| `proposal.applied` | Every operation in the proposal is confirmed. Carries producer stage/attempt, proposal artifact digest, proposal id/kind, normalized target identity, and operation count. |
+| `proposal.execution_started` | Fsynced immediately before each provider call. Carries the proposal identity, operation index, normalized target, guard mode (`atomic`, `observed`, or `none`) and guard fingerprint, typed-request fingerprint, and provider idempotency key when available. Its absence permits a first call; its unterminated presence requires reconciliation, never blind replay. |
+| `proposal.operation_applied` | The provider confirmed one call. Carries its operation index, external ref/effect digest, and, when another operation follows, the returned or newly observed version used as its freshness guard. |
+| `proposal.applied` | Every operation in the proposal is confirmed. Carries producer stage/attempt, proposal artifact digest, proposal id/kind, normalized target identity, operation count, and the closed provider outcome when the kind has one (`merged` or `enqueued` for merge). |
 | `proposal.refused` | Validation or provider policy rejected the mutation before a confirmed effect. Carries the same identity, the current operation index when execution had begun, and a stable refusal code. |
-| `proposal.execution_ambiguous` | A request may have taken effect but confirmation failed. Carries its operation index and is never retried automatically. |
+| `proposal.partially_applied` | One or more operations were confirmed before a later operation was definitively rejected or found stale. Carries the confirmed operation count/effect refs, failed operation index/code, and remaining unattempted count. It is terminal and never reclassified as a refusal. |
+| `proposal.execution_ambiguous` | A request may have taken effect but confirmation failed. Carries its operation index and confirmed prior-operation count and is never retried automatically. |
 
 Events carry identifiers and digests, not the proposal body or credentials. The
 initial refusal-code vocabulary is:
@@ -535,6 +630,7 @@ initial refusal-code vocabulary is:
 `capability-not-declared`, `target-not-allowed`, `outside-claimed-scope`,
 `reserved-label`, `stale-precondition`, `conditional-mutation-unsupported`,
 `duplicate`, `provider-rejected`, and `set-aborted`.
+`proposal.partially_applied.failedCode` uses the same stable vocabulary.
 
 These `proposal.*` events extend the cross-runner conformance surface.
 Implementation must add them and their normative fields to `ARCHITECTURE.md` §3.3's
@@ -542,14 +638,14 @@ enumeration, the versioned journal schema, telemetry projection, and the shared
 conformance fixtures; they must not be hidden in the conformance-excluded
 `runner.*` namespace.
 
-A refused set returns `status: blocked` with `error.code: PROPOSAL_REFUSED`; an
-ambiguous provider result returns `status: blocked` with
-`error.code: PROPOSAL_EXECUTION_AMBIGUOUS`. Both use the existing `blocked`
-disposition to journal the cause, release the claim/workspaces, and route the run to
-the escalation ladder. They do not set `outputs.blockedBy`, because a refused
-mutation is not an issue dependency. A provider failure known to have occurred
-before any mutation may use the executor's infrastructure retry path; a definitive
-policy rejection or unknown outcome may not.
+A refused set returns `status: blocked` with `error.code: PROPOSAL_REFUSED`; a
+partial prefix returns `PROPOSAL_PARTIALLY_APPLIED`; an ambiguous provider result
+returns `PROPOSAL_EXECUTION_AMBIGUOUS`. All use the existing `blocked` disposition
+to journal the cause, release the claim/workspaces, and route the run to the
+escalation ladder. They do not set `outputs.blockedBy`, because a proposal
+execution outcome is not an issue dependency. A provider failure known to have
+occurred before any mutation may use the executor's infrastructure retry path; a
+definitive policy rejection, partial effect, or unknown outcome may not.
 
 ## What the runner does on each status
 

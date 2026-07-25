@@ -60,8 +60,10 @@ Three properties this design holds fixed:
   is the only stage that receives a migrated writer credential. The producer still
   declares the canonical capability as proposal authority but receives no credential
   for it.
-- Refusal is fail-closed and first-class: `proposal.refused` plus a `blocked`
-  `PROPOSAL_REFUSED` result routes through the existing escalation disposition.
+- Refusal and non-atomic completion are fail-closed and first-class:
+  `proposal.refused`, `proposal.partially_applied`, and
+  `proposal.execution_ambiguous` each return a distinct `blocked` result through
+  the existing escalation disposition.
 - Explicit non-adoptions from the gh-aw review: no auto-enabled default mutations, no
   probabilistic threat-detection as an authorization gate, no runtime-editable prompt
   surface outside the run pin.
@@ -90,17 +92,20 @@ Three properties this design holds fixed:
    verdict into a typed proposal after review. A workflow that needs human or agentic
    review of mutation intent may add an explicit proposal-review gate, but passing
    that gate never bypasses deterministic validation.
-4. **A proposal set preflights atomically, then executes with durable, conditional
+4. **A proposal set preflights atomically, then executes with provider-realizable
    per-call guards.** One preflight refusal prevents every mutation in the set.
-   Every provider call carries an atomic compare-and-swap condition for the pinned
-   SHAs or issue version; a provider that cannot enforce it is unsupported for that
-   operation. A last-moment read and the executor lease are not authorization. An
-   execution-started event is fsynced before each call; a later mismatch stops the
-   remaining work but does not roll back confirmed issue writes. Existing-target
-   issue proposals may contain a bounded ordered operation list whose condition
-   chains through each provider-returned version, so comment-plus-label/state
-   behavior does not reuse a stale `updatedAt`. An unterminated call is reconciled
-   read-only and becomes ambiguous unless an exact effect or an enforceable provider
+   Immutable authority guards are atomic where the provider must prevent object
+   substitution: GitHub merge/enqueue pins the reviewed head and push pins the
+   remote ref. GitHub exposes no atomic base-SHA, PR-close head-SHA, or issue
+   resource-version condition, so those are explicitly observational freshness
+   guards checked under a shared runner target lease immediately before narrow,
+   typed provider calls. They detect stale intent but do not authorize or widen
+   the target. An execution-started event is fsynced before each call; a later
+   mismatch stops the remaining work but does not roll back confirmed effects.
+   Existing-target issue proposals refresh `updatedAt` between ordered operations.
+   A confirmed prefix followed by rejection is
+   `proposal.partially_applied`, never `proposal.refused`; an unterminated call is
+   reconciled read-only and becomes ambiguous unless an exact effect or enforceable
    idempotency key proves a safe outcome. Merge, close, and push cannot be batched
    with another proposal.
 
@@ -112,19 +117,20 @@ proposal-routed authority for the same capability.
 
 | Order | Surface | Migration |
 |---|---|---|
-| 1 | Merge and PR-write routing | Move merge and close behind `apply-proposals`. Because close shares the broad `github:pr:write` grant with open/update/list/poll, migrate that whole credential route at once: close is exclusive to the proposal executor, while every remaining operation is assigned to a runner-owned, method-scoped provider adapter that cannot call close. No agentic or arbitrary-command stage receives the broad PR-write credential. Compatibility entrypoints remain only for workflow versions pinned to direct injection before migration. |
+| 1 | Merge and PR-write routing | Move merge and close behind `apply-proposals`. The trusted merge producer preserves workflow-pinned or synthesized structured commit title/message; the executor detects direct-vs-merge-queue policy live, applies the provider's atomic expected-head guard, and reports `merged` separately from `enqueued` so the existing queue watcher retains merge/eviction/timeout routing. Moot close requires its bounded explanatory comment and posts it before closing; a confirmed comment followed by close rejection is partial. Because close shares the broad `github:pr:write` grant with open/update/list/poll, migrate that whole credential route at once: close is exclusive to the proposal executor, while every remaining operation is assigned to a runner-owned, method-scoped provider adapter that cannot call close. No agentic or arbitrary-command stage receives the broad PR-write credential. Compatibility entrypoints remain only for workflow versions pinned to direct injection before migration. |
 | 2 | Push | Agentic implementation/remediation stages commit without a push credential and propose the exact source SHA and run-branch ref. The deterministic push stage requires that SHA to equal the runner-pinned, reviewed current branch tip (and requires fast-forward ancestry in fast-forward mode), then applies it after namespace and remote-SHA checks; rebased remediation uses provider-native force-with-lease against that exact remote SHA, never unconditional force. |
-| 3 | Issue writes | Curation/nomination stages emit bounded create or existing-target proposals; one existing-target proposal may carry an ordered operation list. The migration adapter groups the mandatory explanatory comment before its related label/state operations, and the executor chains provider-enforced resource versions between them. The executor confines every operation to `repoRef` and the claimed issue except for bounded creation in that repository, and refuses trust labels reserved to `github:issues:approve`. |
+| 3 | Issue writes | Migrate the whole canonical route, not only curation/nomination. Their agent-authored create/edit/comment/label/state intents become bounded proposals, confined to `repoRef` and claimed or trusted-selector issue scope and barred from trust labels. Runner bookkeeping stays on closed method-scoped adapters: claim/release/reconciliation preserves the claim-ledger lock, provider winner election, losing-reservation rollback, and release ordering; backlog metadata repair preserves ledger/provider drift correction; disposition preserves implementation close-out, parking, escalation/status, queue outcome, and post-merge closure; PR-lifecycle bookkeeping preserves verdict/status comments, merge refusal/demotion, fan-out/unparking/healing, and remediation checkpoint/rebase/update/publish/finding-response paths. Read-only consumers receive no writer token. The new routing version is invalid until every shipped/example workflow, scheduler/gate hook, terminal path, and compatibility entrypoint is assigned exactly once. |
 
 Until a row is migrated, its canonical capability keeps today's direct-injection
 behavior. A row is complete only when the compiler rejects mixed routing, every
 agentic producer is credentialless for that capability, every mutating operation has
 exactly one trusted route, only the proposal executor receives a handle for
 proposal-routed operations, and refusal/escalation coverage is present. A split
-canonical capability such as `github:pr:write` additionally requires all
-non-proposal operations to use closed runner-owned adapters; leaving a direct broad
-credential on any task process leaves the row incomplete. This preserves incremental
-delivery without claiming the boundary before it exists.
+canonical capability such as `github:pr:write` or `github:issues:write`
+additionally requires all non-proposal operations to use closed runner-owned
+adapters; leaving a direct broad credential on any task process leaves the row
+incomplete. This preserves incremental delivery without claiming the boundary
+before it exists.
 
 ### TBH-2 — Staged / dry-run mode
 
