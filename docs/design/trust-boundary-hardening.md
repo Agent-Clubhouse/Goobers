@@ -74,6 +74,9 @@ Three properties this design holds fixed:
    capabilities `github:pr:merge`, `github:pr:write`, `repo:push`, and
    `github:issues:write`. This avoids weakening the canonical registry with duplicate
    names while keeping close narrower than the credential that implements it.
+   Issue-write proposals cannot mutate trust/eligibility labels; applying
+   `goobers:approved` remains the separate `github:issues:approve` authority and is
+   not part of the initial issue-write route.
 2. **Validation is trusted Go code (resolves TBH-Q1).** Phase 0 does not add a
    workflow-authored constraint DSL. Repository, item/PR, and branch allowlists are
    derived from the pinned run identity, `repoRef`, the claimed item or a trusted
@@ -87,11 +90,16 @@ Three properties this design holds fixed:
    verdict into a typed proposal after review. A workflow that needs human or agentic
    review of mutation intent may add an explicit proposal-review gate, but passing
    that gate never bypasses deterministic validation.
-4. **A proposal set preflights atomically, then executes with durable per-call
-   guards.** One preflight refusal prevents every mutation in the set. Freshness is
-   re-checked immediately before each provider call, then an execution-started event
-   is fsynced before the call; a later mismatch stops the remaining proposals but
-   does not roll back confirmed issue writes. An unterminated call is reconciled
+4. **A proposal set preflights atomically, then executes with durable, conditional
+   per-call guards.** One preflight refusal prevents every mutation in the set.
+   Every provider call carries an atomic compare-and-swap condition for the pinned
+   SHAs or issue version; a provider that cannot enforce it is unsupported for that
+   operation. A last-moment read and the executor lease are not authorization. An
+   execution-started event is fsynced before each call; a later mismatch stops the
+   remaining work but does not roll back confirmed issue writes. Existing-target
+   issue proposals may contain a bounded ordered operation list whose condition
+   chains through each provider-returned version, so comment-plus-label/state
+   behavior does not reuse a stale `updatedAt`. An unterminated call is reconciled
    read-only and becomes ambiguous unless an exact effect or an enforceable provider
    idempotency key proves a safe outcome. Merge, close, and push cannot be batched
    with another proposal.
@@ -104,15 +112,19 @@ proposal-routed authority for the same capability.
 
 | Order | Surface | Migration |
 |---|---|---|
-| 1 | Merge and PR close | Extract the credentialed provider handlers from `merge-pr` and `apply-verdict` behind `apply-proposals`. Their deterministic verdict/SHA checks become proposal production or executor validation as appropriate; compatibility entrypoints remain only for workflow versions still on direct injection. |
+| 1 | Merge and PR-write routing | Move merge and close behind `apply-proposals`. Because close shares the broad `github:pr:write` grant with open/update/list/poll, migrate that whole credential route at once: close is exclusive to the proposal executor, while every remaining operation is assigned to a runner-owned, method-scoped provider adapter that cannot call close. No agentic or arbitrary-command stage receives the broad PR-write credential. Compatibility entrypoints remain only for workflow versions pinned to direct injection before migration. |
 | 2 | Push | Agentic implementation/remediation stages commit without a push credential and propose the exact source SHA and run-branch ref. The deterministic push stage requires that SHA to equal the runner-pinned, reviewed current branch tip (and requires fast-forward ancestry in fast-forward mode), then applies it after namespace and remote-SHA checks; rebased remediation uses provider-native force-with-lease against that exact remote SHA, never unconditional force. |
-| 3 | Issue writes | Curation/nomination stages emit bounded create/edit/comment/label/state proposals; the executor confines every operation to `repoRef` and the claimed issue except for bounded creation in that repository. |
+| 3 | Issue writes | Curation/nomination stages emit bounded create or existing-target proposals; one existing-target proposal may carry an ordered operation list. The migration adapter groups the mandatory explanatory comment before its related label/state operations, and the executor chains provider-enforced resource versions between them. The executor confines every operation to `repoRef` and the claimed issue except for bounded creation in that repository, and refuses trust labels reserved to `github:issues:approve`. |
 
 Until a row is migrated, its canonical capability keeps today's direct-injection
 behavior. A row is complete only when the compiler rejects mixed routing, every
-agentic producer is credentialless for that capability, the built-in executor is the
-sole credential recipient, and refusal/escalation coverage is present. This preserves
-incremental delivery without claiming the boundary before it exists.
+agentic producer is credentialless for that capability, every mutating operation has
+exactly one trusted route, only the proposal executor receives a handle for
+proposal-routed operations, and refusal/escalation coverage is present. A split
+canonical capability such as `github:pr:write` additionally requires all
+non-proposal operations to use closed runner-owned adapters; leaving a direct broad
+credential on any task process leaves the row incomplete. This preserves incremental
+delivery without claiming the boundary before it exists.
 
 ### TBH-2 — Staged / dry-run mode
 
