@@ -1029,12 +1029,13 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors|export|prune|compact> [flags] [path]
+Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]
 
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 prune:   remove terminal runs outside the configured retention bounds
+prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 
 ### telemetry compact
@@ -1072,6 +1073,16 @@ telemetry.retention.window or telemetry.retention.maxRuns is exceeded. Active
 and paused runs are never removed. The configured 90d/500-run defaults apply
 when a bound is omitted. This explicit command works even when automatic
 retention is disabled. Exit codes: 0 = OK, 1 = prune error, 2 = usage/config error.
+
+### telemetry prune-orphans
+Usage: goobers telemetry prune-orphans [--delete] [--min-age=D] [path]
+
+Report directories without run.yaml from both published run roots and unpublished
+creation staging roots after at least 24h of inactivity. The default is a dry-run
+report; --delete opts into deletion. --min-age may raise but never lower
+the 24h safety threshold. Valid run journals, recent or active directories, files,
+and symlinks are always preserved.
+Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]

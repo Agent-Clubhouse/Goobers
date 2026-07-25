@@ -2,7 +2,9 @@ package journal
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -43,7 +45,7 @@ func TestNilScrubberFailsClosed(t *testing.T) {
 }
 
 // TestConcurrentCreateSameRunRejectsAllButOne asserts the concurrency property
-// the atomic-os.Mkdir fix guarantees: N goroutines racing to create the same run
+// atomic publication guarantees: N goroutines racing to create the same run
 // id yield exactly one winner, the rest a clean "already exists" error — never
 // two writers interleaving on one journal. It runs under -race for data-race
 // safety and guards against a regression that reintroduces a non-atomic create.
@@ -73,6 +75,54 @@ func TestConcurrentCreateSameRunRejectsAllButOne(t *testing.T) {
 
 	if wins != 1 {
 		t.Fatalf("expected exactly 1 Create to win the race, got %d", wins)
+	}
+}
+
+func TestCreatePreservesExistingEmptyRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	finalDir := filepath.Join(root, testIdentity().RunID)
+	if err := os.MkdirAll(finalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := Create(root, testIdentity(), nil, WithClock(constClock()))
+	if run != nil {
+		defer func() { _ = run.Close() }()
+	}
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Create error = %v, want already exists", err)
+	}
+	entries, err := os.ReadDir(finalDir)
+	if err != nil {
+		t.Fatalf("read pre-existing run directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pre-existing empty run directory was replaced: %v", entries)
+	}
+}
+
+func TestCreateFailureLeavesNoPublishedOrStagedRun(t *testing.T) {
+	root := t.TempDir()
+	_, err := Create(root, testIdentity(), map[string][]byte{
+		"invalid\x00name": []byte("input"),
+	}, WithClock(constClock()))
+	if err == nil {
+		t.Fatal("Create succeeded with an invalid input path")
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed Create left run directory entries: %v", entries)
+	}
+	stagingRoot := RunCreationStagingDir(root)
+	stagingEntries, statErr := os.ReadDir(stagingRoot)
+	if statErr != nil {
+		t.Fatalf("read staging root: %v", statErr)
+	}
+	if len(stagingEntries) != 0 {
+		t.Fatalf("failed Create left staging entries: %v", stagingEntries)
 	}
 }
 
