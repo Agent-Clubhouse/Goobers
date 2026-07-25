@@ -19,7 +19,7 @@ _goobers_completion()
             'validate:validate an instance or checked-in config source tree'
             'lint:lint config via the single authoritative validation engine (alias for validate)'
             'doctor:preflight a Kubernetes cluster against the documented infra shape'
-            'config:inspect instance configuration and compare workflow definitions'
+            'config:inspect, materialize, and compare instance configuration'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'service:install and manage the platform-supervised daemon'
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
@@ -192,7 +192,7 @@ _goobers_completion()
             ;;
         config)
             if (( CURRENT == 3 )); then
-                candidates=(diff show)
+                candidates=(diff materialize show)
                 _describe -V 'command' candidates
                 return
             fi

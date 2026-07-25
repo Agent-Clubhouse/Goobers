@@ -2,7 +2,9 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +31,10 @@ const (
 	guidedExampleRoot              = "gaggles/" + guidedExampleGaggle
 	guidedRepositoryConnectionName = "github-main"
 	guidedBacklogConnectionName    = "github-backlog"
+
+	// GuidedSourceInstanceFile is the secret-free instance template stored in a
+	// checked-in config source tree.
+	GuidedSourceInstanceFile = "instance.yaml.example"
 )
 
 var guidedWorkflowOrder = []string{
@@ -77,6 +83,321 @@ func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
 	}
 	return initWithSeed(root, guidedConfig(opts), func(dir string) error {
 		return copyGuidedConfig(dir, opts)
+	})
+}
+
+// InitGuidedSource creates a complete checked-in config source tree without
+// placing runtime state or credential values beneath root.
+func InitGuidedSource(root string, opts GuidedOptions) error {
+	opts = normalizeGuidedOptions(opts)
+	if err := validateGuidedOptions(opts); err != nil {
+		return err
+	}
+	if err := CheckGuidedSourceTarget(root); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create config source %s: %w", root, err)
+	}
+	if err := WriteConfig(filepath.Join(root, GuidedSourceInstanceFile), guidedConfig(opts)); err != nil {
+		return err
+	}
+	if err := copyGuidedConfig(root, opts); err != nil {
+		return fmt.Errorf("seed config source: %w", err)
+	}
+	return nil
+}
+
+// CheckGuidedSourceTarget rejects any populated path so guided setup never
+// replaces files in an existing config source.
+func CheckGuidedSourceTarget(root string) error {
+	info, err := os.Stat(root)
+	if err == nil && !info.IsDir() {
+		return fmt.Errorf("config source path %s is not a directory", root)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	populated, err := dirHasFiles(root)
+	if err != nil {
+		return fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	if populated {
+		return fmt.Errorf("config source %s already contains files; refusing to overwrite it", root)
+	}
+	return nil
+}
+
+// LoadGuidedSourceConfig loads the secret-free instance template from a
+// checked-in config source tree.
+func LoadGuidedSourceConfig(root string) (*Config, error) {
+	return LoadConfig(filepath.Join(root, GuidedSourceInstanceFile))
+}
+
+// InitGuidedFromSource materializes a validated config source into a fresh
+// runtime instance while retaining the source location in instance.yaml.
+func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("guided source instance config is required")
+	}
+	if err := CheckGuidedInitTarget(root); err != nil {
+		return nil, err
+	}
+	if err := CheckGuidedSourceInstancePaths(root, sourceRoot); err != nil {
+		return nil, err
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config source: %w", err)
+	}
+
+	runtimeConfig := *cfg
+	runtimeConfig.WorkflowSource = &WorkflowSource{
+		Kind: WorkflowSourceKindLocalDir,
+		Path: sourceAbs,
+	}
+	if err := runtimeConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("guided source instance config: %w", err)
+	}
+	return initWithSeed(root, &runtimeConfig, func(dir string) error {
+		return copyGuidedSourceDefinitions(dir, sourceAbs)
+	})
+}
+
+// MaterializeWorkflowSource replaces an instance's declarative configuration
+// with the validated local source recorded in instance.yaml.
+func MaterializeWorkflowSource(root string) (string, error) {
+	layout := NewLayout(root)
+	runtimeConfig, err := LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return "", err
+	}
+	if runtimeConfig.WorkflowSource == nil {
+		return "", fmt.Errorf("instance has no workflowSource; run guided setup or configure a local source")
+	}
+	source := *runtimeConfig.WorkflowSource
+	if source.Kind != WorkflowSourceKindLocalDir {
+		return "", fmt.Errorf("materialize workflowSource: kind %q is not supported; use %q", source.Kind, WorkflowSourceKindLocalDir)
+	}
+	if err := CheckGuidedSourceInstancePaths(root, source.Path); err != nil {
+		return "", err
+	}
+	sourceRoot, err := filepath.Abs(source.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve config source: %w", err)
+	}
+	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		return "", fmt.Errorf("load config source instance template: %w", err)
+	}
+	materializedConfig := *sourceConfig
+	materializedConfig.WorkflowSource = &source
+	if err := materializedConfig.Validate(); err != nil {
+		return "", fmt.Errorf("config source instance template: %w", err)
+	}
+	if _, report, err := LoadConfigDir(sourceRoot); err != nil {
+		return "", fmt.Errorf("load config source definitions: %w (report: %+v)", err, report)
+	}
+
+	stagingRoot, err := os.MkdirTemp(root, ".config-materialize-")
+	if err != nil {
+		return "", fmt.Errorf("create config materialization staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stagingRoot) }()
+
+	if err := WriteConfig(filepath.Join(stagingRoot, ConfigFileName), &materializedConfig); err != nil {
+		return "", err
+	}
+	stagedConfigDir := filepath.Join(stagingRoot, ConfigDirName)
+	if err := copyGuidedSourceDefinitions(stagedConfigDir, sourceRoot); err != nil {
+		return "", fmt.Errorf("stage config source definitions: %w", err)
+	}
+	if _, report, err := LoadConfigDir(stagedConfigDir); err != nil {
+		return "", fmt.Errorf("validate staged config source definitions: %w (report: %+v)", err, report)
+	}
+	if err := installMaterializedConfig(layout, stagingRoot); err != nil {
+		return "", err
+	}
+	return sourceRoot, nil
+}
+
+func installMaterializedConfig(layout Layout, stagingRoot string) error {
+	backupRoot, err := os.MkdirTemp(layout.Root, ".config-materialize-backup-")
+	if err != nil {
+		return fmt.Errorf("create config materialization backup directory: %w", err)
+	}
+	backupConfigFile := filepath.Join(backupRoot, ConfigFileName)
+	backupConfigDir := filepath.Join(backupRoot, ConfigDirName)
+
+	if err := os.Rename(layout.ConfigFile(), backupConfigFile); err != nil {
+		_ = os.RemoveAll(backupRoot)
+		return fmt.Errorf("back up %s: %w", ConfigFileName, err)
+	}
+	if err := os.Rename(layout.ConfigDir(), backupConfigDir); err != nil {
+		rollbackErr := wrapMaterializeRollbackError(os.Rename(backupConfigFile, layout.ConfigFile()))
+		return errors.Join(
+			fmt.Errorf("back up %s: %w", ConfigDirName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+
+	stagedConfigFile := filepath.Join(stagingRoot, ConfigFileName)
+	if err := os.Rename(stagedConfigFile, layout.ConfigFile()); err != nil {
+		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
+		return errors.Join(
+			fmt.Errorf("install %s: %w", ConfigFileName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+	if err := os.Rename(filepath.Join(stagingRoot, ConfigDirName), layout.ConfigDir()); err != nil {
+		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
+		return errors.Join(
+			fmt.Errorf("install %s: %w", ConfigDirName, err),
+			rollbackErr,
+			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
+		)
+	}
+	if err := os.RemoveAll(backupRoot); err != nil {
+		return fmt.Errorf("remove config materialization backup %s: %w", backupRoot, err)
+	}
+	return nil
+}
+
+func rollbackMaterializedConfig(layout Layout, backupConfigFile, backupConfigDir string) error {
+	var rollbackErrors []error
+	if err := os.Remove(layout.ConfigFile()); err != nil && !os.IsNotExist(err) {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.RemoveAll(layout.ConfigDir()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.Rename(backupConfigFile, layout.ConfigFile()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := os.Rename(backupConfigDir, layout.ConfigDir()); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	if err := errors.Join(rollbackErrors...); err != nil {
+		return fmt.Errorf("roll back config materialization: %w", err)
+	}
+	return nil
+}
+
+func wrapMaterializeRollbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("roll back config materialization: %w", err)
+}
+
+func removeMaterializeBackup(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove config materialization backup %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeMaterializeBackupAfterRollback(path string, rollbackErr error) error {
+	if rollbackErr != nil {
+		return nil
+	}
+	return removeMaterializeBackup(path)
+}
+
+// CheckGuidedSourceInstancePaths requires the desired-state source and runtime
+// instance to be disjoint directory trees.
+func CheckGuidedSourceInstancePaths(root, sourceRoot string) error {
+	sourceAbs, err := canonicalGuidedPath(sourceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve config source: %w", err)
+	}
+	rootAbs, err := canonicalGuidedPath(root)
+	if err != nil {
+		return fmt.Errorf("resolve instance root: %w", err)
+	}
+	if pathsOverlap(sourceAbs, rootAbs) {
+		return fmt.Errorf("config source %s and instance root %s must be separate paths", sourceAbs, rootAbs)
+	}
+	return nil
+}
+
+func canonicalGuidedPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathsOverlap(first, second string) bool {
+	contains := func(parent, child string) bool {
+		rel, err := filepath.Rel(parent, child)
+		return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	}
+	return contains(first, second) || contains(second, first)
+}
+
+func copyGuidedSourceDefinitions(destination, source string) error {
+	for _, name := range []string{"manifest.yaml", "gaggles"} {
+		if err := copyGuidedSourcePath(destination, source, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyGuidedSourcePath(destination, source, name string) error {
+	sourcePath := filepath.Join(source, name)
+	return filepath.WalkDir(sourcePath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("config source path %s is a symlink; refusing to materialize it", path)
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("config source path %s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		return nil
 	})
 }
 

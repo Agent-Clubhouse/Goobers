@@ -73,10 +73,13 @@ generate a PowerShell completion script
 generate a zsh completion script
 .TP
 \fBgoobers config\fR
-inspect instance configuration and compare workflow definitions
+inspect, materialize, and compare instance configuration
 .TP
 \fBgoobers config diff\fR
 compare active workflows with canonical definitions
+.TP
+\fBgoobers config materialize\fR
+apply the recorded checked-in source to the runtime instance
 .TP
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
@@ -293,6 +296,7 @@ show a workflow as a text DAG
 \fBgoobers-completion-zsh\fR(1),
 \fBgoobers-config\fR(1),
 \fBgoobers-config-diff\fR(1),
+\fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),

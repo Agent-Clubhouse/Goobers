@@ -116,10 +116,27 @@ jobs:
           grep --fixed-strings "goobers run implementation ./my-instance" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
-          printf '%s\n\n\n\n\n\n\n\n\n' 'Agent-Clubhouse/Goobers' |
+          printf '%s\n' \
+            'new-local' \
+            'smoke/quickstart-config' \
+            'Agent-Clubhouse/Goobers' \
+            '' \
+            'implementation' \
+            '' \
+            '' \
+            '' \
+            '' \
+            '' \
+            '' \
+            'no' \
+            'yes' |
             goobers init --guided smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
+          test -f smoke/quickstart-config/instance.yaml.example
+          test -f smoke/quickstart-config/manifest.yaml
+          test -f smoke/quickstart-config/gaggles/goobers/workflows/implementation.yaml
+          test ! -e smoke/quickstart-config/telemetry.db
           mkdir generated-docs
           goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli

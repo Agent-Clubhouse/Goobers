@@ -90,15 +90,21 @@ $HOME/.local/bin/goobers escalations show <run-id> ./my-instance # inspect cause
 
 The checksummed installer and reproducibility details are documented in
 [Releases & packaging](docs/guides/releases.md#install-a-pinned-release).
-`goobers init --guided` scaffolds the instance root described in
-`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/` (seeded with a starter
-gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
-`telemetry.db` placeholder — using the canonical config embedded in that
-release, and is safe to re-run (existing pieces are left untouched). Edit
-`instance.yaml` to point at your own repo and set the referenced token env var
-or file; edit `config/` to shape your workforce. The `quickstart@v1` template is
-intentionally limited to a disposable first success and omits production
-remediation, escalation, CI, and merge policy.
+`goobers init --guided` is a first-run flow that separately selects the
+configuration source and target application repository. It creates or reuses a
+checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
+`gaggles/`), then materializes the runtime instance described in
+`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/`, `runs/`, `scheduler/`,
+`workcopies/`, and `telemetry.db`. Populated source and instance destinations
+are never overwritten. Set the referenced credential environment variables at
+runtime and author the workforce in the selected configuration source; the
+instance records that source in `workflowSource` while runtime state remains
+outside it. After later source edits, stop the daemon and run
+`goobers config materialize ./my-instance` before restarting; this validates
+and reapplies the recorded desired state without touching runtime state. The
+`quickstart@v1` template is intentionally limited to a
+disposable first success and omits production remediation, escalation, CI, and
+merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts
 any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
@@ -111,6 +117,8 @@ the daemon as a supervised service via
 [Daemon supervision](docs/guides/supervision.md)
 (systemd · launchd · Windows Service). How binaries are built, packaged, and
 verified for distribution: [Releases & packaging](docs/guides/releases.md).
+Before making the daemon API reachable beyond loopback, follow the
+[tier-2 OIDC authentication guide](docs/guides/oidc-authentication.md).
 Azure DevOps instances can use
 [Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
 

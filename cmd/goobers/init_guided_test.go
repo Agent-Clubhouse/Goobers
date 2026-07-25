@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,7 +15,10 @@ import (
 
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "widget-instance")
+	sourceRoot := root + "-config"
 	input := strings.NewReader(strings.Join([]string{
+		"",
+		sourceRoot,
 		"https://github.com/acme/Widget.Service.git",
 		"",
 		"",
@@ -24,6 +28,8 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"",
 		"",
+		"",
+		"yes",
 	}, "\n") + "\n")
 	var stdout, stderr bytes.Buffer
 
@@ -38,6 +44,11 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))",
 		"docs/guides/github-token-scopes.md",
 		"Work tracking: GitHub Issues in acme/Widget.Service",
+		"Configuration source (desired state; separate from runtime state)",
+		"Keeping the config source local-only",
+		"config-source: " + sourceRoot,
+		"target-repo:   https://github.com/acme/Widget.Service",
+		"backlog:       https://github.com/acme/Widget.Service/issues",
 		"Repository read PAT permissions: Contents: Read-only.",
 		"Work-tracking PAT permissions: Issues: Read and write.",
 		"Pull-request PAT permissions: Pull requests: Read and write; Contents: Read and write.",
@@ -52,6 +63,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"docs/requirements/goober.md",
 		"View journal telemetry:",
 		"`goobers trace` / `goobers telemetry`",
+		"goobers config materialize " + strconv.Quote(root),
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("guided init stdout lacks %q:\n%s", want, stdout.String())
@@ -66,6 +78,14 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		cfg.Repos[0].Name != "Widget.Service" ||
 		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_REPO_TOKEN" {
 		t.Fatalf("unexpected guided instance config: %+v", cfg)
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkflowSource == nil || cfg.WorkflowSource.Kind != instance.WorkflowSourceKindLocalDir ||
+		cfg.WorkflowSource.Path != sourceAbs {
+		t.Fatalf("guided workflow source = %+v, want local source %s", cfg.WorkflowSource, sourceAbs)
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "GOOBERS_GITHUB_ISSUES_TOKEN",
@@ -85,6 +105,61 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("selected workflow %q not scaffolded: %v", name, err)
 		}
+	}
+	for _, path := range []string{
+		filepath.Join(sourceRoot, instance.GuidedSourceInstanceFile),
+		filepath.Join(sourceRoot, "manifest.yaml"),
+		filepath.Join(sourceRoot, "gaggles", "widget-service", "gaggle.yaml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("config source path %s not scaffolded: %v", path, err)
+		}
+	}
+	for _, runtimePath := range []string{
+		instance.ConfigFileName,
+		instance.TelemetryDBName,
+		instance.SchedulerDirName,
+	} {
+		if _, err := os.Stat(filepath.Join(sourceRoot, runtimePath)); !os.IsNotExist(err) {
+			t.Errorf("runtime path %s leaked into config source: %v", runtimePath, err)
+		}
+	}
+}
+
+func TestGuidedInitDefaultPathCreatesSiblingConfigSource(t *testing.T) {
+	base := t.TempDir()
+	instanceRoot := filepath.Join(base, "goobers")
+	if err := os.Mkdir(instanceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(instanceRoot)
+	input := strings.NewReader(strings.Join([]string{
+		"",
+		"",
+		"acme/widget",
+		"",
+		"work-nomination",
+		"",
+		"",
+		"",
+		"",
+		"yes",
+	}, "\n") + "\n")
+	var stdout, stderr bytes.Buffer
+
+	code := runInitWithInput([]string{"--guided"}, input, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	sourceRoot := filepath.Join(base, "goobers-config")
+	if _, err := os.Stat(filepath.Join(sourceRoot, instance.GuidedSourceInstanceFile)); err != nil {
+		t.Fatalf("default config source was not created as an instance sibling: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(instanceRoot, instance.ConfigFileName)); err != nil {
+		t.Fatalf("default instance was not created: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "config-source: "+sourceRoot) {
+		t.Fatalf("guided output does not show sibling source %q:\n%s", sourceRoot, stdout.String())
 	}
 }
 

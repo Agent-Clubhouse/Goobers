@@ -12,8 +12,8 @@ Usage:
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
   goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
-  goobers config show|diff [flags] [path]
-                                inspect instance config or compare workflows with canonical definitions
+  goobers config show|materialize|diff [flags] [path]
+                                inspect, materialize, or compare instance configuration
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -124,8 +124,8 @@ Usage:
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
   goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
-  goobers config show|diff [flags] [path]
-                                inspect instance config or compare workflows with canonical definitions
+  goobers config show|materialize|diff [flags] [path]
+                                inspect, materialize, or compare instance configuration
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -379,13 +379,15 @@ Generate a shell completion script. Source the output in the target shell.
 ### config
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect instance configuration and compare workflow definitions.
+Inspect, materialize, and compare instance configuration.
 
 Subcommands:
-  show   render the effective instance config (secrets redacted)
-  diff   compare active workflows with the shipped canonical workflows
+  show         render the effective instance config (secrets redacted)
+  materialize  apply the recorded checked-in source to the runtime instance
+  diff         compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` or `goobers config diff -h` for details.
+Run `goobers config show -h`, `goobers config materialize -h`, or
+`goobers config diff -h` for details.
 Default path is ".".
 
 ### config diff
@@ -402,6 +404,22 @@ structural drift, printed as ERROR with active and canonical values.
 
 Exit codes: 0 = structurally identical (informational tuning is allowed),
 1 = structural drift or invalid config, 2 = usage/IO error.
+
+### config materialize
+Usage: goobers config materialize [instance-root]
+
+Validate and apply the checked-in local config source recorded in
+<instance-root>/instance.yaml. The source's instance.yaml.example becomes
+the runtime instance.yaml (with workflowSource retained), and manifest.yaml
+plus gaggles/ replace the runtime config/ tree. Journals, scheduler data,
+workcopies, credential values, and telemetry remain untouched.
+
+Stop the daemon before materializing, then restart it to use the new
+definitions. GitHub-backed guided sources use their local checkout, so pull
+the desired revision into that checkout first.
+
+Exit codes: 0 = materialized, 1 = invalid source or apply error, 2 = usage
+error or not an instance root.
 
 ### config show
 Usage: goobers config show [--json] [path]
@@ -596,9 +614,11 @@ Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
 telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It prompts for
-a GitHub repository, work tracking, token references, and canonical workflows,
-then validates the result. --template=quickstart seeds the versioned onboarding
+with instance.yaml or a populated config/ before prompting. It separately
+selects a checked-in config source and target GitHub application repository,
+then validates both. The source may be new or existing locally, cloned from
+GitHub, or optionally backed by a newly confirmed GitHub repository.
+--template=quickstart seeds the versioned onboarding
 workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced.
