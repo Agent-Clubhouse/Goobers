@@ -30,7 +30,7 @@ complete -c goobers -n '__fish_seen_subcommand_from trace; and test (count (comm
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
