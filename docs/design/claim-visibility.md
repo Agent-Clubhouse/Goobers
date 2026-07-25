@@ -30,12 +30,30 @@ spec:
 | Value | Claim scope and authority | Provider state |
 |---|---|---|
 | `local` | Default. The per-instance `ClaimLedger` is authoritative within that instance. | A non-authoritative mirror may be written for human visibility. |
-| `shared` | Opt-in. The local ledger remains authoritative for the instance's run ownership and lease, while a provider-backed claim record is an additional admission constraint shared by participating instances. | The remote record must be acquired and released as part of the claim lifecycle. |
+| `shared` | Opt-in. The local ledger remains authoritative for the instance's run ownership and lease, while a provider-backed claim record is an additional admission constraint shared by participating instances. | A shared coordination record, distinguishable from a local mirror, must be acquired and released as part of the claim lifecycle. |
 
 Omitting the field is exactly equivalent to `local`. Upgrades, provider changes,
 and new query surfaces must not silently turn a local workflow into a shared one.
 An unsupported provider must reject `shared` rather than fall back to local
 visibility.
+
+### Provider record roles
+
+Provider state written for `local` and `shared` modes has different semantics and
+must be unambiguously distinguishable:
+
+- A **local mirror** reports one instance's local-ledger state for humans. It is
+  not a shared claim, even when it refers to the same item or resembles a claim
+  marker.
+- A **shared coordination record** identifies itself as participating in the
+  `shared` protocol and carries the identity needed for owner-scoped acquisition,
+  renewal, and release.
+
+Shared admission and live-activity queries must consider only shared coordination
+records and ignore local mirrors. Conversely, local-marker reconciliation and
+cleanup must not mutate or remove shared coordination records. The concrete
+GitHub encoding - for example, a separate marker namespace or an explicit mode
+discriminator - belongs to #1487; the required behavioral separation does not.
 
 ## Claim and release contract
 
@@ -67,9 +85,9 @@ rather than being reported as a complete shared release.
 ## Provider sequence
 
 The first `shared` implementation is GitHub-specific and is tracked by
-[#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487). It uses the
-GitHub claim marker as the remote coordination record while retaining the local
-ledger's owner and lease data.
+[#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487). It encodes a
+GitHub shared coordination record distinct from the local human-readable mirror
+while retaining the local ledger's owner and lease data.
 
 Azure DevOps must not accept `claimVisibility: shared` until the provider reaches
 claim-marker parity through [#32](https://github.com/Agent-Clubhouse/Goobers/issues/32).
