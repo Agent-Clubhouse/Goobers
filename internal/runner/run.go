@@ -706,13 +706,13 @@ type baseSyncConflictArtifact struct {
 // (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
 // provenance across a resume without duplicating ref.touched.
 type walkSeed struct {
-	pointers        []apiv1.ContextPointer
-	lastStage       string
-	lastResult      apiv1.ResultEnvelope
+	pointers   []apiv1.ContextPointer
+	lastStage  string
+	lastResult apiv1.ResultEnvelope
 	// stageOutputs is every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	stageOutputs stageOutputs
+	stageOutputs    stageOutputs
 	workspaceBranch string
 	branchRecorded  bool
 	humanDecision   *HumanGateDecision
