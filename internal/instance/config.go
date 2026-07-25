@@ -328,7 +328,7 @@ const (
 )
 
 const (
-	// GitHubAuthPAT selects the env/file/store-backed static token — the
+	// GitHubAuthPAT selects the env/file/Keychain/store-backed static token — the
 	// default when auth is absent, byte-identical to before GitHub repos
 	// accepted an auth block at all.
 	GitHubAuthPAT = "pat"
@@ -357,7 +357,7 @@ type RepoAuthConfig struct {
 	// target repo's owner (kind github-app).
 	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
 	// PrivateKey references the App's PEM-encoded private key for kind
-	// github-app — env, file, or store, exactly like a token ref; never an
+	// github-app — env, file, Keychain, or store, exactly like a token ref; never an
 	// inline value (CFG-009). The key only ever signs short-lived App JWTs
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
@@ -433,14 +433,17 @@ type SecretStoreAuthConfig struct {
 }
 
 // TokenRef points at a credential without storing its value: an environment
-// variable name, a path to a file containing it (SEC-*, "Env vars / token
-// file" at tiers 1-2, ARCHITECTURE.md §9), or a secret in a declared external
-// secret store (#683). Exactly one source per ref.
+// variable name, a path to a file containing it, a macOS Keychain service
+// name, or a secret in a declared external secret store (#683). Exactly one
+// source per ref.
 type TokenRef struct {
 	// Env is the name of an environment variable holding the token.
 	Env string `json:"env,omitempty" yaml:"env,omitempty"`
 	// File is a path to a file whose contents are the token.
 	File string `json:"file,omitempty" yaml:"file,omitempty"`
+	// Keychain is the service name of a generic-password item in the macOS
+	// login keychain.
+	Keychain string `json:"keychain,omitempty" yaml:"keychain,omitempty"`
 	// Store references a secret in a declared secretStores entry as
 	// "<storeName>/<secretName>". The store name must match a secretStores
 	// entry; the secret name is interpreted by that store's resolver.
@@ -456,6 +459,9 @@ func (r TokenRef) sourceCount() int {
 	if r.File != "" {
 		n++
 	}
+	if r.Keychain != "" {
+		n++
+	}
 	if r.Store != "" {
 		n++
 	}
@@ -469,14 +475,14 @@ func (r TokenRef) Configured() bool {
 
 // CredentialTokenRef converts this ref into the credentials package's source
 // shape under the given resolver ref name, carrying whichever single source
-// (env, file, or store) is configured. A store-backed ref resolves only
+// (env, file, Keychain, or store) is configured. A store-backed ref resolves only
 // through a resolver built with the instance's secret-store registry
 // (credentials.NewResolverWithStores); plain credentials.NewResolver fails
 // closed on it at construction, so a composition site that was never wired
 // for stores rejects the ref with a diagnostic instead of silently reading
 // it as unconfigured.
 func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
-	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Store: r.Store}
+	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store}
 }
 
 // CredentialGrant sources one stage capability from its own token ref (#287).
@@ -485,8 +491,8 @@ type CredentialGrant struct {
 	// Capability is the canonical capability string (internal/capability) this
 	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
 	Capability string `json:"capability" yaml:"capability"`
-	// Token is the source of the credential — exactly one of env or file, like
-	// a repo's token; inline secret values are never permitted.
+	// Token is the source of the credential — exactly one supported TokenRef
+	// source, like a repo's token; inline secret values are never permitted.
 	Token TokenRef `json:"token" yaml:"token"`
 }
 
@@ -708,7 +714,7 @@ func (c OTLPConfig) Validate() error {
 		}
 		seenHeaders[canonicalName] = true
 		if ref.sourceCount() != 1 {
-			return fmt.Errorf("headers[%q] must reference exactly one of env, file, or store; inline values are not permitted", name)
+			return fmt.Errorf("headers[%q] must reference exactly one of env, file, keychain, or store; inline values are not permitted", name)
 		}
 	}
 	return nil
@@ -840,7 +846,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("portal: %w", err)
 	}
 	if c.Webhook.Secret.sourceCount() > 1 {
-		return fmt.Errorf("webhook.secret must reference exactly one of env, file, or store — inline secret values are never permitted (CFG-009, SEC-010)")
+		return fmt.Errorf("webhook.secret must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 	}
 	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
 		return err
@@ -896,7 +902,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
 		}
 		if r.Token.sourceCount() > 1 {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
+			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 		}
 		if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores); err != nil {
@@ -917,7 +923,7 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
 				}
 				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, or store — "+
+					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
 						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 				}
 			case GitHubAuthApp:
@@ -927,7 +933,7 @@ func (c *Config) Validate() error {
 				// silent fallback, which the minting design forbids (#686,
 				// no implicit PAT fallback).
 				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
+					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
 				}
 				if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
 					return fmt.Errorf("repos[%d] (%s/%s): auth.tenant and auth.clientId are only valid for ADO auth kinds", i, r.Owner, r.Name)
@@ -942,7 +948,7 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId %q must be the numeric installation ID", i, r.Owner, r.Name, r.Auth.InstallationID)
 				}
 				if r.Auth.PrivateKey == nil || r.Auth.PrivateKey.sourceCount() != 1 {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, or store — "+
+					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, keychain, or store — "+
 						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 				}
 				if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): auth.privateKey", i, r.Owner, r.Name), *r.Auth.PrivateKey, stores); err != nil {
@@ -974,11 +980,11 @@ func (c *Config) Validate() error {
 			switch kind {
 			case ADOAuthPAT:
 				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env, token.file, or token.store", i, r.Owner, r.Name)
+					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
 				}
 			case ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity:
 				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env, token.file, or token.store", i, r.Owner, r.Name, kind)
+					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name, kind)
 				}
 			default:
 				return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
@@ -1009,7 +1015,7 @@ func (c *Config) Validate() error {
 		}
 		seen[cg.Capability] = true
 		if cg.Token.sourceCount() != 1 {
-			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, or store — "+
+			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
 		}
 		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, cg.Capability), cg.Token, stores); err != nil {
@@ -1248,7 +1254,7 @@ func (s WorkflowSource) Validate() error {
 				return err
 			}
 			if s.Token == nil || s.Token.sourceCount() != 1 {
-				return fmt.Errorf("remote git token must reference exactly one of env, file, or store — inline secret values are never permitted (CFG-009, SEC-010)")
+				return fmt.Errorf("remote git token must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
 		} else if s.Token != nil {
 			return fmt.Errorf("token is only valid for a remote git url")

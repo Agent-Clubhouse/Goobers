@@ -18,11 +18,11 @@ var ErrTokenRefNotFound = errors.New("credentials: token ref not found")
 // treated as misconfiguration, not a valid (empty) secret.
 var ErrTokenRefEmpty = errors.New("credentials: token ref resolved to an empty value")
 
-// TokenRef names one secret source: exactly one of Env, File, or Store must
-// be set. Env/File are the tiers 1-2 shape of instance.yaml's token refs
-// (docs/ARCHITECTURE.md §6); Store is the tier-3 counterpart behind the same
-// seam — a "<storeName>/<secretName>" ref into a declared external secret
-// store (#683, SEC-010).
+// TokenRef names one secret source: exactly one of Env, File, Keychain, or
+// Store must be set. Env/File/Keychain are the tiers 1-2 shape of
+// instance.yaml's token refs (docs/ARCHITECTURE.md §6); Store is the tier-3
+// counterpart behind the same seam — a "<storeName>/<secretName>" ref into a
+// declared external secret store (#683, SEC-010).
 type TokenRef struct {
 	// Name is the logical name other config (capability grants) refers to
 	// this ref by, e.g. "github-issues".
@@ -32,6 +32,9 @@ type TokenRef struct {
 	// File is the path to a file whose (trimmed) contents are the secret
 	// value.
 	File string
+	// Keychain is the service name of a generic-password item in the macOS
+	// login keychain.
+	Keychain string
 	// Store is a "<storeName>/<secretName>" ref resolved through a
 	// StoreResolver. Refs with Store set can only be built into a resolver
 	// via NewResolverWithStores — NewResolver fails closed on them.
@@ -43,19 +46,19 @@ func (r TokenRef) validate() error {
 		return errors.New("credentials: token ref has no name")
 	}
 	sources := 0
-	for _, s := range []string{r.Env, r.File, r.Store} {
+	for _, s := range []string{r.Env, r.File, r.Keychain, r.Store} {
 		if s != "" {
 			sources++
 		}
 	}
 	if sources != 1 {
-		return fmt.Errorf("credentials: token ref %q must set exactly one of Env, File, or Store", r.Name)
+		return fmt.Errorf("credentials: token ref %q must set exactly one of Env, File, Keychain, or Store", r.Name)
 	}
 	return nil
 }
 
 // resolve reads the secret value for this ref from the process environment,
-// filesystem, or the configured secret-store resolver.
+// filesystem, macOS Keychain, or the configured secret-store resolver.
 func (r TokenRef) resolve(ctx context.Context, stores StoreResolver) (string, error) {
 	var raw string
 	switch {
@@ -78,6 +81,12 @@ func (r TokenRef) resolve(ctx context.Context, stores StoreResolver) (string, er
 			return "", fmt.Errorf("credentials: token ref %q: read %q: %w", r.Name, r.File, err)
 		}
 		raw = string(b)
+	case r.Keychain != "":
+		value, err := resolveKeychain(ctx, r.Keychain)
+		if err != nil {
+			return "", fmt.Errorf("credentials: token ref %q: %w", r.Name, err)
+		}
+		raw = value
 	case r.Store != "":
 		// Construction fails closed on a store ref without a StoreResolver,
 		// so stores is never nil here; the guard is belt-and-suspenders.
@@ -98,9 +107,9 @@ func (r TokenRef) resolve(ctx context.Context, stores StoreResolver) (string, er
 }
 
 // Resolver resolves a named secret reference. Implementations must honor
-// context cancellation. The local implementation reads env vars and files;
-// Azure Key Vault supplies the tier-3 implementation behind this same seam
-// (SEC-010), without changes to credential consumers.
+// context cancellation. The local implementation reads env vars, files, and
+// macOS Keychain; Azure Key Vault supplies the tier-3 implementation behind
+// this same seam (SEC-010), without changes to credential consumers.
 type Resolver interface {
 	Resolve(ctx context.Context, name string) (string, error)
 }
@@ -121,10 +130,10 @@ type StoreResolver interface {
 type ResolveFunc func(ctx context.Context) (string, error)
 
 // tokenRefResolver holds no secret material itself. Every TokenRef is re-read
-// at resolve time so a rotated env var, file, or store secret takes effect
-// without restarting the process (store reads are TTL-cached by the
-// StoreResolver, not here); dynamic sources are consulted per resolve for the
-// same reason.
+// at resolve time so a rotated env var, file, Keychain item, or store secret
+// takes effect without restarting the process (store reads are TTL-cached by
+// the StoreResolver, not here); dynamic sources are consulted per resolve for
+// the same reason.
 type tokenRefResolver struct {
 	refs    map[string]TokenRef
 	stores  StoreResolver
@@ -133,7 +142,7 @@ type tokenRefResolver struct {
 
 var _ Resolver = (*tokenRefResolver)(nil)
 
-// NewResolver builds the local env/file Resolver from a set of token refs.
+// NewResolver builds the local env/file/Keychain Resolver from a set of token refs.
 // Names must be unique and each ref must be well-formed. A store-backed ref
 // fails closed here: local-only construction sites must reject it with a
 // diagnostic rather than silently read it as unconfigured — callers that
