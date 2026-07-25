@@ -121,6 +121,7 @@ export class LiveDataController {
   private cursor: string | undefined;
   private failureCount = 0;
   private generation = 0;
+  private invalidationFlush: Promise<void> | undefined;
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
@@ -445,42 +446,59 @@ export class LiveDataController {
     if (this.invalidationTimer !== undefined) {
       return;
     }
-    this.invalidationTimer = setTimeout(() => void this.flushInvalidations(), delay);
+    this.invalidationTimer = setTimeout(() => {
+      this.invalidationTimer = undefined;
+      void this.flushInvalidations();
+    }, delay);
   }
 
   private async flushInvalidations(): Promise<void> {
-    this.invalidationTimer = undefined;
-    if (this.pendingModels.size === 0) {
-      return;
+    if (this.invalidationFlush) {
+      return this.invalidationFlush;
     }
-    const revision = this.invalidationRevision;
-    const models = new Set(this.pendingModels);
-    this.pendingModels.clear();
-    const stream = this.activeStream;
-    const restoreConnected = stream !== undefined;
-    if (restoreConnected) {
-      this.setFreshness("stale");
-    }
-    const refreshed = await this.runRefresh(models);
-    if (!this.started) {
-      return;
-    }
-    if (!refreshed && stream === this.activeStream) {
-      this.invalidationRevision += 1;
-      for (const model of models) {
-        this.pendingModels.add(model);
+    const flush = this.drainInvalidations().finally(() => {
+      if (this.invalidationFlush === flush) {
+        this.invalidationFlush = undefined;
       }
-      this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
-      return;
-    }
-    if (
-      restoreConnected &&
-      refreshed &&
-      stream === this.activeStream &&
-      this.pendingModels.size === 0 &&
-      revision === this.invalidationRevision
-    ) {
-      this.setFreshness("connected");
+    });
+    this.invalidationFlush = flush;
+    return flush;
+  }
+
+  private async drainInvalidations(): Promise<void> {
+    while (this.pendingModels.size > 0) {
+      const revision = this.invalidationRevision;
+      const models = new Set(this.pendingModels);
+      this.pendingModels.clear();
+      const stream = this.activeStream;
+      const restoreConnected = stream !== undefined;
+      if (restoreConnected) {
+        this.setFreshness("stale");
+      }
+      const refreshed = await this.runRefresh(models);
+      if (!this.started) {
+        return;
+      }
+      if (!refreshed && stream === this.activeStream) {
+        this.invalidationRevision += 1;
+        for (const model of models) {
+          this.pendingModels.add(model);
+        }
+        this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
+        return;
+      }
+      if (this.invalidationTimer !== undefined) {
+        return;
+      }
+      if (
+        restoreConnected &&
+        refreshed &&
+        stream === this.activeStream &&
+        this.pendingModels.size === 0 &&
+        revision === this.invalidationRevision
+      ) {
+        this.setFreshness("connected");
+      }
     }
   }
 

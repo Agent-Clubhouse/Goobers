@@ -150,7 +150,7 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
-  it("stays stale until invalidations queued during the snapshot are applied", async () => {
+  it("collapses invalidation windows during a snapshot into one follow-up refresh", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
     const controller = new LiveDataController(client, testConfig);
@@ -169,6 +169,9 @@ describe("LiveDataController", () => {
     stream.push(update("session:1", ["run"]));
     await settle();
     await vi.advanceTimersByTimeAsync(10);
+    stream.push(update("session:2", ["workflow"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
 
     initial.resolve(true);
     await settle();
@@ -177,6 +180,7 @@ describe("LiveDataController", () => {
 
     replay.resolve(true);
     await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
     expect(controller.freshness).toBe("connected");
 
     controller.stop();

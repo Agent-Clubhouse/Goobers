@@ -2,31 +2,82 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import type { RequestOptions, RunList, RunListOptions } from "./api/types";
+import type {
+  DaemonEventStream,
+  DaemonUpdateEvent,
+  Instance,
+  RequestOptions,
+  RunList,
+  RunListOptions,
+} from "./api/types";
 import { LiveDataProvider } from "./liveData";
 import { useOperationalOverview, useOperationalSnapshot } from "./operationalData";
 import { populatedDaemonFixtures } from "./test/daemonFixtures";
 
-// A client whose listRuns records the AbortSignal it was handed and stays
-// pending until released, so a refresh can be observed mid-flight.
 class GatedRunsClient extends FixtureDaemonClient {
   readonly signals: (AbortSignal | undefined)[] = [];
-  private open = false;
-  private readonly waiters: (() => void)[] = [];
+  readonly stream = new ControlledEventStream();
+  instanceName: string | undefined;
+  private readonly gates: { promise: Promise<void>; resolve: () => void }[] = [];
+
+  override connectEvents(): Promise<DaemonEventStream> {
+    return Promise.resolve(this.stream);
+  }
 
   override async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
     this.signals.push(options?.signal);
-    if (!this.open) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
-    }
+    const gate = deferred();
+    this.gates.push(gate);
+    await gate.promise;
     return super.listRuns(request, options);
   }
 
-  release(): void {
-    this.open = true;
-    for (const resolve of this.waiters.splice(0)) {
-      resolve();
+  override async getInstance(options?: RequestOptions): Promise<Instance> {
+    const instance = await super.getInstance(options);
+    return this.instanceName ? { ...instance, name: this.instanceName } : instance;
+  }
+
+  release(count: number): void {
+    for (const gate of this.gates.splice(0, count)) {
+      gate.resolve();
     }
+  }
+}
+
+class ControlledEventStream implements DaemonEventStream {
+  private closed = false;
+  private readonly events: DaemonUpdateEvent[] = [];
+  private readonly readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
+
+  push(event: DaemonUpdateEvent): void {
+    const reader = this.readers.shift();
+    if (reader) {
+      reader({ done: false, value: event });
+      return;
+    }
+    this.events.push(event);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const reader of this.readers.splice(0)) {
+      reader({ done: true, value: undefined });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<DaemonUpdateEvent> {
+    return {
+      next: () => {
+        const event = this.events.shift();
+        if (event) {
+          return Promise.resolve({ done: false, value: event });
+        }
+        if (this.closed) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+        return new Promise((resolve) => this.readers.push(resolve));
+      },
+    };
   }
 }
 
@@ -38,8 +89,17 @@ function wrapper(client: GatedRunsClient) {
   );
 }
 
-describe("operational hooks do not abort in-flight reads on refresh (#1367)", () => {
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
   });
@@ -48,56 +108,69 @@ describe("operational hooks do not abort in-flight reads on refresh (#1367)", ()
     vi.restoreAllMocks();
   });
 
-  it("keeps the overview's in-flight request alive when a new refresh starts", async () => {
+  it("finishes a slow overview load and collapses a refresh burst into one current replay", async () => {
     const client = new GatedRunsClient(populatedDaemonFixtures());
     const { result, unmount } = renderHook(() => useOperationalOverview(client), {
       wrapper: wrapper(client),
     });
 
-    // First load is in flight (its listRuns are gated open).
-    await waitFor(() => expect(client.signals.length).toBeGreaterThanOrEqual(1));
-    const firstSignal = client.signals[0];
-    expect(firstSignal?.aborted).toBe(false);
+    await waitFor(() => expect(client.signals).toHaveLength(5));
+    const initialSignals = [...client.signals];
 
-    // A second refresh must NOT cancel the first request mid-flight.
-    const before = client.signals.length;
     act(() => {
-      result.current.retry();
+      client.stream.push(invalidation("session:1"));
+      client.stream.push(invalidation("session:2"));
+      client.stream.push(invalidation("session:3"));
     });
-    await waitFor(() => expect(client.signals.length).toBeGreaterThan(before));
-    expect(firstSignal?.aborted).toBe(false);
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem("goobers-live-event-cursor")).toBe("session:3"),
+    );
+    expect(client.signals).toHaveLength(5);
+    expect(initialSignals.every((signal) => signal?.aborted === false)).toBe(true);
 
-    // Unmount is the one place a still-pending request is aborted — and it
-    // cancels only the latest controller, never resurrects an abort of the
-    // earlier request that was allowed to finish on its own.
-    const latestSignal = client.signals[client.signals.length - 1];
+    client.instanceName = "refreshed-instance";
+    act(() => client.release(5));
+    await waitFor(() => expect(client.signals).toHaveLength(10));
+    expect(initialSignals.every((signal) => signal?.aborted === false)).toBe(true);
+
+    act(() => client.release(5));
+    await waitFor(() => {
+      expect(result.current.state.status).toBe("ready");
+      if (result.current.state.status === "ready") {
+        expect(result.current.state.data.instance.name).toBe("refreshed-instance");
+      }
+    });
+    expect(client.signals).toHaveLength(10);
     unmount();
-    expect(latestSignal?.aborted).toBe(true);
-    expect(firstSignal?.aborted).toBe(false);
-    client.release();
   });
 
-  it("keeps the snapshot's in-flight request alive when a new refresh starts", async () => {
+  it("keeps one snapshot request in flight and aborts the active replay on unmount", async () => {
     const client = new GatedRunsClient(populatedDaemonFixtures());
     const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
       wrapper: wrapper(client),
     });
 
-    await waitFor(() => expect(client.signals.length).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(client.signals).toHaveLength(1));
     const firstSignal = client.signals[0];
-    expect(firstSignal?.aborted).toBe(false);
 
-    const before = client.signals.length;
     act(() => {
       result.current.retry();
+      result.current.retry();
     });
-    await waitFor(() => expect(client.signals.length).toBeGreaterThan(before));
+    await act(async () => Promise.resolve());
+    expect(client.signals).toHaveLength(1);
     expect(firstSignal?.aborted).toBe(false);
 
-    const latestSignal = client.signals[client.signals.length - 1];
+    act(() => client.release(1));
+    await waitFor(() => expect(client.signals).toHaveLength(2));
+    const replaySignal = client.signals[1];
     unmount();
-    expect(latestSignal?.aborted).toBe(true);
+    expect(replaySignal?.aborted).toBe(true);
     expect(firstSignal?.aborted).toBe(false);
-    client.release();
+    client.release(1);
   });
 });
+
+function invalidation(id: string): DaemonUpdateEvent {
+  return { id, type: "invalidate", data: { cursor: id, models: ["run"] } };
+}

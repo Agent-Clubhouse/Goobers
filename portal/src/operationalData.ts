@@ -58,51 +58,118 @@ export interface OperationalSnapshotQuery {
   state: QueryState<OperationalSnapshot>;
 }
 
+type OperationalRefresh = (models?: ReadonlySet<UpdateModel>) => Promise<boolean>;
+
+function useCoalescedOperationalRefresh(
+  task: (models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => Promise<boolean>,
+): OperationalRefresh {
+  const taskRef = useRef(task);
+  taskRef.current = task;
+  const active = useRef<
+    { controller: AbortController; promise: Promise<boolean> } | undefined
+  >(undefined);
+  const pending = useRef(false);
+  const pendingAll = useRef(false);
+  const pendingModels = useRef(new Set<UpdateModel>());
+  const enabled = useRef(true);
+
+  const refresh = useCallback((models?: ReadonlySet<UpdateModel>) => {
+    if (!enabled.current) {
+      return Promise.resolve(false);
+    }
+
+    pending.current = true;
+    if (models === undefined) {
+      pendingAll.current = true;
+      pendingModels.current.clear();
+    } else if (!pendingAll.current) {
+      for (const model of models) {
+        pendingModels.current.add(model);
+      }
+    }
+
+    if (active.current) {
+      return active.current.promise;
+    }
+
+    const operation = {
+      controller: new AbortController(),
+      promise: Promise.resolve(false),
+    };
+    const promise = (async () => {
+      let refreshed = false;
+      while (enabled.current && pending.current) {
+        const controller = new AbortController();
+        operation.controller = controller;
+        const models = pendingAll.current ? undefined : new Set(pendingModels.current);
+        pending.current = false;
+        pendingAll.current = false;
+        pendingModels.current.clear();
+        refreshed = await taskRef.current(models, controller.signal);
+      }
+      return refreshed;
+    })().finally(() => {
+      if (active.current === operation) {
+        active.current = undefined;
+      }
+    });
+    operation.promise = promise;
+    active.current = operation;
+    return promise;
+  }, []);
+
+  useEffect(() => {
+    enabled.current = true;
+    return () => {
+      enabled.current = false;
+      pending.current = false;
+      pendingAll.current = false;
+      pendingModels.current.clear();
+      const operation = active.current;
+      active.current = undefined;
+      operation?.controller.abort();
+    };
+  }, [task]);
+
+  return refresh;
+}
+
 export function useOperationalSnapshot(client: DaemonClient): OperationalSnapshotQuery {
   const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
-  const request = useRef<AbortController | undefined>(undefined);
-  const generation = useRef(0);
   const { freshness, isFresh, subscribe } = useLiveData();
 
-  const refresh = useCallback(() => {
-    // Do NOT abort an in-flight request here. On a busy instance a burst of
-    // SSE events would otherwise cancel the request already answering the
-    // backend mid-scan (the "list runs failed: context canceled" churn of
-    // #1367). Let it finish and gate its result on a generation token so only
-    // the newest refresh applies its data. The live-data controller already
-    // coalesces (invalidation window) and serializes (refresh queue)
-    // event-driven refreshes, so overlap is rare in practice.
-    const controller = new AbortController();
-    request.current = controller;
-    const token = ++generation.current;
-    const isCurrent = () => token === generation.current && !controller.signal.aborted;
-    setState((current) =>
-      current.status === "ready" || current.status === "stale"
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
+  const performRefresh = useCallback(
+    async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      setState((current) =>
+        current.status === "ready" || current.status === "stale"
+          ? { status: "stale", data: current.data }
+          : { status: "loading" },
+      );
 
-    return loadOperationalSnapshot(client, controller.signal).then(
-      (data) => {
-        if (isCurrent()) {
-          setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+      try {
+        const data = await loadOperationalSnapshot(client, signal);
+        if (signal.aborted) {
+          return false;
         }
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
-      },
-      (error: unknown) => {
-        if (isCurrent()) {
-          const queryError =
-            error instanceof Error ? error : new Error("Unable to read daemon data.");
-          setState((current) =>
-            current.status === "ready" || current.status === "stale"
-              ? { status: "stale", data: current.data, error: queryError }
-              : { status: "error", error: queryError },
-          );
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          return false;
         }
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read daemon data.");
+        setState((current) =>
+          current.status === "ready" || current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
         return false;
-      },
-    );
-  }, [client, isFresh]);
+      }
+    },
+    [client, isFresh],
+  );
+  const refresh = useCoalescedOperationalRefresh(performRefresh);
 
   useEffect(
     () => subscribe(["instance", "workflow", "run"], refresh),
@@ -123,17 +190,7 @@ export function useOperationalSnapshot(client: DaemonClient): OperationalSnapsho
 
   usePeriodicHealth(client, freshness, setState);
 
-  // Invalidate any in-flight settle and cancel the latest request on unmount —
-  // the only point where aborting the backend read is the right thing to do.
-  useEffect(
-    () => () => {
-      generation.current += 1;
-      request.current?.abort();
-    },
-    [],
-  );
-
-  return { retry: refresh, state };
+  return { retry: () => void refresh(), state };
 }
 
 export async function loadOperationalSnapshot(
@@ -274,55 +331,47 @@ export function workflowDisplayName(
 
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
   const [state, setState] = useState<QueryState<OperationalOverview>>({ status: "loading" });
-  const request = useRef<AbortController | undefined>(undefined);
-  const generation = useRef(0);
   const data = useRef<OperationalOverview | undefined>(undefined);
   const { freshness, isFresh, subscribe } = useLiveData();
 
-  const load = useCallback(
-    (models?: ReadonlySet<UpdateModel>) => {
-      // Do NOT abort an in-flight request here (see #1367): a burst of SSE
-      // events must not cancel the load already answering the backend
-      // mid-scan. Let it finish and gate its result on a generation token so
-      // only the newest load applies. The live-data controller already
-      // coalesces and serializes event-driven refreshes.
-      const controller = new AbortController();
-      request.current = controller;
-      const token = ++generation.current;
-      const isCurrent = () => token === generation.current && !controller.signal.aborted;
+  const performLoad = useCallback(
+    async (models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
           : { status: "loading" },
       );
 
-      return loadOperationalOverview(client, controller.signal, {
-        previous: data.current,
-        models,
-      }).then(
-        (loaded) => {
-          if (isCurrent()) {
-            data.current = loaded;
-            setState(isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded });
-          }
-          return true;
-        },
-        (error: unknown) => {
-          if (isCurrent()) {
-            const queryError =
-              error instanceof Error ? error : new Error("Unable to read daemon data.");
-            setState((current) =>
-              current.status === "ready" || current.status === "stale"
-                ? { status: "stale", data: current.data, error: queryError }
-                : { status: "error", error: queryError },
-            );
-          }
+      try {
+        const loaded = await loadOperationalOverview(client, signal, {
+          previous: data.current,
+          models,
+        });
+        if (signal.aborted) {
           return false;
-        },
-      );
+        }
+        data.current = loaded;
+        setState(
+          isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded },
+        );
+        return true;
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          return false;
+        }
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read daemon data.");
+        setState((current) =>
+          current.status === "ready" || current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
+        return false;
+      }
     },
     [client, isFresh],
   );
+  const load = useCoalescedOperationalRefresh(performLoad);
 
   useEffect(
     () => subscribe(["instance", "workflow", "run"], (models) => load(models)),
@@ -345,16 +394,6 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
     data.current = overview;
   }, []);
   usePeriodicHealth(client, freshness, setState, rememberOverview);
-
-  // Invalidate any in-flight settle and cancel the latest request on unmount —
-  // the only point where aborting the backend read is the right thing to do.
-  useEffect(
-    () => () => {
-      generation.current += 1;
-      request.current?.abort();
-    },
-    [],
-  );
 
   return { retry: () => void load(), state };
 }
