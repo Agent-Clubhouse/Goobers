@@ -1,0 +1,85 @@
+package localscheduler
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/goobers/goobers/internal/journal"
+)
+
+const scheduleDemandStateFileName = "schedule-demand.json"
+
+type scheduleDemandStateFile struct {
+	Workflows []scheduleDemandWorkflow `json:"workflows"`
+}
+
+type scheduleDemandWorkflow struct {
+	Gaggle   string `json:"gaggle"`
+	Workflow string `json:"workflow"`
+}
+
+func readScheduleDemandState(schedulerDir string) (map[WorkflowIdentity]bool, error) {
+	data, err := os.ReadFile(filepath.Join(schedulerDir, scheduleDemandStateFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[WorkflowIdentity]bool{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("localscheduler: read schedule demand: %w", err)
+	}
+	var state scheduleDemandStateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("localscheduler: decode schedule demand: %w", err)
+	}
+	outstanding := make(map[WorkflowIdentity]bool, len(state.Workflows))
+	for _, workflow := range state.Workflows {
+		identity := WorkflowIdentity{Gaggle: workflow.Gaggle, Workflow: workflow.Workflow}
+		if identity.Workflow == "" {
+			return nil, fmt.Errorf("localscheduler: invalid schedule demand for empty workflow")
+		}
+		if outstanding[identity] {
+			return nil, fmt.Errorf(
+				"localscheduler: duplicate schedule demand for workflow %q in gaggle %q",
+				identity.Workflow, identity.Gaggle,
+			)
+		}
+		outstanding[identity] = true
+	}
+	return outstanding, nil
+}
+
+func writeScheduleDemandState(schedulerDir string, outstanding map[WorkflowIdentity]bool) error {
+	state := scheduleDemandStateFile{
+		Workflows: make([]scheduleDemandWorkflow, 0, len(outstanding)),
+	}
+	for identity, pending := range outstanding {
+		if !pending {
+			continue
+		}
+		state.Workflows = append(state.Workflows, scheduleDemandWorkflow{
+			Gaggle:   identity.Gaggle,
+			Workflow: identity.Workflow,
+		})
+	}
+	sort.Slice(state.Workflows, func(i, j int) bool {
+		if state.Workflows[i].Gaggle == state.Workflows[j].Gaggle {
+			return state.Workflows[i].Workflow < state.Workflows[j].Workflow
+		}
+		return state.Workflows[i].Gaggle < state.Workflows[j].Gaggle
+	})
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("localscheduler: marshal schedule demand: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		return fmt.Errorf("localscheduler: create schedule demand directory: %w", err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, scheduleDemandStateFileName), data, 0o644); err != nil {
+		return fmt.Errorf("localscheduler: persist schedule demand: %w", err)
+	}
+	return nil
+}

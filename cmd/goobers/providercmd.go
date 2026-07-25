@@ -67,6 +67,7 @@ const (
 	mergeLockFileName = "merge.lock"
 
 	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
+	claimLockOperationBacklogScanCursor    = "backlog-query.scan-cursor"
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"

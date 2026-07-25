@@ -1176,6 +1176,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
+	mu             sync.Mutex
 	ref            string
 	repo           providers.RepositoryRef
 	labels         []string
@@ -1184,6 +1185,7 @@ type backlogCounter struct {
 	reg            runner.SecretRegistrar
 	schedulerDir   string
 	quota          *localscheduler.ProviderQuotaState
+	cursor         string
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -1193,12 +1195,26 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	}
 	defer cleanup()
 
+	b.mu.Lock()
+	cursor := b.cursor
+	b.mu.Unlock()
+
+	const pageSize = 100
+	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: b.repo, Labels: b.labels, LabelPredicate: b.labelPredicate, State: "open", Limit: 100,
+		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
 		return 0, err
 	}
+	b.mu.Lock()
+	if pageInfo.HasNext {
+		b.cursor = pageInfo.NextCursor
+	} else {
+		b.cursor = ""
+	}
+	b.mu.Unlock()
 	count := 0
 	for _, item := range items {
 		matched, err := b.labelPredicate.Matches(item.Labels)

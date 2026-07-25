@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -45,9 +47,14 @@ const DefaultClaimLease = 6 * time.Hour
 // that the full eligible set is normally covered outright (the live backlog
 // runs ~40 eligible items; 250 is ~6x that), low enough to bound provider
 // pagination (3 pages at GitHub's per_page=100 max). Truncation past this
-// ceiling is starvation-safe because the fetch is OldestFirst — see the
-// ListWorkItems call below.
+// ceiling is starvation-safe because empty windows advance a durable cursor
+// and wrap after reaching the end of the oldest-first result set.
 const backlogScanCeiling = 250
+const backlogScanPageSize = 100
+
+type backlogScanCursor struct {
+	Cursor string `json:"cursor,omitempty"`
+}
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
@@ -137,7 +144,8 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
-	labelFilter, err := labelpredicate.Compile(providerInput("labelPredicate", ""), requireLabels, excludeLabels)
+	labelExpression := providerInput("labelPredicate", "")
+	labelFilter, err := labelpredicate.Compile(labelExpression, requireLabels, excludeLabels)
 	if err != nil {
 		pf(stderr, "error: invalid labelPredicate: %v\n", err)
 		return 1
@@ -244,15 +252,18 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		labels = append(labels, trustLabel)
 	}
 	labels = append(labels, labelFilter.RequiredLabels()...)
-	// Keep exact predicate evaluation below so Limit remains a bound on
-	// candidates scanned, not on matches found after unbounded pagination.
-	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repo,
-		Labels:      labels,
-		State:       "open",
-		Limit:       scanLimit,
-		OldestFirst: true,
-	})
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	cursorPath := backlogScanCursorPath(
+		l.SchedulerDir(), repo, trustLabel, labelExpression, requireLabels, excludeLabels,
+	)
+	scanCursor, err := readBacklogScanCursor(lockPath, cursorPath)
+	if err != nil {
+		pf(stderr, "error: read backlog scan cursor: %v\n", err)
+		return 1
+	}
+	items, nextScanCursor, err := listBacklogScanWindow(
+		ctx, issueProvider, repo, labels, scanLimit, scanCursor,
+	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
 	}
@@ -356,7 +367,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// unconditional baseline every claim order now starts from.
 	sortEligibleFIFO(eligible)
 
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
@@ -374,7 +384,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
+
 		if len(eligible) == 0 {
+			if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+				pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+				return 1
+			}
 			pln(stdout, "no eligible items")
 			return 0
 		}
@@ -431,6 +446,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		})
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
@@ -547,6 +566,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 1
 	}
 	if len(eligible) == 0 {
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
@@ -554,6 +577,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
 	if len(claimed) == 0 {
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
 	if labelFilter.ReferencesLabel(providers.LabelReady) {
@@ -833,6 +860,127 @@ func sortEligibleFIFO(items []providers.WorkItem) {
 func parseWorkItemID(id string) (int64, bool) {
 	n, err := strconv.ParseInt(id, 10, 64)
 	return n, err == nil
+}
+
+func backlogScanCursorPath(
+	schedulerDir string,
+	repo providers.RepositoryRef,
+	trustLabel, expression string,
+	requireLabels, excludeLabels []string,
+) string {
+	key, _ := json.Marshal(struct {
+		Repository    providers.RepositoryRef `json:"repository"`
+		TrustLabel    string                  `json:"trustLabel,omitempty"`
+		Expression    string                  `json:"expression,omitempty"`
+		RequireLabels []string                `json:"requireLabels,omitempty"`
+		ExcludeLabels []string                `json:"excludeLabels,omitempty"`
+	}{
+		Repository:    repo,
+		TrustLabel:    trustLabel,
+		Expression:    expression,
+		RequireLabels: requireLabels,
+		ExcludeLabels: excludeLabels,
+	})
+	sum := sha256.Sum256(key)
+	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
+}
+
+func readBacklogScanCursor(lockPath, cursorPath string) (backlogScanCursor, error) {
+	cursor := backlogScanCursor{}
+	err := withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
+		var err error
+		cursor, err = loadBacklogScanCursor(cursorPath)
+		return err
+	})
+	return cursor, err
+}
+
+func loadBacklogScanCursor(path string) (backlogScanCursor, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return backlogScanCursor{}, nil
+	}
+	if err != nil {
+		return backlogScanCursor{}, err
+	}
+	var cursor backlogScanCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return backlogScanCursor{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return cursor, nil
+}
+
+func advanceBacklogScanCursor(
+	lockPath, cursorPath string,
+	observed, next backlogScanCursor,
+) error {
+	return withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
+		current, err := loadBacklogScanCursor(cursorPath)
+		if err != nil {
+			return err
+		}
+		if current != observed {
+			return nil
+		}
+		data, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("marshal backlog scan cursor: %w", err)
+		}
+		if err := journal.WriteFileAtomic(cursorPath, data, 0o644); err != nil {
+			return fmt.Errorf("write backlog scan cursor: %w", err)
+		}
+		return nil
+	})
+}
+
+func listBacklogScanWindow(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	labels []string,
+	limit int,
+	cursor backlogScanCursor,
+) ([]providers.WorkItem, backlogScanCursor, error) {
+	if limit <= 0 {
+		return nil, cursor, nil
+	}
+	items := make([]providers.WorkItem, 0, limit)
+	maxPages := (limit + backlogScanPageSize - 1) / backlogScanPageSize
+	for range maxPages {
+		pageLimit := min(backlogScanPageSize, limit)
+		pageInfo := &providers.ListWorkItemsPageInfo{}
+		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+			Repository:  repo,
+			Labels:      labels,
+			State:       "open",
+			Limit:       pageLimit,
+			Cursor:      cursor.Cursor,
+			PageInfo:    pageInfo,
+			OldestFirst: true,
+		})
+		if err != nil {
+			return nil, cursor, err
+		}
+		if pageInfo.CandidateCount < 0 || pageInfo.CandidateCount > pageLimit {
+			return nil, cursor, fmt.Errorf(
+				"provider returned invalid work-item candidate count %d for limit %d",
+				pageInfo.CandidateCount, pageLimit,
+			)
+		}
+		items = append(items, pageItems...)
+		if !pageInfo.HasNext {
+			return items, backlogScanCursor{}, nil
+		}
+		if pageInfo.CandidateCount == 0 || pageInfo.NextCursor == "" {
+			return nil, cursor, fmt.Errorf("provider returned a non-advancing work-item cursor")
+		}
+		cursor.Cursor = pageInfo.NextCursor
+		limit -= pageInfo.CandidateCount
+		if limit <= 0 {
+			break
+		}
+	}
+	return items, cursor, nil
 }
 
 // runBacklogQueryRelease implements `backlog-query --release` (issues

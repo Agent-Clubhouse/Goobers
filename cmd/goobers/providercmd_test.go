@@ -120,6 +120,7 @@ type fakeGitHubServer struct {
 	filesRequests      int
 	checkStateRequests int
 	issueListRequests  int
+	issueListPageSizes []int
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
@@ -149,6 +150,12 @@ func (s *fakeGitHubServer) issueListRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueListRequests
+}
+
+func (s *fakeGitHubServer) issueListPageSizeHistory() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.issueListPageSizes...)
 }
 
 func (s *fakeGitHubServer) dependencyRequestCount() int {
@@ -379,6 +386,7 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 		}
 		perPage = pp
 	}
+	s.issueListPageSizes = append(s.issueListPageSizes, perPage)
 	page := 1
 	if pg, err := strconv.Atoi(q.Get("page")); err == nil && pg > 0 {
 		page = pg
