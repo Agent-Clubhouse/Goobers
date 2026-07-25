@@ -398,8 +398,8 @@ export const goWireFixtures = {
         "finishedAt": "2026-07-18T12:36:56Z",
         "durationMillis": 120000,
         "lastActivityAt": "2026-07-18T12:36:56Z",
-        "lastSeq": 9,
-        "repassCount": 1,
+        "lastSeq": 16,
+        "repassCount": 2,
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1
@@ -424,8 +424,8 @@ export const goWireFixtures = {
     "finishedAt": "2026-07-18T12:36:56Z",
     "durationMillis": 120000,
     "lastActivityAt": "2026-07-18T12:36:56Z",
-    "lastSeq": 9,
-    "repassCount": 1,
+    "lastSeq": 16,
+    "repassCount": 2,
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
@@ -552,6 +552,25 @@ export const goWireFixtures = {
     "stage": "implement",
     "attempts": [
       {
+        "id": "sta_visit_1_attempt_1",
+        "visit": 1,
+        "number": 1,
+        "class": "initial",
+        "status": "failure",
+        "startedSeq": 2,
+        "finishedSeq": 3,
+        "startedAt": "2026-07-18T12:32:56Z",
+        "finishedAt": "2026-07-18T12:36:56Z",
+        "durationMillis": 120000,
+        "artifacts": [],
+        "error": {
+          "code": "initial_failed",
+          "message": "initial execution failed"
+        }
+      },
+      {
+        "id": "sta_visit_1_attempt_2",
+        "visit": 1,
         "number": 2,
         "class": "policy",
         "status": "success",
@@ -574,11 +593,48 @@ export const goWireFixtures = {
             "attemptClass": "policy",
             "recordedSeq": 8
           }
-        ],
+        ]
+      },
+      {
+        "id": "sta_visit_2_attempt_1",
+        "visit": 2,
+        "number": 1,
+        "class": "initial",
+        "status": "failure",
+        "startedSeq": 10,
+        "finishedSeq": 11,
+        "startedAt": "2026-07-18T12:32:56Z",
+        "finishedAt": "2026-07-18T12:36:56Z",
+        "durationMillis": 120000,
+        "artifacts": [],
         "error": {
-          "code": "recovered",
-          "message": "completed after retry"
+          "code": "repass_failed",
+          "message": "first repass failed"
         }
+      },
+      {
+        "id": "sta_visit_2_attempt_2",
+        "visit": 2,
+        "number": 2,
+        "class": "infra",
+        "status": "success",
+        "startedSeq": 12,
+        "finishedSeq": 13,
+        "startedAt": "2026-07-18T12:32:56Z",
+        "finishedAt": "2026-07-18T12:36:56Z",
+        "durationMillis": 120000,
+        "artifacts": []
+      },
+      {
+        "id": "sta_visit_3_attempt_1",
+        "visit": 3,
+        "number": 1,
+        "class": "initial",
+        "status": "running",
+        "startedSeq": 15,
+        "startedAt": "2026-07-18T12:32:56Z",
+        "durationMillis": 0,
+        "artifacts": []
       }
     ]
   },

@@ -3,6 +3,7 @@ package readservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -241,6 +242,10 @@ type AttemptList struct {
 
 // StageAttempt is one durable stage traversal.
 type StageAttempt struct {
+	// ID is opaque and remains stable when a live attempt completes.
+	ID string `json:"id"`
+	// Visit groups retries under the same per-stage graph traversal.
+	Visit          int                  `json:"visit"`
 	Number         int                  `json:"number"`
 	Class          string               `json:"class"`
 	Status         string               `json:"status"`
@@ -252,6 +257,7 @@ type StageAttempt struct {
 	Outputs        map[string]any       `json:"outputs,omitempty"`
 	Artifacts      []ArtifactMetadata   `json:"artifacts"`
 	Error          *journal.ErrorDetail `json:"error,omitempty"`
+	branch         int
 }
 
 // ArtifactContent is a verified, already-redacted journal artifact.
@@ -774,7 +780,7 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 		return AttemptList{}, err
 	}
 
-	attempts := collectStageAttempts(run.records, indexArtifacts(run.records), stage)[stage]
+	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
 }
 
@@ -1102,7 +1108,7 @@ func summarizeRunForStage(
 	sort.Strings(stages)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
-		stageAttempts = collectStageAttempts(run.records, artifactIndex{}, attemptStage)
+		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
 
 	return RunSummary{
@@ -1814,11 +1820,13 @@ func (i *artifactIndex) applyRedaction(event journal.Event) {
 }
 
 func collectStageAttempts(
+	runID string,
 	records []journal.EventRecord,
 	artifacts artifactIndex,
 	stage string,
 ) map[string][]StageAttempt {
 	byStage := make(map[string][]StageAttempt)
+	visits := make(map[string]stageVisitState)
 	if stage != "" {
 		byStage[stage] = []StageAttempt{}
 	}
@@ -1855,21 +1863,17 @@ func collectStageAttempts(
 		}
 		attempts := byStage[event.Stage]
 		switch event.Type {
+		case journal.EventStageRerunRequested:
+			visit := visits[event.Stage]
+			visit.humanRequested = true
+			visits[event.Stage] = visit
 		case journal.EventStageStarted:
-			started := event.Time
-			attempts = append(attempts, StageAttempt{
-				Number:     event.Attempt,
-				Class:      attemptClass(event.AttemptClass),
-				Status:     "running",
-				StartedSeq: event.Seq,
-				StartedAt:  &started,
-				Artifacts:  []ArtifactMetadata{},
-			})
+			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
 			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass); i >= 0 {
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
 				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
 				}
@@ -1878,24 +1882,16 @@ func collectStageAttempts(
 			if event.Error == nil || event.Error.Code != "executor_error" {
 				continue
 			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
 		case journal.EventStageFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
@@ -1917,6 +1913,60 @@ func collectStageAttempts(
 		byStage[event.Stage] = attempts
 	}
 	return byStage
+}
+
+type stageVisitState struct {
+	ordinal        int
+	humanVisit     bool
+	humanRequested bool
+}
+
+func newStageAttempt(
+	runID string,
+	event journal.Event,
+	visits map[string]stageVisitState,
+	started bool,
+) StageAttempt {
+	visit := visits[event.Stage]
+	switch event.AttemptClass {
+	case "":
+		visit.ordinal++
+		visit.humanVisit = false
+		visit.humanRequested = false
+	case journal.AttemptHuman:
+		// Legacy journals can lack stage.rerun.requested. Treat their first
+		// consecutive human attempt as the visit boundary.
+		if visit.humanRequested || !visit.humanVisit || visit.ordinal == 0 {
+			visit.ordinal++
+		}
+		visit.humanVisit = true
+		visit.humanRequested = false
+	default:
+		if visit.ordinal == 0 {
+			visit.ordinal = 1
+		}
+	}
+	visits[event.Stage] = visit
+	attempt := StageAttempt{
+		ID:        stageAttemptID(runID, event.Branch, event.Stage, event.Seq),
+		Visit:     visit.ordinal,
+		Number:    event.Attempt,
+		Class:     attemptClass(event.AttemptClass),
+		Artifacts: []ArtifactMetadata{},
+		branch:    event.Branch,
+	}
+	if started {
+		eventTime := event.Time
+		attempt.Status = "running"
+		attempt.StartedSeq = event.Seq
+		attempt.StartedAt = &eventTime
+	}
+	return attempt
+}
+
+func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
+	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func finishAttempt(
@@ -1958,21 +2008,35 @@ func attemptClass(class journal.AttemptClass) string {
 	return string(class)
 }
 
-func matchingOpenAttempt(attempts []StageAttempt, number int, class journal.AttemptClass) int {
+func matchingOpenAttempt(
+	attempts []StageAttempt,
+	number int,
+	class journal.AttemptClass,
+	branch int,
+) int {
 	wantClass := attemptClass(class)
-	fallback := -1
+	bestIndex := -1
+	bestScore := -1
 	for i := len(attempts) - 1; i >= 0; i-- {
 		if attempts[i].FinishedSeq != 0 || attempts[i].Number != number {
 			continue
 		}
+		score := 0
+		if attempts[i].branch == branch {
+			score += 2
+		}
 		if attempts[i].Class == wantClass {
+			score++
+		}
+		if score > bestScore {
+			bestIndex = i
+			bestScore = score
+		}
+		if score == 3 {
 			return i
 		}
-		if fallback < 0 {
-			fallback = i
-		}
 	}
-	return fallback
+	return bestIndex
 }
 
 func scalarOutputs(outputs map[string]any) map[string]any {
