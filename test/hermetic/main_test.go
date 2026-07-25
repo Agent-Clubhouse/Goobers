@@ -306,3 +306,86 @@ func writeFixture(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestParseShardValidatesSelector(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"", "1/3", "3/3", "1/1", " 2 / 4 "} {
+		if _, err := parseShard(ok); err != nil {
+			t.Errorf("parseShard(%q) unexpected error: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"0/3", "4/3", "1/0", "abc", "1/", "/3", "-1/3", "1/2/3"} {
+		if _, err := parseShard(bad); err == nil {
+			t.Errorf("parseShard(%q) = nil error, want rejection", bad)
+		}
+	}
+}
+
+// TestSelectShardPartitionsExactly is the coverage-integrity guard: for any
+// package set and shard count, the shards must be disjoint and their union must
+// equal the whole set — so fanning the unit suite across runners never silently
+// drops or double-runs a package.
+func TestSelectShardPartitionsExactly(t *testing.T) {
+	t.Parallel()
+	for _, total := range []int{1, 2, 3, 5, 8} {
+		for _, size := range []int{0, 1, 7, 40, 137} {
+			packages := make([]string, size)
+			for i := range packages {
+				// Deliberately unsorted input to prove selectShard sorts.
+				packages[i] = "pkg/" + string(rune('a'+i%26)) + "/" + itoa(size-i)
+			}
+			seen := map[string]int{}
+			for index := 1; index <= total; index++ {
+				for _, pkg := range selectShard(packages, shardSpec{index: index, total: total}) {
+					seen[pkg]++
+				}
+			}
+			// Deduplicate the input (generated names can collide) before comparing.
+			want := map[string]bool{}
+			for _, pkg := range packages {
+				want[pkg] = true
+			}
+			if len(seen) != len(want) {
+				t.Fatalf("total=%d size=%d: union has %d packages, want %d", total, size, len(seen), len(want))
+			}
+			for pkg, count := range seen {
+				if !want[pkg] {
+					t.Fatalf("total=%d: shard produced unknown package %q", total, pkg)
+				}
+				if count != 1 {
+					t.Fatalf("total=%d: package %q appears in %d shards, want exactly 1", total, pkg, count)
+				}
+			}
+		}
+	}
+}
+
+func TestSelectShardIsDeterministicRegardlessOfInputOrder(t *testing.T) {
+	t.Parallel()
+	forward := []string{"a", "b", "c", "d", "e"}
+	reversed := []string{"e", "d", "c", "b", "a"}
+	spec := shardSpec{index: 1, total: 2}
+	if !reflect.DeepEqual(selectShard(forward, spec), selectShard(reversed, spec)) {
+		t.Fatalf("selectShard depends on input order: %v vs %v",
+			selectShard(forward, spec), selectShard(reversed, spec))
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	if neg {
+		digits = append([]byte{'-'}, digits...)
+	}
+	return string(digits)
+}
