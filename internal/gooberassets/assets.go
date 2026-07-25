@@ -1,5 +1,10 @@
 // Package gooberassets loads a goober's optional static asset bundle and
 // materializes an isolated snapshot for each harness invocation.
+//
+// On Windows, materialization preserves the source bundle's read-only bit via
+// os.Chmod, but Unix permission bits such as executable, group, and other bits
+// are not enforced. Windows determines executability from file extensions and
+// PATHEXT rather than mode bits.
 package gooberassets
 
 import (
@@ -244,16 +249,16 @@ func (b *Bundle) Materialize(workspace string) (err error) {
 		if err := os.WriteFile(path, asset.data, 0o600); err != nil {
 			return fmt.Errorf("write asset %q: %w", asset.path, err)
 		}
-		if err := os.Chmod(path, asset.mode.Perm()); err != nil {
+		if err := applyMode(path, asset.mode); err != nil {
 			return fmt.Errorf("set asset mode %q: %w", asset.path, err)
 		}
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if err := os.Chmod(filepath.Join(target, dirs[i].path), dirs[i].mode.Perm()); err != nil {
+		if err := applyMode(filepath.Join(target, dirs[i].path), dirs[i].mode); err != nil {
 			return fmt.Errorf("set asset directory mode %q: %w", dirs[i].path, err)
 		}
 	}
-	if err := os.Chmod(target, b.rootMode.Perm()); err != nil {
+	if err := applyMode(target, b.rootMode); err != nil {
 		return fmt.Errorf("set asset root mode: %w", err)
 	}
 	return nil
