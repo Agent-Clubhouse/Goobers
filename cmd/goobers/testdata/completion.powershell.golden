@@ -46,6 +46,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'post-merge'
         'telemetry-query'
         'docs-churn'
+        'ios-simulator-test'
         'pr-select'
         'gather-sibling-context'
         'gather-implement-context'
