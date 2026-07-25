@@ -2,10 +2,15 @@ package bootstrap
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -96,6 +101,47 @@ func TestSchedulerForWiresConfigToStart(t *testing.T) {
 	}
 	if st.last.Item == nil || st.last.Item.ID != "101" {
 		t.Errorf("run input missing backlog item: %+v", st.last.Item)
+	}
+}
+
+// TestSchedulerForPinsGaggleAndGooberPolicy: SchedulerFor threads the
+// gaggle's branch namespace (#1109) and the reviewer goobers' declared grants
+// (#294) into every started run, and the event shape pins the trigger
+// identity the #629 projection writes into run.yaml.
+func TestSchedulerForPinsGaggleAndGooberPolicy(t *testing.T) {
+	loaded, err := LoadAndRegister(fixtureRoot, "")
+	if err != nil {
+		t.Fatalf("LoadAndRegister: %v", err)
+	}
+	// Overlay the policy surface the fixture leaves at its defaults so the
+	// derivation is visible end to end.
+	loaded.Gaggles[0].Spec.BranchNamespace = "bots/"
+	loaded.Goobers = append(loaded.Goobers, apiv1.Goober{
+		ObjectMeta: metav1.ObjectMeta{Name: "reviewer"},
+		Spec:       apiv1.GooberSpec{Capabilities: []string{"agent:model"}},
+	})
+
+	st := &fakeStarter{}
+	sched, err := loaded.SchedulerFor(loaded.Gaggles[0].Name, SchedulerDeps{Starter: st})
+	if err != nil {
+		t.Fatalf("SchedulerFor: %v", err)
+	}
+	item := providers.WorkItem{Provider: providers.ProviderGitHub, ID: "7", Title: "pin policy"}
+	if _, err := sched.Dispatch(context.Background(), scheduler.Event{
+		WorkflowName: loaded.Workflows[0].Name,
+		Item:         &item,
+		DedupeKey:    "github:7",
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if st.last.TriggerKind != string(journal.TriggerItem) || st.last.TriggerRef != "github:7" {
+		t.Errorf("trigger = %q %q, want %q github:7", st.last.TriggerKind, st.last.TriggerRef, journal.TriggerItem)
+	}
+	if st.last.BranchNamespace != "bots/" {
+		t.Errorf("branchNamespace = %q, want the gaggle's configured root", st.last.BranchNamespace)
+	}
+	if want := map[string][]string{"reviewer": {"agent:model"}}; !reflect.DeepEqual(st.last.GateGooberCapabilities, want) {
+		t.Errorf("gateGooberCapabilities = %v, want %v", st.last.GateGooberCapabilities, want)
 	}
 }
 

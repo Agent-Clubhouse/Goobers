@@ -54,6 +54,13 @@ const (
 	// EventRunnerAnnotation records local-runner lifecycle bookkeeping. Its
 	// payload lives entirely under Runner and is excluded from conformance.
 	EventRunnerAnnotation EventType = "runner.annotation"
+	// EventRunnerIsolationPosture records the isolation posture the runner
+	// applied to a stage (#1305) — which sandbox posture was in effect and
+	// how it was satisfied. Like runner.annotation its payload lives entirely
+	// under Runner and it is excluded from conformance: posture is a property
+	// of the runner substrate, so the same workflow definition must produce
+	// identical conformance views sandboxed or not.
+	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
 
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
@@ -274,8 +281,9 @@ func (e Event) IsConformanceNormative() bool {
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
 		return false
-	case EventRunnerAnnotation:
-		// Local-runner lifecycle bookkeeping lives under runner.* only.
+	case EventRunnerAnnotation, EventRunnerIsolationPosture:
+		// Local-runner lifecycle/substrate bookkeeping lives under runner.*
+		// only; isolation posture must never split the conformance surface.
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

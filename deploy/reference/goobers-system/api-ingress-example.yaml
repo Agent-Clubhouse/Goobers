@@ -1,0 +1,35 @@
+# Example ingress (k8s-infra-shape.md §5): ONE HTTPS inbound door for API +
+# portal + webhook/signal endpoint; TLS via the customer's cert machinery
+# (cert-manager or equivalent). No inbound reaches anything else — stage pods
+# accept no inbound, ever.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-api
+    app.kubernetes.io/component: api
+  annotations:
+    # SSE tuning (§5): the portal event stream is long-lived, so proxy read
+    # timeouts must exceed the SSE heartbeat and buffering must be off.
+    # Annotations shown for ingress-nginx — CHANGE-ME for your ingress class.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: CHANGE-ME
+  tls:
+    - hosts:
+        - goobers.example.com # CHANGE-ME
+      secretName: goobers-api-tls # CHANGE-ME
+  rules:
+    - host: goobers.example.com # CHANGE-ME
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: goobers-api
+                port:
+                  name: http

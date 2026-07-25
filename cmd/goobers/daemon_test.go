@@ -193,7 +193,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = instanceLog.Close() })
-	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.OTLPConfig{})
+	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.OTLPConfig{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

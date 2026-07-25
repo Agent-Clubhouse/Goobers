@@ -457,7 +457,7 @@ func (m *Manager) runIDForBranch(branch string) (string, bool) {
 }
 
 func commitIsAncestor(ctx context.Context, repoDir, ancestor, descendant string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"merge-base", "--is-ancestor", ancestor, descendant})...)
+	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"merge-base", "--is-ancestor", ancestor, descendant})...)
 	cmd.Dir = repoDir
 	err := cmd.Run()
 	if err == nil {

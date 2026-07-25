@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -99,6 +100,12 @@ type RunRequest struct {
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
+	// Sandbox, when non-nil, is the platform sandbox a subprocess-based
+	// Adapter MUST confine its harness session with (S3/#166): writes are
+	// restricted to Workspace plus the runtime roots the adapter declares.
+	// Nil (the default, and always the value under a "disabled" posture)
+	// leaves the launch path byte-identical to the pre-sandbox behavior.
+	Sandbox sandbox.Sandbox
 }
 
 // Outcome is what an Adapter hands back after a harness session ends.

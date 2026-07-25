@@ -672,13 +672,19 @@ type resumeContext struct {
 	recorded bool
 }
 
+// BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
+// conflict surfaces under (#813). Exported so the Temporal engine's activity
+// host reports the identical normative error code instead of a string copy
+// that can drift (the #624 shared-constant pattern).
+const BaseSyncConflictErrorCode = "base_sync_conflict"
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
-	baseSyncConflictErrorCode   = "base_sync_conflict"
+	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
 
 type baseSyncConflictArtifact struct {
@@ -2651,7 +2657,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			Gaggle:          in.Gaggle,
 			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
 			Goal:            "gate: " + g.Name,
-			RepoRef:         in.RepoRef,
+			RepoRef:         in.RepoRef.EnvelopeRef(),
 			Item:            in.Item,
 			Limits:          gateLimits,
 		}
@@ -2960,7 +2966,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
 		Goal:                 goal,
 		Workspace:            workspace.path,
-		RepoRef:              in.RepoRef,
+		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
 		Item:                 in.Item,
 		ContextPointers:      upstream,
@@ -3125,6 +3131,15 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 	}, true
 }
 
+// MachineUsesRepo reports whether any stage of the compiled workflow touches a
+// repository workspace — the predicate behind lazy run-branch provenance.
+// Exported so the Temporal engine's journal projection (#629) applies the
+// identical rule instead of a copy that can drift (the #624 shared-constant
+// pattern).
+func MachineUsesRepo(machine *workflow.Machine) bool {
+	return machineUsesRepo(machine)
+}
+
 func machineUsesRepo(machine *workflow.Machine) bool {
 	for _, task := range machine.Def.Spec.Tasks {
 		if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
@@ -3186,11 +3201,14 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 }
 
 // DefaultRepoCloneURL derives the git remote URL worktree.Manager clones from a
-// RepoRef — the same derivation Config.RepoCloneURL defaults to. Exported so the
-// composition root (cmd/goobers) can key the worktree Manager's per-repo git-auth
-// resolver on the identical URLs the runner will hand WorkingCopy (MGV-11 #1286),
-// without duplicating the provider URL rules.
-func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) { return defaultRepoCloneURL(ref) }
+// RepoRef — the same derivation Config.RepoCloneURL defaults to. Exported so
+// both the tier-3 worker host's workspace provisioner (#632) and the composition
+// root (cmd/goobers) — which keys the worktree Manager's per-repo git-auth
+// resolver on the identical URLs the runner will hand WorkingCopy (MGV-11 #1286) —
+// share the derivation instead of duplicating the provider URL rules.
+func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
+	return defaultRepoCloneURL(ref)
+}
 
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from
 // a RepoRef.

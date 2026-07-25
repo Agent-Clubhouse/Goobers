@@ -6,6 +6,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 | Feature | DSL version | Feature support | Version support | Since app version |
 | --- | --- | --- | --- | --- |
+| `gaggle.spec.project.checkout.sparse` | 1.4 | preview | supported | dev |
+| `gaggle.spec.sandbox` | 1.4 | preview | supported | dev |
 | `gate.branch.escalate` | 1.4 | ga | supported | dev |
 | `gate.branches` | 1.4 | ga | supported | dev |
 | `gate.evaluator.agentic` | 1.4 | ga | supported | dev |
@@ -104,6 +106,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `workflow.terminal.abort` | 1.4 | ga | supported | dev |
 | `workflow.terminal.complete` | 1.4 | ga | supported | dev |
 | `workflow.terminal.escalate` | 1.4 | ga | supported | dev |
+| `gaggle.spec.project.checkout.sparse` | 2.0 | preview | supported | dev |
+| `gaggle.spec.sandbox` | 2.0 | preview | supported | dev |
 | `gate.branch.escalate` | 2.0 | ga | supported | dev |
 | `gate.branches` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic` | 2.0 | ga | supported | dev |

@@ -1,0 +1,12 @@
+# Gaggle namespace (k8s-infra-shape.md §3): stage pods, sandbox resources,
+# and secrets for ONE gaggle live here; the operator provisions/labels these
+# from the Gaggle CR (GAG-012). The overlay's `namespace:` field renames this
+# object to the gaggle's namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: CHANGE-ME-gaggle
+  labels:
+    goobers.dev/gaggle: CHANGE-ME
+    # Stage pods are non-root, capability-dropped, no-privilege workloads.
+    pod-security.kubernetes.io/enforce: restricted

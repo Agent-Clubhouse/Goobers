@@ -1,0 +1,78 @@
+# Operator identity + least-privilege RBAC (k8s-infra-shape.md §3: one service
+# account per component; the operator alone holds CRD-reconcile rights).
+# ClusterRole rules mirror the +kubebuilder:rbac markers on
+# internal/operator/gaggle_controller.go — widen them only when the operator's
+# reconcile grows, never speculatively. CRD *installation* (the
+# apiextensions.k8s.io surface) is a cluster-admin action at install time (§1),
+# deliberately not granted here.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goobers-operator
+  namespace: goobers-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: goobers-operator
+rules:
+  - apiGroups: ["goobers.dev"]
+    resources: ["gaggles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["goobers.dev"]
+    resources: ["gaggles/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["goobers.dev"]
+    resources: ["goobers"]
+    verbs: ["get", "list", "watch"]
+  # Per-goober worker Deployments in per-gaggle namespaces (§2/§3).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The operator provisions and labels per-gaggle namespaces from the Gaggle CR
+  # (§3, GAG-012). No delete: namespace teardown stays a human/GitOps action.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: goobers-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: goobers-operator
+subjects:
+  - kind: ServiceAccount
+    name: goobers-operator
+    namespace: goobers-system
+---
+# Leader election (§2: 1 replica, leader-elect) — namespaced, control-plane
+# namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: goobers-operator-leader-election
+  namespace: goobers-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: goobers-operator-leader-election
+  namespace: goobers-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: goobers-operator-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: goobers-operator
+    namespace: goobers-system

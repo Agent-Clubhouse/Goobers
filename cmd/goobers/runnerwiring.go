@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -45,6 +46,7 @@ func buildTelemetryClient(
 	scrubber journal.Scrubber,
 	registry *journal.RegistryScrubber,
 	otlp instance.OTLPConfig,
+	stores credentials.StoreResolver,
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
 		ServiceName:    "goobers",
@@ -54,7 +56,7 @@ func buildTelemetryClient(
 		Batch:          true,
 	}
 	if otlp.Enabled() {
-		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry)
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +72,7 @@ func resolveOTLPHeaders(
 	ctx context.Context,
 	headerRefs map[string]instance.TokenRef,
 	registry *journal.RegistryScrubber,
+	stores credentials.StoreResolver,
 ) (map[string]string, error) {
 	names := make([]string, 0, len(headerRefs))
 	for name := range headerRefs {
@@ -79,14 +82,9 @@ func resolveOTLPHeaders(
 
 	refs := make([]credentials.TokenRef, 0, len(names))
 	for _, name := range names {
-		ref := headerRefs[name]
-		refs = append(refs, credentials.TokenRef{
-			Name: "telemetry.otlp.headers." + strings.ToLower(name),
-			Env:  ref.Env,
-			File: ref.File,
-		})
+		refs = append(refs, headerRefs[name].CredentialTokenRef("telemetry.otlp.headers."+strings.ToLower(name)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWithStores(refs, stores)
 	if err != nil {
 		return nil, fmt.Errorf("configure telemetry OTLP headers: %w", err)
 	}
@@ -298,12 +296,25 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // token, byte-identical to the prior instance-global behavior. agent:model and
 // other cfg.Credentials entries stay unqualified (the shared token every gaggle
 // uses), overriding the repo-default grant for their capability (#287).
+// stores resolves store-backed token refs (#683) — built once per composition
+// root (daemon setup, or a one-shot command's own scope) so every consumer
+// shares one TTL cache; a store ref with a nil stores fails closed at
+// resolver construction rather than degrading into an unconfigured token.
+//
+// A github-app repo (#686) contributes a minting dynamic source under the same
+// ref name a static token would use, so every consumer that resolves the repo
+// ref — capability grants, ci-poll, the open-PR lister, worktree git auth —
+// receives short-lived installation tokens with no further wiring. registrar
+// receives every minted token (and the App key) at mint time; nil is only for
+// display-path callers that never write journals.
+//
 // additionalRepos are the gaggle's read-only reference repos (MGV-10, #1285):
 // each gains only a repo-qualified contents:read grant from its own token, never
 // a write capability. Pass nil for instance-level or single-repo callers.
-func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef) (credentials.Resolver, []credentials.Grant, error) {
+func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	var sources map[string]credentials.ResolveFunc
 	for _, r := range cfg.Repos {
 		owner := r.Owner
 		if r.Provider == "ado" && r.Project != "" {
@@ -311,9 +322,28 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string, addi
 		}
 		ref := owner + "/" + r.Name
 		tokenRef := ""
-		if r.Token.Env != "" || r.Token.File != "" {
+		if r.GitHubAppAuth() {
+			// Fail closed on a duplicate owner/name (as a static-token repo does
+			// at NewResolverWith's duplicate-ref check): silently overwriting the
+			// minting source would let a second entry hijack the first's grants.
+			if _, dup := sources[ref]; dup {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: duplicate repository reference", ref)
+			}
+			mint, err := newGitHubAppTokenSource(r, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ResolveFunc)
+			}
+			sources[ref] = mint
 			tokenRef = ref
-			refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
+		} else if r.Token.Configured() {
+			// The full token ref (env|file|store) is appended; a store-backed ref
+			// resolves through stores below (#683) and fails closed there if no
+			// store resolver is configured.
+			tokenRef = ref
+			refs = append(refs, r.Token.CredentialTokenRef(ref))
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
@@ -323,13 +353,9 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string, addi
 		if !capability.StageDeclarable(cg.Capability) {
 			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
 		}
-		refs = append(refs, credentials.TokenRef{
-			Name: credentialRefName(cg.Capability),
-			Env:  cg.Token.Env,
-			File: cg.Token.File,
-		})
+		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(cg.Capability)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWith(refs, stores, sources)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
@@ -397,19 +423,33 @@ func buildGooberCredentialGrants(gooberName string, capabilities []string, sourc
 // entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
 func credentialRefName(cap string) string { return "credential:" + cap }
 
+// newGitHubAppTokenSource builds the installation-token minting source for a
+// github-app repo (#686). A package var so CLI tests substitute an
+// httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
+// production source caches until near expiry and single-flights refreshes.
+var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.Token, nil
+}
+
 // buildWorktreeGitEnv builds the worktree Manager's per-repo git-auth resolver
 // (MGV-11 #1286). Keyed on the clone URL the runner hands WorkingCopy, it backs:
 //   - each read-only reference repo (additionalRepos) with that repo's own
 //     contents:read token (MGV-10/#1285), as an x-access-token http.extraheader
 //     scoped to that URL — a read credential, never a push one;
-//   - an ADO project repo with its Entra/PAT source (unchanged);
-//   - every other URL (notably a GitHub project repo) with the ambient git
-//     environment (nil return), byte-identical to the pre-#1286 behavior.
+//   - an ADO project repo with its Entra/PAT source, stores-aware (#683);
+//   - a GitHub project repo with its github-app installation token or a
+//     static/store-backed token (#667/#686), via githubWorktreeGitEnvironment,
+//     scoped to the project repo's own clone URL;
+//   - every other URL with the ambient git environment (nil return).
 //
-// Returns (nil, nil) when nothing bespoke is needed — a GitHub-only gaggle with
-// no configured reference-repo tokens — so the Manager keeps its plain ambient
-// behavior and a single-gaggle instance is unchanged.
-func buildWorktreeGitEnv(cfg *instance.Config, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, resolver credentials.Resolver, grants []credentials.Grant, cloneURL func(apiv1.RepoRef) (string, error), reg providers.SecretRegistrar) (func(context.Context, string) ([]string, error), error) {
+// Returns (nil, nil) when nothing bespoke is needed — a GitHub-only gaggle whose
+// project repo and reference repos carry no configured tokens — so the Manager
+// keeps its plain ambient behavior and a single-gaggle instance is unchanged.
+func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, resolver credentials.Resolver, grants []credentials.Grant, cloneURL func(apiv1.RepoRef) (string, error), reg providers.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
 	grantRef := make(map[string]string, len(grants))
 	for _, g := range grants {
 		grantRef[g.Capability] = g.Ref
@@ -435,14 +475,27 @@ func buildWorktreeGitEnv(cfg *instance.Config, gaggleProject apiv1.RepoRef, addi
 
 	var adoSource providers.ADOCredentialSource
 	if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
-		source, err := adoauth.Source(adoRepo, nil)
+		source, err := adoauth.Source(adoRepo, nil, stores)
 		if err != nil {
 			return nil, fmt.Errorf("configure ADO worktree authentication: %w", err)
 		}
 		adoSource = source
 	}
 
-	if len(readRefByURL) == 0 && adoSource == nil {
+	// GitHub project-repo authentication (#667/#686): github-app installation
+	// tokens or a static/store-backed token for the gaggle's own GitHub repo,
+	// scoped to its clone URL. nil when the project repo is not an authenticated
+	// GitHub repo (public, or a non-GitHub provider).
+	var githubProjectEnv func(context.Context, string) ([]string, error)
+	if githubRepo, ok := githubRepoForGaggle(cfg, gaggleProject); ok {
+		env, err := githubWorktreeGitEnvironment(workcopiesDir, githubRepo, reg, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure GitHub worktree authentication: %w", err)
+		}
+		githubProjectEnv = env
+	}
+
+	if len(readRefByURL) == 0 && adoSource == nil && githubProjectEnv == nil {
 		return nil, nil // nothing bespoke — keep the Manager's ambient behavior
 	}
 	return func(ctx context.Context, repoURL string) ([]string, error) {
@@ -456,7 +509,12 @@ func buildWorktreeGitEnv(cfg *instance.Config, gaggleProject apiv1.RepoRef, addi
 		if adoSource != nil {
 			return providers.ADOGitAuthEnvironment(ctx, adoSource, reg, repoURL)
 		}
-		return nil, nil // ambient (GitHub project repo, unchanged)
+		if githubProjectEnv != nil {
+			// Scoped to the project repo's clone URL; returns nil (ambient) for
+			// any other URL.
+			return githubProjectEnv(ctx, repoURL)
+		}
+		return nil, nil // ambient
 	}, nil
 }
 
@@ -1070,7 +1128,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // starts/wires the returned refresher; a single `goobers run` has no accretion
 // to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
 // is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string) (*localscheduler.OpenPRRefresher, error) {
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -1084,7 +1142,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, "", "", nil)
+	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1298,7 +1356,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -1310,7 +1368,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
 		gaggleOwner += "/" + gaggleProject.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name, additionalRepos)
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name, additionalRepos, sharedReg)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1331,7 +1389,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
-		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg)
+		if cfg.PartialCloneEnabled() {
+			managerOptions = append(managerOptions, worktree.WithPartialClone())
+		}
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr
 		}
@@ -1502,6 +1563,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if spec.TimeoutSeconds > 0 {
 				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
 			}
+			// Opt-in agentic sandbox enforcement (S3/#166, #1305): this
+			// gaggle's effective posture, resolved once at the composition
+			// root (instance.EffectiveAgenticSandbox). The default posture,
+			// disabled, adds no option — the executor and adapter behave
+			// byte-identically to an instance with no sandbox config at all.
+			if sandboxPosture == instance.SandboxEnforced {
+				opts = append(opts, harness.WithSandboxEnforcement())
+			}
 			return harness.NewExecutor(
 				adapter,
 				injector,
@@ -1573,6 +1642,104 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 		}
 	}
 	return instance.RepoRef{}, false
+}
+
+// githubRepoForGaggle is adoRepoForGaggle's GitHub counterpart: the instance
+// repo backing this gaggle's project, resolved so its configured token can
+// authenticate mirror clone/fetch (#667).
+func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+		return cfg.Repos[0], true
+	}
+	if project.Provider != apiv1.ProviderGitHub {
+		return instance.RepoRef{}, false
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == "github" && repo.Owner == project.Owner && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	return instance.RepoRef{}, false
+}
+
+// githubWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
+// that authenticates mirror clone/fetch of a GitHub repo with its configured
+// credential (#667), via the secret-free askpass helper — the token only ever
+// exists in the git child process's environment, never on disk or argv.
+//
+// A repo with no credential returns a nil resolver and writes nothing: a
+// public-repo instance keeps today's unauthenticated child environment, byte
+// for byte. With a token ref configured the resolver re-resolves it on every
+// clone/fetch (rotation without restart, matching the env/file resolver's
+// contract); a github-app repo (#686) mints per operation instead, so a
+// refreshed installation token flows into the next fetch with no worktree
+// changes. A store-backed token ref (#683) resolves through stores like
+// env/file refs. All three fail closed — an unresolvable ref or failed mint
+// aborts provisioning rather than falling back to an anonymous fetch, and
+// GIT_TERMINAL_PROMPT=0 turns a rejected credential into an immediate error
+// instead of an interactive hang. The token is scoped to the configured repo:
+// any other remote URL the manager is ever pointed at gets the ambient
+// (unauthenticated) environment.
+func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	var resolve credentials.ResolveFunc
+	switch {
+	case repo.GitHubAppAuth():
+		// The minting source registers tokens with registrar itself, at mint
+		// time — before any consumer (including this one) sees the value.
+		mint, err := newGitHubAppTokenSource(repo, registrar, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = mint
+	case repo.Token.Configured():
+		// A static token ref (env|file|store) resolves through stores; a
+		// store-backed ref can never fall into the unauthenticated arm because
+		// Configured() counts it as a source and resolver construction fails
+		// closed without store support.
+		refName := repo.Owner + "/" + repo.Name
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = func(ctx context.Context) (string, error) {
+			return resolver.Resolve(ctx, refName)
+		}
+	default:
+		return nil, nil
+	}
+	askpass, err := credentials.WriteAskpassScript(filepath.Join(workcopiesDir, "auth"))
+	if err != nil {
+		return nil, err
+	}
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if !sameGitRemote(repoURL, cloneURL) {
+			return nil, nil
+		}
+		token, err := resolve(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if registrar != nil {
+			registrar.Register([]byte(token))
+		}
+		return credentials.GitAuthEnvironment(askpass, token), nil
+	}, nil
+}
+
+// sameGitRemote reports whether two https remote URLs name the same repo,
+// tolerating the cosmetic variance git remotes carry: an optional .git
+// suffix, a trailing slash, and case (GitHub owner/name are case-insensitive).
+func sameGitRemote(a, b string) bool {
+	normalize := func(u string) string {
+		u = strings.TrimRight(strings.TrimSpace(u), "/")
+		u = strings.TrimSuffix(u, ".git")
+		return strings.ToLower(u)
+	}
+	return normalize(a) == normalize(b)
 }
 
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers
@@ -1668,6 +1835,21 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 		refs[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = g.Spec.Project
 	}
 	return refs, nil
+}
+
+// sandboxPosturesByGaggle resolves each configured gaggle's effective agentic
+// isolation posture (#1305): the gaggle's own sandbox override when declared,
+// else the instance-wide sandbox.agentic posture, else disabled. Resolved once
+// here, at the composition root, so the per-gaggle runner wiring and anything
+// else that needs the posture agree on one resolution (the same shape as
+// branchNamespacesByGaggle above).
+func sandboxPosturesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]instance.SandboxPosture {
+	out := make(map[string]instance.SandboxPosture, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = instance.EffectiveAgenticSandbox(cfg, g)
+	}
+	return out
 }
 
 // branchNamespacesByGaggle maps each configured gaggle to its run-branch

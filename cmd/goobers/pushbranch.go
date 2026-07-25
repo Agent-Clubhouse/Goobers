@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -124,7 +125,13 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 			return nil, err
 		}
 		if repo, ok := adoRepoForOrigin(cfg, remote); ok {
-			source, err := adoauth.Source(repo, nil)
+			// One-shot command scope: push-branch runs as its own process, so
+			// it builds its own store registry (#683) for a store-backed PAT.
+			stores, err := secretstore.NewRegistry(cfg.SecretStores)
+			if err != nil {
+				return nil, err
+			}
+			source, err := adoauth.Source(repo, nil, stores)
 			if err != nil {
 				return nil, err
 			}

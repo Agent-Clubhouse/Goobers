@@ -121,7 +121,8 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	previewSeen := 0
 	for _, feature := range features {
 		wantLevel := SupportGA
-		if feature.ID == featureStageImage {
+		switch feature.ID {
+		case featureStageImage, featureGaggleSandbox, featureGaggleCheckoutSparse:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -552,9 +553,14 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
 	}
+	// Gaggle-scoped features are registered (they appear in `goobers features`
+	// and the feature matrix) but have no workflow/goober resolution path, so
+	// only the registered comparison includes them.
+	wantRegistered := append(want, gaggleOnlyFeatureIDs()...)
+	slices.Sort(wantRegistered)
 	registered := featureIDs(AllFeatures())
-	if !slices.Equal(registered, want) {
-		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
+	if !slices.Equal(registered, wantRegistered) {
+		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(wantRegistered, registered), difference(registered, wantRegistered))
 	}
 }
 
@@ -800,6 +806,12 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// gaggleOnlyFeatureIDs are registered DSL features declared on Gaggle objects,
+// which FeaturesForWorkflow/FeaturesForGoober cannot resolve.
+func gaggleOnlyFeatureIDs() []FeatureID {
+	return []FeatureID{featureGaggleSandbox, featureGaggleCheckoutSparse}
 }
 
 func featureIDs(features []Feature) []FeatureID {

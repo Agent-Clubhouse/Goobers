@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -259,7 +260,17 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 		return dashboardAPI{}, err
 	}
 	if running {
-		target, err := waitForDashboardDaemon(ctx, layout, config.APIListenAddress())
+		// The attach proxy has no bearer-token source yet, so an authenticated
+		// daemon is refused up front with the real reason instead of a probe
+		// loop that times out on 401s (#640, #644).
+		if config.API.Auth != nil {
+			return dashboardAPI{}, fmt.Errorf(
+				"daemon API at %s requires a bearer token (api.auth is configured) and `goobers dashboard` cannot supply one yet; "+
+					"query the daemon API directly, or stop the daemon to serve the standalone read-only dashboard",
+				config.APIListenAddress(),
+			)
+		}
+		target, err := waitForDashboardDaemon(ctx, layout, daemonAPIScheme(config), config.APIListenAddress())
 		if err != nil {
 			return dashboardAPI{}, err
 		}
@@ -274,18 +285,27 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 	return standaloneDashboardAPI(layout, config, errorLog)
 }
 
-func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configuredAddress string) (*url.URL, error) {
+// daemonAPIScheme mirrors httpapi.Server.Scheme for the attach probe and
+// proxy: the daemon serves HTTPS exactly when api.tls is configured.
+func daemonAPIScheme(config *instance.Config) string {
+	if config.API.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme, configuredAddress string) (*url.URL, error) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.NewTimer(dashboardAttachTimeout)
 	defer deadline.Stop()
 	var lastErr error
-	lastLocation := configuredAddress
+	lastLocation := scheme + "://" + configuredAddress
 	for {
 		address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
 		if addressErr != nil {
 			lastErr = addressErr
 		} else {
-			target, parseErr := url.Parse("http://" + address)
+			target, parseErr := url.Parse(scheme + "://" + address)
 			if parseErr != nil {
 				return nil, fmt.Errorf("parse daemon API address %q: %w", address, parseErr)
 			}
@@ -319,6 +339,14 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configu
 					return target, nil
 				}
 			} else {
+				// An untrusted api.tls certificate cannot heal within the
+				// attach window; fail fast with the cause instead of spinning
+				// to the timeout.
+				var certErr *tls.CertificateVerificationError
+				if errors.As(requestErr, &certErr) {
+					return nil, fmt.Errorf("daemon API at %s presented a TLS certificate this host does not trust: %w; "+
+						"make the api.tls certificate's issuing CA trusted on this host and retry", lastLocation, certErr)
+				}
 				lastErr = requestErr
 			}
 		}

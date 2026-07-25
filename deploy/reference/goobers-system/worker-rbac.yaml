@@ -1,0 +1,33 @@
+# Worker identity (k8s-infra-shape.md §3: one service account per component,
+# least privilege). Workers read CR definitions in the control-plane namespace
+# only; execution state flows through Temporal and the journal volume, not the
+# Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goobers-worker
+  namespace: goobers-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: goobers-worker
+  namespace: goobers-system
+rules:
+  - apiGroups: ["goobers.dev"]
+    resources: ["gaggles", "goobers", "workflows", "manifests"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: goobers-worker
+  namespace: goobers-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: goobers-worker
+subjects:
+  - kind: ServiceAccount
+    name: goobers-worker
+    namespace: goobers-system

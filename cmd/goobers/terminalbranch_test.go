@@ -400,7 +400,7 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { newTerminalBranchDeleter = previous })
 
-	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar)
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 func TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo(t *testing.T) {
 	cfg := &instance.Config{}
 	registrar := journal.NewRegistryScrubber()
-	prepare, err := buildTerminalBranchPreparer(instance.Layout{}, cfg, registrar)
+	prepare, err := buildTerminalBranchPreparer(instance.Layout{}, cfg, registrar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

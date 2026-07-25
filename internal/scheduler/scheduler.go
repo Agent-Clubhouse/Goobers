@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlog"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -38,6 +39,20 @@ type Event struct {
 	// with the same (workflow, dedupe key) resolve to the same run and never
 	// double-start.
 	DedupeKey string
+}
+
+// trigger derives the run's pinned trigger identity from the event shape: an
+// item-carrying event (backlog poll, provider event) is an item trigger, a
+// bare tick a schedule fire — journal.TriggerKind vocabulary, which also
+// drives the engine's deferred branch-provenance rule (#629). Ref is the
+// event's dedupe key, the same identity the deterministic RunID is minted
+// from.
+func (ev Event) trigger() journal.Trigger {
+	kind := journal.TriggerSchedule
+	if ev.Item != nil {
+		kind = journal.TriggerItem
+	}
+	return journal.Trigger{Kind: kind, Ref: ev.DedupeKey}
 }
 
 // Decision is the outcome of dispatching an Event.
@@ -73,6 +88,19 @@ type Config struct {
 	Claimer Claimer
 	// Telemetry optionally records a scheduler span per dispatch.
 	Telemetry SpanStarter
+	// BranchNamespace is the gaggle's run-branch namespace root
+	// (GaggleSpec.BranchNamespace, #1109), pinned into every run this
+	// scheduler starts. Empty means the default namespace.
+	BranchNamespace string
+	// GateGooberCapabilities maps a reviewer goober name to its declared
+	// capability grants (#294) — the pinned lookup an agentic gate's envelope
+	// draws from, since AgenticGate carries no stage-level capabilities.
+	// bootstrap derives it from the loaded Goober definitions.
+	GateGooberCapabilities map[string][]string
+	// MaxRepasses overrides the shared gate repass budget when > 0
+	// (gate.DefaultMaxRepasses applies otherwise), pinned per run like the
+	// local runner's Config.MaxRepasses.
+	MaxRepasses int
 }
 
 // Scheduler decides when to start workflow runs for one gaggle.
@@ -152,6 +180,7 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		return engine.RunInput{}, fmt.Errorf("scheduler: compile pinned workflow %q: %w", ev.WorkflowName, err)
 	}
 	allowPreviewFeatures := s.cfg.Registry.PreviewFeaturesEnabled()
+	trigger := ev.trigger()
 	in := engine.RunInput{
 		RunID:                  engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
 		Gaggle:                 s.cfg.Gaggle,
@@ -162,6 +191,11 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		PreviewFeaturesEnabled: &allowPreviewFeatures,
 		Spec:                   def.Spec,
 		RepoRef:                s.cfg.Repo,
+		TriggerKind:            string(trigger.Kind),
+		TriggerRef:             trigger.Ref,
+		BranchNamespace:        s.cfg.BranchNamespace,
+		GateGooberCapabilities: s.cfg.GateGooberCapabilities,
+		MaxRepasses:            s.cfg.MaxRepasses,
 	}
 	if ev.Item != nil {
 		bi := backlog.FromWorkItem(*ev.Item)

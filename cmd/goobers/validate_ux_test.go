@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -91,7 +92,7 @@ func TestValidateCheckRepos(t *testing.T) {
 	t.Cleanup(func() { targetRepositoryReachable = original })
 
 	called := 0
-	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string) error {
+	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
 		called++
 		if repo.Owner != "your-org" || repo.Name != "your-repo" {
 			t.Errorf("repository = %s/%s, want your-org/your-repo", repo.Owner, repo.Name)
@@ -109,7 +110,7 @@ func TestValidateCheckRepos(t *testing.T) {
 		t.Fatalf("repository check calls=%d stdout=%q", called, stdout)
 	}
 
-	targetRepositoryReachable = func(context.Context, instance.RepoRef, string) error {
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
 		return errors.New("repository not found or access denied for test-token")
 	}
 	code, stdout, stderr = runArgs(t, "validate", "--check-repos", root)
@@ -160,7 +161,7 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
 
-	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string) error {
+	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
 		if repo.Provider != "ado" || repo.Project != "widgets" {
 			t.Fatalf("repository = %#v", repo)
 		}
@@ -175,8 +176,8 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
-	}}, &stdout)
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}}, nil, &stdout)
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
 	}
