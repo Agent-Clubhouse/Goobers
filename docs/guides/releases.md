@@ -11,8 +11,9 @@ Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 complete matrix, verifies its shared checksum manifest, Linux binary, and
 release-pinned documentation, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
-`install.sh`, `feature-registry.json`, `dsl-support-matrix.json`, and
-`RELEASE_NOTES.md`. The release body and attached notes are the same document:
+`install.sh`, `goobers-agent-toolkit_<version>.zip`, `feature-registry.json`,
+`dsl-support-matrix.json`, and `RELEASE_NOTES.md`. The release body and attached
+notes are the same document:
 curated highlights and the commit changelog followed by the DSL feature-support
 delta, DSL support-matrix delta, and external-consumer policy. Re-running the
 workflow updates the existing release and replaces its assets, so a partially
@@ -76,11 +77,11 @@ Windows adopters should use the checksum-verified
 regenerates the CLI reference, man pages, and completion scripts from that
 release's command registry, packages each target with the tagged checkout's
 documentation into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest, the tagged install helper, generated release notes, and
-the shipped DSL feature and version-support snapshots into `dist/` (override
-with `-output`). It is a standalone Go tool — matching `test/ci` and
-`test/coveragegate` — so it runs identically on any release runner without a
-shell dependency.
+`SHA256SUMS` manifest, the tagged install helper, portable agent toolkit,
+generated release notes, and shipped DSL feature and version-support snapshots
+into `dist/` (override with `-output`). It is a standalone Go tool — matching
+`test/ci` and `test/coveragegate` — so it runs identically on any release
+runner without a shell dependency.
 
 ```sh
 go run ./release -first-feature-snapshot      # first recorded snapshot only
@@ -122,6 +123,22 @@ binary, onboarding docs, shell completions, man pages, and generated templates.
 Start with the bundled `README.md`, use `docs/VISION.md` and
 `docs/ARCHITECTURE.md` for the product concepts, then follow
 `docs/guides/quickstart.md`.
+
+### Portable agent toolkit
+
+Every non-empty release build writes
+`goobers-agent-toolkit_<version>.zip`. Its `manifest.json` identifies the
+producing release and commit, compiled DSL support matrix, compatible harness
+adapters, CLI command requirements, and every product-owned payload asset with
+its SHA-256 digest. The copy-ready product boundary is
+`payload/.goobers/agent-toolkit/`; user-owned root instructions are outside it.
+
+The payload carries canonical Agent Skills plus docs, schemas, examples, and
+the capability registry copied from the same source revision as the binary.
+Release tests validate the manifest schema and golden layout, recalculate every
+asset digest, compare representative references with their release sources,
+resolve every adapter skill, and reject secret-shaped content and
+machine-specific paths.
 
 ### Release notes and DSL support snapshots
 
@@ -174,11 +191,12 @@ expect); unix targets use `.tar.gz`.
 ### Checksums
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
-`<hex>  <filename>` line per binary archive, `install.sh`, and the authoritative
-`feature-registry.json` and `dsl-support-matrix.json`, sorted by filename. The
-generated release note remains editable for curation and is not checksummed.
-The same file verifies on every platform: `sha256sum -c SHA256SUMS` on unix,
-and PowerShell `Get-FileHash -Algorithm SHA256` on Windows (see the
+`<hex>  <filename>` line per binary archive, `install.sh`, portable agent
+toolkit, and authoritative `feature-registry.json` and
+`dsl-support-matrix.json`, sorted by filename. The generated release note
+remains editable for curation and is not checksummed. The same file verifies on
+every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+`Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
 **primary integrity mechanism** for the initially-unsigned Windows artifacts.
 

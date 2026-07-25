@@ -87,6 +87,17 @@ func run(args []string, stdout, stderr io.Writer) error {
 		checksumAssets = append(checksumAssets, installerPath)
 		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(installerPath))
 
+		repoRoot, err := findAgentToolkitRepositoryRoot()
+		if err != nil {
+			return err
+		}
+		toolkitPath, err := packageAgentToolkit(repoRoot, opts.version, opts.commit, opts.outDir)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, toolkitPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(toolkitPath))
+
 		notesPath, snapshotPaths, err := writeReleaseMetadata(
 			opts.version,
 			opts.previousFeatures,
