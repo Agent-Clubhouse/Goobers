@@ -32,14 +32,14 @@ here open a pull request but never merge it.
 Set these values for the examples:
 
 ```sh
-export GOOBERS_SRC=/path/to/Goobers
 export GOOBERS_INSTANCE="$HOME/goobers-widget"
+export GOOBERS_CONFIG_SOURCE="$HOME/goobers-widget-config"
 export GOOBERS_TARGET="acme/widget-service"
 ```
 
-`GOOBERS_SRC` is the Goobers source checkout containing `config-examples/`.
-`GOOBERS_INSTANCE` is runtime state and must not be inside the target
-repository.
+`GOOBERS_CONFIG_SOURCE` is the desired-state tree to version and review.
+`GOOBERS_INSTANCE` is runtime state and must be separate from both the config
+source and target repository.
 
 ## 2. Create least-privilege tokens
 
@@ -99,153 +99,52 @@ GH_TOKEN="$GOOBERS_GITHUB_TOKEN" gh repo view "$GOOBERS_TARGET"
 ## 3. Initialize the instance
 
 ```sh
-goobers init "$GOOBERS_INSTANCE"
-rm -rf "$GOOBERS_INSTANCE/config"
-cp -R "$GOOBERS_SRC/config-examples" "$GOOBERS_INSTANCE/config"
+goobers init --guided "$GOOBERS_INSTANCE"
 ```
 
-`init` creates the instance root and runtime directories. Replacing only its
-seeded `config/` preserves `instance.yaml`, journals, scheduler state, and
-telemetry.
+Choose `new-local`, enter `$GOOBERS_CONFIG_SOURCE`, and then select
+`implementation` and `backlog-curation`. The target application repository
+prompt is separate from the config source prompt: enter `$GOOBERS_TARGET` only
+for the target. Guided setup asks for environment variable names, never token
+values.
 
-Configure `instance.yaml` for the target. Split `GOOBERS_TARGET` into its owner
-and repository name; environment variables are not expanded inside YAML.
+The source may instead be an existing local tree or an existing GitHub config
+repository. A GitHub source is cloned to the local checkout path before it is
+validated. For a new local source, setup can optionally create an empty GitHub
+repository after displaying its owner, name, and visibility and asking for a
+second confirmation. It does not initialize git, commit, or push.
 
-```yaml
-apiVersion: goobers.dev/v1alpha1
-kind: Instance
-repos:
-  - provider: github
-    owner: acme
-    name: widget-service
-    token:
-      env: GOOBERS_GITHUB_TOKEN
-credentials:
-  - capability: agent:model
-    token:
-      env: GOOBERS_COPILOT_TOKEN
-telemetry:
-  enabled: true
-runner:
-  livenessTimeout: 2m
-timezone: America/Los_Angeles
-runConditions:
-  maxParallelRuns: 1
-  stalledRunTimeout: 45m
-  claimsLockTimeout: 30s
-```
-
-`runner.livenessTimeout` defaults to two minutes and marks a daemon unhealthy
-when its scheduler tick heartbeat in `scheduler/up.lock` is older than that.
-`timezone` is an IANA location used for every workflow schedule; omit it for
-UTC. Token references may use `token.file` instead of `token.env`, but never an
-inline token value. `stalledRunTimeout` defaults to 45 minutes and escalates a
-running journal that has received no event or stage heartbeat for that period.
-`claimsLockTimeout` defaults to 30 seconds and bounds cross-process claim-ledger
-lock acquisition.
-
-## 4. Make the workforce repository-specific
-
-The reference config contains curation, implementation, nomination, merge, and
-sample workflows. Start with only the two needed for this walkthrough:
-
-```sh
-rm -f \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/workflows/default-implement.yaml" \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/workflows/merge-review.yaml" \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/workflows/todo-check.yaml" \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/workflows/work-nomination.yaml"
-rm -rf \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/goobers/coder" \
-  "$GOOBERS_INSTANCE/config/gaggles/acme-web/goobers/nominator"
-```
-
-Use an editor to make the following changes. The config remains valid only
-when directory names and references agree.
-
-1. Rename `config/gaggles/acme-web/` to a stable gaggle identifier such as
-   `widget`.
-2. In `config/manifest.yaml`, replace `acme-web` in `spec.gaggles` with
-   `widget`. Give the manifest and instance meaningful names. For local
-   tiers, remove the example `secretRef.keyVault` values; `secretRef.name` is
-   a connection label, while the actual token source remains in
-   `instance.yaml`.
-3. In `gaggles/widget/gaggle.yaml`, set `metadata.name: widget`, the project
-   owner/name/default branch, and `spec.backlog.project:
-   acme/widget-service`. Keep its connection refs aligned with the two
-   connections in the manifest.
-4. Replace every remaining `spec.gaggle: acme-web` with `spec.gaggle:
-   widget`.
-5. Add `agent:model` to `spec.capabilities` in the retained curator,
-   implementer, and reviewer goober definitions. Preserve their existing
-   grants.
-6. In `goobers/reviewer/goober.yaml`, remove `merge-review` from
-   `spec.workflows` because that workflow was removed.
-7. Replace references to "Acme Web" in each `instructions.md`. Tell the
-   implementer and reviewer where the repository's conventions live, which
-   fast targeted checks to use, and what changes are out of scope.
-8. In `workflows/implementation.yaml`, replace
-   `command: ["make", "ci"]` in the `local-ci` stage with the target
-   repository's real non-interactive CI command.
-
-The goober capability lists should retain their workload grants while adding
-the model credential:
-
-```yaml
-# curator
-capabilities:
-  - agent:model
-  - github:issues:write
-
-# implementer
-capabilities:
-  - agent:model
-  - repo:push
-
-# reviewer
-capabilities:
-  - agent:model
-```
-
-Also add `agent:model` to each retained agentic task's capabilities:
-
-```yaml
-# workflows/backlog-curation.yaml: curate
-capabilities:
-  - agent:model
-  - github:issues:write
-
-# workflows/implementation.yaml: implement
-capabilities:
-  - agent:model
-  - repo:push
-```
-
-The agentic review gate has no task-level capability list; it receives
-`agent:model` from the reviewer goober definition.
-
-The resulting config should have this shape:
+The checked-in source has this shape:
 
 ```text
-config/
-  manifest.yaml
-  gaggles/
-    widget/
-      gaggle.yaml
-      goobers/
-        curator/
-        implementer/
-        reviewer/
-      workflows/
-        backlog-curation.yaml
-        implementation.yaml
+instance.yaml.example
+manifest.yaml
+gaggles/
+  widget/
+    gaggle.yaml
+    goobers/
+      curator/
+      implementer/
+      reviewer/
+    workflows/
+      backlog-curation.yaml
+      implementation.yaml
 ```
+
+`instance.yaml.example` contains only credential locators such as environment
+variable names. Journals, scheduler data, workcopies, credential values, and
+`telemetry.db` remain under `$GOOBERS_INSTANCE`, never in the source tree.
+Guided setup validates the source, materializes its definitions into the fresh
+instance, validates the instance, and prints the exact
+`config-repo -> instance/gaggle -> target-repo/backlog` mapping.
+
+## 4. Review the generated desired state
 
 Search for placeholders before proceeding:
 
 ```sh
 grep -R -n -E 'acme-web|Acme Web|owner: acme|name: web|acme/web' \
-  "$GOOBERS_INSTANCE/config" || true
+  "$GOOBERS_CONFIG_SOURCE" || true
 ```
 
 Review the two workflow definitions rather than treating them as opaque

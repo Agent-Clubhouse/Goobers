@@ -3,6 +3,7 @@ package instance
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +30,10 @@ const (
 	guidedExampleRoot              = "gaggles/" + guidedExampleGaggle
 	guidedRepositoryConnectionName = "github-main"
 	guidedBacklogConnectionName    = "github-backlog"
+
+	// GuidedSourceInstanceFile is the secret-free instance template stored in a
+	// checked-in config source tree.
+	GuidedSourceInstanceFile = "instance.yaml.example"
 )
 
 var guidedWorkflowOrder = []string{
@@ -77,6 +82,152 @@ func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
 	}
 	return initWithSeed(root, guidedConfig(opts), func(dir string) error {
 		return copyGuidedConfig(dir, opts)
+	})
+}
+
+// InitGuidedSource creates a complete checked-in config source tree without
+// placing runtime state or credential values beneath root.
+func InitGuidedSource(root string, opts GuidedOptions) error {
+	opts = normalizeGuidedOptions(opts)
+	if err := validateGuidedOptions(opts); err != nil {
+		return err
+	}
+	if err := CheckGuidedSourceTarget(root); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create config source %s: %w", root, err)
+	}
+	if err := WriteConfig(filepath.Join(root, GuidedSourceInstanceFile), guidedConfig(opts)); err != nil {
+		return err
+	}
+	if err := copyGuidedConfig(root, opts); err != nil {
+		return fmt.Errorf("seed config source: %w", err)
+	}
+	return nil
+}
+
+// CheckGuidedSourceTarget rejects any populated path so guided setup never
+// replaces files in an existing config source.
+func CheckGuidedSourceTarget(root string) error {
+	info, err := os.Stat(root)
+	if err == nil && !info.IsDir() {
+		return fmt.Errorf("config source path %s is not a directory", root)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	populated, err := dirHasFiles(root)
+	if err != nil {
+		return fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	if populated {
+		return fmt.Errorf("config source %s already contains files; refusing to overwrite it", root)
+	}
+	return nil
+}
+
+// LoadGuidedSourceConfig loads the secret-free instance template from a
+// checked-in config source tree.
+func LoadGuidedSourceConfig(root string) (*Config, error) {
+	return LoadConfig(filepath.Join(root, GuidedSourceInstanceFile))
+}
+
+// InitGuidedFromSource materializes a validated config source into a fresh
+// runtime instance while retaining the source location in instance.yaml.
+func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("guided source instance config is required")
+	}
+	if err := CheckGuidedInitTarget(root); err != nil {
+		return nil, err
+	}
+	if err := CheckGuidedSourceInstancePaths(root, sourceRoot); err != nil {
+		return nil, err
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config source: %w", err)
+	}
+
+	runtimeConfig := *cfg
+	runtimeConfig.WorkflowSource = &WorkflowSource{
+		Kind: WorkflowSourceKindLocalDir,
+		Path: sourceAbs,
+	}
+	if err := runtimeConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("guided source instance config: %w", err)
+	}
+	return initWithSeed(root, &runtimeConfig, func(dir string) error {
+		return copyGuidedSourceDefinitions(dir, sourceAbs)
+	})
+}
+
+// CheckGuidedSourceInstancePaths requires the desired-state source and runtime
+// instance to be disjoint directory trees.
+func CheckGuidedSourceInstancePaths(root, sourceRoot string) error {
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve config source: %w", err)
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve instance root: %w", err)
+	}
+	if pathsOverlap(sourceAbs, rootAbs) {
+		return fmt.Errorf("config source %s and instance root %s must be separate paths", sourceAbs, rootAbs)
+	}
+	return nil
+}
+
+func pathsOverlap(first, second string) bool {
+	contains := func(parent, child string) bool {
+		rel, err := filepath.Rel(parent, child)
+		return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	}
+	return contains(first, second) || contains(second, first)
+}
+
+func copyGuidedSourceDefinitions(destination, source string) error {
+	for _, name := range []string{"manifest.yaml", "gaggles"} {
+		if err := copyGuidedSourcePath(destination, source, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyGuidedSourcePath(destination, source, name string) error {
+	sourcePath := filepath.Join(source, name)
+	return filepath.WalkDir(sourcePath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("config source path %s is a symlink; refusing to materialize it", path)
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("config source path %s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		return nil
 	})
 }
 

@@ -285,3 +285,103 @@ func TestInitGuidedTokenValidationDoesNotEchoSecret(t *testing.T) {
 		t.Fatalf("validation error exposed token value: %v", err)
 	}
 }
+
+func TestInitGuidedSourceMaterializesSeparateRuntimeState(t *testing.T) {
+	sourceRoot := filepath.Join(t.TempDir(), "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(sourceRoot, GuidedSourceInstanceFile),
+		filepath.Join(sourceRoot, "manifest.yaml"),
+		filepath.Join(sourceRoot, "gaggles", "widget", "gaggle.yaml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("source path %s: %v", path, err)
+		}
+	}
+	for _, name := range []string{ConfigFileName, ConfigDirName, SchedulerDirName, TelemetryDBName} {
+		if _, err := os.Stat(filepath.Join(sourceRoot, name)); !os.IsNotExist(err) {
+			t.Errorf("runtime state %s exists in source tree: %v", name, err)
+		}
+	}
+
+	cfg, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(t.TempDir(), "instance")
+	if _, err := InitGuidedFromSource(instanceRoot, sourceRoot, cfg); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+	runtimeConfig, err := LoadConfig(NewLayout(instanceRoot).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig runtime: %v", err)
+	}
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeConfig.WorkflowSource == nil ||
+		runtimeConfig.WorkflowSource.Kind != WorkflowSourceKindLocalDir ||
+		runtimeConfig.WorkflowSource.Path != sourceAbs {
+		t.Fatalf("runtime workflow source = %+v", runtimeConfig.WorkflowSource)
+	}
+	if _, report, err := LoadConfigDir(NewLayout(instanceRoot).ConfigDir()); err != nil {
+		t.Fatalf("LoadConfigDir runtime: %v (report: %+v)", err, report)
+	}
+}
+
+func TestInitGuidedSourceRefusesToOverwriteExistingTree(t *testing.T) {
+	sourceRoot := t.TempDir()
+	sentinel := filepath.Join(sourceRoot, "manifest.yaml")
+	if err := os.WriteFile(sentinel, []byte("sentinel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := InitGuidedSource(sourceRoot, GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("InitGuidedSource error = %v", err)
+	}
+	data, readErr := os.ReadFile(sentinel)
+	if readErr != nil || string(data) != "sentinel\n" {
+		t.Fatalf("existing source changed: data=%q err=%v", data, readErr)
+	}
+}
+
+func TestInitGuidedFromSourceRejectsOverlappingRuntimePath(t *testing.T) {
+	sourceRoot := filepath.Join(t.TempDir(), "config-source")
+	opts := GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "app-org",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		Workflows:            []string{GuidedWorkflowWorkNomination},
+	}
+	if err := InitGuidedSource(sourceRoot, opts); err != nil {
+		t.Fatalf("InitGuidedSource: %v", err)
+	}
+	cfg, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitGuidedFromSource(filepath.Join(sourceRoot, "runtime"), sourceRoot, cfg); err == nil ||
+		!strings.Contains(err.Error(), "must be separate paths") {
+		t.Fatalf("InitGuidedFromSource overlapping error = %v", err)
+	}
+}

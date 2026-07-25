@@ -25,9 +25,11 @@ const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
 	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
-	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
-	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
-	"then validates the result. --template=quickstart seeds the versioned onboarding\n" +
+	"with instance.yaml or a populated config/ before prompting. It separately\n" +
+	"selects a checked-in config source and target GitHub application repository,\n" +
+	"then validates both. The source may be new or existing locally, cloned from\n" +
+	"GitHub, or optionally backed by a newly confirmed GitHub repository.\n" +
+	"--template=quickstart seeds the versioned onboarding\n" +
 	"workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced.\n"
@@ -41,10 +43,20 @@ func runInitWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 }
 
 func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Writer, goos string) int {
+	return runInitWithInputForOSAndGitHub(args, stdin, stdout, stderr, goos, defaultGuidedGitHubOperations{})
+}
+
+func runInitWithInputForOSAndGitHub(
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	goos string,
+	github guidedGitHubOperations,
+) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
-	guided := fs.Bool("guided", false, "prompt for repository, work tracking, credentials, and workflows")
+	guided := fs.Bool("guided", false, "prompt for config source, target repository, credentials, and workflows")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
 	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
@@ -84,13 +96,11 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 
 	var res *instance.InitResult
+	var guidedResult guidedInitResult
 	var err error
+	errCode := 2
 	if *guided {
-		var opts instance.GuidedOptions
-		opts, err = promptGuidedOptions(stdin, stdout)
-		if err == nil {
-			res, err = instance.InitGuided(root, opts)
-		}
+		res, guidedResult, errCode, err = runGuidedInit(root, stdin, stdout, stderr, github)
 	} else if *template == instance.QuickstartTemplate {
 		res, err = instance.InitQuickstart(root)
 	} else if *demo {
@@ -100,7 +110,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 2
+		return errCode
 	}
 
 	abs, err := filepath.Abs(res.Root)
@@ -110,7 +120,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	if len(res.Created) == 0 {
 		pf(stdout, "instance already initialized at %s (nothing to do)\n", abs)
 		if *guided {
-			return finishGuidedInit(root, abs, stdout, stderr)
+			return finishGuidedInit(root, abs, guidedResult, stdout, stderr)
 		}
 		return 0
 	}
@@ -133,16 +143,47 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stdout, demoTourBanner, abs)
 	}
 	if *guided {
-		return finishGuidedInit(root, abs, stdout, stderr)
+		return finishGuidedInit(root, abs, guidedResult, stdout, stderr)
 	}
 	return 0
 }
 
-func finishGuidedInit(root, abs string, stdout, stderr io.Writer) int {
+func finishGuidedInit(root, abs string, result guidedInitResult, stdout, stderr io.Writer) int {
 	pln(stdout, "")
 	if code := runValidate([]string{root}, stdout, stderr); code != 0 {
 		pf(stderr, "error: guided setup did not produce a valid instance\n")
 		return code
+	}
+	pf(stdout, `
+Onboarding mapping:
+  config-repo:  %s
+  config-source: %s
+  instance-root: %s
+  target-repo:   %s
+  backlog:       %s
+  mapping:       %s -> %s -> %s
+
+Source validation and instance startup:
+  goobers validate --source-tree %s
+  goobers up %s
+`,
+		result.ConfigRepo,
+		result.SourceRoot,
+		abs,
+		result.TargetRepo,
+		result.Backlog,
+		result.SourceRoot,
+		filepath.Join(abs, instance.GagglesDirName, result.Gaggle),
+		result.TargetRepo,
+		strconv.Quote(result.SourceRoot),
+		strconv.Quote(abs),
+	)
+	if result.RemoteCreated {
+		pf(stdout, `
+The GitHub config repository is empty; no commit or push was performed:
+  git -C %s init
+  git -C %s remote add origin %s
+`, strconv.Quote(result.SourceRoot), strconv.Quote(result.SourceRoot), strconv.Quote(result.ConfigRepo+".git"))
 	}
 	pf(
 		stdout,
@@ -163,9 +204,11 @@ type guidedPrompter struct {
 
 func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOptions, error) {
 	p := guidedPrompter{reader: bufio.NewReader(stdin), out: stdout}
-	pln(stdout, "Guided first-run setup")
-	pln(stdout, "")
+	return promptGuidedOptionsWithPrompter(p)
+}
 
+func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, error) {
+	stdout := p.out
 	repoText, err := p.ask("Main GitHub repository (owner/name or URL)", "", validGitHubRepoInput)
 	if err != nil {
 		return instance.GuidedOptions{}, err
