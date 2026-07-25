@@ -80,7 +80,10 @@ spec:
         # #990: deterministic file-overlap set, threaded to elect-lander +
         # apply-verdict. Empty string when nothing overlaps.
         - overlappingSiblingsCsv
-      next: review
+        # #1313: whether this PR is currently parked before review for
+        # exceeding the size threshold — scope-gate branches on this.
+        - scopeGateParked
+      next: scope-gate
 
     - name: apply-verdict
       type: deterministic
@@ -272,6 +275,23 @@ spec:
         - demote-pr
 
   gates:
+    # #1313: escalates the advisory goobers:scope-drift flag (#1111) into an
+    # actual gate. gather-sibling-context already reconciled the
+    # goobers:scope-gate label/comment; this just routes on scopeGateParked —
+    # not parked proceeds to review unchanged, parked completes the run
+    # cleanly this cycle (self-heals next cycle once the diff shrinks or an
+    # operator acks it).
+    - name: scope-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: scopeGateParked
+          equals: "false"
+      branches:
+        pass: review
+        fail: ""
+
     - name: review
       evaluator: agentic
       agentic:
