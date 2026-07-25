@@ -123,3 +123,33 @@ behind every unit of work.
 - **PORT-Q4:** **Resolved:** the browser uses the versioned daemon API. The API
   and CLI share a journal/telemetry-backed read service; there is no browser
   journals-direct path and no dashboard-only read implementation.
+
+## Co-branding requirements
+
+- **PORT-CBR-001 (MUST):** The portal MUST read brand identity (name, tagline,
+  scope mark, logo, favicon) from `GET /api/v1/portal/config` on startup and
+  apply it. An unconfigured instance MUST render standard Goobers defaults with
+  no visible difference from today.
+- **PORT-CBR-002 (MUST):** Accent color token overrides declared in
+  `instance.yaml` under `portal.theme` MUST be applied to the portal's CSS
+  token layer without altering semantic status colors (success, warning, danger).
+  Both light and dark mode variants MUST be independently overridable.
+- **PORT-CBR-003 (MUST):** The portal MUST render a support footer in the
+  sidebar when any `portal.support` field is configured, with links for Docs,
+  Get help, Chat, and operator-defined custom links (max 6). The footer MUST be
+  hidden entirely when no support fields are set.
+- **PORT-CBR-004 (MUST):** Logo and favicon assets MUST be served from the
+  instance's `assets/` subdirectory via `GET /assets/<path>`. The handler MUST
+  prevent path traversal outside the instance root.
+- **PORT-CBR-005 (MUST):** All cobrand config URLs MUST be validated at
+  `goobers validate` and daemon startup: asset URLs scoped to `/assets/`,
+  support URLs as absolute HTTPS (or allowed deep-link schemes), accent values
+  as valid CSS colors. Invalid values MUST block startup (color) or produce
+  validation warnings (missing asset files).
+- **PORT-CBR-006 (SHOULD):** The portal SHOULD update `document.title` and the
+  favicon to reflect the configured brand on load.
+- **PORT-CBR-007 (WON'T):** Per-gaggle theme overrides are out of scope.
+  Branding is instance-wide identity. Full white-label (removing upstream
+  attribution) is out of scope.
+
+Design authority: [`docs/design/cobrand.md`](../design/cobrand.md).

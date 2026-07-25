@@ -23,6 +23,7 @@ import type {
   Health,
   Instance,
   PageRequest,
+  PortalConfig,
   RequestOptions,
   RunDetail,
   RunList,
@@ -45,6 +46,7 @@ type PathParameters = Readonly<Record<string, string>>;
 const clientRoutes = {
   health: apiRoutes.health,
   instance: apiRoutes.instance,
+  portalConfig: apiRoutes.portalConfig,
   gaggles: apiRoutes.gaggles,
   gaggleGoobers: apiRoutes.gaggleGoobers,
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
@@ -161,6 +163,10 @@ export class HttpDaemonClient implements DaemonClient {
     const instance = await this.getJSON<Instance>(clientRoutes.instance, undefined, options);
     assertSupportedContractVersion(instance);
     return instance;
+  }
+
+  getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
+    return this.getJSON(clientRoutes.portalConfig, undefined, options);
   }
 
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {

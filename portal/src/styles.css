@@ -178,6 +178,24 @@ summary:focus-visible {
   font-size: 12px;
 }
 
+.support-footer {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 0 5px;
+}
+
+.support-footer a {
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.support-footer a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
 .live-mark {
   background: var(--success);
   border: 2px solid var(--success-soft);

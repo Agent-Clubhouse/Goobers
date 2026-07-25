@@ -29,7 +29,7 @@ clustered orchestration over a large monorepo.
 | `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — tier-3 (CRD-apply path), revived in V2 |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
-| `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
+| `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `skills/` | Portable agent skills for authoring Goobers config | Active |
