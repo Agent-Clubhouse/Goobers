@@ -36,7 +36,7 @@ type completionCommand struct {
 	desc    string               // registry short help (renders as the zsh description)
 	subs    []completionCommand  // nested subcommands, from the registry
 	flags   []completionFlagSpec // annotated flags (completionFlagSpecs[id])
-	argKind string               // dynamic positional arg kind (workflows|runs|escalations)
+	argKind string               // dynamic positional arg kind (workflows|runs|escalations|examples)
 }
 
 // completionFlagSpec annotates one flag for completion. takesArg mirrors

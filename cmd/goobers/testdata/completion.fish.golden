@@ -1,4 +1,8 @@
 # fish completion for goobers
+function __goobers_completion_examples
+    command goobers __complete examples 2>/dev/null
+end
+
 function __goobers_completion_workflows
     command goobers __complete workflows 2>/dev/null
 end
