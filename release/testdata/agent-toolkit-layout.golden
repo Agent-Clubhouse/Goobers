@@ -22,6 +22,8 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/go
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/implementer/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/implementer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/nominator/goober.yaml
@@ -31,6 +33,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/reviewer
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/scripts/check-todos.sh
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlog-curation.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/default-implement.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/docs-updater.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/merge-review.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/todo-check.yaml
