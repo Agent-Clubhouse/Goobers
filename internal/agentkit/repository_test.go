@@ -57,21 +57,50 @@ func TestInstallAllHarnessesIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestInstallPreservesExistingUserInstruction(t *testing.T) {
-	root := newTestRepository(t)
-	const userContent = "# Existing instructions\n\nKeep this content.\n"
-	writeTestFile(t, root, "CLAUDE.md", []byte(userContent))
-	repository := openTestRepository(t, root)
+func TestInstallAddsReferenceToExistingUserInstructions(t *testing.T) {
+	tests := []struct {
+		harness string
+		target  string
+	}{
+		{harness: "copilot", target: ".github/copilot-instructions.md"},
+		{harness: "claude", target: "CLAUDE.md"},
+		{harness: "generic", target: "AGENTS.md"},
+	}
+	for _, test := range tests {
+		t.Run(test.harness, func(t *testing.T) {
+			root := newTestRepository(t)
+			const userContent = "# Existing instructions\n\nKeep this content.\n"
+			writeTestFile(t, root, test.target, []byte(userContent))
+			repository := openTestRepository(t, root)
+			bundle := testBundle(t, "v1.2.3", "abc123")
 
-	result, err := repository.Install(testBundle(t, "v1.2.3", "abc123"), "claude")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.InstructionCreated {
-		t.Fatal("existing user instruction was reported as created")
-	}
-	if got := string(readTestFile(t, root, "CLAUDE.md")); got != userContent {
-		t.Fatalf("user instruction changed to %q", got)
+			result, err := repository.Install(bundle, test.harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.InstructionCreated || !result.InstructionUpdated {
+				t.Fatalf("existing instruction result = %+v", result)
+			}
+			got := readTestFile(t, root, test.target)
+			if !bytes.HasPrefix(got, []byte(userContent)) {
+				t.Fatalf("user instruction prefix changed to %q", got)
+			}
+			if bytes.Count(got, []byte(instructionReferenceBegin)) != 1 ||
+				bytes.Count(got, []byte(result.Reference)) != 1 {
+				t.Fatalf("managed instruction reference = %q", got)
+			}
+
+			repeated, err := repository.Install(bundle, test.harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repeated.InstructionCreated || repeated.InstructionUpdated {
+				t.Fatalf("repeated install changed instructions: %+v", repeated)
+			}
+			if after := readTestFile(t, root, test.target); !bytes.Equal(after, got) {
+				t.Fatalf("repeated install changed instruction to %q", after)
+			}
+		})
 	}
 }
 
@@ -165,6 +194,72 @@ func TestUpdateRequiresAcknowledgementAndPreservesUserFiles(t *testing.T) {
 	}
 }
 
+func TestUpdateRepairsExecutableModeDrift(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission bits are not supported on Windows")
+	}
+
+	root := newTestRepository(t)
+	repository := openTestRepository(t, root)
+	bundle := testBundle(t, "v1.2.3", "abc123")
+	if _, err := repository.Install(bundle, "generic"); err != nil {
+		t.Fatal(err)
+	}
+	const executablePath = InstalledRoot + "/config-examples/gaggles/acme-web/scripts/check-todos.sh"
+	fullPath := filepath.Join(root, filepath.FromSlash(executablePath))
+	if err := os.Chmod(fullPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := repository.Check(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "modified" || !containsString(report.Modified, executablePath) {
+		t.Fatalf("permission drift check = %+v", report)
+	}
+	plan, err := repository.PlanUpdate(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(plan.ModifiedOwned, executablePath) {
+		t.Fatalf("permission drift modified files = %v", plan.ModifiedOwned)
+	}
+	var modeChange *Change
+	for i := range plan.Changes {
+		if plan.Changes[i].Path == executablePath {
+			modeChange = &plan.Changes[i]
+			break
+		}
+	}
+	if modeChange == nil ||
+		!bytes.Equal(modeChange.Old, modeChange.New) ||
+		modeChange.OldMode.Perm() != 0o644 ||
+		modeChange.Mode.Perm() != 0o755 {
+		t.Fatalf("permission drift change = %+v", modeChange)
+	}
+	if err := repository.ApplyUpdate(plan, false); err == nil {
+		t.Fatal("permission drift was repaired without acknowledgement")
+	}
+	if err := repository.ApplyUpdate(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("updated executable mode = %04o", info.Mode().Perm())
+	}
+	report, err = repository.Check(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "current" {
+		t.Fatalf("post-repair check = %+v", report)
+	}
+}
+
 func TestCleanUpgradeDoesNotRequireModifiedAcknowledgement(t *testing.T) {
 	root := newTestRepository(t)
 	repository := openTestRepository(t, root)
@@ -212,6 +307,7 @@ func TestCleanUpgradeDeletesObsoleteOwnedAsset(t *testing.T) {
 		Path:   "payload/" + obsoletePath,
 		SHA256: digest(obsolete.Data),
 		Size:   int64(len(obsolete.Data)),
+		Mode:   formatAssetMode(obsolete.Mode),
 	})
 	var err error
 	oldBundle.ManifestJSON, err = marshalManifest(oldBundle.Manifest)
@@ -347,6 +443,7 @@ func TestUpdateRefusesUserOwnedCollision(t *testing.T) {
 		Path:   "payload/" + collisionPath,
 		SHA256: digest(future.Data),
 		Size:   int64(len(future.Data)),
+		Mode:   formatAssetMode(future.Mode),
 	})
 	var err error
 	newBundle.ManifestJSON, err = marshalManifest(newBundle.Manifest)
@@ -462,6 +559,7 @@ func TestManifestDriftCannotClaimUserSkill(t *testing.T) {
 				Path:   "payload/" + customSkill,
 				SHA256: digest(customContent),
 				Size:   int64(len(customContent)),
+				Mode:   formatAssetMode(0o644),
 			})
 			manifestData, err := marshalManifest(manifest)
 			if err != nil {
@@ -513,6 +611,7 @@ func TestInterruptedUpdateRecoversWithoutUserCollision(t *testing.T) {
 		Path:   "payload/" + addedPath,
 		SHA256: digest(addedFile.Data),
 		Size:   int64(len(addedFile.Data)),
+		Mode:   formatAssetMode(addedFile.Mode),
 	})
 	var err error
 	newBundle.ManifestJSON, err = marshalManifest(newBundle.Manifest)
@@ -631,6 +730,7 @@ func TestInterruptedUpdateRejectsInventedSourceManifest(t *testing.T) {
 		Path:   "payload/" + customSkill,
 		SHA256: digest(customContent),
 		Size:   int64(len(customContent)),
+		Mode:   formatAssetMode(0o644),
 	})
 	inventedManifest, err := marshalManifest(inventedSource.Manifest)
 	if err != nil {

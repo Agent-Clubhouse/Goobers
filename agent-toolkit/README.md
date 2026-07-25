@@ -35,7 +35,7 @@ payload/
 The manifest records its own schema and bundle versions, the producing Goobers
 release and commit, the release's DSL support matrix, compatible harness
 adapters, required and optional CLI commands, and every product-owned payload
-file with its size and SHA-256 digest.
+file with its size, required mode, and SHA-256 digest.
 
 `goobers agent-kit install` copies the payload into a selected configuration
 repository and retains that metadata as

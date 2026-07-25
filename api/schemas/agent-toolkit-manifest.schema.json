@@ -103,7 +103,7 @@
     "asset": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "size"],
+      "required": ["path", "sha256", "size", "mode"],
       "properties": {
         "path": {
           "type": "string",
@@ -116,7 +116,8 @@
           }
         },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "size": { "type": "integer", "minimum": 0 }
+        "size": { "type": "integer", "minimum": 0 },
+        "mode": { "type": "string", "pattern": "^0[0-7]{3}$" }
       }
     },
     "adapter": {

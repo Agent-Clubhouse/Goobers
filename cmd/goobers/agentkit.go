@@ -24,10 +24,10 @@ const agentKitHelp = "Usage: goobers agent-kit <subcommand> [flags] [path]\n\n" 
 
 const agentKitInstallHelp = "Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]\n\n" +
 	"Install the toolkit bundled with this Goobers binary beneath the product-owned\n" +
-	"`.goobers/agent-toolkit/` boundary. If the selected harness instruction file\n" +
-	"does not exist, create a minimal reference to the installed adapter. Existing\n" +
-	"AGENTS.md, CLAUDE.md, Copilot instructions, skills, and repository content are\n" +
-	"never overwritten.\n\n" +
+	"`.goobers/agent-toolkit/` boundary and add a minimal adapter reference to the\n" +
+	"selected harness instruction file. Existing instructions are preserved; install\n" +
+	"only appends a clearly delimited managed reference when one is not already present.\n" +
+	"Skills and other repository content are never overwritten.\n\n" +
 	"Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or\n" +
 	"write error, 2 = usage error.\n"
 
@@ -103,10 +103,13 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 	} else {
 		pf(stdout, "Agent toolkit bundle %s is already current.\n", bundle.Manifest.BundleVersion)
 	}
-	if result.InstructionCreated {
+	switch {
+	case result.InstructionCreated:
 		pf(stdout, "Created %s with the %s adapter reference.\n", result.InstructionPath, *harness)
-	} else {
-		pf(stdout, "Preserved existing %s. Add this reference if needed:\n  %s\n", result.InstructionPath, result.Reference)
+	case result.InstructionUpdated:
+		pf(stdout, "Added the %s adapter reference to existing %s.\n", *harness, result.InstructionPath)
+	default:
+		pf(stdout, "%s already contains the %s adapter reference.\n", result.InstructionPath, *harness)
 	}
 	writeAgentKitNextSteps(stdout)
 	return 0
@@ -261,6 +264,17 @@ func writeAgentKitDiff(w io.Writer, changes []agentkit.Change) error {
 			newPath = "/dev/null"
 		}
 		pf(w, "diff --goobers a/%s b/%s\n", change.Path, change.Path)
+		switch change.Kind {
+		case agentkit.ChangeAdd:
+			pf(w, "new file mode %04o\n", change.Mode.Perm())
+		case agentkit.ChangeDelete:
+			pf(w, "deleted file mode %04o\n", change.OldMode.Perm())
+		case agentkit.ChangeModify:
+			if change.OldMode.Perm() != change.Mode.Perm() {
+				pf(w, "old mode %04o\n", change.OldMode.Perm())
+				pf(w, "new mode %04o\n", change.Mode.Perm())
+			}
+		}
 		diff := difflib.UnifiedDiff{
 			A:        difflib.SplitLines(string(change.Old)),
 			B:        difflib.SplitLines(string(change.New)),

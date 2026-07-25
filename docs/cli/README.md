@@ -157,10 +157,10 @@ install the release-matched agent toolkit
 Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]
 
 Install the toolkit bundled with this Goobers binary beneath the product-owned
-`.goobers/agent-toolkit/` boundary. If the selected harness instruction file
-does not exist, create a minimal reference to the installed adapter. Existing
-AGENTS.md, CLAUDE.md, Copilot instructions, skills, and repository content are
-never overwritten.
+`.goobers/agent-toolkit/` boundary and add a minimal adapter reference to the
+selected harness instruction file. Existing instructions are preserved; install
+only appends a clearly delimited managed reference when one is not already present.
+Skills and other repository content are never overwritten.
 
 Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or
 write error, 2 = usage error.

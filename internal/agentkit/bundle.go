@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/api/schemas"
@@ -71,6 +72,7 @@ type Asset struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
 }
 
 // Adapter maps a supported harness to its toolkit references.
@@ -184,6 +186,7 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 			Path:   "payload/" + installedPath,
 			SHA256: fmt.Sprintf("%x", sum),
 			Size:   int64(len(file.Data)),
+			Mode:   formatAssetMode(file.Mode),
 		})
 	}
 	sort.Slice(assets, func(i, j int) bool { return assets[i].Path < assets[j].Path })
@@ -307,6 +310,9 @@ func validateManifestPaths(manifest Manifest) error {
 		if _, duplicate := seen[asset.Path]; duplicate {
 			return fmt.Errorf("agent toolkit manifest contains duplicate asset %q", asset.Path)
 		}
+		if _, err := parseAssetMode(asset.Mode); err != nil {
+			return fmt.Errorf("agent toolkit asset %q: %w", asset.Path, err)
+		}
 		seen[asset.Path] = struct{}{}
 	}
 	return nil
@@ -370,6 +376,18 @@ func sourceMode(sourcePath string) fs.FileMode {
 		return 0o755
 	}
 	return 0o644
+}
+
+func formatAssetMode(mode fs.FileMode) string {
+	return fmt.Sprintf("%04o", mode.Perm())
+}
+
+func parseAssetMode(value string) (fs.FileMode, error) {
+	mode, err := strconv.ParseUint(value, 8, 32)
+	if err != nil || len(value) != 4 || value[0] != '0' || mode > 0o777 {
+		return 0, fmt.Errorf("invalid file mode %q", value)
+	}
+	return fs.FileMode(mode), nil
 }
 
 func includeAll(string) bool { return true }
