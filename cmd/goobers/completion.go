@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	configexamples "github.com/goobers/goobers/config-examples"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -56,6 +57,18 @@ func runCompletionCandidates(args []string, stdout io.Writer) int {
 }
 
 func completionCandidates(kind, start string) []string {
+	if kind == "examples" {
+		examples, err := configexamples.WorkflowExamples()
+		if err != nil {
+			return nil
+		}
+		names := make([]string, len(examples))
+		for i, example := range examples {
+			names[i] = example.Name
+		}
+		return names
+	}
+
 	root, ok := completionInstanceRoot(start)
 	if !ok {
 		return nil

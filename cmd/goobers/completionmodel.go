@@ -59,6 +59,7 @@ var completionPositionalArgKinds = map[string]string{
 	"run abort":        "runs",
 	"trace":            "runs",
 	"escalations show": "escalations",
+	"examples show":    "examples",
 	"workflow show":    "workflows",
 }
 
