@@ -54,8 +54,12 @@ type WorkflowEntry struct {
 	// PollPriority preserves higher-priority polls when a provider budget cannot
 	// cover every poll due in one tick.
 	PollPriority int32
-	Starter      Starter
-	RepoRef      apiv1.RepoRef
+	// ScheduleDemandCounter sizes a due schedule fire to the eligible work
+	// available at that instant. Nil preserves the ordinary one-run-per-fire
+	// schedule behavior.
+	ScheduleDemandCounter BacklogCounter
+	Starter               Starter
+	RepoRef               apiv1.RepoRef
 	// RequiredCapabilities is the union of runner (toolchain/platform)
 	// capabilities this workflow's gaggle and stages require (RRQ-1/#1101).
 	// dispatch refuses the run before admission when the runner does not claim
@@ -475,7 +479,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 type tickCandidate struct {
 	entry              WorkflowEntry
 	schedule           TickResult
-	scheduleDue        bool
+	scheduleRemaining  int
+	schedulePollDue    bool
 	backlogPollDue     bool
 	backlogRemaining   int
 	poolSkips          int
@@ -484,8 +489,8 @@ type tickCandidate struct {
 }
 
 func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
-	if c.scheduleDue {
-		c.scheduleDue = false
+	if c.scheduleRemaining > 0 {
+		c.scheduleRemaining--
 		return c.schedule, journal.TriggerSchedule, true
 	}
 	if c.backlogRemaining > 0 {
@@ -569,7 +574,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			}
 			if res.Fire {
 				candidate.schedule = res
-				candidate.scheduleDue = true
+				candidate.scheduleRemaining = 1
+				candidate.schedulePollDue = entry.ScheduleDemandCounter != nil
 			}
 		}
 
@@ -579,10 +585,10 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		allCandidates = append(allCandidates, candidate)
 	}
 
-	s.pollBacklogs(ctx, allCandidates, now)
+	s.pollDemandCounters(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
-		if candidate.scheduleDue || candidate.backlogRemaining > 0 {
+		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 {
 			identity := entryIdentity(candidate.entry)
 			s.mu.Lock()
 			candidate.poolSkips = s.consecutivePoolSkips[identity]
@@ -767,12 +773,29 @@ func (s *Scheduler) backlogPollDue(entry WorkflowEntry, now time.Time) bool {
 	return due
 }
 
-func (s *Scheduler) pollBacklogs(ctx context.Context, candidates []*tickCandidate, now time.Time) {
-	byProvider := make(map[apiv1.Provider][]*tickCandidate)
+type demandPoll struct {
+	candidate *tickCandidate
+	counter   BacklogCounter
+	schedule  bool
+}
+
+func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCandidate, now time.Time) {
+	byProvider := make(map[apiv1.Provider][]demandPoll)
 	for _, candidate := range candidates {
+		if candidate.schedulePollDue {
+			provider := quotaProvider(candidate.entry.PollProvider)
+			byProvider[provider] = append(byProvider[provider], demandPoll{
+				candidate: candidate,
+				counter:   candidate.entry.ScheduleDemandCounter,
+				schedule:  true,
+			})
+		}
 		if candidate.backlogPollDue {
 			provider := quotaProvider(candidate.entry.PollProvider)
-			byProvider[provider] = append(byProvider[provider], candidate)
+			byProvider[provider] = append(byProvider[provider], demandPoll{
+				candidate: candidate,
+				counter:   candidate.entry.BacklogCounter,
+			})
 		}
 	}
 	providerNames := make([]string, 0, len(byProvider))
@@ -785,17 +808,22 @@ func (s *Scheduler) pollBacklogs(ctx context.Context, candidates []*tickCandidat
 		provider := apiv1.Provider(providerName)
 		due := byProvider[provider]
 		sort.Slice(due, func(i, j int) bool {
-			if due[i].entry.PollPriority != due[j].entry.PollPriority {
-				return due[i].entry.PollPriority > due[j].entry.PollPriority
+			left, right := due[i].candidate.entry, due[j].candidate.entry
+			if left.PollPriority != right.PollPriority {
+				return left.PollPriority > right.PollPriority
 			}
-			if due[i].entry.Workflow != due[j].entry.Workflow {
-				return due[i].entry.Workflow < due[j].entry.Workflow
+			if left.Workflow != right.Workflow {
+				return left.Workflow < right.Workflow
 			}
-			return due[i].entry.Gaggle < due[j].entry.Gaggle
+			if left.Gaggle != right.Gaggle {
+				return left.Gaggle < right.Gaggle
+			}
+			return due[i].schedule && !due[j].schedule
 		})
 
 		s.journalProviderQuotaReset(provider, now)
-		for _, candidate := range due {
+		for _, poll := range due {
+			entry := poll.candidate.entry
 			decision := ProviderPollBudget{Provider: provider, Requested: 1, Allowed: 1}
 			if s.providerQuota != nil {
 				decision = s.providerQuota.ReservePolls(provider, now, 1)
@@ -805,31 +833,44 @@ func (s *Scheduler) pollBacklogs(ctx context.Context, candidates []*tickCandidat
 			}
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
-				candidate.backlogRemaining = s.pollBacklog(pollCtx, candidate.entry)
+				s.applyDemandCount(poll, s.pollDemand(pollCtx, entry, poll))
 				continue
 			}
-			if guarded, ok := candidate.entry.BacklogCounter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
-				candidate.backlogRemaining = s.pollBacklog(ctx, candidate.entry)
+			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
+				s.applyDemandCount(poll, s.pollDemand(ctx, entry, poll))
 				continue
 			}
-			s.journalPollShed(candidate.entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
+			s.applyDemandCount(poll, 0)
+			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
 	}
 }
 
-func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry) int {
-	ready, err := entry.BacklogCounter.EligibleCount(ctx)
+func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
+	if poll.schedule {
+		poll.candidate.scheduleRemaining = ready
+		return
+	}
+	poll.candidate.backlogRemaining = ready
+}
+
+func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {
+	ready, err := poll.counter.EligibleCount(ctx)
 	if err != nil {
 		var budgetErr *ProviderPollBudgetError
 		if errors.As(err, &budgetErr) {
 			s.journalPollShed(entry, budgetErr.Provider, budgetErr.Remaining, budgetErr.Requested, budgetErr.ResetAt)
 			return 0
 		}
+		code := "backlog_count_failed"
+		if poll.schedule {
+			code = "schedule_demand_count_failed"
+		}
 		s.journalEvent(journal.Event{
 			Type:     journal.EventError,
 			Workflow: entry.Workflow,
 			Gaggle:   entry.Gaggle,
-			Error:    &journal.ErrorDetail{Code: "backlog_count_failed", Message: err.Error()},
+			Error:    &journal.ErrorDetail{Code: code, Message: err.Error()},
 		})
 		return 0
 	}

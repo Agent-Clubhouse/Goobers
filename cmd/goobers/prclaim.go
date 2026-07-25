@@ -19,14 +19,6 @@ func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)
 }
 
-func claimEligiblePullRequest(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
-	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
-	if err != nil {
-		return nil, err
-	}
-	return claimPullRequest(root, eligible, runID, workflow, leaseDuration)
-}
-
 func claimEligiblePullRequestInOrder(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
 	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
 	if err != nil {

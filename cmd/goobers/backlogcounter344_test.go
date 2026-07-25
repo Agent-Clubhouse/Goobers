@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type backlogTestRegistrar struct{ registered [][]byte }
@@ -84,6 +85,31 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 		if bc.quota == nil {
 			t.Fatal("provider quota observer was not wired")
+		}
+	})
+
+	t.Run("pr remediation uses claim-aware pull request demand", func(t *testing.T) {
+		wf := &apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "pr-remediation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:   "goobers",
+				Start:    "select",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h", Priority: 100}},
+				Tasks: []apiv1.Task{{
+					Name: "select",
+					Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "update-behind-pr"}},
+				}},
+			},
+		}
+		counter := buildScheduleDemandCounter(
+			cfg, wf, repoRef, nil, nil, "/instance/scheduler", "acme", nil,
+		)
+		remediation, ok := counter.(*remediationDemandCounter)
+		if !ok {
+			t.Fatalf("counter type = %T, want *remediationDemandCounter", counter)
+		}
+		if remediation.headPrefix != "acme/" || remediation.gaggle != "goobers" {
+			t.Fatalf("remediation counter scope = prefix %q gaggle %q", remediation.headPrefix, remediation.gaggle)
 		}
 	})
 }
