@@ -1185,22 +1185,49 @@ type backlogCounter struct {
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
-	var accounting *providerQuotaAccounting
-	if b.quota != nil {
-		accounting = &providerQuotaAccounting{state: b.quota}
-		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
-			accounting.prepaid = &reservation
-		}
-		defer accounting.RefundUnused()
-	}
-
-	token, err := b.resolver.Resolve(ctx, b.ref)
+	provider, cleanup, err := newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
-	b.reg.Register([]byte(token))
+	defer cleanup()
+
+	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
+
+func newCounterGitHubProvider(
+	ctx context.Context,
+	ref string,
+	schedulerDir string,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	quota *localscheduler.ProviderQuotaState,
+) (*providers.GitHubProvider, func(), error) {
+	var accounting *providerQuotaAccounting
+	if quota != nil {
+		accounting = &providerQuotaAccounting{state: quota}
+		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+			accounting.prepaid = &reservation
+		}
+	}
+	cleanup := func() {}
+	if accounting != nil {
+		cleanup = accounting.RefundUnused
+	}
+
+	token, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	reg.Register([]byte(token))
 	opts := []func(*providers.GitHubProvider){
-		apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx)),
+		apiReadCacheOptionForSnapshot(schedulerDir, providersnapshot.ID(ctx)),
 	}
 	if accounting != nil {
 		opts = append(opts,
@@ -1212,29 +1239,18 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	// reset-aware admission. Transport and 5xx retries remain enabled and each
 	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
-	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(items), nil
+	return newGitHubProvider(token, opts...), cleanup, nil
 }
 
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
 	return b.quota != nil
 }
 
-// buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
-// declared type=backlog-item trigger, if it has one (#344) — the daemon-
-// side fan-out counter, independent of and never dispatched through
-// `goobers backlog-query`'s own per-run claim (that stays the actual
-// claiming mechanism; this only estimates how many runs a Tick should fan
-// out to). Trigger.Selector (already declared in the schema, never
-// implemented until now — #342's own survey found it, like Signal, entirely
-// unwired) is a flat map; only its KEYS are used as required GitHub labels
-// — values are ignored, since GitHub issue labels are plain strings with no
-// key=value structure to match against, unlike a true k8s label selector.
+// buildBacklogCounter wires the daemon-side fan-out counter for a workflow's
+// declared type=backlog-item trigger (#344). It counts work items carrying
+// every selector key as a GitHub label. The per-run backlog-query stage remains
+// the actual claiming mechanism; this only estimates how many runs a Tick
+// should fan out to.
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
@@ -1271,6 +1287,65 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 		counter.quota = quota
 	}
 	return counter
+}
+
+// buildScheduleDemandCounter recognizes the built-in update-behind-pr selector
+// and sizes each due schedule tick to its unclaimed eligible PR set.
+func buildScheduleDemandCounter(
+	cfg *instance.Config,
+	wf *apiv1.Workflow,
+	repoRef apiv1.RepoRef,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	schedulerDir, branchNamespace string,
+	quota *localscheduler.ProviderQuotaState,
+) localscheduler.BacklogCounter {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	hasSchedule := false
+	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule {
+			hasSchedule = true
+			break
+		}
+	}
+	base, headPrefix, ok := remediationCounterScope(wf, branchNamespace)
+	if !hasSchedule || !ok {
+		return nil
+	}
+	return &remediationDemandCounter{
+		ref:          repoRef.Owner + "/" + repoRef.Name,
+		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		base:         base,
+		headPrefix:   headPrefix,
+		gaggle:       wf.Spec.Gaggle,
+		resolver:     resolver,
+		reg:          reg,
+		schedulerDir: schedulerDir,
+		quota:        quota,
+	}
+}
+
+func remediationCounterScope(wf *apiv1.Workflow, branchNamespace string) (base, headPrefix string, ok bool) {
+	for _, task := range wf.Spec.Tasks {
+		if task.Name != wf.Spec.Start || task.Run == nil ||
+			len(task.Run.Command) != 2 ||
+			task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "update-behind-pr" {
+			continue
+		}
+		base = task.Inputs["base"]
+		if base == "" {
+			base = "main"
+		}
+		headPrefix = task.Inputs["headPrefix"]
+		if headPrefix == "" {
+			headPrefix = providers.NormalizeBranchNamespace(branchNamespace)
+		}
+		return base, headPrefix, true
+	}
+	return "", "", false
 }
 
 type providerQuotaAccounting struct {
