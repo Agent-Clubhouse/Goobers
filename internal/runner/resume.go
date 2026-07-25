@@ -372,9 +372,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
-	if humanProgress.decided {
-		// The event log is authoritative when gate.evaluated was fsynced but
-		// the following transition checkpoint was lost or corrupt.
+	if humanProgress.waiting || humanProgress.decided {
+		// The event log is authoritative when gate.paused or gate.evaluated
+		// was fsynced but the corresponding checkpoint was lost or stale.
 		startState = humanProgress.gate
 	}
 	var completedGate *gate.Result

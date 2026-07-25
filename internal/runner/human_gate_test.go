@@ -87,6 +87,15 @@ func humanResumeInput(runID string, machine *workflow.Machine, gate string, paus
 	}
 }
 
+type humanGateCountingAutomated struct {
+	calls int
+}
+
+func (a *humanGateCountingAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	a.calls++
+	return gate.OutcomePass, nil
+}
+
 func latestHumanPauseSeq(t *testing.T, runsDir, runID, gateName string) uint64 {
 	t.Helper()
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
@@ -454,6 +463,66 @@ func TestRunnerHumanGateRecordedDecisionOverridesMissingCheckpoint(t *testing.T)
 	}
 	if stageStarts != 1 || pauses != 1 || verdicts != 1 {
 		t.Fatalf("replay counts: stage.started=%d gate.paused=%d gate.evaluated=%d, want 1 each", stageStarts, pauses, verdicts)
+	}
+}
+
+func TestRunnerHumanGateDecisionOverridesStalePredecessorCheckpoint(t *testing.T) {
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "prechecked-human-approval",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web",
+			Start:  "precheck",
+			Gates: []apiv1.Gate{
+				{
+					Name:      "precheck",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+					Branches:  map[string]string{gate.OutcomePass: "approval", gate.OutcomeFail: workflow.TargetAbort},
+				},
+				{
+					Name:      "approval",
+					Evaluator: apiv1.EvaluatorHuman,
+					Human:     &apiv1.HumanGate{},
+					Branches:  map[string]string{"pass": workflow.TerminalComplete},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile prechecked human gate: %v", err)
+	}
+	automated := &humanGateCountingAutomated{}
+	r, runsDir := newTestRunnerWithDeterministic(t, nil, automated)
+	const runID = "human-stale-predecessor-checkpoint"
+	startHumanGateRun(t, r, machine, runID)
+	if automated.calls != 1 {
+		t.Fatalf("precheck calls after start = %d, want 1", automated.calls)
+	}
+
+	run, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	run.SetMachineState("precheck")
+	if err := run.Checkpoint(); err != nil {
+		t.Fatalf("write stale checkpoint: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close interrupted run: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), humanResumeInput(
+		runID, machine, "approval", latestHumanPauseSeq(t, runsDir, runID, "approval"), "pass",
+	))
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("Resume phase = %q, want completed", result.Phase)
+	}
+	if automated.calls != 1 {
+		t.Fatalf("precheck calls after resume = %d, want journaled waiting gate to prevent re-evaluation", automated.calls)
 	}
 }
 

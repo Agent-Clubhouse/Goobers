@@ -743,6 +743,11 @@ func TestEvaluatorHumanGateRequiresExplicitDecision(t *testing.T) {
 	if _, err := ev.EvaluateHuman(g, "unknown"); err == nil {
 		t.Fatal("EvaluateHuman accepted a decision with no branch")
 	}
+	restricted := g
+	restricted.Human = &apiv1.HumanGate{Approvers: []string{"maintainers"}}
+	if _, err := ev.EvaluateHuman(restricted, "pass"); err == nil {
+		t.Fatal("EvaluateHuman ignored configured approver restrictions")
+	}
 
 	got, err := ev.EvaluateHuman(g, "needs-changes")
 	if err != nil {

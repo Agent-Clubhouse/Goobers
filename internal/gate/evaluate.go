@@ -285,6 +285,9 @@ func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision string) (Result, error)
 	if g.Evaluator != apiv1.EvaluatorHuman {
 		return Result{}, fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
 	}
+	if g.Human != nil && len(g.Human.Approvers) > 0 {
+		return Result{}, fmt.Errorf("gate %q: human approver restrictions are not supported yet", g.Name)
+	}
 	if decision == "" {
 		return Result{}, fmt.Errorf("gate %q: human decision is required", g.Name)
 	}

@@ -89,7 +89,7 @@ func TestCompileAllowsHumanGate(t *testing.T) {
 		Gates: []apiv1.Gate{{
 			Name:      "approval",
 			Evaluator: apiv1.EvaluatorHuman,
-			Human:     &apiv1.HumanGate{Approvers: []string{"maintainers"}},
+			Human:     &apiv1.HumanGate{},
 			Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
 		}},
 	}
@@ -97,6 +97,12 @@ func TestCompileAllowsHumanGate(t *testing.T) {
 	if _, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("compile human gate: %v", err)
 	}
+	spec.Gates[0].Human.Approvers = []string{"maintainers"}
+	if _, err := compileAcknowledged(Definition{Name: "restricted-human-approval", Version: 1, Spec: spec}); err == nil ||
+		!strings.Contains(err.Error(), "human approver restrictions are not supported yet") {
+		t.Fatalf("restricted human gate error = %v, want fail-closed approver rejection", err)
+	}
+	spec.Gates[0].Human.Approvers = nil
 	spec.Gates[0].Human.TimeoutSeconds = 60
 	spec.Gates[0].Human.OnTimeout = "reject"
 	if _, err := compileAcknowledged(Definition{Name: "timed-human-approval", Version: 1, Spec: spec}); err == nil ||
