@@ -21,11 +21,9 @@ import (
 // printed.
 func TestIntegrationAzureKeyVaultLiveSmoke(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_LIVE_KEYVAULT_URI")
+	testdep.RequireEnv(t, "GOOBERS_LIVE_KEYVAULT_SECRET")
 	vaultURI := os.Getenv("GOOBERS_LIVE_KEYVAULT_URI")
 	secretName := os.Getenv("GOOBERS_LIVE_KEYVAULT_SECRET")
-	if vaultURI == "" || secretName == "" {
-		t.Skip("integration test skipped: set GOOBERS_LIVE_KEYVAULT_URI and GOOBERS_LIVE_KEYVAULT_SECRET to opt in")
-	}
 
 	registry, err := NewRegistry([]instance.SecretStoreConfig{{
 		Name:     "live-kv",

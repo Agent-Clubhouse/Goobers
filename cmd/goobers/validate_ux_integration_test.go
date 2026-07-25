@@ -30,7 +30,7 @@ func TestIntegrationGitRepositoryReachableTimeoutKillsDescendantHoldingOutputPip
 			Provider: "github",
 			Owner:    "example",
 			Name:     "repository",
-		}, "test-token")
+		}, "test-token", nil)
 	}()
 	waitForFile(t, pidFile)
 
@@ -60,7 +60,7 @@ func TestIntegrationGitRepositoryReachableTimeoutBoundedWhenEscapedDescendantHol
 			Provider: "github",
 			Owner:    "example",
 			Name:     "repository",
-		}, "test-token")
+		}, "test-token", nil)
 	}()
 	waitForFile(t, pidFile)
 
