@@ -430,6 +430,9 @@ const (
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
 	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
+	featureStageWorkspaceRepoReadOnly     FeatureID = "stage.workspace.repo-readonly"
+	featureStageWorkspace                 FeatureID = "stage.workspace"
+	featureGateAgenticWorkspace           FeatureID = "gate.evaluator.agentic.workspace"
 	featureStageSyncBase                  FeatureID = "stage.run.syncBase"
 	featureStageResultFile                FeatureID = "stage.resultFile"
 	featureGateName                       FeatureID = "gate.name"
@@ -549,6 +552,9 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
 		featureStageWorkspaceScratch,
+		featureStageWorkspaceRepoReadOnly,
+		featureStageWorkspace,
+		featureGateAgenticWorkspace,
 		featureStageSyncBase,
 		featureStageResultFile,
 		featureGateName,
@@ -622,6 +628,13 @@ func currentFeatures(sinceVersion string) []Feature {
 var previewFeatures = map[FeatureID]struct{}{
 	featureGaggleSandbox:        {},
 	featureGaggleCheckoutSparse: {},
+	// The read-only repo workspace and the task/gate-level workspace seam are
+	// preview alongside the fan-out work they exist for (#1562): they change
+	// where a stage runs, and only the fan-out conformance corpus exercises
+	// the concurrent case they were added for.
+	featureStageWorkspaceRepoReadOnly: {},
+	featureStageWorkspace:             {},
+	featureGateAgenticWorkspace:       {},
 }
 
 type featureSet map[FeatureID]struct{}
@@ -759,6 +772,12 @@ func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {
 }
 
 func addTaskFeatures(used featureSet, task apiv1.Task) {
+	if task.Workspace != "" {
+		used.add(featureStageWorkspace)
+		if task.Workspace == apiv1.WorkspaceRepoReadOnly {
+			used.add(featureStageWorkspaceRepoReadOnly)
+		}
+	}
 	used.add(featureTaskName, featureTaskGoal)
 	switch task.Type {
 	case apiv1.TaskDeterministic:
@@ -844,6 +863,8 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageWorkspaceRepo)
 	case apiv1.WorkspaceScratch:
 		used.add(featureStageWorkspaceScratch)
+	case apiv1.WorkspaceRepoReadOnly:
+		used.add(featureStageWorkspaceRepoReadOnly)
 	}
 	if task.Run.SyncBase {
 		used.add(featureStageSyncBase)
@@ -905,6 +926,12 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 		}
 		if gate.Agentic.TimeoutSeconds != 0 {
 			used.add(featureEvaluatorAgenticTimeout)
+		}
+		if gate.Agentic.Workspace != "" {
+			used.add(featureGateAgenticWorkspace)
+			if gate.Agentic.Workspace == apiv1.WorkspaceRepoReadOnly {
+				used.add(featureStageWorkspaceRepoReadOnly)
+			}
 		}
 		addRetryFeatures(used, gate.Agentic.Retry, retryFeatureIDs{
 			policy:      featureEvaluatorAgenticRetry,

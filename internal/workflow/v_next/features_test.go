@@ -122,7 +122,10 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	for _, feature := range features {
 		wantLevel := SupportGA
 		switch feature.ID {
-		case featureGaggleSandbox, featureGaggleCheckoutSparse:
+		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+			featureStageWorkspaceRepoReadOnly,
+			featureStageWorkspace,
+			featureGateAgenticWorkspace:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -484,7 +487,11 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			},
 			{
 				Name: "agent-salvage", Type: apiv1.TaskAgentic, Goal: "salvage",
-				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage, Next: "shell-repo",
+				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage,
+				// The agentic seam: a task-level workspace, which an agentic
+				// stage has no Run to express.
+				Workspace: apiv1.WorkspaceRepoReadOnly,
+				Next:      "shell-repo",
 			},
 			{
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
@@ -521,7 +528,8 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "agentic", Evaluator: apiv1.EvaluatorAgentic,
 				Agentic: &apiv1.AgenticGate{
 					Goober: "reviewer", TimeoutSeconds: 30,
-					Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+					Workspace: apiv1.WorkspaceRepoReadOnly,
+					Retry:     &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
 				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
@@ -776,6 +784,9 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.run.syncBase",
 		"stage.run.workspace.repo",
 		"stage.run.workspace.scratch",
+		"stage.workspace",
+		"stage.workspace.repo-readonly",
+		"gate.evaluator.agentic.workspace",
 		"stage.resultFile",
 		"gate.name",
 		"gate.branches",

@@ -476,7 +476,7 @@ func TestCompileRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 		},
 	}
 	_, err := compileAcknowledged(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), "syncBase requires a repo workspace") {
+	if err == nil || !strings.Contains(err.Error(), "syncBase requires a writable repo workspace") {
 		t.Fatalf("Compile error = %v, want syncBase repo-workspace requirement", err)
 	}
 }
