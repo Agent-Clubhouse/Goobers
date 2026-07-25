@@ -18,6 +18,7 @@ func TestMachineGraphIsPinnedAndReadOnly(t *testing.T) {
 		def,
 		map[string]apiv1.Task{},
 		map[string]apiv1.Gate{},
+		nil,
 		source,
 	)
 	if err != nil {

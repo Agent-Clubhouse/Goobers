@@ -199,6 +199,13 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `workflow.spec.displayName` | 2.0 | ga | supported | dev |
 | `workflow.spec.gaggle` | 2.0 | ga | supported | dev |
 | `workflow.spec.gates` | 2.0 | ga | supported | dev |
+| `workflow.spec.parallels` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branchTimeoutSeconds` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.failurePolicy` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.join` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.maxConcurrentBranches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.onFailure` | 2.0 | preview | supported | dev |
 | `workflow.spec.readiness` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxChainDepth` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 2.0 | ga | supported | dev |
@@ -216,6 +223,10 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
+<<<<<<< HEAD
 - Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`
+=======
+- Added: `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
+>>>>>>> 514c31fa (feat(dsl): static fan-out/fan-in surface — parallels, @join, and validation)
 - Removed: none
 - Level changes: none

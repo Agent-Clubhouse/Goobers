@@ -861,6 +861,13 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		states[g.Name] = true
 	}
 
+	for _, p := range w.Spec.Parallels {
+		if states[p.Name] {
+			r.add(Error, file, "Workflow", w.Name, "duplicate state name %q", p.Name)
+		}
+		states[p.Name] = true
+	}
+
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
 	}
@@ -889,7 +896,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
-		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
+		if t.Next != "" && !wf.IsReservedAnyTarget(t.Next) && !states[t.Next] {
 			r.add(Error, file, "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
 		}
 	}
@@ -909,9 +916,10 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 		for outcome, next := range g.Branches {
 			// Empty means the success terminal (TerminalComplete); "@abort"
-			// and "@escalate" are reserved terminal targets — neither is a
-			// dangling reference (workflow.IsReservedTarget).
-			if next != "" && !wf.IsReservedTarget(next) && !states[next] {
+			// and "@escalate" are reserved terminal targets and "@join" is a
+			// reserved branch target — none is a dangling reference
+			// (workflow.IsReservedAnyTarget).
+			if next != "" && !wf.IsReservedAnyTarget(next) && !states[next] {
 				r.add(Error, file, "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
 			}
 		}

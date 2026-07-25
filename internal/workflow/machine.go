@@ -37,6 +37,19 @@ func IsReservedTarget(target string) bool {
 	return model.IsReservedTarget(target)
 }
 
+// IsReservedBranchTarget reports whether target is a reserved NON-terminal
+// branch action (today only "@join", which ends a parallel branch and
+// continues the run at the join state).
+func IsReservedBranchTarget(target string) bool {
+	return model.IsReservedBranchTarget(target)
+}
+
+// IsReservedAnyTarget reports whether target is reserved in any sense —
+// terminal or branch. Use it where the question is "is this a state name?".
+func IsReservedAnyTarget(target string) bool {
+	return model.IsReservedAnyTarget(target)
+}
+
 // BranchTarget resolves a gate outcome to its declared transition target.
 func BranchTarget(gate apiv1.Gate, outcome string) (target string, ok bool) {
 	return model.BranchTarget(gate, outcome)
