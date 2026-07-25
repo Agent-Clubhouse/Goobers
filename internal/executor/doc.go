@@ -19,8 +19,8 @@
 //
 // Because a caller (the runner, #17) constructs exactly one invoke.Deterministic
 // per run, TaskExecutor is the single dispatcher registered for
-// apiv1.TaskDeterministic: it routes to ShellExecutor or CIPollExecutor by
-// InvocationEnvelope.Inputs[InputKind].
+// apiv1.TaskDeterministic: it routes InvocationEnvelope.Inputs[InputKind]
+// through a KindRegistry populated at the composition root.
 //
 // ShellExecutor implements invoke.Deterministic — the existing engine↔runtime
 // seam (internal/invoke) — so it plugs into the runner (#17) the same way any

@@ -518,21 +518,15 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 	}, nil
 }
 
-// ciPollTaskExecutor admits ci-poll's credential against each invocation's
-// declared capabilities. Other deterministic kinds retain TaskExecutor's
-// existing dispatch behavior without materializing the PR credential.
-type ciPollTaskExecutor struct {
-	fallback invoke.Deterministic
+// ciPollKindExecutor admits ci-poll's credential against each invocation's
+// declared capabilities. Registering it only for KindCIPoll keeps credential
+// materialization out of every other deterministic kind.
+type ciPollKindExecutor struct {
 	injector *credentials.Injector
 	recorder executor.ArtifactRecorder
 }
 
-func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	kind, _ := env.Inputs[executor.InputKind].(string)
-	if kind != executor.KindCIPoll {
-		return e.fallback.Run(ctx, env, run)
-	}
-
+func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	set, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
@@ -558,23 +552,19 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	return ciPoll.Run(ctx, pollCfg)
 }
 
-// buildCIPollExecutor wraps the deterministic dispatcher for a repo-backed
-// instance. Credential resolution stays lazy so a non-ci-poll stage never
-// requires the PR capability or token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic, recorder executor.ArtifactRecorder) (invoke.Deterministic, error) {
+// buildCIPollExecutor builds the registered ci-poll kind for a repo-backed
+// instance. Credential resolution stays lazy until that kind is dispatched.
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
-		return fallback, nil
+		return executor.NewCIPollKindExecutor(nil), nil
 	}
 	if injector == nil {
 		return nil, fmt.Errorf("build ci-poll executor: credential injector is nil")
 	}
-	if fallback == nil {
-		return nil, fmt.Errorf("build ci-poll executor: fallback executor is nil")
-	}
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollTaskExecutor{fallback: fallback, injector: injector, recorder: recorder}, nil
+	return &ciPollKindExecutor{injector: injector, recorder: recorder}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -1494,11 +1484,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				shell.DefaultMaxOutputBytes = diagnosticsMaxOutputBytes
 			}
 
-			fallback, err := executor.NewTaskExecutor(shell, nil)
+			kinds := executor.NewKindRegistry()
+			if err := kinds.Register(executor.KindShell, shell); err != nil {
+				return nil, err
+			}
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec)
 			if err != nil {
 				return nil, err
 			}
-			return buildCIPollExecutor(cfg, injector, fallback, rec)
+			if err := kinds.Register(executor.KindCIPoll, ciPoll); err != nil {
+				return nil, err
+			}
+			return executor.NewTaskExecutor(kinds)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]

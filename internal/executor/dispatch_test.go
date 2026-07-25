@@ -13,12 +13,25 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestTaskExecutor_DefaultsToShell(t *testing.T) {
-	shell, _ := newTestExecutor(t, nil)
-	te, err := NewTaskExecutor(shell, nil)
+func newRegisteredTaskExecutor(t *testing.T, shell *ShellExecutor, ciPoll *CIPollExecutor) *TaskExecutor {
+	t.Helper()
+	registry := NewKindRegistry()
+	if err := registry.Register(KindShell, shell); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(KindCIPoll, NewCIPollKindExecutor(ciPoll)); err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewTaskExecutor(registry)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return executor
+}
+
+func TestTaskExecutor_DefaultsToShell(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	te := newRegisteredTaskExecutor(t, shell, nil)
 
 	env := apiv1.InvocationEnvelope{TaskID: "t1", Workspace: t.TempDir()}
 	result, err := te.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "echo hi"}})
@@ -39,10 +52,7 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	}
 
 	ciPoll.Sleep = noSleep
-	te, err := NewTaskExecutor(shell, ciPoll)
-	if err != nil {
-		t.Fatal(err)
-	}
+	te := newRegisteredTaskExecutor(t, shell, ciPoll)
 
 	env := apiv1.InvocationEnvelope{
 		TaskID:       "t1",
@@ -74,10 +84,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
 		tick++
 		return at
 	}
-	te, err := NewTaskExecutor(shell, ciPoll)
-	if err != nil {
-		t.Fatal(err)
-	}
+	te := newRegisteredTaskExecutor(t, shell, ciPoll)
 
 	env := apiv1.InvocationEnvelope{
 		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
@@ -112,10 +119,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
 		slept = interval
 		return nil
 	}
-	te, err := NewTaskExecutor(shell, ciPoll)
-	if err != nil {
-		t.Fatal(err)
-	}
+	te := newRegisteredTaskExecutor(t, shell, ciPoll)
 
 	env := apiv1.InvocationEnvelope{
 		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
@@ -154,10 +158,7 @@ func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	te, err := NewTaskExecutor(shell, ciPoll)
-	if err != nil {
-		t.Fatal(err)
-	}
+	te := newRegisteredTaskExecutor(t, shell, ciPoll)
 
 	env := apiv1.InvocationEnvelope{
 		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
@@ -174,16 +175,13 @@ func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
 
 func TestTaskExecutor_CIPollWithoutConfiguredExecutorFailsClosed(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
-	te, err := NewTaskExecutor(shell, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	te := newRegisteredTaskExecutor(t, shell, nil)
 	env := apiv1.InvocationEnvelope{
 		Capabilities: []string{string(capability.GitHubPRWrite)},
 		Inputs:       map[string]interface{}{InputKind: KindCIPoll},
 	}
-	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil {
-		t.Fatal("expected an error when kind=ci-poll is declared but no CIPollExecutor is configured")
+	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil || err.Error() != "executor: kind=ci-poll declared but no CIPollExecutor is configured" {
+		t.Fatalf("Run error = %v, want missing CIPollExecutor error", err)
 	}
 }
 
@@ -211,10 +209,7 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 			}
 			ciPoll.MaxConsecutivePollErrors = 1
 			ciPoll.Sleep = noSleep
-			te, err := NewTaskExecutor(shell, ciPoll)
-			if err != nil {
-				t.Fatal(err)
-			}
+			te := newRegisteredTaskExecutor(t, shell, ciPoll)
 
 			env := apiv1.InvocationEnvelope{
 				TaskID:       "poll",
@@ -241,20 +236,94 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 	}
 }
 
-func TestTaskExecutor_UnknownKindIsError(t *testing.T) {
+type testKindExecutor struct {
+	called bool
+}
+
+func (e *testKindExecutor) Run(_ context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	e.called = true
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: env.TaskID + ":" + strings.Join(run.Command, " "),
+	}, nil
+}
+
+func TestTaskExecutor_RoutesToRegisteredKind(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
-	te, err := NewTaskExecutor(shell, nil)
+	example := &testKindExecutor{}
+	registry := NewKindRegistry()
+	if err := registry.Register(KindShell, shell); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("example", example); err != nil {
+		t.Fatal(err)
+	}
+	te, err := NewTaskExecutor(registry)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	result, err := te.Run(context.Background(), apiv1.InvocationEnvelope{
+		TaskID: "registered",
+		Inputs: map[string]interface{}{InputKind: "example"},
+	}, apiv1.DeterministicRun{Command: []string{"example", "argument"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !example.called || result.Status != apiv1.ResultSuccess || result.Summary != "registered:example argument" {
+		t.Fatalf("registered executor called = %v, result = %+v", example.called, result)
+	}
+}
+
+func TestKindRegistryRejectsInvalidRegistrations(t *testing.T) {
+	registry := NewKindRegistry()
+	example := &testKindExecutor{}
+	if err := registry.Register("", example); err == nil {
+		t.Fatal("expected empty kind registration to fail")
+	}
+	if err := registry.Register("example", nil); err == nil {
+		t.Fatal("expected nil executor registration to fail")
+	}
+	if err := registry.Register("example", example); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("example", example); err == nil {
+		t.Fatal("expected duplicate kind registration to fail")
+	}
+}
+
+func TestKindRegistryRejectsTypedNilExecutor(t *testing.T) {
+	registry := NewKindRegistry()
+	var shell *ShellExecutor
+	if err := registry.Register(KindShell, shell); err == nil || err.Error() != `executor: kind "shell" executor must not be nil` {
+		t.Fatalf("Register error = %v, want typed-nil executor error", err)
+	}
+	if _, err := NewTaskExecutor(registry); err == nil || err.Error() != "executor: shell executor must not be nil" {
+		t.Fatalf("NewTaskExecutor error = %v, want missing shell error", err)
+	}
+}
+
+func TestTaskExecutor_UnknownKindIsError(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	te := newRegisteredTaskExecutor(t, shell, nil)
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKind: "something-else"}}
-	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil {
-		t.Fatal("expected an error for an unknown kind")
+	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil || err.Error() != "executor: unknown kind something-else" {
+		t.Fatalf("Run error = %v, want equivalent unknown-kind error", err)
 	}
 }
 
 func TestNewTaskExecutor_RequiresShell(t *testing.T) {
-	if _, err := NewTaskExecutor(nil, nil); err == nil {
-		t.Fatal("expected an error for a nil shell executor")
+	if _, err := NewTaskExecutor(nil); err == nil {
+		t.Fatal("expected nil registry to fail")
+	}
+	if _, err := NewTaskExecutor(NewKindRegistry()); err == nil || err.Error() != "executor: shell executor must not be nil" {
+		t.Fatalf("NewTaskExecutor error = %v, want missing shell error", err)
+	}
+
+	var shell *ShellExecutor
+	registry := NewKindRegistry()
+	registry.executors[KindShell] = shell
+	if _, err := NewTaskExecutor(registry); err == nil || err.Error() != "executor: shell executor must not be nil" {
+		t.Fatalf("NewTaskExecutor error = %v, want typed-nil shell error", err)
 	}
 }
