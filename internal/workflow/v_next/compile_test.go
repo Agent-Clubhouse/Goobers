@@ -2,7 +2,6 @@ package vnext
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -57,7 +56,7 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
-func TestCompileExpandsRunScriptToShellCommand(t *testing.T) {
+func TestCompilePreservesRunScriptForShellExecutor(t *testing.T) {
 	script := "set -eu\nprintf 'ok\\n'"
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -83,31 +82,14 @@ func TestCompileExpandsRunScriptToShellCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("compiled machine has no check task")
 	}
-	if want := []string{"sh", "-c", script}; !reflect.DeepEqual(task.Run.Command, want) {
-		t.Fatalf("compiled command = %#v, want %#v", task.Run.Command, want)
+	if task.Run.Command != nil {
+		t.Fatalf("compiled command = %#v, want nil", task.Run.Command)
 	}
-	if task.Run.Script != "" {
-		t.Fatalf("compiled script = %q, want canonical command only", task.Run.Script)
+	if task.Run.Script != script {
+		t.Fatalf("compiled script = %q, want %q", task.Run.Script, script)
 	}
 	if task.Run.Env["LC_ALL"] != "C" || task.Run.Workspace != apiv1.WorkspaceScratch {
 		t.Fatalf("compiled run lost options: %+v", task.Run)
-	}
-
-	commandSpec := spec
-	commandSpec.Tasks = append([]apiv1.Task(nil), spec.Tasks...)
-	commandTask := commandSpec.Tasks[0]
-	commandTask.Run = &apiv1.DeterministicRun{
-		Command:   []string{"sh", "-c", script},
-		Env:       map[string]string{"LC_ALL": "C"},
-		Workspace: apiv1.WorkspaceScratch,
-	}
-	commandSpec.Tasks[0] = commandTask
-	commandMachine, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: commandSpec})
-	if err != nil {
-		t.Fatalf("Compile command form: %v", err)
-	}
-	if machine.Digest() != commandMachine.Digest() {
-		t.Fatalf("script digest = %q, command digest = %q; sugar must compile identically", machine.Digest(), commandMachine.Digest())
 	}
 }
 

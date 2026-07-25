@@ -16,9 +16,11 @@ imply extra sandboxing.
 ## Inline workflow script
 
 Pin the workflow to DSL 2.0 and put a short script directly under `run.script`.
-The compiler expands it to `run.command: ["sh", "-c", <script>]` and sends it
-through the existing shell-stage executor. Do not set `command` and `script`
-together; validation rejects that ambiguity.
+The existing shell-stage executor invokes the script through the host's native
+command interpreter: `sh -c` on Unix or `cmd.exe /D /S /C` on Windows. Write
+scripts in that interpreter's syntax and declare an OS runner requirement when
+the syntax is platform-specific. Do not set `command` and `script` together;
+validation rejects that ambiguity.
 
 The runnable reference is
 [`workflows/inline-policy-check.yaml`](../../config-examples/gaggles/acme-web/workflows/inline-policy-check.yaml):
@@ -54,6 +56,7 @@ spec:
         labels: "ready,security-reviewed"
         requiredLabel: "security-reviewed"
         resultFile: "policy-result.json"
+      requiredCapabilities: ["os=linux"]
       expectedOutputs: [allowed]
       next: label-policy
   gates:
@@ -67,10 +70,11 @@ spec:
         fail: "@abort"
 ```
 
-`workspace: scratch` makes the no-repository dependency explicit. Omit it when
-the inline check needs to inspect the project worktree. Keep inline scripts
-small; move growing logic into the project repository so it can have dedicated
-tests and project review.
+This example uses POSIX syntax, so `requiredCapabilities: ["os=linux"]` keeps it
+off Windows runners. `workspace: scratch` makes the no-repository dependency
+explicit. Omit it when the inline check needs to inspect the project worktree.
+Keep inline scripts small; move growing logic into the project repository so it
+can have dedicated tests and project review.
 
 ## In-repo project script
 

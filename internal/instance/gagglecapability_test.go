@@ -45,6 +45,24 @@ func TestApplyGaggleCICommand_OverridesLocalCI(t *testing.T) {
 	}
 }
 
+func TestApplyGaggleCICommand_ReplacesInlineScript(t *testing.T) {
+	workflow := workflowWithLocalCI("impl", "web", nil)
+	workflow.Spec.Tasks[1].Run.Script = "make ci"
+	set := &ConfigSet{
+		Gaggles:   []apiv1.Gaggle{gaggle("web", apiv1.GaggleSpec{CICommand: []string{"npm", "run", "ci"}})},
+		Workflows: []apiv1.Workflow{workflow},
+	}
+	ApplyGaggleCICommand(set)
+
+	run := set.Workflows[0].Spec.Tasks[1].Run
+	if want := []string{"npm", "run", "ci"}; !reflect.DeepEqual(run.Command, want) {
+		t.Fatalf("local-ci command = %v, want %v", run.Command, want)
+	}
+	if run.Script != "" {
+		t.Fatalf("local-ci script = %q, want cleared by command override", run.Script)
+	}
+}
+
 func TestApplyGaggleCICommand_NoOverrideKeepsDeclaredCommand(t *testing.T) {
 	// A gaggle with no CICommand leaves the declared default in place — the
 	// single-Go-gaggle regression case.

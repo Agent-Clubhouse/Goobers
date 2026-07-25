@@ -343,8 +343,9 @@ spec:
                           type: string
                         script:
                           description: |-
-                            Script is an inline POSIX shell script compiled to command: ["sh", "-c", script].
-                            It is mutually exclusive with Command.
+                            Script is an inline script executed by the host's native command
+                            interpreter: sh on Unix and cmd.exe on Windows. It is mutually exclusive
+                            with Command.
                           minLength: 1
                           type: string
                         syncBase:

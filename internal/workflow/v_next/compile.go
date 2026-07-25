@@ -159,11 +159,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		opt(o)
 	}
 
-	authoredDef := def
 	scriptProblems := runScriptProblems(def)
-	if len(scriptProblems) == 0 {
-		def = expandRunScripts(def)
-	}
 	m, err := newMachine(def)
 	if err != nil {
 		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
@@ -174,7 +170,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if o.allowPreviewFeatures != nil {
 		allowPreview = *o.allowPreviewFeatures
 	}
-	problems = append(problems, blockingFeatureProblems(CheckWorkflowFeatureSupport(authoredDef, allowPreview))...)
+	problems = append(problems, blockingFeatureProblems(CheckWorkflowFeatureSupport(def, allowPreview))...)
 	problems = append(problems, scriptProblems...)
 	if o.goobers != nil {
 		names := make([]string, 0, len(o.goobers))
@@ -221,21 +217,6 @@ func runScriptProblems(def Definition) []string {
 		}
 	}
 	return problems
-}
-
-func expandRunScripts(def Definition) Definition {
-	tasks := append([]apiv1.Task(nil), def.Spec.Tasks...)
-	for i := range tasks {
-		if tasks[i].Run == nil || tasks[i].Run.Script == "" {
-			continue
-		}
-		run := *tasks[i].Run
-		run.Command = []string{"sh", "-c", run.Script}
-		run.Script = ""
-		tasks[i].Run = &run
-	}
-	def.Spec.Tasks = tasks
-	return def
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.

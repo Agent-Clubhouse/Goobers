@@ -59,6 +59,11 @@ func newTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecut
 	if runtime.GOOS == "windows" {
 		t.Skip("ShellExecutor tests exercise Unix process and shell semantics")
 	}
+	return newPortableTestExecutor(t, injector)
+}
+
+func newPortableTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecutor, *fakeRecorder) {
+	t.Helper()
 	if injector == nil {
 		resolver, err := credentials.NewResolver(nil)
 		if err != nil {
@@ -99,6 +104,54 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello") {
 		t.Fatalf("stdout artifact = %q, want it to contain %q", got, "hello")
+	}
+}
+
+func TestShellExecutor_RunScript(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	script := "message='hello-from-script'\nprintf '%s\\n' \"$message\""
+	if runtime.GOOS == "windows" {
+		script = "@echo off\nset \"message=hello-from-script\"\necho %message%"
+	}
+	tempDir := env.Workspace
+	if runtime.GOOS == "windows" {
+		tempDir = os.TempDir()
+	}
+	before, err := filepath.Glob(filepath.Join(tempDir, "goobers-inline-*.cmd"))
+	if err != nil {
+		t.Fatalf("glob temporary scripts before run: %v", err)
+	}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Script: script,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello-from-script") {
+		t.Fatalf("stdout artifact = %q, want inline script output", got)
+	}
+	files, err := filepath.Glob(filepath.Join(tempDir, "goobers-inline-*.cmd"))
+	if err != nil {
+		t.Fatalf("glob temporary scripts: %v", err)
+	}
+	if len(files) != len(before) {
+		t.Fatalf("temporary inline script count = %d, want prior count %d: %v", len(files), len(before), files)
+	}
+}
+
+func TestShellExecutor_RejectsCommandAndScript(t *testing.T) {
+	exec, _ := newPortableTestExecutor(t, nil)
+	_, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"echo", "command"},
+		Script:  "echo script",
+	})
+	if err == nil || !strings.Contains(err.Error(), "declares both command and script") {
+		t.Fatalf("Run error = %v, want command/script ambiguity rejection", err)
 	}
 }
 

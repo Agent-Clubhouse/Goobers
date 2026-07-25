@@ -256,8 +256,9 @@ type DeterministicRun struct {
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Command []string `json:"command,omitempty" yaml:"command,omitempty"`
-	// Script is an inline POSIX shell script compiled to command: ["sh", "-c", script].
-	// It is mutually exclusive with Command.
+	// Script is an inline script executed by the host's native command
+	// interpreter: sh on Unix and cmd.exe on Windows. It is mutually exclusive
+	// with Command.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	Script string `json:"script,omitempty" yaml:"script,omitempty"`
