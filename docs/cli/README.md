@@ -34,6 +34,7 @@
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
+| [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
@@ -664,6 +665,33 @@ config, 2 = usage/IO error.
 $ goobers features
 $ goobers features --dsl-version 1.4
 $ goobers features --used
+~~~
+
+## `goobers fix`
+
+mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+
+~~~text
+Usage: goobers fix --to <version> [--write] [path]
+
+Mechanically migrate every workflow in a config directory (default path
+".") from its current dslVersion to <version>, one registered version
+step at a time (DVL-6). Prints a reviewable unified diff per changed
+workflow file by default; --write applies the diff to each file in
+place instead. Refuses a workflow that is already at <version>, and
+refuses any jump for which no direct one-step migration is registered —
+chain multiple `fix` invocations for a multi-step upgrade, never a
+silent multi-step rewrite. Never runs automatically; this is always an
+author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
+migrate), 1 = one or more workflows could not be migrated,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fix --to 2.0
+$ goobers fix --to 2.0 --write ./instance
 ~~~
 
 ## `goobers gather-ci-failures`
