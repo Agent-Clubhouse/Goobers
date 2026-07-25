@@ -13,7 +13,7 @@ const PADDING = 48;
 const CYCLE_LANE_HEIGHT = 34;
 const PARALLEL_EDGE_LANE_GAP = 28;
 
-export const MIN_GRAPH_ZOOM = 0.75;
+export const MIN_GRAPH_ZOOM = 0.25;
 export const MAX_GRAPH_ZOOM = 1.4;
 
 export interface WorkflowLayoutStage {
@@ -258,10 +258,11 @@ export function fitGraphZoom(
   }
   const ratio = Math.min(
     1,
-    (viewportWidth - 24) / graphWidth,
-    (viewportHeight - 24) / graphHeight,
+    Math.max(1, viewportWidth - 24) / graphWidth,
+    Math.max(1, viewportHeight - 24) / graphHeight,
   );
-  return clampGraphZoom(Math.floor(ratio * 100) / 100);
+  const roundedDown = Math.floor(ratio * 1_000) / 1_000;
+  return roundedDown > 0 ? roundedDown : ratio;
 }
 
 export function clampGraphZoom(zoom: number): number {

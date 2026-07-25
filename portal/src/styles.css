@@ -1925,6 +1925,29 @@ a.telemetry-error-row:hover {
   gap: 9px;
 }
 
+.workflow-graph-shell:fullscreen,
+.workflow-graph-shell-expanded {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  width: 100%;
+}
+
+.workflow-graph-shell-expanded {
+  inset: 0;
+  position: fixed;
+  z-index: 1000;
+}
+
+.workflow-graph-shell:fullscreen .workflow-graph-viewport,
+.workflow-graph-shell-expanded .workflow-graph-viewport {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
 .workflow-graph-controls {
   align-items: center;
   display: flex;
@@ -1955,13 +1978,6 @@ a.telemetry-error-row:hover {
   opacity: 0.45;
 }
 
-.graph-control-divider {
-  background: var(--line);
-  height: 20px;
-  margin: 0 3px;
-  width: 1px;
-}
-
 .graph-zoom-value {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1976,11 +1992,24 @@ a.telemetry-error-row:hover {
   background-size: 16px 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
+  cursor: grab;
   height: 360px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   position: relative;
   scrollbar-gutter: stable;
+  touch-action: pan-y;
+}
+
+.workflow-graph-viewport.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.workflow-graph-viewport:focus,
+.workflow-graph-viewport:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .workflow-graph-sizer {
@@ -3589,6 +3618,11 @@ a.telemetry-error-row:hover {
   .workflow-graph-viewport {
     background-image: none;
     height: 420px;
+  }
+
+  .workflow-graph-shell:fullscreen,
+  .workflow-graph-shell-expanded {
+    padding: 10px;
   }
 
   .configuration-warning-heading {
