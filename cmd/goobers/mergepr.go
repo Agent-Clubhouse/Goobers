@@ -200,6 +200,17 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
 			}
 		}
+		if isTutorBranch(poll.HeadBranch, providerBranchNamespace()) {
+			classification, classifyErr := classifyRemoteTutorChanges(
+				ctx, provider, repo, pullNumber, poll.BaseSHA, poll.HeadSHA,
+			)
+			switch {
+			case classifyErr != nil:
+				reasons = append(reasons, fmt.Sprintf("Tutor change classification failed (%v) — explicit human review required", classifyErr))
+			case classification.RequiresHumanSignoff():
+				reasons = append(reasons, tutorManualReviewReason(classification))
+			}
+		}
 		if advisoryMode {
 			reasons = append(reasons, "advisory mode: no merge attempted")
 		}
