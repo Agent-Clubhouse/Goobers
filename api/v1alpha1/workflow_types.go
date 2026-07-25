@@ -37,6 +37,7 @@ type Trigger struct {
 	// LabelPredicate is a CEL expression over the item's label set. The only
 	// supported operations are string membership in `labels` and boolean
 	// composition with &&, ||, and !. It is ANDed with Selector.
+	// +kubebuilder:validation:MinLength=1
 	// +optional
 	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
 	// Priority orders provider-backed polling when a quota window cannot cover
