@@ -1,124 +1,214 @@
-# Windows quickstart (install & verify)
+# Windows quickstart (tier 1, local)
 
-Install the `goobers` binary on Windows from a tagged release: download the
-release zip, verify its checksum, place it on `PATH`, and confirm the version.
-This is the Windows-specific companion to the platform-neutral
-[`quickstart.md`](quickstart.md) — the CLI surface is identical; this page covers
-the Windows-specific *getting-the-binary* path (zip + `Get-FileHash` verification
-+ `PATH`) and, once a supervised daemon is wanted, points at the
-[Windows Service](supervision.md#windows-windows-service) setup.
+Stand up a `goobers` node on Windows from scratch: install prerequisites,
+install or build the binary, configure credentials, drive a first run, and run
+the daemon in the foreground. This is the Windows-specific companion to the
+platform-neutral [`quickstart.md`](quickstart.md).
 
-Tagged releases publish a `windows/amd64` archive alongside the macOS and Linux
-artifacts. The archive includes the release-stamped CLI and its matching
-onboarding documentation; the steps below are the supported Windows install
-path.
+Windows is **officially supported for deterministic workloads**. The required
+Windows CI gate runs the real foreground daemon and the complete shipped
+implementation workflow through the local runner with a deterministic fake
+harness. That validation is sufficient for the deterministic-only support
+milestone. Live Copilot CLI/agentic parity remains the independent
+[#647 Tier 2](https://github.com/Agent-Clubhouse/Goobers/issues/647) scope and is
+not a blocker to using deterministic workflows on Windows.
 
-## 1. Download
+## Validated environment and evidence
 
-Grab the Windows archive and the checksum manifest from the release you want
-(see [Releases & packaging](releases.md) for the artifact naming scheme):
+The `windows gate (build · vet · runtime smoke)` job in
+`.github/workflows/ci.yml` runs on `windows-latest` for every change. A
+representative successful hosted run on 2026-07-25 used:
 
-- `goobers_<version>_windows_amd64.zip` — contains `goobers.exe`, `README.md`,
-  and the release-pinned `docs/` tree
-- `SHA256SUMS` — the checksum manifest covering every artifact in the release
+| Component | Validated on |
+|---|---|
+| Operating system | Microsoft Windows Server 2025, `Microsoft Windows [Version 10.0.26100.32995]`, runner image `windows-2025-vs2026` version `20260714.173.1` |
+| Architecture | `windows/amd64` |
+| Go toolchain | Go 1.26.5 (the version pinned in [`go.mod`](../../go.mod)) |
+| Git | Git for Windows 2.55.0.windows.2 |
 
-Only `windows/amd64` is published. `windows/arm64` is **not** shipped — see
-[the arm64 decision](releases.md#windowsarm64-deferred).
+Each run uploads a `windows-validation-evidence` artifact containing:
+
+- `environment.txt`, including the exact Windows version/build reported by
+  `cmd.exe /c ver`, runner image, Git, Go, and Goobers versions;
+- `implementation-workflow.json` plus the captured run journal, proving the
+  fake-harness implementation path reached `phase=completed` through
+  `query-backlog`, implementation, review, local gate, PR/CI gates, and
+  `close-out`;
+- daemon status/logs and its scheduler journal, including
+  `daemon.clean_shutdown`; and
+- `summary.md`, including the breakage triage list. The current list is empty.
+
+Reproduce the source-level validation from a repository checkout:
+
+```powershell
+go build -o bin\goobers.exe .\cmd\goobers
+go run .\test\windowsvalidate -bin bin\goobers.exe -out bin\windows-validation-evidence
+Get-Content .\bin\windows-validation-evidence\summary.md
+```
+
+The validation is credential-free and does not invoke an external agent CLI.
+Its fake replaces external effects while the real runner, worktrees, journal,
+stage envelopes, and gates execute normally.
+
+## 1. Install prerequisites
+
+Use a 64-bit Windows 11 or Windows Server 2025 host with:
+
+1. **Git for Windows 2.40 or newer** on `PATH`. Goobers relies on modern
+   worktree and per-command Git configuration behavior.
+2. **PowerShell** for the commands below.
+3. **Go matching `go.mod`** only when building from source or reproducing the
+   validation. A release install does not require Go, Node.js, Bash, or Make.
+4. Every executable used by your own deterministic workflow stages on the
+   daemon's `PATH`.
+
+Enable Windows long-path support from an elevated PowerShell, enable Git's
+matching support, and prefer a short instance root such as `C:\goobers`:
+
+```powershell
+New-ItemProperty `
+  -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWord -Force
+git config --global core.longpaths true
+```
+
+See [Windows worktree notes](windows-worktree-notes.md) for symlink behavior,
+CRLF policy, and the full path-length calculation.
 
 ## 2. Verify the checksum
 
-Never skip this — the artifacts are distributed **unsigned initially** (see
-[Signing posture](releases.md#signing-posture)), so the SHA-256 is the integrity
-check. PowerShell's `Get-FileHash` produces the same lowercase hex the
-`SHA256SUMS` manifest uses:
+Download `goobers_<version>_windows_amd64.zip` and `SHA256SUMS` from the same
+tagged release. Only `windows/amd64` is published; Windows ARM64 is deferred.
+Release artifacts are initially unsigned, so checksum verification is required:
 
 ```powershell
-# From the folder containing the .zip and SHA256SUMS:
-$want = (Select-String -Path .\SHA256SUMS -Pattern 'goobers_.*_windows_amd64\.zip').Line.Split(' ')[0]
-$got  = (Get-FileHash -Algorithm SHA256 .\goobers_*_windows_amd64.zip).Hash.ToLower()
-if ($got -eq $want) { "OK: checksum matches" } else { throw "CHECKSUM MISMATCH: $got != $want" }
+$archive = Get-ChildItem .\goobers_*_windows_amd64.zip
+$want = (Select-String -Path .\SHA256SUMS -Pattern ([regex]::Escape($archive.Name))).Line.Split(' ')[0]
+$got = (Get-FileHash -Algorithm SHA256 $archive.FullName).Hash.ToLower()
+if ($got -ne $want) { throw "CHECKSUM MISMATCH: $got != $want" }
+"OK: checksum matches"
 ```
 
 ## 3. Extract & place on PATH
 
-Extract `goobers.exe` and put its folder on `PATH`. A per-user install needs no
-elevation:
+A per-user install needs no elevation:
 
 ```powershell
-# Per-user install (no admin):
 $dest = "$env:LOCALAPPDATA\Programs\goobers"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Expand-Archive -Path .\goobers_*_windows_amd64.zip -DestinationPath $dest -Force
 
-# Add to the *user* PATH (persists across sessions; open a new terminal after):
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$dest*") {
   [Environment]::SetEnvironmentVariable('Path', "$userPath;$dest", 'User')
 }
 ```
 
-For a machine-wide install, extract to `C:\Program Files\goobers` from an
-elevated prompt and set the `Machine` PATH instead — this matches the path the
-[Windows Service](supervision.md#windows-windows-service) example uses
-(`C:\Program Files\goobers\goobers.exe`).
-
-> **SmartScreen note.** Because the binary is unsigned, Windows SmartScreen may
-> warn on first run ("Windows protected your PC"). This is expected for an
-> unsigned executable whose checksum you have already verified — choose *More
-> info → Run anyway*. The [Authenticode upgrade path](releases.md#signing-posture)
-> removes this warning once code signing is adopted.
-
-## 4. Confirm
+Open a new terminal, then confirm the installed binary:
 
 ```powershell
 goobers --version
 ```
 
-reports the same `version (commit …, built …, go… windows/amd64)` string the
-release was stamped with (the packaging engine injects build metadata via the
-same `internal/version` `-ldflags` path a local `make build` uses). From here
-open `docs/RELEASE.md` to confirm the installed documentation identity, then use
-the bundled `docs/guides/quickstart.md`. Release packaging adapts that walkthrough
-to confirm the tagged binary and invoke `goobers` from `PATH`, so no source
-checkout or build step is required before configuring credentials and driving a
-first run.
+For a machine-wide install, extract to `C:\Program Files\goobers` from an
+elevated prompt and update the machine `PATH`. Because the binary is unsigned,
+SmartScreen may warn on first launch. After verifying the checksum, choose
+**More info → Run anyway**. See [Releases & packaging](releases.md) for the
+artifact and signing posture.
 
-To run the daemon under the Service Control Manager instead of a foreground
-`goobers up`, follow [Daemon supervision → Windows](supervision.md#windows-windows-service).
+## 4. Build from source instead
 
-## Windows deltas
-
-The CLI is identical across platforms; a few Windows-specific behaviors are
-documented where they live:
-
-- **Git/worktree behavior** (long paths, `core.symlinks=false`, CRLF policy):
-  see [Windows worktree notes](windows-worktree-notes.md).
-- **Deterministic `network: none` stages**: the Linux user-namespace isolation
-  has no Windows analog yet; the Windows execution-isolation posture is being
-  decided in [#651](https://github.com/Agent-Clubhouse/Goobers/issues/651).
-  Until then, treat a Windows node as trusted-local only.
-- **Agent (Copilot CLI) stages**: whether agentic stages are supportable on
-  Windows is under spike in
-  [#647](https://github.com/Agent-Clubhouse/Goobers/issues/647); deterministic
-  stages are the safe assumption first.
-
-## Build from source
-
-To build from source instead of installing a tagged archive, use a Windows host
-with the Go toolchain pinned in [`go.mod`](../../go.mod):
+From a repository checkout with the pinned Go toolchain:
 
 ```powershell
-go build -o goobers.exe ./cmd/goobers
+go build -o bin\goobers.exe .\cmd\goobers
+.\bin\goobers.exe --version
 ```
 
-(The committed `cmd/goobers/portal-dist` assets are embedded automatically, so no
-Node/npm step is needed for the CLI build.) To cross-compile the release package
-from another platform:
+The committed portal assets are embedded, so Node/npm is not needed for the CLI
+build. Use `go run .\test\ci`, not `make ci`, for the repository's portable
+development gate on a shell-less Windows host.
 
-```sh
-GOOS=windows GOARCH=amd64 go run ./release -targets windows/amd64 -first-feature-snapshot
+## 5. Scaffold and configure an instance
+
+```powershell
+goobers init C:\goobers\my-instance
 ```
 
-`-first-feature-snapshot` selects the empty baseline for this first/local
-package. For later releases, use `-previous-features` as described in
-[Releases & packaging](releases.md).
+Edit `instance.yaml` to point at your repository. Never inline a provider
+secret. For an interactive first run, reference an environment variable in the
+config and set it before starting Goobers:
+
+```powershell
+$env:GOOBERS_GITHUB_TOKEN = '<token from your secret manager>'
+```
+
+For a file-backed secret, remove inherited ACLs and grant only the current user
+full access. Goobers checks the Windows DACL and fails closed on a broadly
+readable file; Unix `chmod 600` is not meaningful on NTFS.
+
+```powershell
+$tokenDir = "$env:USERPROFILE\.config\goobers"
+$tokenFile = "$tokenDir\github.token"
+New-Item -ItemType Directory -Force -Path $tokenDir | Out-Null
+Set-Content -NoNewline -Path $tokenFile -Value $env:GOOBERS_GITHUB_TOKEN
+icacls.exe $tokenFile /inheritance:r /grant:r "$($env:USERNAME):F"
+```
+
+Set the repository token reference to `env: GOOBERS_GITHUB_TOKEN` or
+`file: C:\Users\<you>\.config\goobers\github.token`, then validate:
+
+```powershell
+goobers validate C:\goobers\my-instance
+```
+
+## 6. Drive a first run
+
+Run one configured workflow manually:
+
+```powershell
+goobers run <workflow-name> C:\goobers\my-instance
+goobers status C:\goobers\my-instance
+goobers trace <run-id> C:\goobers\my-instance
+```
+
+The credential-free fake-harness path is the source-level validation command in
+[Validated environment and evidence](#validated-environment-and-evidence);
+`goobers init --demo` remains limited to hosts with native network isolation.
+
+## 7. Run the daemon in the foreground
+
+```powershell
+goobers up C:\goobers\my-instance
+```
+
+`goobers up` runs the scheduler and local runner in the foreground. From a
+second terminal, confirm it is healthy:
+
+```powershell
+goobers status --daemon C:\goobers\my-instance
+```
+
+Press Ctrl+C or Ctrl+Break in the daemon console to request a graceful drain.
+The Windows validation uses Ctrl+Break against a dedicated console and
+requires a clean exit plus a `daemon.clean_shutdown` journal event.
+
+This foreground/manual lifecycle is the scope validated here. For unattended
+operation under the Service Control Manager, follow
+[Daemon supervision → Windows](supervision.md#windows-windows-service); Windows
+Service installation is a separate deployment concern.
+
+## Deltas from the macOS/Linux flow
+
+| Aspect | Windows behavior |
+|---|---|
+| Distribution | `.zip` + PowerShell `Get-FileHash`; only `windows/amd64` |
+| Build/CI command | `go build` / `go run .\test\ci`; Bash and Make are not required by the platform |
+| Paths/worktrees | Enable long paths, use a short instance root, and define repository line endings in `.gitattributes` |
+| Token files | Owner-only NTFS DACL checked with Windows APIs; do not use `chmod` |
+| Foreground shutdown | Ctrl+C/Ctrl+Break; Windows has no SIGTERM |
+| `network: none` | Fails closed because Windows has no native isolation backend; trusted-local operators may explicitly set `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1` |
+| Agentic stages | Live Copilot CLI support remains #647 Tier 2; deterministic-only support does not depend on it |
+| Service supervision | SCM setup is documented separately and is not part of the foreground validation |
+
+All other CLI and journal semantics are shared across platforms.

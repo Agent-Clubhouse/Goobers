@@ -369,7 +369,7 @@ jobs:
       - name: Enforce the journal conformance contract
         run: make test-conformance
 
-  # Windows joins CI as a REQUIRED, GREEN runtime smoke (#633) — deliberately not
+  # Windows joins CI as a REQUIRED, GREEN runtime gate (#633/#752) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
   # to remove: that one published a red check the Goobers merge flow (which has no
   # notion of an advisory check, see #961) read as a hard block. This one is
@@ -377,9 +377,9 @@ jobs:
   # builds and vets for Windows, then runs focused native-runtime regressions,
   # green as of #623's proc Job-Object impl + the build-tags on the unix-only
   # commands/tests. That makes it safe to gate on: it only reds on a real,
-  # fixable Windows regression — never as an expected-red. The complete suite
-  # remains a later step; these tests exercise the platform seams and Windows
-  # runtime paths that compile-only coverage previously missed.
+  # fixable Windows regression — never as an expected-red. The focused tests
+  # exercise platform seams, then the node validation drives the real foreground
+  # daemon and canonical fake-harness implementation workflow end to end.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
@@ -428,6 +428,20 @@ jobs:
 
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
+
+      - name: Build Windows validation binary
+        run: go build -o bin/goobers.exe ./cmd/goobers
+
+      - name: Validate Windows daemon and implementation workflow
+        run: go run ./test/windowsvalidate -bin bin/goobers.exe -out bin/windows-validation-evidence
+
+      - name: Upload Windows validation evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-validation-evidence
+          path: bin/windows-validation-evidence/
+          if-no-files-found: warn
 
   vulnerability-scan:
     name: Go vulnerability scan
