@@ -125,6 +125,9 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 		CLICapabilities: agentToolkitCLICapabilities{
 			Required: []string{"version", "versions", "validate", "status", "trace", "workflow show"},
 			Optional: []string{
+				"agent-kit install",
+				"agent-kit check",
+				"agent-kit update",
 				"features",
 				"runs list",
 				"stats",
@@ -182,6 +185,7 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		source      string
 		destination string
 	}{
+		{"agent-toolkit/.gitattributes", ".gitattributes"},
 		{"agent-toolkit/README.md", "README.md"},
 		{"docs/ARCHITECTURE.md", "docs/ARCHITECTURE.md"},
 		{"docs/stage-contract.md", "docs/stage-contract.md"},

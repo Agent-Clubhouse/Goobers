@@ -1,0 +1,2 @@
+# Keep text-asset digests stable without reclassifying user-owned binary files.
+* text=auto eol=lf
