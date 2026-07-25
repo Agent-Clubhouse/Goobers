@@ -146,6 +146,66 @@ func (p *GitHubProvider) Kind() ProviderKind {
 	return ProviderGitHub
 }
 
+// CreateRepository creates an empty GitHub repository under a user or
+// organization owner. It never initializes, commits, or pushes content.
+func (p *GitHubProvider) CreateRepository(ctx context.Context, req CreateRepositoryRequest) (CreateRepositoryResult, error) {
+	if req.Owner == "" || req.Name == "" {
+		return CreateRepositoryResult{}, fmt.Errorf("repository owner and name are required")
+	}
+	switch req.Visibility {
+	case "private", "public", "internal":
+	default:
+		return CreateRepositoryResult{}, fmt.Errorf("repository visibility must be private, public, or internal")
+	}
+
+	var viewer struct {
+		Login string `json:"login"`
+	}
+	userEndpoint, err := joinURL(p.BaseURL, "user")
+	if err != nil {
+		return CreateRepositoryResult{}, err
+	}
+	if err := p.do(ctx, http.MethodGet, userEndpoint, nil, &viewer); err != nil {
+		return CreateRepositoryResult{}, fmt.Errorf("resolve authenticated GitHub owner: %w", err)
+	}
+
+	endpoint := ""
+	if strings.EqualFold(viewer.Login, req.Owner) {
+		endpoint, err = joinURL(p.BaseURL, "user", "repos")
+	} else {
+		endpoint, err = joinURL(p.BaseURL, "orgs", req.Owner, "repos")
+	}
+	if err != nil {
+		return CreateRepositoryResult{}, err
+	}
+	body := map[string]interface{}{
+		"name":       req.Name,
+		"visibility": req.Visibility,
+		"private":    req.Visibility == "private",
+		"auto_init":  false,
+	}
+	var created struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name       string `json:"name"`
+		CloneURL   string `json:"clone_url"`
+		Visibility string `json:"visibility"`
+	}
+	if err := p.do(ctx, http.MethodPost, endpoint, body, &created); err != nil {
+		return CreateRepositoryResult{}, fmt.Errorf("create GitHub repository %s/%s: %w", req.Owner, req.Name, err)
+	}
+	return CreateRepositoryResult{
+		Repository: RepositoryRef{
+			Provider: ProviderGitHub,
+			Owner:    created.Owner.Login,
+			Name:     created.Name,
+			URL:      created.CloneURL,
+		},
+		Visibility: created.Visibility,
+	}, nil
+}
+
 // CloneRepository clones a GitHub repository to a local destination.
 func (p *GitHubProvider) CloneRepository(ctx context.Context, req CloneRequest) (CloneResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {

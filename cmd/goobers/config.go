@@ -16,11 +16,13 @@ import (
 )
 
 const configHelp = "Usage: goobers config <subcommand> [flags] [path]\n\n" +
-	"Inspect instance configuration and compare workflow definitions.\n\n" +
+	"Inspect, materialize, and compare instance configuration.\n\n" +
 	"Subcommands:\n" +
-	"  show   render the effective instance config (secrets redacted)\n" +
-	"  diff   compare active workflows with the shipped canonical workflows\n\n" +
-	"Run `goobers config show -h` or `goobers config diff -h` for details.\n" +
+	"  show         render the effective instance config (secrets redacted)\n" +
+	"  materialize  apply the recorded checked-in source to the runtime instance\n" +
+	"  diff         compare active workflows with the shipped canonical workflows\n\n" +
+	"Run `goobers config show -h`, `goobers config materialize -h`, or\n" +
+	"`goobers config diff -h` for details.\n" +
 	"Default path is \".\".\n"
 
 const configShowHelp = "Usage: goobers config show [--json] [path]\n\n" +
@@ -45,8 +47,20 @@ const configDiffHelp = "Usage: goobers config diff [--against <canonical-root>] 
 	"Exit codes: 0 = structurally identical (informational tuning is allowed),\n" +
 	"1 = structural drift or invalid config, 2 = usage/IO error.\n"
 
+const configMaterializeHelp = "Usage: goobers config materialize [instance-root]\n\n" +
+	"Validate and apply the checked-in local config source recorded in\n" +
+	"<instance-root>/instance.yaml. The source's instance.yaml.example becomes\n" +
+	"the runtime instance.yaml (with workflowSource retained), and manifest.yaml\n" +
+	"plus gaggles/ replace the runtime config/ tree. Journals, scheduler data,\n" +
+	"workcopies, credential values, and telemetry remain untouched.\n\n" +
+	"Stop the daemon before materializing, then restart it to use the new\n" +
+	"definitions. GitHub-backed guided sources use their local checkout, so pull\n" +
+	"the desired revision into that checkout first.\n\n" +
+	"Exit codes: 0 = materialized, 1 = invalid source or apply error, 2 = usage\n" +
+	"error or not an instance root.\n"
+
 // runConfig is the `config` group dispatcher: it only handles the bare/`-h`
-// invocation, since real work lives in the show and diff subcommands.
+// invocation, since real work lives in subcommands.
 func runConfig(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", configHelp) }
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -115,6 +129,53 @@ func runConfigShow(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	pf(stdout, "%s", yamlData)
+	return 0
+}
+
+func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("config materialize", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "config materialize")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
+		return 2
+	}
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		pf(stderr, "error: load config: %v\n", err)
+		return 1
+	}
+	if cfg.WorkflowSource == nil {
+		pf(stderr, "error: instance has no workflowSource; run guided setup or configure a local source\n")
+		return 1
+	}
+	if cfg.WorkflowSource.Kind != instance.WorkflowSourceKindLocalDir {
+		pf(stderr, "error: workflowSource kind %q cannot be materialized; expected %q\n",
+			cfg.WorkflowSource.Kind, instance.WorkflowSourceKindLocalDir)
+		return 1
+	}
+	if code := runValidate([]string{"--source-tree", cfg.WorkflowSource.Path}, stdout, stderr); code != 0 {
+		return code
+	}
+	sourceRoot, err := instance.MaterializeWorkflowSource(root)
+	if err != nil {
+		pf(stderr, "error: materialize config source: %v\n", err)
+		return 1
+	}
+	pf(stdout, "materialized config source %s into %s\n", sourceRoot, absolutePath(root))
 	return 0
 }
 
