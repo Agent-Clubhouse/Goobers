@@ -107,12 +107,14 @@ from a transcript.
 
 ### 3.1 Runner-authored artifact-set handoff
 
-The shipped agentic harness can lift only one task-declared `inputs.artifactFile`
-and exposes it downstream as `<stage>.artifact[0]`. Agentic completion envelopes
-cannot be trusted to mint their own paths or digests, and the current runner does
-not create semantic context names such as `reproduction.bundle`. That single-file
-surface is insufficient for a harness plus a variable set of dumps, traces, or
-profiles.
+The shipped agentic harness can lift only one task-declared
+`inputs.artifactFile`. It appends that runner-authored pointer after any
+artifacts self-reported by the completion, so its only downstream address is the
+positional `<stage>.artifact[i]`; it is `<stage>.artifact[0]` only when the
+completion reports no artifacts. Agentic completion envelopes cannot be trusted
+to mint their own paths or digests, and the current runner does not create
+semantic context names such as `reproduction.bundle`. That single-file surface
+is insufficient for a harness plus a variable set of dumps, traces, or profiles.
 
 Therefore #1484 must add **manifest-driven agentic artifact-set lifting** before
 #1482 implements this workflow. Each artifact-producing deep-investigation task
