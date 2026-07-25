@@ -42,33 +42,43 @@ func TestUpDoesNotBindWebhookListenerWithoutWebhookTriggers(t *testing.T) {
 
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
-	address := freeLoopbackAddress(t)
+
+	// Hold the webhook address for the whole test rather than probing it after
+	// the fact. Releasing the port and re-binding it to prove the daemon left it
+	// alone races every other listener on the machine: on a busy runner an
+	// unrelated process can take the port in between and the test then blames
+	// the daemon. Holding it inverts the assertion into a race-free one -- a
+	// daemon that wrongly bound the webhook listener cannot start at all, which
+	// surfaces below as a non-zero exit before startup.
+	guard := holdLoopbackAddress(t)
 	const secretEnv = "GOOBERS_TEST_UNUSED_WEBHOOK_SECRET"
 	t.Setenv(secretEnv, "configured-but-unused-secret")
-	configureWebhook(t, root, address, secretEnv)
+	configureWebhook(t, root, guard.Addr().String(), secretEnv)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	var stderr bytes.Buffer
-	done := make(chan int, 1)
+	var daemonCode int
+	daemonDone := make(chan struct{})
 	go func() {
-		done <- runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, &stderr)
+		daemonCode = runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, &stderr)
+		close(daemonDone)
 	}()
+	// Registered after the interval cleanup above, so it runs before it: the
+	// daemon reads configReloadInterval from its own goroutine and must be fully
+	// stopped before that package-level value is restored, including on the
+	// t.Fatal paths below.
+	t.Cleanup(func() {
+		cancel()
+		<-daemonDone
+	})
 	select {
 	case <-started.started:
-	case code := <-done:
-		t.Fatalf("daemon exited before startup: code = %d, stderr = %q", code, stderr.String())
+	case <-daemonDone:
+		t.Fatalf("daemon exited before startup (webhook listener bound without webhook triggers?): code = %d, stderr = %q", daemonCode, stderr.String())
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for daemon startup")
-	}
-
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		t.Fatalf("webhook address was bound without webhook triggers: %v", err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
 	}
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
@@ -85,16 +95,17 @@ func TestUpDoesNotBindWebhookListenerWithoutWebhookTriggers(t *testing.T) {
 	if rejected.Error == nil || !strings.Contains(rejected.Error.Message, "requires a daemon restart") {
 		t.Fatalf("reload rejection = %+v", rejected.Error)
 	}
-	listener, err = net.Listen("tcp", address)
-	if err != nil {
-		t.Fatalf("rejected webhook reload unexpectedly bound a listener: %v", err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	// We still hold the webhook address, so a reload that wrongly brought a
+	// listener up could not have bound it and would have taken the daemon down.
+	select {
+	case <-daemonDone:
+		t.Fatalf("rejected webhook reload unexpectedly bound a listener: code = %d, stderr = %q", daemonCode, stderr.String())
+	default:
 	}
 
 	cancel()
-	if code := <-done; code != 0 {
+	<-daemonDone
+	if code := daemonCode; code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
 }
