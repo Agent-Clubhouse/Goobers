@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -275,9 +274,17 @@ type Config struct {
 	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
 	// separator is tried directly, PATH is not consulted, matching what
 	// exec.Command itself does when the stage later actually runs it).
-	// Optional — nil defaults to exec.LookPath. Tests override this to
-	// simulate a missing executable without depending on the host's real
-	// PATH.
+	// Optional — nil disables the preflight entirely (no behavior change),
+	// matching this Config's other optional hooks (Failed, NotifyTerminal,
+	// etc: nil is a no-op). Unlike ToolchainVerifier, this cannot default to
+	// a real implementation: a compiled machine's local-ci stage is a
+	// near-universal fixture shape across this package's own tests (and any
+	// embedder's), so defaulting to exec.LookPath would preflight a real
+	// host PATH lookup on every such test regardless of whether its executor
+	// is even real — exactly the #1600 regression this doc guards against.
+	// The production daemon wiring (cmd/goobers/runnerwiring.go) sets this
+	// to exec.LookPath explicitly; tests set it only when they mean to
+	// exercise the preflight.
 	LookPathFunc func(string) (string, error)
 	// Failed handles the instance-level consequence of a run reaching terminal
 	// PhaseFailed (#1054): leaving a human-visible trace (a comment carrying the
@@ -397,15 +404,11 @@ func New(cfg Config) (*Runner, error) {
 	if toolchains == nil {
 		toolchains = toolchain.DefaultVerifier()
 	}
-	lookPath := cfg.LookPathFunc
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
 	return &Runner{
 		cfg:               cfg,
 		maxSteps:          maxSteps,
 		toolchains:        toolchains,
-		lookPath:          lookPath,
+		lookPath:          cfg.LookPathFunc,
 		heartbeatInterval: StageHeartbeatInterval,
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
@@ -580,10 +583,15 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		// an executable PATH cannot resolve on this host (e.g. no GNU Make on a
 		// bring-your-own Windows runner) — before any stage executes, and before
 		// a repass/remediation cycle burns its budget repeatedly rediscovering
-		// an environment gap no code change can fix.
-		if err := checkCICommandPreflight(r.lookPath, in.Machine); err != nil {
-			span.Fail(err)
-			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, ciCommandPreflightState, 0, err)
+		// an environment gap no code change can fix. r.lookPath is nil unless
+		// the caller explicitly opted in (Config.LookPathFunc's doc comment) —
+		// a compiled machine's local-ci stage is too common a fixture shape
+		// across this package's own tests to preflight by default (#1600).
+		if r.lookPath != nil {
+			if err := checkCICommandPreflight(r.lookPath, in.Machine); err != nil {
+				span.Fail(err)
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, ciCommandPreflightState, 0, err)
+			}
 		}
 
 		seed := walkSeed{}
