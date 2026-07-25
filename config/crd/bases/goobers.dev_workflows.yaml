@@ -116,6 +116,15 @@ spec:
                           format: int32
                           minimum: 1
                           type: integer
+                        workspace:
+                          description: |-
+                            Workspace selects the filesystem workspace the reviewer evaluates in.
+                            Unset preserves the historical behaviour (a writable repo worktree).
+                          enum:
+                          - repo
+                          - scratch
+                          - repo-readonly
+                          type: string
                       required:
                       - goober
                       type: object
@@ -495,6 +504,21 @@ spec:
                       enum:
                       - deterministic
                       - agentic
+                      type: string
+                    workspace:
+                      description: |-
+                        Workspace selects the filesystem workspace for this stage, for stages
+                        that cannot express it through Run — i.e. AGENTIC tasks, which have no
+                        DeterministicRun and were previously hardcoded to the writable repo
+                        worktree. A deterministic task should keep using Run.Workspace, which
+                        takes precedence when both are set.
+
+                        The motivating case is repo-readonly for an agentic research stage
+                        inside a parallel branch (docs/design/static-fan-out-fan-in.md §6.5).
+                      enum:
+                      - repo
+                      - scratch
+                      - repo-readonly
                       type: string
                   required:
                   - goal
