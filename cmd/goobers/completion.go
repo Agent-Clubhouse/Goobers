@@ -31,7 +31,7 @@ func runCompletionScript(script string, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
-const completionHelp = "Usage: goobers completion <bash|zsh|fish>\n\n" +
+const completionHelp = "Usage: goobers completion <bash|zsh|fish|powershell>\n\n" +
 	"Generate a shell completion script. Source the output in the target shell.\n"
 
 func completionUsage(w io.Writer) {
@@ -147,10 +147,11 @@ func recentCompletionRunIDs(runs []runSummary) []string {
 // available when package-level vars initialize — these accessors build the
 // scripts on first use, long after init() has run.
 var (
-	completionScriptsOnce sync.Once
-	bashCompletionScript  string
-	zshCompletionScript   string
-	fishCompletionScript  string
+	completionScriptsOnce      sync.Once
+	bashCompletionScript       string
+	zshCompletionScript        string
+	fishCompletionScript       string
+	powershellCompletionScript string
 )
 
 func renderCompletionScripts() {
@@ -158,6 +159,7 @@ func renderCompletionScripts() {
 	bashCompletionScript = renderBashCompletion(m)
 	zshCompletionScript = renderZshCompletion(m)
 	fishCompletionScript = renderFishCompletion(m)
+	powershellCompletionScript = renderPowerShellCompletion(m)
 }
 
 // bashCompletion returns the bash completion script.
@@ -176,4 +178,10 @@ func zshCompletion() string {
 func fishCompletion() string {
 	completionScriptsOnce.Do(renderCompletionScripts)
 	return fishCompletionScript
+}
+
+// powershellCompletion returns the PowerShell completion script.
+func powershellCompletion() string {
+	completionScriptsOnce.Do(renderCompletionScripts)
+	return powershellCompletionScript
 }
