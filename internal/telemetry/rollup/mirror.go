@@ -40,6 +40,7 @@ type journalEvent struct {
 	Target          string              `json:"target,omitempty"`
 	Escalated       bool                `json:"escalated,omitempty"`
 	Status          string              `json:"status,omitempty"`
+	Outcome         string              `json:"outcome,omitempty"`
 	Outputs         map[string]any      `json:"outputs,omitempty"`
 	Artifacts       []journalRef        `json:"artifacts,omitempty"`
 	Actor           string              `json:"actor,omitempty"`

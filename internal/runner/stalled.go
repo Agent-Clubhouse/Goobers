@@ -551,7 +551,7 @@ func (r *Runner) finishStalledWith(
 	finalState string,
 	steps int,
 	request stalledRequest,
-	finish func(string, *journal.Run, journal.RunPhase, string, int) (Result, error),
+	finish func(string, *journal.Run, journal.RunPhase, string, int, string) (Result, error),
 ) (Result, error) {
 	phase := request.phase
 	if phase == "" {
@@ -560,7 +560,9 @@ func (r *Runner) finishStalledWith(
 	if err := jr.Append(interruptEvent(runID, request)); err != nil {
 		return Result{}, fmt.Errorf("runner: journal interrupted run %q: %w", runID, err)
 	}
-	return finish(runID, jr, phase, finalState, steps)
+	// A stall/cancel interruption is never PhaseCompleted, so it has no
+	// business outcome to report (#851).
+	return finish(runID, jr, phase, finalState, steps, "")
 }
 
 // interruptEvent is the diagnostic error event recorded before a live run's

@@ -47,7 +47,7 @@ func TestFinishFinalizesEveryTerminalPhaseAfterJournaling(t *testing.T) {
 				},
 			}}
 
-			res, err := r.finish(runID, jr, phase, "last-state", 3)
+			res, err := r.finish(runID, jr, phase, "last-state", 3, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +74,7 @@ func TestFinishSurfacesFinalizerFailureWithTerminalResult(t *testing.T) {
 			return errors.New("cleanup failed")
 		},
 	}}
-	res, err := r.finish(runID, jr, journal.PhaseFailed, "implement", 1)
+	res, err := r.finish(runID, jr, journal.PhaseFailed, "implement", 1, "")
 	if err == nil {
 		t.Fatal("expected finalizer error")
 	}
@@ -117,7 +117,7 @@ func TestFinishIgnoresTerminalNotificationFailure(t *testing.T) {
 			return nil
 		},
 	}}
-	res, err := r.finish(runID, jr, journal.PhaseEscalated, "review", 2)
+	res, err := r.finish(runID, jr, journal.PhaseEscalated, "review", 2, "")
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestFinishPreparesBeforeRunFinished(t *testing.T) {
 			})
 		},
 	}}
-	res, err := r.finish(runID, jr, journal.PhaseAborted, "review", 2)
+	res, err := r.finish(runID, jr, journal.PhaseAborted, "review", 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}

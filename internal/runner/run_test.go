@@ -1199,10 +1199,24 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var sawFinished bool
 	for _, event := range events {
 		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
 			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
 		}
+		// #851: a no-work completion must be distinguishable from a
+		// genuinely productive one on the journaled run.finished event
+		// itself, so read models/telemetry can exclude it from throughput
+		// numerators without re-deriving it from stage results.
+		if event.Type == journal.EventRunFinished {
+			sawFinished = true
+			if event.Outcome != RunOutcomeNoWork {
+				t.Fatalf("run.finished Outcome = %q, want %q", event.Outcome, RunOutcomeNoWork)
+			}
+		}
+	}
+	if !sawFinished {
+		t.Fatal("no run.finished event journaled")
 	}
 }
 
@@ -1923,7 +1937,7 @@ func TestRunnerGateRoutedSuccessToCompleteStaysCompleted(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		"run-849-ok:implement": {status: apiv1.ResultSuccess, summary: "reviewed, correctly declined to merge"},
 	}
-	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-849-ok",
@@ -1937,6 +1951,32 @@ func TestRunnerGateRoutedSuccessToCompleteStaysCompleted(t *testing.T) {
 	}
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed (a successful stage routed to a completing branch is a designed outcome, not a failure)", res.Phase)
+	}
+
+	// #851: the completing gate's own automated-check outcome ("fail" here —
+	// the "status-equals equals=blocked" check reports fail against a
+	// success status, and this fixture wires fail -> TerminalComplete) is
+	// reused as-is as the run's business-outcome axis, distinct from
+	// Status=completed (the execution axis #849 fixed).
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-849-ok"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawFinished bool
+	for _, e := range events {
+		if e.Type == journal.EventRunFinished {
+			sawFinished = true
+			if e.Outcome != gate.OutcomeFail {
+				t.Fatalf("run.finished Outcome = %q, want %q", e.Outcome, gate.OutcomeFail)
+			}
+		}
+	}
+	if !sawFinished {
+		t.Fatal("no run.finished event journaled")
 	}
 }
 

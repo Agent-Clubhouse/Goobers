@@ -70,7 +70,7 @@ func (db *DB) ingestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_outcomes", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -104,14 +104,17 @@ func (db *DB) DeleteRun(runID string) error {
 
 func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	var status string
+	var outcome string
 	var finishedAt time.Time
 	for _, ev := range events {
 		switch ev.Type {
 		case eventRunResumed:
 			status = ""
+			outcome = ""
 			finishedAt = time.Time{}
 		case eventRunFinished:
 			status = ev.Status
+			outcome = ev.Outcome
 			finishedAt = ev.Time
 		}
 	}
@@ -129,6 +132,17 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 			INSERT INTO run_goober_digests (run_id, goober_digest)
 			VALUES (?, ?)`, id.RunID, id.GooberDigest); err != nil {
 			return fmt.Errorf("rollup: insert goober digest for run %s: %w", id.RunID, err)
+		}
+	}
+	// #851: outcome is only meaningful alongside a completed run — a
+	// satellite row present only when one was actually reported (see
+	// schema.go v14's own precedent for why this is a satellite table, not
+	// a runs column).
+	if outcome != "" {
+		if _, err := tx.Exec(`
+			INSERT INTO run_outcomes (run_id, outcome)
+			VALUES (?, ?)`, id.RunID, outcome); err != nil {
+			return fmt.Errorf("rollup: insert outcome for run %s: %w", id.RunID, err)
 		}
 	}
 	return nil

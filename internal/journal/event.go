@@ -181,6 +181,21 @@ type Event struct {
 	// Status is the terminal status for run.finished / stage.finished, or the
 	// prior terminal phase for run.resumed. Normative.
 	Status string `json:"status,omitempty"`
+	// Outcome is run.finished's business-disposition axis (issue #851),
+	// distinct from and only meaningful alongside Status ==
+	// PhaseCompleted: Status answers "did the machinery work" (a crashed or
+	// stage-errored run is never Completed, per issue #849's fix); Outcome
+	// answers "of the designed terminals, what did it decide" — the
+	// completing gate's own evaluator outcome (a check's pass/fail, an
+	// agentic Verdict's Decision, or a merge-review land-outcome like
+	// merged/enqueued/evicted), reused as-is rather than inventing new
+	// producer plumbing. The reserved value "no-work" marks a task's
+	// ResultNoWork short-circuit — a run that correctly found nothing to do
+	// completed cleanly, but is not productive throughput and must be
+	// excluded from completion-rate/effectiveness numerators built on this
+	// field. Empty when Status != PhaseCompleted, or when a plain
+	// task-driven completion had no gate decision to report. Normative.
+	Outcome string `json:"outcome,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`

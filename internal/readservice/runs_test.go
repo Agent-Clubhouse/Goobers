@@ -143,6 +143,84 @@ func appendFixtureStageAttempt(
 	}
 }
 
+// TestRunSummaryExposesOutcomeSeparatelyFromPhase is issue #851's read-model
+// acceptance: Outcome is the business-disposition axis, only meaningful
+// alongside a completed Phase, and must survive into the read model
+// unmodified from the journaled run.finished event.
+func TestRunSummaryExposesOutcomeSeparatelyFromPhase(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
+
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-outcome-merged", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted), Outcome: "merged"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.GetRun(context.Background(), "run-outcome-merged")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if detail.Phase != journal.PhaseCompleted || detail.Outcome != "merged" {
+		t.Fatalf("detail phase/outcome = %q/%q, want completed/merged", detail.Phase, detail.Outcome)
+	}
+
+	noWorkRun, noWorkClock := createFixtureRun(
+		t, layout, machine, "run-outcome-no-work", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerSchedule}, true,
+	)
+	noWorkClock.advance(time.Second)
+	if err := noWorkRun.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted), Outcome: "no-work"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := noWorkRun.Close(); err != nil {
+		t.Fatal(err)
+	}
+	noWorkDetail, err := service.GetRun(context.Background(), "run-outcome-no-work")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if noWorkDetail.Phase != journal.PhaseCompleted || noWorkDetail.Outcome != "no-work" {
+		t.Fatalf("no-work detail phase/outcome = %q/%q, want completed/no-work", noWorkDetail.Phase, noWorkDetail.Outcome)
+	}
+
+	// A resumed run's prior terminal Outcome must not leak into the reopened,
+	// still-running summary — mirrors TestRunSummaryReflectsHumanTerminalResume's
+	// FinishedAt/Phase reset for the same reason (a resume genuinely reopens
+	// the run; nothing about its old terminal disposition still applies).
+	resumedRun, resumedClock := createFixtureRun(
+		t, layout, machine, "run-outcome-resumed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	resumedClock.advance(time.Second)
+	if err := resumedRun.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted), Outcome: "needs-changes"}); err != nil {
+		t.Fatal(err)
+	}
+	resumedClock.advance(time.Second)
+	if err := resumedRun.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseCompleted), Target: "implement",
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumedRun.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumedDetail, err := service.GetRun(context.Background(), "run-outcome-resumed")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if resumedDetail.Phase != journal.PhaseRunning || resumedDetail.Outcome != "" {
+		t.Fatalf("resumed detail phase/outcome = %q/%q, want running/empty (stale terminal outcome must not leak)", resumedDetail.Phase, resumedDetail.Outcome)
+	}
+}
+
 func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	started := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)

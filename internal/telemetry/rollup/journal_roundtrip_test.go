@@ -121,3 +121,69 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		t.Fatalf("ProviderMutations: %v, %#v", err, muts)
 	}
 }
+
+// TestIngestRunPopulatesOutcome is issue #851's rollup acceptance: the
+// business-disposition axis on run.finished must round-trip through
+// IngestRun into the queryable run_outcomes satellite table (a run with no
+// Outcome must leave it empty, not "0"/some zero-value artifact of the join).
+func TestIngestRunPopulatesOutcome(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	db := openTestDB(t, tmp)
+
+	newRun := func(runID string) *journal.Run {
+		t.Helper()
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "merge-review", WorkflowVersion: 1, Gaggle: "web",
+			Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		}, nil)
+		if err != nil {
+			t.Fatalf("journal.Create: %v", err)
+		}
+		return run
+	}
+	ingest := func(runID string, outcome string) {
+		t.Helper()
+		run := newRun(runID)
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: "completed", Outcome: outcome}); err != nil {
+			t.Fatalf("append run.finished: %v", err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := db.IngestRun(run.Dir()); err != nil {
+			t.Fatalf("IngestRun: %v", err)
+		}
+	}
+	ingest("run-outcome-merged", "merged")
+	ingest("run-outcome-no-work", "no-work")
+
+	noOutcomeRun := newRun("run-outcome-none")
+	if err := noOutcomeRun.Append(journal.Event{Type: journal.EventRunFinished, Status: "failed"}); err != nil {
+		t.Fatalf("append run.finished: %v", err)
+	}
+	if err := noOutcomeRun.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := db.IngestRun(noOutcomeRun.Dir()); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	runs, err := db.Runs()
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	byID := make(map[string]RunSummary, len(runs))
+	for _, r := range runs {
+		byID[r.RunID] = r
+	}
+	if got := byID["run-outcome-merged"].Outcome; got != "merged" {
+		t.Errorf("run-outcome-merged Outcome = %q, want %q", got, "merged")
+	}
+	if got := byID["run-outcome-no-work"].Outcome; got != "no-work" {
+		t.Errorf("run-outcome-no-work Outcome = %q, want %q", got, "no-work")
+	}
+	if got := byID["run-outcome-none"].Outcome; got != "" {
+		t.Errorf("run-outcome-none Outcome = %q, want empty", got)
+	}
+}

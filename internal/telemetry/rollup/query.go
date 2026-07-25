@@ -19,9 +19,16 @@ type RunSummary struct {
 	TriggerKind     string
 	TriggerRef      string
 	Status          string
-	StartedAt       time.Time
-	FinishedAt      time.Time // zero if the run has not finished
-	DurationMs      int64     // 0 if the run has not finished
+	// Outcome is the run's business-disposition axis (issue #851), meaningful
+	// only alongside Status == "completed" — empty otherwise, or for a
+	// completed run with no reported outcome. The reserved value "no-work"
+	// (RunOutcomeNoWork's wire value in internal/runner) marks a task's
+	// ResultNoWork short-circuit: retained for audit/query, but callers
+	// computing throughput/completion-rate must exclude it.
+	Outcome    string
+	StartedAt  time.Time
+	FinishedAt time.Time // zero if the run has not finished
+	DurationMs int64     // 0 if the run has not finished
 }
 
 // StageAttempt is a queryable row from the stage_attempts table.
@@ -126,9 +133,10 @@ type SpanEventSummary struct {
 func (db *DB) Runs() ([]RunSummary, error) {
 	rows, err := db.sql.Query(`
 		SELECT r.run_id, r.workflow, r.workflow_version, r.workflow_digest, rgd.goober_digest,
-		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms
+		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, ro.outcome, r.started_at, r.finished_at, r.duration_ms
 		FROM runs r
 		LEFT JOIN run_goober_digests rgd ON rgd.run_id = r.run_id
+		LEFT JOIN run_outcomes ro ON ro.run_id = r.run_id
 		ORDER BY r.started_at, r.run_id`)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query runs: %w", err)
@@ -138,14 +146,14 @@ func (db *DB) Runs() ([]RunSummary, error) {
 	var out []RunSummary
 	for rows.Next() {
 		var r RunSummary
-		var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt sql.NullString
+		var digest, gooberDigest, triggerKind, triggerRef, status, outcome, startedAt, finishedAt sql.NullString
 		var durationMs sql.NullInt64
 		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &gooberDigest, &r.Gaggle,
-			&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs); err != nil {
+			&triggerKind, &triggerRef, &status, &outcome, &startedAt, &finishedAt, &durationMs); err != nil {
 			return nil, fmt.Errorf("rollup: scan run: %w", err)
 		}
 		r.WorkflowDigest, r.GooberDigest = digest.String, gooberDigest.String
-		r.TriggerKind, r.TriggerRef, r.Status = triggerKind.String, triggerRef.String, status.String
+		r.TriggerKind, r.TriggerRef, r.Status, r.Outcome = triggerKind.String, triggerRef.String, status.String, outcome.String
 		if r.StartedAt, err = parseTime(startedAt); err != nil {
 			return nil, err
 		}

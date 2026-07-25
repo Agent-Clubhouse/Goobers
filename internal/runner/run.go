@@ -28,6 +28,14 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
+// RunOutcomeNoWork is run.finished's reserved, cross-workflow business
+// outcome (issue #851) for a task's ResultNoWork short-circuit: the run
+// completed cleanly (Status == PhaseCompleted) having correctly found
+// nothing to do. It is not productive throughput and read models/telemetry
+// must exclude it from completion-rate/effectiveness numerators built on
+// the Outcome field, while still retaining it for audit/query.
+const RunOutcomeNoWork = "no-work"
+
 // toolchainPreflightState is the synthetic failing-state name recorded when a
 // run fails the #735 toolchain preflight before any real stage executes, so a
 // `failed` run's FailureStage reads as the preflight rather than mis-attributing
@@ -1127,10 +1135,10 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 	}
 	switch gr.Target {
 	case workflow.TargetAbort:
-		res, err := r.finish(runID, jr, journal.PhaseAborted, gr.Gate, steps)
+		res, err := r.finish(runID, jr, journal.PhaseAborted, gr.Gate, steps, "")
 		return "", res, false, err
 	case workflow.TargetEscalate:
-		res, err := r.finish(runID, jr, journal.PhaseEscalated, gr.Gate, steps)
+		res, err := r.finish(runID, jr, journal.PhaseEscalated, gr.Gate, steps, "")
 		return "", res, false, err
 	case workflow.TerminalComplete:
 		// #849: a non-pass gate must not hide an unresolved stage failure,
@@ -1143,7 +1151,11 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
 			return "", res, false, err
 		}
-		res, err := r.finish(runID, jr, journal.PhaseCompleted, gr.Gate, steps)
+		// #851: gr.Outcome is already the completing gate's own evaluator
+		// outcome (a check's pass/fail, an agentic Verdict's Decision, or a
+		// merge-review land-outcome) — reused as-is as the business-outcome
+		// axis, no new producer plumbing needed.
+		res, err := r.finish(runID, jr, journal.PhaseCompleted, gr.Gate, steps, gr.Outcome)
 		return "", res, false, err
 	default:
 		return gr.Target, Result{}, true, nil
@@ -1489,7 +1501,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
-	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
+	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps, "")
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
 	// diagnostic-append failure must not silently drop the cause the caller
@@ -1544,7 +1556,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
 		return stalledResult, stalledErr
 	}
-	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps)
+	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps, "")
 	res.FailureStage, res.FailureCode, res.FailureMessage = stage, code, boundFailureMessage(message)
 	if err == nil && nerr != nil {
 		err = nerr
@@ -1617,7 +1629,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 			return "", res, false, err
 		}
-		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps, "")
 		return "", res, false, err
 	case apiv1.ResultFailure:
 		// #712: notify before any routing decision below — a rate-limited
@@ -1660,13 +1672,13 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			target := taskEscalationTarget(machine, t)
 			switch target {
 			case workflow.TargetAbort:
-				res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
+				res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps, "")
 				return "", res, false, err
 			case workflow.TargetEscalate:
-				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps, "")
 				return "", res, false, err
 			case workflow.TerminalComplete:
-				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps, "")
 				return "", res, false, err
 			default:
 				return target, Result{}, true, nil
@@ -1700,7 +1712,12 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// query-backlog -> curate/implement wiring (Next names a real,
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
-		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
+		// #851: "no-work" is the reserved cross-workflow business outcome
+		// for this short-circuit — a run that correctly found nothing to do
+		// completed cleanly but is not productive throughput, and must be
+		// excluded from completion-rate/effectiveness numerators built on
+		// this field.
+		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps, RunOutcomeNoWork)
 		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the
@@ -1713,13 +1730,15 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 	// surface must not crash one runner while completing on another).
 	switch t.Next {
 	case workflow.TargetAbort:
-		res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps, "")
 		return "", res, false, err
 	case workflow.TargetEscalate:
-		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps, "")
 		return "", res, false, err
 	case workflow.TerminalComplete:
-		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
+		// A plain task-driven completion (no gate decided this) has no
+		// business-outcome signal to report.
+		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps, "")
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
@@ -1763,20 +1782,25 @@ func journalToleratedFailure(jr *journal.Run, stage string) error {
 }
 
 // finish claims terminalization from the watchdog before preparing cleanup.
-func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+// runOutcome is the business-disposition axis (issue #851) journaled
+// alongside phase — only meaningful when phase is PhaseCompleted; every
+// other terminal phase passes "" (Status alone already answers "did the
+// machinery work" for those).
+func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, runOutcome string) (Result, error) {
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
-	return r.finishTakeover(runID, jr, phase, finalState, steps)
+	return r.finishTakeover(runID, jr, phase, finalState, steps, runOutcome)
 }
 
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
-// takeover, or for a recovered run with no live owner.
-func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+// takeover, or for a recovered run with no live owner. See finish's doc
+// comment for runOutcome.
+func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, runOutcome string) (Result, error) {
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}
-	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase), Outcome: runOutcome}); err != nil {
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}

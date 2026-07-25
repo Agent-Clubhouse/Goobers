@@ -409,4 +409,22 @@ CREATE TABLE IF NOT EXISTS scheduler_ingest_cursor (
 	last_seq    INTEGER NOT NULL
 );
 `,
+	// v14 (issue #851): the run's business-disposition axis, distinct from
+	// `runs.status` (the execution axis #849 fixed) — meaningful only
+	// alongside status='completed'. Populated from run.finished's Outcome
+	// field; the reserved value 'no-work' marks a task's ResultNoWork
+	// short-circuit, retained here for audit/query but excluded from
+	// throughput/completion-rate reporting built on this table. A satellite
+	// table (present only when Outcome is non-empty) rather than
+	// ALTER TABLE runs ADD COLUMN, matching v2/v3's own stated precedent:
+	// CREATE TABLE IF NOT EXISTS is idempotent under SQLite's own schema
+	// locking and safe to reapply, where ALTER TABLE ADD COLUMN already
+	// flaked "duplicate column name" under concurrent first-Opens (see v3's
+	// comment).
+	`
+CREATE TABLE IF NOT EXISTS run_outcomes (
+	run_id  TEXT NOT NULL PRIMARY KEY,
+	outcome TEXT NOT NULL
+);
+`,
 }

@@ -127,25 +127,34 @@ type RunList struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	ID               string           `json:"id"`
-	Workflow         string           `json:"workflow"`
-	WorkflowVersion  int              `json:"workflowVersion"`
-	WorkflowDigest   string           `json:"workflowDigest,omitempty"`
-	Gaggle           string           `json:"gaggle"`
-	Trigger          journal.Trigger  `json:"trigger"`
-	Phase            journal.RunPhase `json:"phase"`
-	Terminal         bool             `json:"terminal"`
-	CurrentStage     string           `json:"currentStage,omitempty"`
-	StartedAt        time.Time        `json:"startedAt"`
-	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
-	DurationMillis   int64            `json:"durationMillis"`
-	LastActivityAt   time.Time        `json:"lastActivityAt"`
-	LastSeq          uint64           `json:"lastSeq"`
-	RepassCount      int              `json:"repassCount"`
-	RetryCount       int              `json:"retryCount"`
-	PolicyRetryCount int              `json:"policyRetryCount"`
-	InfraRetryCount  int              `json:"infraRetryCount"`
-	Stages           []string         `json:"-"`
+	ID              string           `json:"id"`
+	Workflow        string           `json:"workflow"`
+	WorkflowVersion int              `json:"workflowVersion"`
+	WorkflowDigest  string           `json:"workflowDigest,omitempty"`
+	Gaggle          string           `json:"gaggle"`
+	Trigger         journal.Trigger  `json:"trigger"`
+	Phase           journal.RunPhase `json:"phase"`
+	// Outcome is run.finished's business-disposition axis (issue #851),
+	// meaningful only when Phase is PhaseCompleted — distinct from Phase,
+	// which answers "did the machinery work." Empty for every other phase,
+	// and for a completed run whose terminal had no business decision to
+	// report. The reserved value "no-work" marks a run that completed
+	// having correctly found nothing to do (RunOutcomeNoWork) — retained
+	// for audit/query but excluded from productive throughput/completion-
+	// rate reporting built on this field.
+	Outcome          string     `json:"outcome,omitempty"`
+	Terminal         bool       `json:"terminal"`
+	CurrentStage     string     `json:"currentStage,omitempty"`
+	StartedAt        time.Time  `json:"startedAt"`
+	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
+	DurationMillis   int64      `json:"durationMillis"`
+	LastActivityAt   time.Time  `json:"lastActivityAt"`
+	LastSeq          uint64     `json:"lastSeq"`
+	RepassCount      int        `json:"repassCount"`
+	RetryCount       int        `json:"retryCount"`
+	PolicyRetryCount int        `json:"policyRetryCount"`
+	InfraRetryCount  int        `json:"infraRetryCount"`
+	Stages           []string   `json:"-"`
 	stageAttempts    map[string][]StageAttempt
 }
 
@@ -1133,6 +1142,7 @@ func summarizeRunForStage(
 	attemptStage string,
 ) (RunSummary, error) {
 	phase := journal.PhaseRunning
+	outcome := ""
 	var finishedAt *time.Time
 	var lastSeq uint64
 	var lastActivityAt time.Time
@@ -1158,6 +1168,7 @@ func summarizeRunForStage(
 		switch event.Type {
 		case journal.EventRunResumed:
 			phase = journal.PhaseRunning
+			outcome = ""
 			finishedAt = nil
 			currentStage = event.Target
 		case journal.EventStageStarted:
@@ -1174,6 +1185,7 @@ func summarizeRunForStage(
 			}
 		case journal.EventStageRerunRequested:
 			phase = journal.PhaseRunning
+			outcome = ""
 			finishedAt = nil
 			currentStage = event.Stage
 		case journal.EventRunFinished:
@@ -1181,6 +1193,7 @@ func summarizeRunForStage(
 				return RunSummary{}, fmt.Errorf("unsupported terminal phase %q", event.Status)
 			}
 			phase = journal.RunPhase(event.Status)
+			outcome = event.Outcome
 			finished := event.Time
 			finishedAt = &finished
 			currentStage = ""
@@ -1218,6 +1231,7 @@ func summarizeRunForStage(
 		Gaggle:           run.identity.Gaggle,
 		Trigger:          run.identity.Trigger,
 		Phase:            phase,
+		Outcome:          outcome,
 		Terminal:         phase != journal.PhaseRunning,
 		CurrentStage:     currentStage,
 		StartedAt:        run.identity.StartedAt,
