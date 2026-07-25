@@ -30,6 +30,7 @@ func TestExportJournalOTLPUsesInclusiveExclusiveSpanStartWindow(t *testing.T) {
 		exportFixtureSpan(t, "11111111111111111111111111111111", "0000000000000004", "until", until),
 	}
 	runsDir := t.TempDir()
+	writeTestRunMarker(t, runsDir, "11111111111111111111111111111111")
 	if err := NewJournalSpanExporter(runsDir, nil).ExportSpans(t.Context(), spans); err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +51,7 @@ func TestExportJournalOTLPMatchesLiveEmission(t *testing.T) {
 		exportFixtureSpan(t, "22222222222222222222222222222222", "0000000000000002", "selected", since),
 	}
 	exporter := NewJournalSpanExporter(t.TempDir(), nil)
+	writeTestRunMarker(t, exporter.runsDir, "22222222222222222222222222222222")
 	live, err := exporter.marshalOTLP(spans[1:])
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +72,7 @@ func TestExportJournalOTLPMatchesLiveEmission(t *testing.T) {
 func TestExportJournalOTLPClassifiesOutputFailure(t *testing.T) {
 	since := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
 	runsDir := t.TempDir()
+	writeTestRunMarker(t, runsDir, "33333333333333333333333333333333")
 	if err := NewJournalSpanExporter(runsDir, nil).ExportSpans(
 		t.Context(),
 		[]sdktrace.ReadOnlySpan{

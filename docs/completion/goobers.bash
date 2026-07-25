@@ -85,6 +85,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
+                prune-orphans) flags+=" --delete --min-age" ;;
             esac
             ;;
         journal)
@@ -197,7 +198,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors export prune compact"
+                candidates="stats errors export prune prune-orphans compact"
             fi
             ;;
         journal)

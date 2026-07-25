@@ -164,6 +164,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}
@@ -314,6 +315,7 @@ func TestJournalSpanExporterNormalizesInvalidUTF8ForOTLPJSON(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}
@@ -357,6 +359,7 @@ func TestJournalSpanExporterRedactsFloatWireRepresentation(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, registry).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}

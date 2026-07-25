@@ -184,6 +184,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "until", takesArg: true, desc: "Include errors at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
+	"telemetry prune-orphans": {
+		{name: "delete", desc: "Delete eligible orphan directories (opt-in; default dry-run)"},
+		{name: "min-age", takesArg: true, desc: "Minimum inactivity age (at least 24h)"},
+	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},
