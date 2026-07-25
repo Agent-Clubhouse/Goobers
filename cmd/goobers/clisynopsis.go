@@ -19,6 +19,7 @@ var synopsisByID = map[string]string{
 	"lint":                   "  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)\n",
 	"doctor":                 "  goobers doctor --k8s [--report json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n                                preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md\n",
 	"config":                 "  goobers config show|materialize|diff [flags] [path]\n                                inspect, materialize, or compare instance configuration\n",
+	"speech":                 "  goobers speech preflight|test [--json] [path]\n                                preflight or test local speech notifications\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",

@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/speechnotify"
 )
 
 type recordingDesktopNotifier struct {
@@ -161,12 +165,16 @@ func TestBuildTerminalNotifierWarnsOnceWhenUnsupported(t *testing.T) {
 	t.Cleanup(func() { newNativeNotifier = original })
 
 	var warnings bytes.Buffer
-	notifier := buildTerminalNotifier(
+	notifier, err := buildTerminalNotifier(
+		context.Background(),
 		instance.NewLayout(t.TempDir()),
 		&instance.Config{Notifications: true},
 		journal.NewPatternScrubber(),
 		schedulerSetupOptions{desktopNotifications: true, notificationWarnings: &warnings},
 	)
+	if err != nil {
+		t.Fatalf("buildTerminalNotifier: %v", err)
+	}
 	if notifier != nil {
 		t.Fatal("unsupported platform returned a terminal notifier")
 	}
@@ -186,6 +194,7 @@ func TestTerminalNotifierFiltersCompletedAndSendsEscalated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+
 	defer func() { _ = jr.Close() }()
 	if err := jr.Append(journal.Event{
 		Type:    journal.EventGateEvaluated,
@@ -203,7 +212,8 @@ func TestTerminalNotifierFiltersCompletedAndSendsEscalated(t *testing.T) {
 	original := newNativeNotifier
 	newNativeNotifier = func() (desktopnotify.Notifier, bool) { return native, true }
 	t.Cleanup(func() { newNativeNotifier = original })
-	notifier := buildTerminalNotifier(
+	notifier, err := buildTerminalNotifier(
+		context.Background(),
 		l,
 		&instance.Config{},
 		journal.NewPatternScrubber(),
@@ -213,6 +223,9 @@ func TestTerminalNotifierFiltersCompletedAndSendsEscalated(t *testing.T) {
 			notificationWarnings: &bytes.Buffer{},
 		},
 	)
+	if err != nil {
+		t.Fatalf("buildTerminalNotifier: %v", err)
+	}
 	if err := notifier("does-not-exist", journal.PhaseCompleted, "done"); err != nil {
 		t.Fatalf("completed notification filter: %v", err)
 	}
@@ -224,5 +237,76 @@ func TestTerminalNotifierFiltersCompletedAndSendsEscalated(t *testing.T) {
 	}
 	if !native.hasDeadline || native.deadline.After(time.Now().Add(desktopNotificationTimeout)) {
 		t.Fatalf("native notification deadline = %v, want a deadline within %s", native.deadline, desktopNotificationTimeout)
+	}
+}
+
+func TestTerminalNotifierSpeechIsOptInExactAndReceipted(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	runID := "fedcba9876543210"
+	jr, err := journal.Create(l.ForGaggle("goobers").RunsDir(), journal.RunIdentity{
+		RunID:    runID,
+		Workflow: "mission-control",
+		Gaggle:   "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "run_failed", Message: "CPU is 91.2% — threshold 90%"},
+	}); err != nil {
+		t.Fatalf("append cause: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatalf("append terminal: %v", err)
+	}
+
+	fake := &speechnotify.FakeSynthesizer{}
+	installFakeSpeechSink(t, fake)
+	notifier, err := buildTerminalNotifier(
+		context.Background(),
+		l,
+		&instance.Config{Speech: &speechnotify.Config{Enabled: true}},
+		journal.NewPatternScrubber(),
+		schedulerSetupOptions{},
+	)
+	if err != nil {
+		t.Fatalf("buildTerminalNotifier: %v", err)
+	}
+	if err := notifier(runID, journal.PhaseCompleted, "done"); err != nil {
+		t.Fatalf("completed notification filter: %v", err)
+	}
+	if err := notifier(runID, journal.PhaseFailed, "implement"); err != nil {
+		t.Fatalf("failed notification: %v", err)
+	}
+	want := "mission-control [fedcba98]\nCPU is 91.2% — threshold 90%"
+	if got := fake.Utterances(); len(got) != 1 || got[0] != want {
+		t.Fatalf("utterances = %#v, want %q", got, want)
+	}
+	raw, err := os.ReadFile(filepath.Join(l.SchedulerDir(), speechnotify.ReceiptFileName))
+	if err != nil {
+		t.Fatalf("read receipt log: %v", err)
+	}
+	if !strings.Contains(string(raw), `"notificationId":"`+runID+`"`) ||
+		!strings.Contains(string(raw), `"status":"delivered"`) ||
+		strings.Contains(string(raw), "CPU is 91.2%") {
+		t.Fatalf("receipt log = %q", raw)
+	}
+}
+
+func TestTerminalNotifierRejectsEnabledSpeechWithoutPreflight(t *testing.T) {
+	fake := &speechnotify.FakeSynthesizer{PreflightErr: errors.New("audio device unavailable")}
+	installFakeSpeechSink(t, fake)
+	notifier, err := buildTerminalNotifier(
+		context.Background(),
+		instance.NewLayout(t.TempDir()),
+		&instance.Config{Speech: &speechnotify.Config{Enabled: true}},
+		journal.NewPatternScrubber(),
+		schedulerSetupOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "speech notifications unavailable") ||
+		!strings.Contains(err.Error(), "audio device unavailable") {
+		t.Fatalf("buildTerminalNotifier = (%v, %v)", notifier, err)
 	}
 }

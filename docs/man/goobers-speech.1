@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SPEECH" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers speech \- preflight and test local speech notifications
+.SH SYNOPSIS
+\fBgoobers speech\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+.fi
+.SH EXAMPLES
+.nf
+goobers speech preflight
+goobers speech test
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

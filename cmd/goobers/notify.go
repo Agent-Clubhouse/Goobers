@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/speechnotify"
 )
 
 type notificationMode uint8
@@ -93,37 +96,75 @@ var newNativeNotifier = desktopnotify.NewNative
 const desktopNotificationTimeout = 5 * time.Second
 
 func buildTerminalNotifier(
+	ctx context.Context,
 	l instance.Layout,
 	cfg *instance.Config,
 	scrubber journal.Scrubber,
 	options schedulerSetupOptions,
-) runner.TerminalNotifier {
-	if !options.desktopNotifications {
-		return nil
-	}
-	mode := options.notifyOverride.resolve(cfg.Notifications)
-	if mode == notificationOff {
-		return nil
-	}
-	native, supported := newNativeNotifier()
-	if !supported {
-		if options.notificationWarnings != nil {
-			pf(options.notificationWarnings, "warning: desktop notifications are not supported on %s; continuing without notifications\n", runtime.GOOS)
+) (runner.TerminalNotifier, error) {
+	var (
+		desktop     desktopnotify.Notifier
+		desktopMode notificationMode
+	)
+	if options.desktopNotifications {
+		desktopMode = options.notifyOverride.resolve(cfg.Notifications)
+		if desktopMode != notificationOff {
+			native, supported := newNativeNotifier()
+			if !supported {
+				if options.notificationWarnings != nil {
+					pf(options.notificationWarnings, "warning: desktop notifications are not supported on %s; continuing without desktop notifications\n", runtime.GOOS)
+				}
+			} else {
+				desktop = native
+			}
 		}
-		return nil
 	}
+
+	speechConfig := cfg.EffectiveSpeechConfig()
+	var speech *speechnotify.Sink
+	if speechConfig.Enabled {
+		recorder := speechnotify.NewFileRecorder(filepath.Join(l.SchedulerDir(), speechnotify.ReceiptFileName))
+		var err error
+		speech, err = newNativeSpeechSink(speechConfig, recorder)
+		if err != nil {
+			return nil, fmt.Errorf("configure speech notifications: %w", err)
+		}
+		if _, err := preflightSpeech(ctx, speech, speechConfig); err != nil {
+			return nil, fmt.Errorf("speech notifications unavailable: %w", err)
+		}
+	}
+	if desktop == nil && speech == nil {
+		return nil, nil
+	}
+
 	return func(runID string, phase journal.RunPhase, finalState string) error {
-		if !mode.includes(phase) {
+		deliverDesktop := desktop != nil && desktopMode.includes(phase)
+		deliverSpeech := speech != nil && notificationImportant.includes(phase)
+		if !deliverDesktop && !deliverSpeech {
 			return nil
 		}
 		message, err := terminalNotificationMessage(l, runID, phase, finalState, scrubber)
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), desktopNotificationTimeout)
-		defer cancel()
-		return native.Notify(ctx, message)
-	}
+		var deliveryErrors []error
+		if deliverDesktop {
+			ctx, cancel := context.WithTimeout(context.Background(), desktopNotificationTimeout)
+			if err := desktop.Notify(ctx, message); err != nil {
+				deliveryErrors = append(deliveryErrors, err)
+			}
+			cancel()
+		}
+		if deliverSpeech {
+			timeout, _ := speechConfig.TimeoutDuration()
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			if _, err := speech.Deliver(ctx, speechnotify.Request{NotificationID: runID, Text: message.Body}); err != nil {
+				deliveryErrors = append(deliveryErrors, err)
+			}
+			cancel()
+		}
+		return errors.Join(deliveryErrors...)
+	}, nil
 }
 
 func terminalNotificationMessage(

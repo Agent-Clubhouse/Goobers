@@ -74,6 +74,9 @@
 | [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
+| [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
+| [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
+| [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
 | [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
@@ -1575,6 +1578,68 @@ not observe a terminal phase.
 
 ~~~console
 $ goobers signal deploy-approved
+~~~
+
+## `goobers speech`
+
+preflight and test local speech notifications
+
+~~~text
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech test
+~~~
+
+## `goobers speech preflight`
+
+check the configured local speech engine without emitting sound
+
+~~~text
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech preflight --json ./instance
+~~~
+
+## `goobers speech test`
+
+speak the fixed local readiness phrase
+
+~~~text
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech test
+$ goobers speech test --json ./instance
 ~~~
 
 ## `goobers stats`
