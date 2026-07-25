@@ -8,14 +8,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,10 +26,8 @@ import (
 
 const (
 	contractEvidenceDir       = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
-	ctrlBreakHelperPIDEnv     = "GOOBERS_WINDOWSVALIDATE_CTRL_BREAK_PID"
 	ephemeralAPIListenAddress = "127.0.0.1:0"
 	implementationTestPattern = `^TestShippedWorkflowContracts$/^selfhost$/^goobers_implementation$/^01_query-backlog_next$`
-	statusControlCExit        = uint32(0xc000013a)
 )
 
 var (
@@ -43,14 +39,6 @@ var (
 )
 
 func main() {
-	if pid := os.Getenv(ctrlBreakHelperPIDEnv); pid != "" {
-		if err := sendCtrlBreakFromHelper(pid); err != nil {
-			fmt.Fprintf(os.Stderr, "windowsvalidate Ctrl+Break helper: %v\n", err)
-			os.Exit(2)
-		}
-		return
-	}
-
 	bin := flag.String("bin", filepath.Join("bin", "goobers.exe"), "path to the goobers binary to validate")
 	outDir := flag.String("out", "windows-validation-evidence", "directory to write captured evidence into")
 	flag.Parse()
@@ -291,31 +279,9 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 }
 
 func sendCtrlBreak(consoleProcessID uint32) error {
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve Ctrl+Break helper: %w", err)
-	}
-	cmd := exec.Command(executable)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", ctrlBreakHelperPIDEnv, consoleProcessID))
-	output, err := cmd.CombinedOutput()
-	if err == nil || isControlExit(err) {
-		return nil
-	}
-	return fmt.Errorf("run Ctrl+Break helper: %w: %s", err, strings.TrimSpace(string(output)))
-}
-
-func sendCtrlBreakFromHelper(value string) error {
-	pid, err := strconv.ParseUint(value, 10, 32)
-	if err != nil {
-		return fmt.Errorf("parse daemon pid %q: %w", value, err)
-	}
-	return generateCtrlBreak(uint32(pid))
-}
-
-func generateCtrlBreak(consoleProcessID uint32) error {
 	// The Actions runner is a Windows service and may not have a console. Give
-	// the daemon a dedicated console, then attach an expendable helper only long
-	// enough to target every process in that console.
+	// the daemon a dedicated console, attach here only long enough to target
+	// every process in that console, and ignore the event in this sender.
 	_, _, _ = freeConsole.Call()
 	attached, _, attachErr := attachConsole.Call(uintptr(consoleProcessID))
 	if attached == 0 {
@@ -332,11 +298,6 @@ func generateCtrlBreak(consoleProcessID uint32) error {
 		return err
 	}
 	return nil
-}
-
-func isControlExit(err error) bool {
-	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr) && uint32(exitErr.ExitCode()) == statusControlCExit
 }
 
 func configureEphemeralAPI(root string) error {
