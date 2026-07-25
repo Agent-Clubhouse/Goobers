@@ -61,7 +61,7 @@ func TestAgentKitCLIInstallCheckAndUpdate(t *testing.T) {
 		t.Fatal("default update wrote files")
 	}
 
-	code, stdout, stderr = runArgs(t, "agent-kit", "update", "--write", root)
+	code, stdout, stderr = runArgs(t, "agent-kit", "update", "--write", "--replace-modified", root)
 	if code != 0 || stderr != "" {
 		t.Fatalf("write update: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
