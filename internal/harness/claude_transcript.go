@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -191,12 +192,12 @@ func readClaudeStreamLine(reader *bufio.Reader) ([]byte, int64, error) {
 			line = append(line, fragment...)
 		}
 
-		switch err {
-		case nil:
+		switch {
+		case err == nil:
 			return line, dropped, nil
-		case bufio.ErrBufferFull:
+		case errors.Is(err, bufio.ErrBufferFull):
 			continue
-		case io.EOF:
+		case errors.Is(err, io.EOF):
 			if len(line) == 0 && dropped == 0 {
 				return nil, 0, io.EOF
 			}
@@ -244,7 +245,7 @@ func convertClaudeStream(r io.Reader, prompts []string, limit, alreadyDropped in
 	for {
 		line, dropped, err := readClaudeStreamLine(reader)
 		streamDropped += dropped
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
