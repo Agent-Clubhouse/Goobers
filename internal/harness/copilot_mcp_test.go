@@ -114,6 +114,47 @@ func TestPrepareCopilotMCPMaterializesScopedConfig(t *testing.T) {
 	}
 }
 
+func TestCopyCopilotConfigRemovesPluginRegistrations(t *testing.T) {
+	sourceHome := t.TempDir()
+	targetHome := t.TempDir()
+	config := []byte(`// Copilot CLI managed configuration
+{
+  "oauthToken": "stored-auth",
+  "model": "stored-model",
+  "provider": {"type": "byok", "endpoint": "https://models.example.test"},
+  "installedPlugins": [
+    {"name": "ambient-tools", "cache_path": "/ambient/plugins/tools"}
+  ]
+}`)
+	if err := os.WriteFile(filepath.Join(sourceHome, "config.json"), config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCopilotConfig(sourceHome, targetHome); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(targetHome, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(got, []byte("installedPlugins")) || bytes.Contains(got, []byte("/ambient/plugins/tools")) {
+		t.Fatalf("scoped Copilot config retained ambient plugin state: %s", got)
+	}
+	var preserved struct {
+		OAuthToken string          `json:"oauthToken"`
+		Model      string          `json:"model"`
+		Provider   json.RawMessage `json:"provider"`
+	}
+	if err := json.Unmarshal(got, &preserved); err != nil {
+		t.Fatal(err)
+	}
+	if preserved.OAuthToken != "stored-auth" ||
+		preserved.Model != "stored-model" ||
+		string(preserved.Provider) != `{"type":"byok","endpoint":"https://models.example.test"}` {
+		t.Fatalf("preserved Copilot config = %#v", preserved)
+	}
+}
+
 func TestCopilotAdapterMCPUsesStoredAuthenticationWithoutModelGrant(t *testing.T) {
 	for _, profileSource := range []string{"USERPROFILE", "HOMEDRIVE/HOMEPATH"} {
 		t.Run(profileSource, func(t *testing.T) {

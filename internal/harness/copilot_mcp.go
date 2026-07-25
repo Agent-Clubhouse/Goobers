@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ const (
 	copilotMCPRuntimeSubdir = ".goobers/mcp"
 	copilotMCPRuntimePrefix = "runtime-"
 	copilotWorkspaceMCPEnv  = "GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP"
+	copilotPluginDirOnlyEnv = "COPILOT_PLUGIN_DIR_ONLY"
 )
 
 type copilotMCPConfig struct {
@@ -50,9 +52,11 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string, source
 	}
 	home := filepath.Join(base, "copilot-home")
 	env = overrideEnv(env, "COPILOT_HOME", home)
-	// Prompt mode normally disables workspace MCP discovery, but an ambient
-	// opt-in must not re-enable undeclared repo configuration for this session.
+	// Keep workspace MCP discovery and ambient plugins from reintroducing
+	// servers outside this invocation's generated configuration.
 	env = removeEnvironment(env, copilotWorkspaceMCPEnv)
+	env = removeEnvironment(env, copilotPluginDirOnlyEnv)
+	env = append(env, copilotPluginDirOnlyEnv+"=true")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
 	}
@@ -126,10 +130,48 @@ func copyCopilotConfig(sourceHome, targetHome string) error {
 		}
 		return fmt.Errorf("read config.json: %w", err)
 	}
+	data, err = removeCopilotPluginRegistrations(data)
+	if err != nil {
+		return fmt.Errorf("sanitize config.json: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(targetHome, "config.json"), data, 0o600); err != nil {
 		return fmt.Errorf("write config.json: %w", err)
 	}
 	return nil
+}
+
+func removeCopilotPluginRegistrations(data []byte) ([]byte, error) {
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(trimLeadingJSONComments(data), &config); err != nil {
+		return nil, err
+	}
+	if _, ok := config["installedPlugins"]; !ok {
+		return data, nil
+	}
+	delete(config, "installedPlugins")
+	return json.Marshal(config)
+}
+
+func trimLeadingJSONComments(data []byte) []byte {
+	data = bytes.TrimSpace(data)
+	for {
+		switch {
+		case bytes.HasPrefix(data, []byte("//")):
+			end := bytes.IndexByte(data, '\n')
+			if end < 0 {
+				return nil
+			}
+			data = bytes.TrimSpace(data[end+1:])
+		case bytes.HasPrefix(data, []byte("/*")):
+			end := bytes.Index(data[2:], []byte("*/"))
+			if end < 0 {
+				return data
+			}
+			data = bytes.TrimSpace(data[end+4:])
+		default:
+			return data
+		}
+	}
 }
 
 func removeEnvironment(env []string, name string) []string {

@@ -32,6 +32,16 @@ type testCopilotMCPConfig struct {
 	MCPServers map[string]testCopilotMCPServer `json:"mcpServers"`
 }
 
+type testCopilotConfig struct {
+	OAuthToken       string                       `json:"oauthToken"`
+	InstalledPlugins []testCopilotInstalledPlugin `json:"installedPlugins"`
+}
+
+type testCopilotInstalledPlugin struct {
+	Name      string `json:"name"`
+	CachePath string `json:"cache_path"`
+}
+
 type testCopilotMCPServer struct {
 	Type    string            `json:"type"`
 	Command string            `json:"command"`
@@ -73,6 +83,10 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 	ambientRemote := newTestRemoteMCPServer(t, "ambient-remote-reachable", "", &ambientRemoteCalls)
 	defer ambientRemote.Close()
 
+	var ambientPluginCalls atomic.Int32
+	ambientPlugin := newTestRemoteMCPServer(t, "ambient-plugin-reachable", "", &ambientPluginCalls)
+	defer ambientPlugin.Close()
+
 	ambientHome := filepath.Join(t.TempDir(), "ambient-copilot")
 	if err := os.MkdirAll(ambientHome, 0o700); err != nil {
 		t.Fatal(err)
@@ -84,7 +98,20 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 			Tools: []string{"*"},
 		},
 	})
+	pluginCache := t.TempDir()
+	writeTestCopilotMCPConfigFile(t, filepath.Join(pluginCache, ".mcp.json"), map[string]testCopilotMCPServer{
+		"ambient-plugin": {
+			Type:  "http",
+			URL:   ambientPlugin.URL,
+			Tools: []string{"*"},
+		},
+	})
+	writeTestCopilotConfig(t, ambientHome, []testCopilotInstalledPlugin{{
+		Name:      "ambient-tools",
+		CachePath: pluginCache,
+	}})
 	t.Setenv("COPILOT_HOME", ambientHome)
+	t.Setenv(copilotPluginDirOnlyEnv, "false")
 	t.Setenv(mcpClientHelperEnv, "1")
 
 	adapter := &CopilotAdapter{
@@ -92,7 +119,7 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 		PromptFlag:        "-test.paniconexit0",
 		ExtraArgs:         []string{"--resume"},
 		Runner:            ExecProcessRunner{},
-		ExtraEnvAllowlist: []string{"COPILOT_HOME", mcpClientHelperEnv},
+		ExtraEnvAllowlist: []string{"COPILOT_HOME", copilotPluginDirOnlyEnv, mcpClientHelperEnv},
 	}
 	stdioMarker := filepath.Join(t.TempDir(), "stdio-calls")
 	workspace := t.TempDir()
@@ -144,6 +171,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 	if got := ambientRemoteCalls.Load(); got != 0 {
 		t.Fatalf("ambient remote tool calls during scoped invocation = %d, want 0", got)
 	}
+	if got := ambientPluginCalls.Load(); got != 0 {
+		t.Fatalf("ambient plugin tool calls during scoped invocation = %d, want 0", got)
+	}
 	assertStdioMCPCalls(t, stdioMarker, 1)
 
 	workspace = t.TempDir()
@@ -157,13 +187,17 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServers(t *testing.T) {
 		t.Fatalf("MCP-free invocation: %v", err)
 	}
 	assertMCPResults(t, second.Payload, map[string]string{
-		"ambient": "ambient-remote-reachable",
+		"ambient":        "ambient-remote-reachable",
+		"ambient-plugin": "ambient-plugin-reachable",
 	})
 	if got := declaredRemoteCalls.Load(); got != 1 {
 		t.Fatalf("declared remote tool calls after MCP-free invocation = %d, want 1", got)
 	}
 	if got := ambientRemoteCalls.Load(); got != 1 {
 		t.Fatalf("ambient remote tool calls after MCP-free invocation = %d, want 1", got)
+	}
+	if got := ambientPluginCalls.Load(); got != 1 {
+		t.Fatalf("ambient plugin tool calls after MCP-free invocation = %d, want 1", got)
 	}
 	assertStdioMCPCalls(t, stdioMarker, 1)
 }
@@ -184,6 +218,34 @@ func TestCopilotMCPClientHelper(t *testing.T) {
 	scoped := strings.Contains(filepath.ToSlash(home), "/.goobers/mcp/runtime-")
 	if scoped != slices.Contains(os.Args, "--disable-builtin-mcps") {
 		t.Fatalf("scoped home = %v, --disable-builtin-mcps args = %v", scoped, os.Args)
+	}
+	pluginDirOnly := strings.EqualFold(os.Getenv(copilotPluginDirOnlyEnv), "true")
+	if scoped != pluginDirOnly {
+		t.Fatalf("scoped home = %v, %s = %q", scoped, copilotPluginDirOnlyEnv, os.Getenv(copilotPluginDirOnlyEnv))
+	}
+	plugins, err := readTestCopilotInstalledPlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scoped && len(plugins) != 0 {
+		t.Fatalf("scoped invocation inherited ambient plugins: %#v", plugins)
+	}
+	if !pluginDirOnly {
+		if config.MCPServers == nil {
+			config.MCPServers = make(map[string]testCopilotMCPServer)
+		}
+		for _, plugin := range plugins {
+			servers, err := readTestCopilotMCPConfig(filepath.Join(plugin.CachePath, ".mcp.json"))
+			if err != nil {
+				t.Fatalf("load plugin %q MCP config: %v", plugin.Name, err)
+			}
+			for name, server := range servers {
+				if _, exists := config.MCPServers[name]; exists {
+					t.Fatalf("duplicate MCP server %q", name)
+				}
+				config.MCPServers[name] = server
+			}
+		}
 	}
 
 	names := make([]string, 0, len(config.MCPServers))
@@ -495,13 +557,59 @@ func isReachabilityToolCall(request testMCPRequest) bool {
 
 func writeTestCopilotMCPConfig(t *testing.T, home string, servers map[string]testCopilotMCPServer) {
 	t.Helper()
+	writeTestCopilotMCPConfigFile(t, filepath.Join(home, "mcp-config.json"), servers)
+}
+
+func writeTestCopilotMCPConfigFile(t *testing.T, path string, servers map[string]testCopilotMCPServer) {
+	t.Helper()
 	data, err := json.Marshal(testCopilotMCPConfig{MCPServers: servers})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "mcp-config.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeTestCopilotConfig(t *testing.T, home string, plugins []testCopilotInstalledPlugin) {
+	t.Helper()
+	data, err := json.Marshal(testCopilotConfig{
+		OAuthToken:       "stored-auth",
+		InstalledPlugins: plugins,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTestCopilotInstalledPlugins(home string) ([]testCopilotInstalledPlugin, error) {
+	data, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var config testCopilotConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	return config.InstalledPlugins, nil
+}
+
+func readTestCopilotMCPConfig(path string) (map[string]testCopilotMCPServer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var config testCopilotMCPConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	return config.MCPServers, nil
 }
 
 func assertMCPResults(t *testing.T, payload []byte, want map[string]string) {
