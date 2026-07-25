@@ -460,6 +460,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// reach election even if the reviewer under-named (or missed) the blocking
 	// siblings; a verdict with a real defect is returned unchanged.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
+	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 
@@ -486,11 +487,21 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.Rationale = reason
 	}
 
-	// Election resolves an all-ordering verdict into a real pass (#833/#834,
-	// reframed). See electedLanderPassRationale.
-	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted, clusterPolicy, resolvedPolicyName); elected {
-		posted.Decision = apiv1.VerdictPass
+	// Election resolves single-lander status for EVERY sibling-overlap PR —
+	// not only one a reviewer classified needs-changes — so a genuinely
+	// clean review still waits its turn behind a live predecessor (#1071):
+	// GitHub's native merge queue must never be a second, uncoordinated
+	// merge authority that crowns a cluster member on its own. See
+	// resolveElectionOutcome.
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+		posted.Elected = elected
 		posted.Rationale = rationale
+		if elected {
+			posted.Decision = apiv1.VerdictPass
+		} else {
+			posted.Decision = apiv1.VerdictNeedsChanges
+			posted.Findings = effective.Findings
+		}
 	}
 
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
@@ -698,16 +709,18 @@ func isMergeReviewStatusComment(body string) bool {
 	return body == mergeReviewStatusMarker || strings.HasPrefix(body, mergeReviewStatusMarker+"\n")
 }
 
-// electedLanderPass resolves an entirely-cross-PR-ordering `needs-changes`
-// verdict into a genuine `pass` when this PR is its cluster's elected lander.
-//
 // WHAT ELECTION MEANS. Being elected does not mean "merge this regardless of
 // review". It means "stop counting those siblings as blockers." And once that
 // is said out loud, the verdict follows deterministically rather than by fiat:
 // every finding was a pure ordering ask (allCrossPRBlocked — the PR is
 // individually fine and merely waiting its turn), and this PR is the one whose
 // turn it is. There is no defect left to fix, so there is nothing for
-// `needs-changes` to describe. The decision is derived, not overridden.
+// `needs-changes` to describe. The decision is derived, not overridden. The
+// same reasoning now also covers a PR whose reviewer verdict is ALREADY a
+// genuine pass (resolveElectionOutcome below): sharing a deterministic
+// overlap with a live sibling means it is not automatically its cluster's
+// lander either, and #1071 requires that to be resolved before it reaches
+// merge-pr, exactly like the needs-changes case.
 //
 // WHY NOT THE PREVIOUS SHAPE. elect-gate's pass branch used to route straight
 // to merge-pr, deliberately bypassing this stage — which produced three
@@ -738,14 +751,55 @@ func isMergeReviewStatusComment(body string) bool {
 // The findings are deliberately left intact on the published verdict. The
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
-func electedLanderPass(selectedNumber int, posted apiv1.Verdict, demoted map[int]bool, policy electionPolicyFunc, policyName string) (bool, string) {
-	if posted.Decision != apiv1.VerdictNeedsChanges {
+
+// resolveElectionOutcome resolves single-lander election for a sibling-
+// overlap PR (#1071/PRL-021), regardless of whether the reviewer's raw
+// decision was needs-changes (electedLanderPass's original case, an
+// all-ordering verdict resolved into a derived pass) or already a genuine
+// pass (a reviewer verdict with no defect of its own). Either way, once a PR
+// shares a deterministic file overlap with a live sibling, it must not reach
+// merge-pr as a landing authority until this same election crowns it —
+// otherwise two overlap-cluster members could each independently earn a
+// clean pass and race GitHub's native merge queue with no arbitration at
+// all, exactly the bypass #1071 exists to close.
+//
+// Returns rationale == "" whenever nothing needs to change: no overlap, a
+// non-electable decision (fail, or an already-escalated verdict), or an
+// ordinary parked needs-changes member (unrelated to this PR — the existing
+// blocked-on-sibling routing already handles it via effective.Findings/
+// verdictLabel without touching Decision/Rationale here).
+func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, findings []apiv1.Finding, rationale string, overlappingSiblings []int, demoted map[int]bool, policy electionPolicyFunc, policyName string) (elected bool, newRationale string) {
+	if len(overlappingSiblings) == 0 {
 		return false, ""
 	}
-	if !electionDecision(posted.Findings, selectedNumber, policy, demoted) {
+	if decision != apiv1.VerdictPass && decision != apiv1.VerdictNeedsChanges {
 		return false, ""
 	}
-	return true, electedLanderPassRationale(selectedNumber, posted, policyName)
+	if electionDecision(findings, selectedNumber, policy, demoted) {
+		return true, electedLanderPassRationale(selectedNumber, apiv1.Verdict{Findings: findings, Rationale: rationale}, policyName)
+	}
+	if decision == apiv1.VerdictPass {
+		// A genuinely clean review still is not this cluster's lander yet —
+		// it must wait behind its live predecessor(s) rather than reach
+		// merge-pr with nothing recording that it skipped the queue.
+		return false, notElectedBlockedRationale(selectedNumber, findings, policyName)
+	}
+	return false, ""
+}
+
+// notElectedBlockedRationale explains why an individually-passing PR is
+// nonetheless parked blocked-on-sibling: it shares a deterministic overlap
+// with a live predecessor and single-lander election has not crowned it yet
+// — the mirror image of electedLanderPassRationale.
+func notElectedBlockedRationale(selectedNumber int, findings []apiv1.Finding, policyName string) string {
+	blockers := unionBlockingPRs(findings)
+	rendered := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		rendered = append(rendered, "#"+strconv.Itoa(b))
+	}
+	return fmt.Sprintf(
+		"This pull request's own review found no defect, but it deterministically overlaps sibling PR(s) %s and is not yet its cluster's elected lander (policy: %s). Landing must wait for single-lander election (#1071) rather than race GitHub's native merge queue.",
+		strings.Join(rendered, ", "), policyName)
 }
 
 // electedLanderPassRationale explains a derived pass in the published comment.
