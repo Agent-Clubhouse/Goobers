@@ -56,6 +56,7 @@ github.com/goobers/goobers/internal/workflow/v_current.validateFeatureRegistryEv
 github.com/goobers/goobers/internal/workflow/v_next.newFeatureRegistryAgainstReleased # Next-interpreter feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_next.validateFeatureRegistryEvolution # Next-interpreter feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
+github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
@@ -74,6 +75,7 @@ github.com/goobers/goobers/internal/httpapi.withHeartbeatInterval # Event-stream
 github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/instance.InitGuided # Direct guided scaffold seam retained for focused generated-config and validation tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 
