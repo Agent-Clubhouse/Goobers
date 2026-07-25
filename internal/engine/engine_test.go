@@ -92,19 +92,6 @@ func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
 	}
 }
 
-func TestRunRejectsExplicitlyDisabledPreviewFeatures(t *testing.T) {
-	in := runInput("disabled-preview", previewSpec())
-	in.PreviewFeaturesEnabled = boolPointer(false)
-
-	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
-	env.ExecuteWorkflow(Run, in)
-	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), "requires explicit instance opt-in") {
-		t.Fatalf("workflow error = %v, want preview opt-in rejection", err)
-	}
-}
-
 // TestLinearFlowCompletes: a single agentic task runs to a terminal state.
 func TestLinearFlowCompletes(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite

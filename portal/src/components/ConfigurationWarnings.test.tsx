@@ -149,7 +149,7 @@ describe("ConfigurationWarnings", () => {
     };
     const laterExplanation = {
       ...workflowWarning,
-      explanation: "run.image is not honored by the local runner",
+      explanation: "spec.project.checkout.sparse is not honored by the local runner",
     };
     renderWarnings({
       status: "ready",
