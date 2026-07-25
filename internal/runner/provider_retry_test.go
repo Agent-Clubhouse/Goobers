@@ -36,7 +36,14 @@ func TestRunnerDoesNotPolicyRetryTerminalCIPollProviderFailure(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return executor.NewTaskExecutor(&executor.ShellExecutor{}, ciPoll)
+		kinds := executor.NewKindRegistry()
+		if err := kinds.Register(executor.KindShell, &executor.ShellExecutor{}); err != nil {
+			return nil, err
+		}
+		if err := kinds.Register(executor.KindCIPoll, executor.NewCIPollKindExecutor(ciPoll)); err != nil {
+			return nil, err
+		}
+		return executor.NewTaskExecutor(kinds)
 	}, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{

@@ -242,7 +242,14 @@ func TestClaimLockTimeoutWithoutDeclaredResultFileIsInfrastructureRetryableThrou
 	}
 	shell.InstanceRoot = root
 	shell.SelfBin = wrapper
-	dispatch, err := executor.NewTaskExecutor(shell, nil)
+	kinds := executor.NewKindRegistry()
+	if err := kinds.Register(executor.KindShell, shell); err != nil {
+		t.Fatal(err)
+	}
+	if err := kinds.Register(executor.KindCIPoll, executor.NewCIPollKindExecutor(nil)); err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := executor.NewTaskExecutor(kinds)
 	if err != nil {
 		t.Fatal(err)
 	}

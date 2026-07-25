@@ -1365,7 +1365,14 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if err != nil {
 				return nil, err
 			}
-			builtins, err := executor.NewTaskExecutor(shell, ciPoll)
+			kinds := executor.NewKindRegistry()
+			if err := kinds.Register(executor.KindShell, shell); err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindCIPoll, executor.NewCIPollKindExecutor(ciPoll)); err != nil {
+				return nil, err
+			}
+			builtins, err := executor.NewTaskExecutor(kinds)
 			if err != nil {
 				return nil, err
 			}

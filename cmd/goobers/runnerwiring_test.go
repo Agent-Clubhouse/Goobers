@@ -1324,12 +1324,6 @@ func (ciPollTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref,
 	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
 
-type ciPollTestFallback struct{}
-
-func (ciPollTestFallback) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	return apiv1.ResultEnvelope{}, errors.New("unexpected fallback invocation")
-}
-
 type ciPollFakePoller struct{ called bool }
 
 func (p *ciPollFakePoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
@@ -1350,7 +1344,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestFallback{}, ciPollTestRecorder{})
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{})
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}

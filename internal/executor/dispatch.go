@@ -12,80 +12,135 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// InputKind is the env.Inputs key that selects which built-in deterministic
-// stage kind to run. Its absence means KindShell — the common case.
+// InputKind is the env.Inputs key that selects which deterministic stage kind
+// to run. Its absence means KindShell — the common case.
 const InputKind = boundedwait.InputKind
 
-// KindShell and KindCIPoll are the built-in deterministic-stage kinds
-// TaskExecutor dispatches. KindShell is the implicit default.
+// KindShell and KindCIPoll are the built-in deterministic-stage kinds.
+// KindShell is the implicit default.
 const (
 	KindShell  = boundedwait.KindShell
 	KindCIPoll = boundedwait.KindCIPoll
 )
 
+// KindExecutor runs one registered deterministic-stage kind.
+type KindExecutor interface {
+	Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error)
+}
+
+// KindRegistry maps deterministic-stage kind names to their executors.
+type KindRegistry struct {
+	executors map[string]KindExecutor
+}
+
+// NewKindRegistry returns an empty deterministic-stage kind registry.
+func NewKindRegistry() *KindRegistry {
+	return &KindRegistry{executors: make(map[string]KindExecutor)}
+}
+
+// Register adds an executor under kind. Registrations must be complete before
+// the registry is passed to NewTaskExecutor.
+func (r *KindRegistry) Register(kind string, executor KindExecutor) error {
+	if r == nil {
+		return errors.New("executor: kind registry must not be nil")
+	}
+	if kind == "" {
+		return errors.New("executor: kind must not be empty")
+	}
+	if executor == nil {
+		return fmt.Errorf("executor: kind %q executor must not be nil", kind)
+	}
+	if r.executors == nil {
+		r.executors = make(map[string]KindExecutor)
+	}
+	if _, exists := r.executors[kind]; exists {
+		return fmt.Errorf("executor: kind %q already registered", kind)
+	}
+	r.executors[kind] = executor
+	return nil
+}
+
 // TaskExecutor implements invoke.Deterministic and is the single dispatcher a
 // caller registers for apiv1.TaskDeterministic: the runner constructs one
-// invoke.Deterministic per run (internal/runner's NewDeterministic factory),
-// so every built-in deterministic-stage kind — the shell executor and the
-// ci-poll task alike — has to be reachable through that one entry point,
+// invoke.Deterministic per run (internal/runner's NewDeterministic factory), so
+// every deterministic-stage kind has to be reachable through this registry,
 // selected by env.Inputs[InputKind].
 type TaskExecutor struct {
-	Shell *ShellExecutor
-	// CIPoll may be nil if this instance has no PR provider configured; a
-	// stage that declares kind=ci-poll then fails closed rather than
-	// silently falling through to the shell executor.
-	CIPoll *CIPollExecutor
+	executors map[string]KindExecutor
 }
 
-// NewTaskExecutor returns a TaskExecutor over shell and the given
-// CIPollExecutor (nil is valid — see CIPoll's doc).
-func NewTaskExecutor(shell *ShellExecutor, ciPoll *CIPollExecutor) (*TaskExecutor, error) {
-	if shell == nil {
+// NewTaskExecutor returns a dispatcher over the registered kind executors.
+// KindShell is required because it is the implicit default.
+func NewTaskExecutor(registry *KindRegistry) (*TaskExecutor, error) {
+	if registry == nil {
+		return nil, errors.New("executor: kind registry must not be nil")
+	}
+	if _, ok := registry.executors[KindShell]; !ok {
 		return nil, errors.New("executor: shell executor must not be nil")
 	}
-	return &TaskExecutor{Shell: shell, CIPoll: ciPoll}, nil
+	executors := make(map[string]KindExecutor, len(registry.executors))
+	for kind, executor := range registry.executors {
+		executors[kind] = executor
+	}
+	return &TaskExecutor{executors: executors}, nil
 }
 
-// Run implements invoke.Deterministic, dispatching to the shell or ci-poll
-// executor per env.Inputs[InputKind].
+// Run implements invoke.Deterministic, dispatching to the registered executor
+// selected by env.Inputs[InputKind].
 func (t *TaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	switch stringInput(env, InputKind) {
-	case "", KindShell:
-		return t.Shell.Run(ctx, env, run)
-	case KindCIPoll:
-		required := string(capability.GitHubPRWrite)
-		if !containsString(env.Capabilities, required) {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)
-		}
-		if t.CIPoll == nil {
-			return apiv1.ResultEnvelope{}, errors.New("executor: kind=ci-poll declared but no CIPollExecutor is configured")
-		}
-		cfg, err := CIPollConfigFromEnvelope(env)
-		if err != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		result, err := t.CIPoll.Run(ctx, cfg)
-		if err == nil {
-			return result, nil
-		}
-		if providers.IsTransientError(err) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(err)
-		}
-		var providerErr *ciPollProviderError
-		if errors.As(err, &providerErr) {
-			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Summary: "ci-poll provider request failed",
-				Error: &apiv1.ErrorInfo{
-					Code:    "poll_provider_error",
-					Message: err.Error(),
-				},
-			}, nil
-		}
-		return result, err
-	default:
-		return apiv1.ResultEnvelope{}, errors.New("executor: unknown " + InputKind + " " + stringInput(env, InputKind))
+	kind := stringInput(env, InputKind)
+	if kind == "" {
+		kind = KindShell
 	}
+	executor, ok := t.executors[kind]
+	if !ok {
+		return apiv1.ResultEnvelope{}, errors.New("executor: unknown " + InputKind + " " + kind)
+	}
+	return executor.Run(ctx, env, run)
+}
+
+type ciPollKindExecutor struct {
+	executor *CIPollExecutor
+}
+
+// NewCIPollKindExecutor adapts a CIPollExecutor to KindExecutor. A nil
+// CIPollExecutor is valid so installations without a PR provider retain the
+// existing fail-closed error when kind=ci-poll is requested.
+func NewCIPollKindExecutor(executor *CIPollExecutor) KindExecutor {
+	return &ciPollKindExecutor{executor: executor}
+}
+
+func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	required := string(capability.GitHubPRWrite)
+	if !containsString(env.Capabilities, required) {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)
+	}
+	if e.executor == nil {
+		return apiv1.ResultEnvelope{}, errors.New("executor: kind=ci-poll declared but no CIPollExecutor is configured")
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	result, err := e.executor.Run(ctx, cfg)
+	if err == nil {
+		return result, nil
+	}
+	if providers.IsTransientError(err) {
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(err)
+	}
+	var providerErr *ciPollProviderError
+	if errors.As(err, &providerErr) {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Summary: "ci-poll provider request failed",
+			Error: &apiv1.ErrorInfo{
+				Code:    "poll_provider_error",
+				Message: err.Error(),
+			},
+		}, nil
+	}
+	return result, err
 }
 
 func containsString(values []string, want string) bool {
