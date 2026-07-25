@@ -11,6 +11,9 @@ depend on the Goobers daemon.
 
 ## Find the canonical sources
 
+Resolve the target release with `goobers-environment-resolver` when this skill
+is used from the Goobers agent toolkit.
+
 When a Goobers source checkout is available, inspect the matching release's
 sources before authoring:
 
@@ -111,6 +114,7 @@ validator for the target release. Do not invent fields from prose or examples.
 Apply the complete checklist in `references/dsl-reference.md`. In particular:
 
 - Use exactly `apiVersion: goobers.dev/v1alpha1` and the appropriate `kind`.
+- Give each workflow an explicit `dslVersion` supported by the target release.
 - Keep undocumented keys out; the definition schemas are closed.
 - Quote cron expressions, selector values, and values under `inputs` or
   `inputsFrom`.

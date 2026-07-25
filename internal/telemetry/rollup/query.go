@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -177,6 +178,14 @@ type RunListFilter struct {
 	TriggerKind string
 	Since       time.Time // inclusive lower bound on started_at; zero = unbounded
 	Until       time.Time // inclusive upper bound on started_at; zero = unbounded
+	// Statuses, when non-nil, narrows the page to rows whose runs.status
+	// matches one of these values; "" matches a run with no recorded status
+	// (not yet terminal — see insertRun). This is a candidate-selection
+	// optimization only (DASH-18 callers always re-verify against the
+	// hydrated journal), so a stale or not-yet-reconciled index row can only
+	// cost the caller an extra journal open, never hide a run: an empty,
+	// non-nil slice deliberately matches nothing.
+	Statuses []string
 }
 
 // RunRefPage returns up to limit run references matching filter, ordered by
@@ -207,6 +216,21 @@ func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursor
 	if !filter.Until.IsZero() {
 		query += " AND started_at <= ?"
 		args = append(args, formatTime(filter.Until).String)
+	}
+	if filter.Statuses != nil {
+		if len(filter.Statuses) == 0 {
+			return nil, nil
+		}
+		clauses := make([]string, len(filter.Statuses))
+		for i, status := range filter.Statuses {
+			if status == "" {
+				clauses[i] = "(status IS NULL OR status = '')"
+				continue
+			}
+			clauses[i] = "status = ?"
+			args = append(args, status)
+		}
+		query += " AND (" + strings.Join(clauses, " OR ") + ")"
 	}
 	if cursorRunID != "" {
 		cursorText := formatTime(cursorStartedAt).String

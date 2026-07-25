@@ -259,6 +259,7 @@ function RunDetailWorkspace({
         {run.graphStatus === "pinned" && run.graph && (
           <RunStageInspector
             client={client}
+            events={events}
             inspectorRef={inspectorRef}
             node={selectedNode}
             runId={runId}

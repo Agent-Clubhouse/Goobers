@@ -256,12 +256,29 @@ describe("run detail", () => {
     const graph = await screen.findByRole("group", {
       name: "implementation pinned execution graph",
     });
-    const ledger = screen.getByRole("region", { name: "Event ledger" });
+    const implement = within(graph).getByRole("button", { name: /^implement,/ });
     expect(within(graph).getAllByRole("button", { name: /^implement,/ })).toHaveLength(1);
-    expect(within(ledger).getAllByText("Attempt 2")).toHaveLength(4);
     expect(
       screen.getByRole("button", { name: "review, gate, Escalated at sequence 12" }),
     ).toBeInTheDocument();
+
+    fireEvent.click(implement);
+    const visits = await screen.findByRole("group", { name: "Stage visits" });
+    const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
+    const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
+    expect(visit2).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Addressed reviewer feedback.")).toBeInTheDocument();
+    const repassContext = screen.getByText("Repass decision · Sequence 7").parentElement;
+    if (!repassContext) {
+      throw new Error("Expected repass decision context.");
+    }
+    expect(
+      within(repassContext).getByText("Review returned needs-changes and selected implement."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(visit1);
+    expect(screen.getByText("Initial implementation.")).toBeInTheDocument();
+    expect(screen.queryByText(/Repass decision/)).not.toBeInTheDocument();
   });
 
   it("keeps an unknown schema visible without rendering its raw payload", async () => {

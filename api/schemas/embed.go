@@ -22,6 +22,9 @@ const RemediationBrief = "remediation-brief-v2.schema.json"
 // RemediationBriefV1 is retained because remediation brief wire versions are immutable.
 const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 
+// AgentToolkitManifest inventories the portable repository-side agent toolkit.
+const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",
@@ -64,5 +67,6 @@ func Files() []string {
 		RemediationBrief,
 		"journal-event.schema.json",
 		"journal-run.schema.json",
+		AgentToolkitManifest,
 	}
 }
