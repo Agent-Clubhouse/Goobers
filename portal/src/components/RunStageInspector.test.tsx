@@ -1,17 +1,33 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AttemptList,
   ArtifactContent,
   DaemonClient,
+  RunEvent,
   StageAttempt,
   WorkflowGraphNode,
 } from "../api/types";
+import { goWireFixtures } from "../api/wire.generated";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
 import { RunStageInspector } from "./RunStageInspector";
 
 const reviewNode: WorkflowGraphNode = { id: "review", kind: "gate", evaluator: "agentic" };
+const implementNode: WorkflowGraphNode = { id: "implement", kind: "agentic" };
+const reviewerRepassEvents: RunEvent[] = [
+  {
+    schema: "v1",
+    seq: 9,
+    type: "gate.evaluated",
+    branch: 0,
+    time: "2026-07-18T12:36:57Z",
+    knownSchema: true,
+    gate: "review",
+    verdict: "needs-changes",
+    target: "implement",
+  },
+];
 
 function attempt(overrides: Partial<StageAttempt>): StageAttempt {
   const visit = overrides.visit ?? 1;
@@ -142,26 +158,109 @@ describe("run stage inspector", () => {
     // Attempt 2 started at seq 8, after the playhead at 5 — it must not appear.
     await waitFor(() => expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument());
     // With a single visible attempt the switcher is not rendered at all.
-    expect(screen.queryByText("Attempt 1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Stage visits" })).not.toBeInTheDocument();
   });
 
-  it("selects repeated attempt numbers by traversal ID", async () => {
-    const client = stubClient([
-      attempt({ id: "sta-first", visit: 1, number: 1, outputs: { result: "first visit" } }),
-      attempt({ id: "sta-second", visit: 2, number: 1, startedSeq: 3, outputs: { result: "second visit" } }),
-    ]);
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+  it("groups the generated reviewer-repass fixture into visits and nested retries", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fixtureAttempts = goWireFixtures.stageAttempts.attempts;
+      const repeatedInitials = fixtureAttempts.filter(
+        (candidate) => candidate.number === 1 && candidate.visit <= 2,
+      );
+      expect(repeatedInitials).toHaveLength(2);
+      expect(new Set(repeatedInitials.map((candidate) => candidate.id)).size).toBe(2);
 
-    const first = await screen.findByRole("button", { name: "Visit 1 · Attempt 1" });
-    expect(screen.getByRole("button", { name: "Visit 2 · Attempt 1" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+      const client = stubClient(fixtureAttempts);
+      render(
+        <RunStageInspector
+          client={client}
+          events={reviewerRepassEvents}
+          node={implementNode}
+          runId="run-123"
+          selectedSeq={13}
+        />,
+      );
+
+      const visits = await screen.findByRole("group", { name: "Stage visits" });
+      const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
+      const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
+      expect(visit2).toHaveAttribute("aria-pressed", "true");
+
+      let retries = screen.getByRole("group", { name: "Visit 2 attempts" });
+      const repassAttempt = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 1",
+      });
+      const infraRetry = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 2 (infra retry)",
+      });
+      expect(infraRetry).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("2m 0s")).toBeInTheDocument();
+      expect(screen.getByText("success")).toBeInTheDocument();
+      expect(screen.getByText("Review returned needs-changes and selected implement.")).toBeInTheDocument();
+
+      fireEvent.click(repassAttempt);
+      expect(screen.getByText("repass_failed: first repass failed")).toBeInTheDocument();
+
+      fireEvent.click(visit1);
+      expect(screen.queryByText(/Repass decision/)).not.toBeInTheDocument();
+      expect(screen.getByText("implemented")).toBeInTheDocument();
+      expect(screen.getByText("result")).toBeInTheDocument();
+      expect(screen.getByText("Visit 1 · Attempt 2 · Seq 8")).toBeInTheDocument();
+
+      visit1.focus();
+      fireEvent.keyDown(visit1, { key: "ArrowRight" });
+      expect(visit2).toHaveFocus();
+      expect(visit2).toHaveAttribute("aria-pressed", "true");
+
+      retries = screen.getByRole("group", { name: "Visit 2 attempts" });
+      const selectedInfraRetry = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 2 (infra retry)",
+      });
+      selectedInfraRetry.focus();
+      fireEvent.keyDown(selectedInfraRetry, { key: "ArrowLeft" });
+      expect(
+        within(retries).getByRole("button", { name: "Visit 2 · Attempt 1" }),
+      ).toHaveFocus();
+      expect(screen.getByText("repass_failed: first repass failed")).toBeInTheDocument();
+
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(
+        /same key|unique ["']key["']/i,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reveals a repass visit only after its traversal starts", async () => {
+    const client = stubClient(goWireFixtures.stageAttempts.attempts);
+    const view = render(
+      <RunStageInspector
+        client={client}
+        events={reviewerRepassEvents}
+        node={implementNode}
+        runId="run-123"
+        selectedSeq={9}
+      />,
     );
-    expect(screen.getByText("second visit")).toBeInTheDocument();
 
-    fireEvent.click(first);
-    expect(screen.getByText("first visit")).toBeInTheDocument();
-    expect(first).toHaveAttribute("aria-pressed", "true");
+    const visits = await screen.findByRole("group", { name: "Stage visits" });
+    expect(within(visits).queryByRole("button", { name: "Visit 2" })).not.toBeInTheDocument();
+
+    view.rerender(
+      <RunStageInspector
+        client={client}
+        events={reviewerRepassEvents}
+        node={implementNode}
+        runId="run-123"
+        selectedSeq={10}
+      />,
+    );
+    expect(
+      await within(screen.getByRole("group", { name: "Stage visits" })).findByRole("button", {
+        name: "Visit 2",
+      }),
+    ).toBeInTheDocument();
   });
 
   it.each([

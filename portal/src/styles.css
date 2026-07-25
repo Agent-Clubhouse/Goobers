@@ -3162,8 +3162,19 @@ a.telemetry-error-row:hover {
 .attempt-switcher {
   display: flex;
   gap: 4px;
-  margin: 18px 0 14px;
+  margin: 18px 0 6px;
   overflow: auto;
+}
+
+.retry-switcher {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  overflow: auto;
+  padding: 6px;
 }
 
 .attempt-button {
@@ -3181,6 +3192,27 @@ a.telemetry-error-row:hover {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent-ink);
+}
+
+.repass-context {
+  background: var(--surface);
+  border-left: 2px solid var(--accent);
+  display: grid;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+}
+
+.repass-context span {
+  color: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.repass-context strong {
+  color: var(--muted-strong);
+  font-size: 9px;
+  line-height: 1.45;
 }
 
 .attempt-content {
