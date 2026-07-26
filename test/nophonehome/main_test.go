@@ -32,6 +32,17 @@ func report() { _, _ = grpc.NewClient(collector) }
 			want: "hardcoded network destination",
 		},
 		{
+			name: "local destination",
+			source: `package sample
+import "net/http"
+func report() {
+	endpoint := "https://maintainer.example.invalid/usage"
+	_, _ = http.Post(endpoint, "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "default telemetry endpoint",
 			source: `package sample
 func configure() {
@@ -86,6 +97,45 @@ func fixture() { _, _ = http.Get("https://fixture.example.invalid") }
 	}
 }
 
+func TestScanAllowsSingleConfiguredImplicitExporter(t *testing.T) {
+	root := writeSourceAt(t, "internal/telemetry/client.go", configuredExporterSource(false))
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
+func TestScanRejectsExtraImplicitExporterInApprovedFunction(t *testing.T) {
+	root := writeSourceAt(t, "internal/telemetry/client.go", configuredExporterSource(true))
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
+		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
+	}
+}
+
+func TestScanRejectsUnconfiguredExporterInApprovedFunction(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"\topts = append(opts, otlptracegrpc.WithEndpoint(endpoint))\n",
+		"",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
+		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
+	}
+}
+
 func TestRunReportsGuardFailure(t *testing.T) {
 	root := writeSource(t, `package sample
 import "net/http"
@@ -102,9 +152,36 @@ func report() { _, _ = http.Get("https://maintainer.example.invalid/usage") }
 
 func writeSource(t *testing.T, source string) string {
 	t.Helper()
+	return writeSourceAt(t, "sample.go", source)
+}
+
+func writeSourceAt(t *testing.T, path, source string) string {
+	t.Helper()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "sample.go"), []byte(source), 0o600); err != nil {
+	fullPath := filepath.Join(root, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func configuredExporterSource(extra bool) string {
+	source := `package telemetry
+import (
+	"strings"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+)
+func spanExporters(ctx any, cfg struct{ OTLPEndpoint string }) {
+	endpoint := strings.TrimSpace(cfg.OTLPEndpoint)
+	opts := []otlptracegrpc.Option{}
+	opts = append(opts, otlptracegrpc.WithEndpoint(endpoint))
+	_, _ = otlptracegrpc.New(ctx, opts...)
+`
+	if extra {
+		source += "\t_, _ = otlptracegrpc.New(ctx)\n"
+	}
+	return source + "}\n"
 }

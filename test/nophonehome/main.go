@@ -65,8 +65,18 @@ var egressAPIs = map[string]map[string]egressAPI{
 	},
 }
 
-var approvedImplicitEgress = map[string]string{
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc.New": "internal/telemetry/client.go:spanExporters",
+type implicitEgressApproval struct {
+	location       string
+	options        string
+	endpointSource string
+}
+
+var approvedImplicitEgress = map[string]implicitEgressApproval{
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc.New": {
+		location:       "internal/telemetry/client.go:spanExporters",
+		options:        "opts",
+		endpointSource: "cfg.OTLPEndpoint",
+	},
 }
 
 type finding struct {
@@ -171,7 +181,7 @@ func scanFile(root, path string) ([]finding, error) {
 	}
 	rel = filepath.ToSlash(rel)
 	imports, importFindings := monitoredImports(files, parsed, rel)
-	bindings := staticBindings(parsed)
+	fileBindings := staticBindings(parsed)
 	findings := append([]finding(nil), importFindings...)
 
 	for _, declaration := range parsed.Decls {
@@ -179,6 +189,7 @@ func scanFile(root, path string) ([]finding, error) {
 		if !ok || function.Body == nil {
 			continue
 		}
+		implicitCalls := make(map[string][]*ast.CallExpr)
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -200,18 +211,13 @@ func scanFile(root, path string) ([]finding, error) {
 			position := files.Position(call.Pos())
 			callName := importPath + "." + selector.Sel.Name
 			if api.implicit {
-				location := rel + ":" + function.Name.Name
-				if approvedImplicitEgress[callName] != location {
-					findings = append(findings, finding{
-						path: rel, line: position.Line, column: position.Column,
-						message: "implicit network destination via " + callName,
-					})
-				}
+				implicitCalls[callName] = append(implicitCalls[callName], call)
 				return true
 			}
 			if api.destination >= len(call.Args) {
 				return true
 			}
+			bindings := bindingsAt(function, call, fileBindings)
 			if destination, ok := staticString(call.Args[api.destination], bindings, nil); ok && strings.TrimSpace(destination) != "" {
 				findings = append(findings, finding{
 					path: rel, line: position.Line, column: position.Column,
@@ -220,8 +226,26 @@ func scanFile(root, path string) ([]finding, error) {
 			}
 			return true
 		})
+		location := rel + ":" + function.Name.Name
+		for callName, calls := range implicitCalls {
+			approval, approved := approvedImplicitEgress[callName]
+			approved = approved &&
+				approval.location == location &&
+				len(calls) == 1 &&
+				explicitlyConfiguredImplicitCall(function, calls[0], imports, fileBindings, callName, approval)
+			if approved {
+				continue
+			}
+			for _, call := range calls {
+				position := files.Position(call.Pos())
+				findings = append(findings, finding{
+					path: rel, line: position.Line, column: position.Column,
+					message: "implicit network destination via " + callName,
+				})
+			}
+		}
 	}
-	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, bindings)...)
+	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, fileBindings)...)
 	return findings, nil
 }
 
@@ -276,6 +300,194 @@ func staticBindings(parsed *ast.File) map[string]ast.Expr {
 		}
 	}
 	return bindings
+}
+
+func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string]ast.Expr) map[string]ast.Expr {
+	bindings := make(map[string]ast.Expr, len(fileBindings))
+	for name, expression := range fileBindings {
+		bindings[name] = expression
+	}
+	forgetFieldNames(bindings, function.Recv)
+	forgetFieldNames(bindings, function.Type.Params)
+	forgetFieldNames(bindings, function.Type.Results)
+
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+
+	callScopes := make(map[*ast.BlockStmt]bool)
+	for node := target; node != nil; node = parents[node] {
+		if block, ok := node.(*ast.BlockStmt); ok {
+			callScopes[block] = true
+		}
+	}
+
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= target.Pos() {
+			return false
+		}
+		block := enclosingBlock(node, parents)
+		if block == nil || !callScopes[block] || node.End() >= target.Pos() {
+			return true
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for i, left := range value.Lhs {
+				name, ok := left.(*ast.Ident)
+				if !ok || name.Name == "_" {
+					continue
+				}
+				if i < len(value.Rhs) {
+					bindings[name.Name] = value.Rhs[i]
+				} else {
+					delete(bindings, name.Name)
+				}
+			}
+			return false
+		case *ast.ValueSpec:
+			for i, name := range value.Names {
+				if i < len(value.Values) {
+					bindings[name.Name] = value.Values[i]
+				} else {
+					delete(bindings, name.Name)
+				}
+			}
+			return false
+		default:
+			return true
+		}
+	})
+	return bindings
+}
+
+func forgetFieldNames(bindings map[string]ast.Expr, fields *ast.FieldList) {
+	if fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		for _, name := range field.Names {
+			delete(bindings, name.Name)
+		}
+	}
+}
+
+func enclosingBlock(node ast.Node, parents map[ast.Node]ast.Node) *ast.BlockStmt {
+	for node = parents[node]; node != nil; node = parents[node] {
+		if block, ok := node.(*ast.BlockStmt); ok {
+			return block
+		}
+	}
+	return nil
+}
+
+func explicitlyConfiguredImplicitCall(
+	function *ast.FuncDecl,
+	call *ast.CallExpr,
+	imports map[string]string,
+	fileBindings map[string]ast.Expr,
+	callName string,
+	approval implicitEgressApproval,
+) bool {
+	if len(call.Args) != 2 || !call.Ellipsis.IsValid() {
+		return false
+	}
+	options, ok := call.Args[1].(*ast.Ident)
+	if !ok || options.Name != approval.options {
+		return false
+	}
+	importPath := strings.TrimSuffix(callName, ".New")
+	configured := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if configured || node == nil || node.Pos() >= call.Pos() {
+			return false
+		}
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, left := range assignment.Lhs {
+			if expressionName(left) != approval.options || i >= len(assignment.Rhs) {
+				continue
+			}
+			appendCall, ok := assignment.Rhs[i].(*ast.CallExpr)
+			if !ok || expressionName(appendCall.Fun) != "append" || len(appendCall.Args) < 2 ||
+				expressionName(appendCall.Args[0]) != approval.options {
+				continue
+			}
+			for _, expression := range appendCall.Args[1:] {
+				optionCall, ok := expression.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				selector, ok := optionCall.Fun.(*ast.SelectorExpr)
+				if !ok || len(optionCall.Args) == 0 {
+					continue
+				}
+				pkg, ok := selector.X.(*ast.Ident)
+				if !ok || imports[pkg.Name] != importPath {
+					continue
+				}
+				api, monitored := egressAPIs[importPath][selector.Sel.Name]
+				if !monitored || api.implicit || api.destination >= len(optionCall.Args) {
+					continue
+				}
+				bindings := bindingsAt(function, optionCall, fileBindings)
+				if derivesFrom(optionCall.Args[api.destination], bindings, approval.endpointSource, nil) {
+					configured = true
+					return false
+				}
+			}
+		}
+		return !configured
+	})
+	return configured
+}
+
+func derivesFrom(expression ast.Expr, bindings map[string]ast.Expr, source string, seen map[string]bool) bool {
+	if expressionName(expression) == source {
+		return true
+	}
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return false
+		}
+		seen[value.Name] = true
+		derived := derivesFrom(binding, bindings, source, seen)
+		delete(seen, value.Name)
+		return derived
+	case *ast.CallExpr:
+		for _, argument := range value.Args {
+			if derivesFrom(argument, bindings, source, seen) {
+				return true
+			}
+		}
+	case *ast.ParenExpr:
+		return derivesFrom(value.X, bindings, source, seen)
+	case *ast.BinaryExpr:
+		return derivesFrom(value.X, bindings, source, seen) ||
+			derivesFrom(value.Y, bindings, source, seen)
+	case *ast.UnaryExpr:
+		return derivesFrom(value.X, bindings, source, seen)
+	}
+	return false
 }
 
 func staticString(expression ast.Expr, bindings map[string]ast.Expr, seen map[string]bool) (string, bool) {
