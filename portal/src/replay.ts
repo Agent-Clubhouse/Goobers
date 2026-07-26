@@ -164,14 +164,13 @@ export function replayTimeline(events: RunEvent[]): ReplayTimeline {
 }
 
 export function replayChapterKind(event: RunEvent): ReplayChapterKind {
-  const target = event.target?.toLowerCase() ?? "";
   if (event.type === "run.finished") {
     return "terminal";
   }
   if (event.type === "ref.touched" && event.externalRef?.kind === "pr") {
     return "external";
   }
-  if (target.includes("escalate")) {
+  if (event.escalated === true) {
     return "escalation";
   }
   if (

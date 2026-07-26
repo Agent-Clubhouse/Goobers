@@ -105,6 +105,7 @@ describe("replay engine (live event stream)", () => {
           type: "gate.evaluated",
           category: "decision",
           target: "@escalate",
+          escalated: true,
         }),
       ),
     ).toBe("escalation");
@@ -124,6 +125,29 @@ describe("replay engine (live event stream)", () => {
         }),
       ),
     ).toBe("terminal");
+  });
+
+  it("uses the authoritative escalation flag instead of target naming", () => {
+    expect(
+      replayChapterKind(
+        ev(1, "2026-01-01T00:00:00Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          target: "@human-review",
+          escalated: true,
+        }),
+      ),
+    ).toBe("escalation");
+    expect(
+      replayChapterKind(
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          target: "@escalate-if-needed",
+          escalated: false,
+        }),
+      ),
+    ).toBe("decision");
   });
 
   it("returns undefined past the last event", () => {
