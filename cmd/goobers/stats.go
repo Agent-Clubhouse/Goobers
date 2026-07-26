@@ -9,16 +9,18 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 type statsJSONSummary struct {
-	Since                *time.Time              `json:"since,omitempty"`
-	Runs                 statsJSONRuns           `json:"runs"`
-	PullRequests         statsJSONPullRequests   `json:"pullRequests"`
-	Issues               statsJSONIssues         `json:"issues"`
-	BusiestWorkflow      *statsJSONWorkflow      `json:"busiestWorkflow"`
-	AgenticStageDuration *statsJSONStageDuration `json:"agenticStageDuration"`
+	Since                *time.Time                    `json:"since,omitempty"`
+	TimeToFirstPR        telemetry.TimeToFirstPRMetric `json:"timeToFirstPR"`
+	Runs                 statsJSONRuns                 `json:"runs"`
+	PullRequests         statsJSONPullRequests         `json:"pullRequests"`
+	Issues               statsJSONIssues               `json:"issues"`
+	BusiestWorkflow      *statsJSONWorkflow            `json:"busiestWorkflow"`
+	AgenticStageDuration *statsJSONStageDuration       `json:"agenticStageDuration"`
 }
 
 type statsJSONRuns struct {
@@ -115,7 +117,12 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	view := newStatsJSONSummary(summary, since)
+	timeToFirstPR, err := db.TimeToFirstPR()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	view := newStatsJSONSummary(summary, timeToFirstPR, since)
 	if *jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(view); err != nil {
 			pf(stderr, "error: encode stats: %v\n", err)
@@ -178,8 +185,13 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newStatsJSONSummary(summary rollup.InstanceSummary, since time.Time) statsJSONSummary {
+func newStatsJSONSummary(
+	summary rollup.InstanceSummary,
+	timeToFirstPR telemetry.TimeToFirstPRMetric,
+	since time.Time,
+) statsJSONSummary {
 	view := statsJSONSummary{
+		TimeToFirstPR: timeToFirstPR,
 		Runs: statsJSONRuns{
 			Total: summary.TotalRuns,
 			ByPhase: statsJSONPhases{

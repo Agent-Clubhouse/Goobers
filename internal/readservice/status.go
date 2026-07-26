@@ -7,6 +7,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resumes at "
@@ -14,6 +15,7 @@ const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resume
 // StatusReader is the shared read boundary used by local status adapters.
 type StatusReader interface {
 	ListStatusRuns(context.Context) ([]RunSummary, error)
+	TimeToFirstPR(context.Context) (telemetry.TimeToFirstPRMetric, error)
 	SchedulerStatus(context.Context) (SchedulerStatus, error)
 }
 
@@ -27,6 +29,44 @@ type SchedulerStatus struct {
 // malformed historical journals are omitted so status remains best-effort.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
+}
+
+// TimeToFirstPR computes the lifetime onboarding metric directly from the
+// immutable run identities and ref.touched events in the run journals.
+func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
+	runIDs, err := s.RunIDs(ctx)
+	if err != nil {
+		return telemetry.TimeToFirstPRMetric{}, err
+	}
+	var firstRunAt, firstPROpenAt time.Time
+	for _, runID := range runIDs {
+		if err := ctx.Err(); err != nil {
+			return telemetry.TimeToFirstPRMetric{}, err
+		}
+		run, err := s.openRun(runID)
+		if err != nil {
+			continue
+		}
+		if startedAt := run.identity.StartedAt; !startedAt.IsZero() &&
+			(firstRunAt.IsZero() || startedAt.Before(firstRunAt)) {
+			firstRunAt = startedAt
+		}
+		for _, record := range run.records {
+			event := record.Event
+			operation, _ := event.Runner["operation"].(string)
+			if event.Type != journal.EventRefTouched ||
+				event.ExternalRef == nil ||
+				event.ExternalRef.Kind != "pr" ||
+				operation != "open" ||
+				event.Time.IsZero() {
+				continue
+			}
+			if firstPROpenAt.IsZero() || event.Time.Before(firstPROpenAt) {
+				firstPROpenAt = event.Time
+			}
+		}
+	}
+	return telemetry.NewTimeToFirstPRMetric(firstRunAt, firstPROpenAt), nil
 }
 
 // SchedulerStatus returns the current scheduler status recorded in the

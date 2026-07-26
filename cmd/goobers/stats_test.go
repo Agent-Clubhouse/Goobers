@@ -92,6 +92,12 @@ func TestStatsJSONAndSinceWindow(t *testing.T) {
 	if got.AgenticStageDuration == nil || got.AgenticStageDuration.Attempts != 1 || got.AgenticStageDuration.LongestStage != "implement" {
 		t.Fatalf("agentic duration = %#v", got.AgenticStageDuration)
 	}
+	if got.TimeToFirstPR.FirstRunAt == nil ||
+		got.TimeToFirstPR.FirstPROpenAt == nil ||
+		got.TimeToFirstPR.Milliseconds == nil ||
+		*got.TimeToFirstPR.Milliseconds != got.TimeToFirstPR.FirstPROpenAt.Sub(*got.TimeToFirstPR.FirstRunAt).Milliseconds() {
+		t.Fatalf("timeToFirstPR = %#v, want source timestamps and their millisecond interval", got.TimeToFirstPR)
+	}
 }
 
 func TestStatsHumanCard(t *testing.T) {
@@ -139,7 +145,9 @@ func TestStatsEmptyInstance(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode empty stats JSON: %v", err)
 	}
-	if got.Runs.Total != 0 || got.BusiestWorkflow != nil || got.AgenticStageDuration != nil {
+	if got.Runs.Total != 0 || got.BusiestWorkflow != nil || got.AgenticStageDuration != nil ||
+		got.TimeToFirstPR.FirstRunAt != nil || got.TimeToFirstPR.FirstPROpenAt != nil ||
+		got.TimeToFirstPR.Milliseconds != nil {
 		t.Fatalf("empty stats JSON = %#v", got)
 	}
 

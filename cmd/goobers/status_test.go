@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedAt time.Time) {
@@ -82,6 +83,7 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 		"Workflow summary (success rate over last 10 terminal runs):",
 		"default-implement",
 		"0/1",
+		"Time to first PR: waiting for first run",
 		"Open PRs with goobers:blocked-on-sibling: 0",
 		"Open PRs with goobers:merge-escalated: 0",
 		"no runs found — trigger one with 'goobers run <workflow>'",
@@ -89,6 +91,94 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
 		}
+	}
+}
+
+func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
+	root := initScheduledDemo(t)
+	firstRunAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	writeStatusRun(t, root, "first-run", "default-implement", "example", firstRunAt)
+
+	eventTime := firstRunAt.Add(5 * time.Minute)
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:     "pr-run",
+		Workflow:  "default-implement",
+		Gaggle:    "example",
+		StartedAt: eventTime,
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventTime = firstRunAt.Add(12 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "First PR in 12m0s") {
+		t.Fatalf("stdout = %q, want journal-derived first-PR duration", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if got.TimeToFirstPR == nil ||
+		got.TimeToFirstPR.FirstRunAt == nil || !got.TimeToFirstPR.FirstRunAt.Equal(firstRunAt) ||
+		got.TimeToFirstPR.FirstPROpenAt == nil || !got.TimeToFirstPR.FirstPROpenAt.Equal(eventTime) ||
+		got.TimeToFirstPR.Milliseconds == nil || *got.TimeToFirstPR.Milliseconds != (12*time.Minute).Milliseconds() {
+		t.Fatalf("timeToFirstPR = %#v", got.TimeToFirstPR)
+	}
+}
+
+func TestStatusTimeToFirstPRCacheRefreshesUntilAchieved(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	firstRunAt := now.Add(-time.Minute)
+	calls := 0
+	cache := newStatusTimeToFirstPRCache(func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
+		calls++
+		if calls == 1 {
+			return telemetry.NewTimeToFirstPRMetric(firstRunAt, time.Time{}), nil
+		}
+		return telemetry.NewTimeToFirstPRMetric(firstRunAt, now), nil
+	})
+	cache.now = func() time.Time { return now }
+
+	if metric, err := cache.Load(context.Background()); err != nil || metric.Milliseconds != nil {
+		t.Fatalf("first Load = %#v, %v; want waiting metric", metric, err)
+	}
+	now = now.Add(statusOnboardingRefresh - time.Second)
+	if _, err := cache.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("loader calls before refresh = %d, want 1", calls)
+	}
+	now = now.Add(time.Second)
+	metric, err := cache.Load(context.Background())
+	if err != nil || metric.Milliseconds == nil {
+		t.Fatalf("refresh Load = %#v, %v; want achieved metric", metric, err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := cache.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("loader calls after achievement = %d, want 2", calls)
 	}
 }
 
@@ -142,9 +232,10 @@ func TestListRunsSkipsNonRunEntry(t *testing.T) {
 }
 
 type stubStatusReadService struct {
-	runs  []readservice.RunSummary
-	err   error
-	calls int
+	runs          []readservice.RunSummary
+	timeToFirstPR telemetry.TimeToFirstPRMetric
+	err           error
+	calls         int
 }
 
 func (s *stubStatusReadService) ListStatusRuns(context.Context) ([]readservice.RunSummary, error) {
@@ -157,6 +248,10 @@ func (s *stubStatusReadService) ListStatusRuns(context.Context) ([]readservice.R
 
 func (s *stubStatusReadService) SchedulerStatus(context.Context) (readservice.SchedulerStatus, error) {
 	return readservice.SchedulerStatus{}, nil
+}
+
+func (s *stubStatusReadService) TimeToFirstPR(context.Context) (telemetry.TimeToFirstPRMetric, error) {
+	return s.timeToFirstPR, nil
 }
 
 func TestListStatusRunsUsesSingleSharedServiceProjection(t *testing.T) {

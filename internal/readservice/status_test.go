@@ -114,6 +114,65 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 }
 
+func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	firstRunAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	first, firstClock := createFixtureRun(
+		t, layout, machine, "first-run", "implementation", "goobers",
+		firstRunAt, journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	firstClock.now = firstRunAt.Add(2 * time.Minute)
+	if err := first.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "42"},
+		Runner:      map[string]any{"operation": "claim"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, secondClock := createFixtureRun(
+		t, layout, machine, "second-run", "implementation", "goobers",
+		firstRunAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	secondClock.now = firstRunAt.Add(8 * time.Minute)
+	if err := second.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "7"},
+		Runner:      map[string]any{"operation": "update"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondClock.now = firstRunAt.Add(12 * time.Minute)
+	if err := second.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err := service.TimeToFirstPR(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) {
+		t.Fatalf("FirstRunAt = %v, want %v", metric.FirstRunAt, firstRunAt)
+	}
+	wantOpenAt := firstRunAt.Add(12 * time.Minute)
+	if metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(wantOpenAt) {
+		t.Fatalf("FirstPROpenAt = %v, want %v", metric.FirstPROpenAt, wantOpenAt)
+	}
+	if metric.Milliseconds == nil || *metric.Milliseconds != (12*time.Minute).Milliseconds() {
+		t.Fatalf("Milliseconds = %v, want %d", metric.Milliseconds, (12 * time.Minute).Milliseconds())
+	}
+}
+
 func TestSchedulerStatusPropagatesReadAndContextFailures(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {

@@ -143,11 +143,15 @@ the run id up front and the final phase/state once it returns.
 bin/goobers status ./my-instance
 ```
 
-`status` revalidates the active configuration before listing runs. Non-fatal
+`status` revalidates the active configuration before listing runs. On a new
+instance it reports that Time to First PR is waiting for the first run or first
+PR; after the onboarding workflow journals its first PR open, it celebrates
+`First PR in <duration>`. The duration is read from the earliest run identity
+and the first PR-open `ref.touched` event, not from command timing. Non-fatal
 configuration warnings use the same `WARNING <code> <scope>: <explanation>`
 lines printed during `up` startup. `status --json` returns an object with
-`warnings` and `runs` arrays; warning objects contain `code`, `severity`,
-`scope`, and `explanation`.
+`warnings` and `runs` arrays plus the structured `timeToFirstPR` metric; warning
+objects contain `code`, `severity`, `scope`, and `explanation`.
 
 ```
 RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED

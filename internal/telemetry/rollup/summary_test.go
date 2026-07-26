@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 type summaryMutation struct {
@@ -92,6 +94,18 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 	if all.LongestAgenticWorkflow != "implement" || all.LongestAgenticStage != "agent" || all.LongestAgenticRunID != "2222222222222222eeeeeeeeeeeeeeee" {
 		t.Fatalf("longest agentic stage identity = %#v", all)
 	}
+	timeToFirstPR, err := db.TimeToFirstPR()
+	if err != nil {
+		t.Fatalf("TimeToFirstPR: %v", err)
+	}
+	wantFirstRunAt := now.Add(-48 * time.Hour)
+	wantFirstPROpenAt := wantFirstRunAt.Add(4 * time.Second)
+	if timeToFirstPR.Anchor != telemetry.TimeToFirstPRAnchor ||
+		timeToFirstPR.FirstRunAt == nil || !timeToFirstPR.FirstRunAt.Equal(wantFirstRunAt) ||
+		timeToFirstPR.FirstPROpenAt == nil || !timeToFirstPR.FirstPROpenAt.Equal(wantFirstPROpenAt) ||
+		timeToFirstPR.Milliseconds == nil || *timeToFirstPR.Milliseconds != 4000 {
+		t.Fatalf("time to first PR = %#v", timeToFirstPR)
+	}
 
 	windowed, err := db.InstanceSummaryStats(now.Add(-24 * time.Hour))
 	if err != nil {
@@ -116,5 +130,15 @@ func TestInstanceSummaryStatsEmpty(t *testing.T) {
 	}
 	if got != (InstanceSummary{}) {
 		t.Fatalf("empty summary = %#v", got)
+	}
+	timeToFirstPR, err := db.TimeToFirstPR()
+	if err != nil {
+		t.Fatalf("TimeToFirstPR: %v", err)
+	}
+	if timeToFirstPR.Anchor != telemetry.TimeToFirstPRAnchor ||
+		timeToFirstPR.FirstRunAt != nil ||
+		timeToFirstPR.FirstPROpenAt != nil ||
+		timeToFirstPR.Milliseconds != nil {
+		t.Fatalf("empty time to first PR = %#v", timeToFirstPR)
 	}
 }

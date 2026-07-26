@@ -112,6 +112,19 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
   telemetry as input (e.g. the nomination workflow's configured sources); this MUST stay
   distinct from the goober-run store.
 
+### Metrics reference
+
+| JSON field | Unit | Journal source | Definition |
+|---|---|---|---|
+| `timeToFirstPR.milliseconds` | milliseconds | Earliest `run.yaml.startedAt`; earliest `ref.touched` event with `externalRef.kind: pr` and `runner.operation: open` | Lifetime elapsed time from the instance's first run start to its first autonomously opened pull request. The field is absent until both endpoints exist. Scheduler ticks and completed no-work runs do not satisfy the PR endpoint. |
+
+`timeToFirstPR.anchor` is the stable value `firstRunStartedAt`;
+`timeToFirstPR.firstRunAt` and `timeToFirstPR.firstPROpenAt` carry the two
+source timestamps for manual journal comparison. The structured object appears
+in `goobers status --json` and `goobers stats --json`; the SQLite rollup derives
+the same values from `runs` and `provider_mutations`. Status reads the live
+journals, while stats reflects the rollup after its next incremental ingest.
+
 ## Relationships
 
 - Provisioned by → the **Instance** (`goobers init` creates `telemetry.db`; Bicep
