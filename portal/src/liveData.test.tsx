@@ -27,6 +27,7 @@ const testConfig: LiveDataConfig = {
   reconnectMaxDelayMs: 200,
   failuresBeforePolling: 2,
   pollingIntervalMs: 200,
+  refreshMaxDelayMs: 1_000,
 };
 
 beforeEach(() => {
@@ -381,6 +382,80 @@ describe("LiveDataController", () => {
       { event: "reconnect", cause: "visibility-visible", delayMs: undefined },
       { event: "connect", cause: "visibility-visible" },
     ]);
+
+    controller.stop();
+  });
+
+  // A refresh fails exactly when the daemon is slow or erroring. Retrying it at a
+  // flat pollingIntervalMs meant the portal re-issued its whole snapshot every 5s
+  // forever against a backend that could not answer, which is what produced the
+  // observed proxy-error flood (#1710). Successive failures must space out.
+  it("backs off exponentially while refreshes keep failing, and resets on success", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh);
+    refresh.mockReset();
+    refresh.mockResolvedValue(false);
+
+    controller.start();
+    await settle();
+    stream.push(update("session:1", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    // First retry is one polling interval out.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    // Second retry must be 400ms, not another 200ms.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(3);
+
+    // Third retry must be 800ms.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refresh).toHaveBeenCalledTimes(4);
+
+    controller.stop();
+  });
+
+  // The counterpart to the escalation above: a recovered daemon must not stay
+  // penalised by the backoff it earned while it was failing.
+  it("resets refresh backoff after a success so a later failure retries at the base interval", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh);
+    refresh.mockReset();
+    // Fail once (escalating the delay to 400ms for the retry after next), then
+    // recover on the retry.
+    refresh.mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    stream.push(update("session:1", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2); // succeeded -> backoff reset
+
+    // A fresh failure now must retry at the base interval, not the escalated one.
+    refresh.mockResolvedValue(false);
+    stream.push(update("session:2", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(4);
 
     controller.stop();
   });

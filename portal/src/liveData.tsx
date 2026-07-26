@@ -34,6 +34,8 @@ export interface LiveDataConfig {
   reconnectMaxDelayMs: number;
   failuresBeforePolling: number;
   pollingIntervalMs: number;
+  /** Ceiling for the backoff applied to consecutively failing refreshes. */
+  refreshMaxDelayMs: number;
 }
 
 const defaultConfig: LiveDataConfig = {
@@ -42,6 +44,7 @@ const defaultConfig: LiveDataConfig = {
   reconnectMaxDelayMs: 30_000,
   failuresBeforePolling: 3,
   pollingIntervalMs: 5_000,
+  refreshMaxDelayMs: 60_000,
 };
 
 type ModelListener = (
@@ -100,6 +103,7 @@ export function LiveDataProvider({
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
       config?.reconnectMaxDelayMs,
+      config?.refreshMaxDelayMs,
       diagnostics,
     ],
   );
@@ -158,6 +162,7 @@ export class LiveDataController {
   private polling = false;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshFailureCount = 0;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
   private skipNextSnapshotRefresh = false;
@@ -453,14 +458,22 @@ export class LiveDataController {
   }
 
   private async runPollingCycle(): Promise<void> {
-    await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
+    const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
     if (!this.polling || !this.started) {
       return;
+    }
+    // The fallback poll is the other path that hammers a degraded daemon: it is
+    // only active because the event stream is already failing, so a failing poll
+    // backs off too rather than re-firing every 5s (#1710).
+    if (refreshed) {
+      this.refreshFailureCount = 0;
+    } else {
+      this.refreshFailureCount += 1;
     }
     this.pollingTimer = setTimeout(() => {
       this.pollingTimer = undefined;
       void this.runPollingCycle();
-    }, this.config.pollingIntervalMs);
+    }, refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay());
   }
 
   private scheduleReconnect(delay: number, cause: string): void {
@@ -503,6 +516,19 @@ export class LiveDataController {
       clearTimeout(this.invalidationTimer);
       this.invalidationTimer = undefined;
     }
+  }
+
+  // A refresh fails precisely when the daemon is slow or erroring, so retrying
+  // it at a flat pollingIntervalMs applied maximum request pressure exactly when
+  // the backend could least absorb it: an Overview whose run queries time out
+  // re-issued the whole snapshot every 5s indefinitely (#1710). Back off the way
+  // the reconnect path already does, and reset on the first success.
+  private refreshRetryDelay(): number {
+    const exponent = Math.max(0, this.refreshFailureCount - 1);
+    return Math.min(
+      this.config.pollingIntervalMs * 2 ** exponent,
+      this.config.refreshMaxDelayMs,
+    );
   }
 
   private scheduleInvalidationFlush(delay: number): void {
@@ -552,11 +578,13 @@ export class LiveDataController {
         return;
       }
       if (!refreshed) {
+        this.refreshFailureCount += 1;
         this.invalidationRevision += 1;
         this.pendingInvalidations.unshift(...invalidations);
-        this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
+        this.scheduleInvalidationFlush(this.refreshRetryDelay());
         return;
       }
+      this.refreshFailureCount = 0;
       if (this.invalidationTimer !== undefined) {
         return;
       }
