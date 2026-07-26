@@ -251,7 +251,7 @@ jobs:
       - name: Download previous timing artifact
         if: ${{ steps.previous-timing.outputs.result != '' }}
         continue-on-error: true
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: test-timings-${{ runner.os }}
           path: previous-test-timings
