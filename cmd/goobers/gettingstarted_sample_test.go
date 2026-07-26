@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 type sampleSeedCatalog struct {
@@ -53,13 +55,80 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stages []string
+	var firstPROpenAt time.Time
 	for _, event := range events {
 		if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
 			stages = append(stages, event.Stage)
 		}
+		operation, _ := event.Runner["operation"].(string)
+		if event.Type == journal.EventRefTouched &&
+			event.ExternalRef != nil &&
+			event.ExternalRef.Kind == "pr" &&
+			operation == "open" &&
+			(firstPROpenAt.IsZero() || event.Time.Before(firstPROpenAt)) {
+			firstPROpenAt = event.Time
+		}
 	}
 	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,push-branch,open-pr"; got != want {
 		t.Fatalf("successful stages = %q, want %q", got, want)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Workflow != "quickstart" || identity.StartedAt.IsZero() || firstPROpenAt.IsZero() {
+		t.Fatalf(
+			"manual journal read = workflow %q, startedAt %v, first PR open %v",
+			identity.Workflow,
+			identity.StartedAt,
+			firstPROpenAt,
+		)
+	}
+	elapsedMilliseconds := firstPROpenAt.Sub(identity.StartedAt).Milliseconds()
+	if elapsedMilliseconds < 0 {
+		t.Fatalf(
+			"manual journal read = startedAt %v, first PR open %v",
+			identity.StartedAt,
+			firstPROpenAt,
+		)
+	}
+
+	code, statusStdout, statusStderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("goobers status: code=%d stdout=%q stderr=%q", code, statusStdout, statusStderr)
+	}
+	elapsed := time.Duration(elapsedMilliseconds) * time.Millisecond
+	if want := fmt.Sprintf("First PR in %s", elapsed.Truncate(time.Second)); !strings.Contains(statusStdout, want) {
+		t.Fatalf(
+			"status = %q, want %q from run.yaml startedAt %v and first PR-open ref.touched time %v",
+			statusStdout,
+			want,
+			identity.StartedAt,
+			firstPROpenAt,
+		)
+	}
+
+	code, statusStdout, statusStderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("goobers status --json: code=%d stdout=%q stderr=%q", code, statusStdout, statusStderr)
+	}
+	var statusOutput statusJSONOutput
+	if err := json.Unmarshal([]byte(statusStdout), &statusOutput); err != nil {
+		t.Fatalf("status JSON = %q: %v", statusStdout, err)
+	}
+	metric := statusOutput.TimeToFirstPR
+	if metric == nil ||
+		metric.Anchor != telemetry.TimeToFirstPRAnchor ||
+		metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(identity.StartedAt) ||
+		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) ||
+		metric.Milliseconds == nil || *metric.Milliseconds != elapsedMilliseconds {
+		t.Fatalf(
+			"timeToFirstPR = %#v, want startedAt %v, first PR open %v, milliseconds %d",
+			metric,
+			identity.StartedAt,
+			firstPROpenAt,
+			elapsedMilliseconds,
+		)
 	}
 
 	server.mu.Lock()

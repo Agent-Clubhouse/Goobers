@@ -173,6 +173,42 @@ func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
 	}
 }
 
+func TestTimeToFirstPRFailsClosedOnUnreadableJournal(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	healthy, clock := createFixtureRun(
+		t, layout, machine, "healthy-run", "implementation", "goobers",
+		startedAt, journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	clock.now = startedAt.Add(12 * time.Minute)
+	if err := healthy.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := healthy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	unreadable, _ := createFixtureRun(
+		t, layout, machine, "unreadable-run", "implementation", "goobers",
+		startedAt.Add(-time.Hour), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	if err := unreadable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(layout.RunsDir(), "unreadable-run", "events.jsonl")
+	if err := os.WriteFile(eventsPath, []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if metric, err := service.TimeToFirstPR(context.Background()); err == nil {
+		t.Fatalf("TimeToFirstPR = %#v, nil; want unreadable journal error", metric)
+	}
+}
+
 func TestSchedulerStatusPropagatesReadAndContextFailures(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {

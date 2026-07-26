@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -45,7 +46,11 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 		}
 		run, err := s.openRun(runID)
 		if err != nil {
-			continue
+			return telemetry.TimeToFirstPRMetric{}, fmt.Errorf(
+				"read run %q for time to first PR: %w",
+				runID,
+				err,
+			)
 		}
 		if startedAt := run.identity.StartedAt; !startedAt.IsZero() &&
 			(firstRunAt.IsZero() || startedAt.Before(firstRunAt)) {

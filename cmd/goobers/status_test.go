@@ -145,6 +145,37 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	}
 }
 
+func TestStatusFailsClosedWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
+	root := initScheduledDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:     "unreadable-run",
+		Workflow:  "default-implement",
+		Gaggle:    "example",
+		StartedAt: startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(instance.NewLayout(root).RunsDir(), "unreadable-run", "events.jsonl")
+	if err := os.WriteFile(eventsPath, []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"status", root},
+		{"status", "--json", root},
+	} {
+		code, stdout, stderr := runArgs(t, args...)
+		if code != 2 || !strings.Contains(stderr, `read run "unreadable-run" for time to first PR`) {
+			t.Fatalf("%v: code = %d, stdout = %q, stderr = %q", args, code, stdout, stderr)
+		}
+	}
+}
+
 func TestStatusTimeToFirstPRCacheRefreshesUntilAchieved(t *testing.T) {
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
 	firstRunAt := now.Add(-time.Minute)
