@@ -34,6 +34,8 @@ const ACTIVE_RUN_LIMIT = 50;
 const ATTENTION_RUN_LIMIT = 20;
 const RECENT_OUTCOME_LIMIT = 20;
 const WORKFLOW_RUN_LIMIT = 5;
+// Keep browser connection capacity available for unrelated daemon requests.
+const WORKFLOW_OUTCOME_CONCURRENCY = 4;
 
 export interface GaggleInventory {
   gaggle: Gaggle;
@@ -270,16 +272,29 @@ async function collectWorkflowOutcomes(
   inventories: GaggleInventory[],
   signal?: AbortSignal,
 ): Promise<RunSummary[]> {
-  const outcomes = await Promise.all(
-    inventories.flatMap((inventory) =>
-      inventory.workflows.map(async (workflow) => {
-        const { gaggle, name } = workflow.identity;
-        const response = await client.listRuns(
-          { gaggle, workflow: name, limit: WORKFLOW_RUN_LIMIT },
-          { signal },
-        );
-        return latestWorkflowOutcome(response.runs, gaggle, name);
-      }),
+  const identities = inventories.flatMap((inventory) =>
+    inventory.workflows.map((workflow) => workflow.identity),
+  );
+  const outcomes = new Array<RunSummary | undefined>(identities.length);
+  let nextIndex = 0;
+
+  async function collectNext(): Promise<void> {
+    while (nextIndex < identities.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const { gaggle, name } = identities[index];
+      const response = await client.listRuns(
+        { gaggle, workflow: name, limit: WORKFLOW_RUN_LIMIT },
+        { signal },
+      );
+      outcomes[index] = latestWorkflowOutcome(response.runs, gaggle, name);
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(WORKFLOW_OUTCOME_CONCURRENCY, identities.length) },
+      collectNext,
     ),
   );
   return outcomes.filter((run): run is RunSummary => run !== undefined);
