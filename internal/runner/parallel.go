@@ -261,20 +261,3 @@ func (p *parallelExec) route() (target string, runJoin bool) {
 		return p.spec.OnFailure, false
 	}
 }
-
-// branchStatusFor maps a settling branch's last stage result to its terminal
-// status. A branch-scoped no-work is a SUCCESSFUL settle that produced
-// nothing — deliberately distinct from succeeded, which the join needs in
-// order to tell "ran and found nothing" from "ran and produced findings".
-func branchStatusFor(result apiv1.ResultEnvelope, artifacts int) journal.BranchStatus {
-	switch result.Status {
-	case apiv1.ResultNoWork:
-		return journal.BranchNoOutput
-	case apiv1.ResultFailure:
-		return journal.BranchFailed
-	}
-	if artifacts == 0 && len(result.Outputs) == 0 {
-		return journal.BranchNoOutput
-	}
-	return journal.BranchSucceeded
-}

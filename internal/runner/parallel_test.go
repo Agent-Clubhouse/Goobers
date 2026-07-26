@@ -129,48 +129,53 @@ func TestCompletenessCoversBranchesThatNeverRan(t *testing.T) {
 	}
 }
 
-func TestBranchStatusFor(t *testing.T) {
+func TestParallelCurrentStatus(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		result    apiv1.ResultEnvelope
-		artifacts int
-		want      journal.BranchStatus
+		name    string
+		prepare func(*parallelExec)
+		want    journal.BranchStatus
 	}{
 		{
-			name:      "produced outputs",
-			result:    apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"findings": 3}},
-			artifacts: 0,
-			want:      journal.BranchSucceeded,
+			name: "produced outputs",
+			prepare: func(p *parallelExec) {
+				p.recordCurrent(map[string]any{"findings": 3}, nil)
+			},
+			want: journal.BranchSucceeded,
 		},
 		{
-			name:      "produced artifacts only",
-			result:    apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
-			artifacts: 2,
-			want:      journal.BranchSucceeded,
+			name: "produced artifacts only",
+			prepare: func(p *parallelExec) {
+				p.recordCurrent(nil, []apiv1.ContextPointer{{Artifact: &apiv1.ArtifactPointer{Path: "report"}}})
+			},
+			want: journal.BranchSucceeded,
 		},
 		{
-			// The distinction the four original statuses could not express.
-			name:      "settled empty",
-			result:    apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
-			artifacts: 0,
-			want:      journal.BranchNoOutput,
+			name:    "settled empty",
+			prepare: func(*parallelExec) {},
+			want:    journal.BranchNoOutput,
 		},
 		{
-			name:      "branch-scoped no-work is a successful empty settle",
-			result:    apiv1.ResultEnvelope{Status: apiv1.ResultNoWork},
-			artifacts: 0,
-			want:      journal.BranchNoOutput,
+			name: "branch-scoped no-work is a successful empty settle",
+			prepare: func(p *parallelExec) {
+				p.markCurrentNoOutput()
+			},
+			want: journal.BranchNoOutput,
 		},
 		{
-			name:      "failure",
-			result:    apiv1.ResultEnvelope{Status: apiv1.ResultFailure},
-			artifacts: 0,
-			want:      journal.BranchFailed,
+			name: "failure",
+			prepare: func(p *parallelExec) {
+				p.markCurrentFailed()
+			},
+			want: journal.BranchFailed,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := branchStatusFor(tc.result, tc.artifacts); got != tc.want {
-				t.Errorf("branchStatusFor = %q, want %q", got, tc.want)
+			p := newParallelExec(apiv1.Parallel{
+				Branches: []apiv1.Branch{{Name: "branch", Start: "stage"}},
+			})
+			tc.prepare(p)
+			if got := p.currentStatus(); got != tc.want {
+				t.Errorf("currentStatus = %q, want %q", got, tc.want)
 			}
 		})
 	}
