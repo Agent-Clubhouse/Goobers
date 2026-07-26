@@ -358,32 +358,11 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 	for i, repo := range repos {
 		label := fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name)
 		refName := fmt.Sprintf("validate-repo-%d", i)
-		var token string
-		var err error
-		if repo.GitHubAppAuth() {
-			// Mint a real installation token (#686): the exchange itself is
-			// the preflight — a missing installation or rejected App key
-			// fails here with GitHub's diagnosis instead of mid-run. nil
-			// registrar matches the ADO preflight (no journal is written);
-			// scrubRepositoryError below keeps the token out of output.
-			var mint credentials.ResolveFunc
-			mint, err = newGitHubAppTokenSource(repo, nil, stores)
-			if err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-				token, err = mint(ctx)
-				cancel()
-			}
-		} else if repoUsesToken(repo) {
-			var resolver credentials.Resolver
-			resolver, err = credentials.NewResolverWithStores([]credentials.TokenRef{
-				repo.Token.CredentialTokenRef(refName),
-			}, stores)
-			if err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-				token, err = resolver.Resolve(ctx, refName)
-				cancel()
-			}
-		}
+		// Mint a real installation token for GitHub App auth (#686): the
+		// exchange itself is the preflight — a missing installation or
+		// rejected App key fails here with GitHub's diagnosis instead of
+		// mid-run. scrubRepositoryError below keeps the token out of output.
+		token, err := resolveRepoToken(repo, refName, stores)
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 			err = targetRepositoryReachable(ctx, repo, token, stores)
@@ -401,6 +380,35 @@ func checkTargetRepositories(repos []instance.RepoRef, stores credentials.StoreR
 		}
 	}
 	return ok
+}
+
+// resolveRepoToken resolves a usable access token for repo — a minted GitHub
+// App installation token, a static token ref, or "" when the repo needs
+// neither (e.g. non-PAT ADO auth) — shared by the repository preflight
+// (checkTargetRepositories) and `goobers doctor --repo` (#916), so both
+// preflight the exact credential path a real run would use.
+func resolveRepoToken(repo instance.RepoRef, refName string, stores credentials.StoreResolver) (string, error) {
+	if repo.GitHubAppAuth() {
+		mint, err := newGitHubAppTokenSource(repo, nil, stores)
+		if err != nil {
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+		defer cancel()
+		return mint(ctx)
+	}
+	if repoUsesToken(repo) {
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
+			repo.Token.CredentialTokenRef(refName),
+		}, stores)
+		if err != nil {
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+		defer cancel()
+		return resolver.Resolve(ctx, refName)
+	}
+	return "", nil
 }
 
 // warnOnOversizedRepository checks a GitHub target repo's size against

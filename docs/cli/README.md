@@ -646,13 +646,13 @@ preflight a Kubernetes cluster against the documented infra shape
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
+       goobers doctor --repo [--report text|json] [instance-root]
 
-Preflight a target Kubernetes cluster against the documented infrastructure
-shape (docs/design/k8s-infra-shape.md) before installing Goobers on it — the
-install-time enforcement of that document (#668). --k8s is the only doctor
-mode today.
+--k8s preflights a target Kubernetes cluster against the documented
+infrastructure shape (docs/design/k8s-infra-shape.md) before installing
+Goobers on it — the install-time enforcement of that document (#668).
 
-The check set, each row citing the shape-doc section it enforces:
+The --k8s check set, each row citing the shape-doc section it enforces:
 
   cluster-version    required  §1     cluster reachable, supported version
   networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
@@ -669,11 +669,19 @@ created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
 
---report json emits the stable machine-readable report; text (default) prints
-the conformance table with remediation hints.
+--repo diffs each configured repo's declared forge-policy manifest
+(<instance-root>/instance.yaml repos[].policy: required merge method,
+merge-queue requirement, required status checks — issue #916, Tier 4 of
+#903) against its live GitHub state. Repos with no policy declared are
+skipped. Token-scope introspection is reported as unavailable when GitHub
+does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
+from a failed call. instance-root defaults to ".".
 
-Exit codes: 0 = cluster conforms (warns allowed), 1 = a required check
-failed, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s) or per-repo findings (--repo).
+
+Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
+failed or drift was found, 2 = usage/IO error.
 ~~~
 
 **Examples**
