@@ -584,8 +584,11 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 // declared capabilities. Registering it only for KindCIPoll keeps credential
 // materialization out of every other deterministic kind.
 type ciPollKindExecutor struct {
-	injector *credentials.Injector
-	recorder executor.ArtifactRecorder
+	cfg       *instance.Config
+	injector  *credentials.Injector
+	recorder  executor.ArtifactRecorder
+	stores    credentials.StoreResolver
+	registrar providers.SecretRegistrar
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -593,25 +596,57 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 	}
-	credentialCapability := capability.ProviderPRWrite
-	if !containsCapability(env.Capabilities, string(credentialCapability)) &&
-		(env.RepoRef.Provider == "" || env.RepoRef.Provider == apiv1.ProviderGitHub) &&
-		containsCapability(env.Capabilities, string(capability.GitHubPRWrite)) {
-		credentialCapability = capability.GitHubPRWrite
-	}
-	token, err := set.Token(ctx, string(credentialCapability))
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
+	resolveToken := func() (string, error) {
+		credentialCapability := capability.ProviderPRWrite
+		if !containsCapability(env.Capabilities, string(credentialCapability)) &&
+			(env.RepoRef.Provider == "" || env.RepoRef.Provider == apiv1.ProviderGitHub) &&
+			containsCapability(env.Capabilities, string(capability.GitHubPRWrite)) {
+			credentialCapability = capability.GitHubPRWrite
+		}
+		token, tokenErr := set.Token(ctx, string(credentialCapability))
+		if tokenErr != nil {
+			return "", fmt.Errorf("resolve ci-poll credential: %w", tokenErr)
+		}
+		return token, nil
 	}
 	var poller executor.PRPoller
 	if newPRPoller != nil {
+		token, err := resolveToken()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
 		poller = newPRPoller(token)
 	} else {
 		switch env.RepoRef.Provider {
 		case "", apiv1.ProviderGitHub:
+			token, err := resolveToken()
+			if err != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
 			poller = providers.NewGitHubProvider(token)
 		case apiv1.ProviderADO:
-			poller = newADOProvider(env.RepoRef.Owner, env.RepoRef.Project, token)
+			if !containsCapability(env.Capabilities, string(capability.ProviderPRWrite)) {
+				_, err = set.Token(ctx, string(capability.ProviderPRWrite))
+				return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
+			}
+			configured, ok := adoRepoForGaggle(e.cfg, env.RepoRef)
+			if !ok {
+				return apiv1.ResultEnvelope{}, fmt.Errorf(
+					"configure ci-poll provider: ADO repository %s/%s/%s is not configured",
+					env.RepoRef.Owner, env.RepoRef.Project, env.RepoRef.Name,
+				)
+			}
+			source, err := adoauth.Source(configured, nil, e.stores)
+			if err != nil {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("configure ci-poll ADO authentication: %w", err)
+			}
+			poller = newADOProvider(
+				configured.Owner,
+				configured.Project,
+				"",
+				providers.WithADOCredentialSource(source),
+				providers.WithADOSecretRegistrar(e.registrar),
+			)
 		default:
 			return apiv1.ResultEnvelope{}, fmt.Errorf("configure ci-poll provider: unsupported repository provider %q", env.RepoRef.Provider)
 		}
@@ -638,7 +673,7 @@ func containsCapability(capabilities []string, required string) bool {
 
 // buildCIPollExecutor builds the registered ci-poll kind for a repo-backed
 // instance. Credential resolution stays lazy until that kind is dispatched.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, stores credentials.StoreResolver, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -648,7 +683,7 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder}, nil
+	return &ciPollKindExecutor{cfg: cfg, injector: injector, recorder: recorder, stores: stores, registrar: registrar}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -1696,7 +1731,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err := kinds.Register(executor.KindShell, shell); err != nil {
 				return nil, err
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, stores, reg)
 			if err != nil {
 				return nil, err
 			}

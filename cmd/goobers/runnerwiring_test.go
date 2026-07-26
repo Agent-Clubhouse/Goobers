@@ -1436,7 +1436,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{})
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, reg)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1520,7 +1520,7 @@ func TestCIPollUsesLegacyDedicatedGitHubPRCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{})
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, &escTestRegistrar{})
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1588,13 +1588,39 @@ func TestCIPollSelectsADOFromInvocationRepository(t *testing.T) {
 
 	previousADOProvider := newADOProvider
 	newADOProvider = func(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
-		return providers.NewADOProvider(organization, project, token, append(opts, func(p *providers.ADOProvider) {
+		if token != "" {
+			t.Fatalf("ADO provider token = %q, want configured credential source", token)
+		}
+		if len(opts) == 0 {
+			t.Fatal("ADO provider was not given a configured credential source")
+		}
+		opts = append(opts, providers.WithADOCredentialSource(providers.NewADOPATCredentialSource("goobers", "test-token")), func(p *providers.ADOProvider) {
 			p.BaseURL = server.URL
-		})...)
+		})
+		return providers.NewADOProvider(organization, project, "", opts...)
 	}
 	t.Cleanup(func() { newADOProvider = previousADOProvider })
 
-	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "organization",
+		Project:  "project",
+		Name:     "repository",
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	reg := &escTestRegistrar{}
+	injector, err := credentials.NewInjector(resolver, grants, reg)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, reg)
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
 	env := ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)})
 	env.RepoRef = apiv1.RepoRef{
 		Provider: apiv1.ProviderADO,

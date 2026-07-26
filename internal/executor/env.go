@@ -71,6 +71,9 @@ const (
 	// RepoNameEnvVar carries the scheduler-routed repository name to goobers
 	// CLI stages.
 	RepoNameEnvVar = "GOOBERS_REPO_NAME"
+	// RepoBranchEnvVar carries the scheduler-routed repository's default branch
+	// to goobers CLI stages.
+	RepoBranchEnvVar = "GOOBERS_REPO_BRANCH"
 
 	// AdditionalReposEnvVar carries the comma-separated names of the gaggle's
 	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,

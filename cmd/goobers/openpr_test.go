@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,6 +11,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -296,22 +300,85 @@ func TestProviderWorkItemClosedMapsADOStates(t *testing.T) {
 	}
 }
 
-func TestNewOpenPRProviderSelectsADO(t *testing.T) {
-	provider, err := newOpenPRProviderForRepo(providers.RepositoryRef{
-		Provider: providers.ProviderADO,
-		Owner:    "organization",
-		Project:  "project",
-		Name:     "repository",
-	}, "token")
+func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ado, ok := provider.(*providers.ADOProvider)
-	if !ok {
-		t.Fatalf("provider = %T, want *providers.ADOProvider", provider)
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "organization",
+		Project:  "project",
+		Name:     "repository",
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}}
+	if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
 	}
-	if ado.Organization != "organization" || ado.Project != "project" {
-		t.Fatalf("ADO provider = %+v", ado)
+
+	var body map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []interface{}{}}); err != nil {
+				t.Fatal(err)
+			}
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"pullRequestId": 42,
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://example.test/pr/42"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var providerCalls int
+	previousADOProvider := newADOProvider
+	newADOProvider = func(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
+		providerCalls++
+		if token != "" {
+			t.Fatalf("ADO provider token = %q, want configured credential source", token)
+		}
+		if len(opts) == 0 {
+			t.Fatal("ADO provider was not given a configured credential source")
+		}
+		opts = append(opts, providers.WithADOCredentialSource(providers.NewADOPATCredentialSource("goobers", "test-token")), func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		})
+		return providers.NewADOProvider(organization, project, "", opts...)
+	}
+	t.Cleanup(func() { newADOProvider = previousADOProvider })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-ado")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
+	t.Setenv(executor.RepoOwnerEnvVar, "organization")
+	t.Setenv(executor.RepoProjectEnvVar, "project")
+	t.Setenv(executor.RepoNameEnvVar, "repository")
+	t.Setenv(executor.RepoBranchEnvVar, "trunk")
+	t.Setenv("GOOBERS_CRED_PROVIDER_PR_WRITE", "")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "open-pr", root)
+	if code != 0 {
+		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
+	}
+	if providerCalls != 1 {
+		t.Fatalf("ADO provider calls = %d, want 1", providerCalls)
+	}
+	if body["targetRefName"] != "refs/heads/trunk" {
+		t.Fatalf("targetRefName = %q, want configured default branch", body["targetRefName"])
 	}
 }
 

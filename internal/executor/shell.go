@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -267,6 +268,22 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 	return paths
 }
 
+func adoWorkloadIdentityEnv() []string {
+	names := [...]string{
+		"AZURE_TENANT_ID",
+		"AZURE_CLIENT_ID",
+		"AZURE_FEDERATED_TOKEN_FILE",
+		"AZURE_AUTHORITY_HOST",
+	}
+	env := make([]string, 0, len(names))
+	for _, name := range names {
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
 // Run implements invoke.Deterministic. It executes run.Command, or run.Script
 // through the host's native command interpreter, in env.Workspace with a
 // capability-scoped, non-ambient environment. It enforces a timeout by killing
@@ -331,7 +348,13 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
 			RepoProjectEnvVar+"="+env.RepoRef.Project,
 			RepoNameEnvVar+"="+env.RepoRef.Name,
+			RepoBranchEnvVar+"="+env.RepoRef.Branch,
 		)
+	}
+	if injectRunContext && len(command) > 1 && command[1] == "open-pr" &&
+		env.RepoRef.Provider == apiv1.ProviderADO &&
+		containsString(env.Capabilities, string(capability.ProviderPRWrite)) {
+		stageEnv = append(stageEnv, adoWorkloadIdentityEnv()...)
 	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)

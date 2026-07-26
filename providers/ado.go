@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	adoPullRequestPageSize = 100
-	adoChangePageSize      = 2000
-	adoCommentPageSize     = 200
-	adoClaimRetries        = 4
-	adoMaxTagLength        = 400
-	adoClaimTagPrefix      = "goobers:claim-run:"
+	adoPullRequestPageSize         = 100
+	adoPullRequestDescriptionLimit = 4000
+	adoChangePageSize              = 2000
+	adoCommentPageSize             = 200
+	adoClaimRetries                = 4
+	adoMaxTagLength                = 400
+	adoClaimTagPrefix              = "goobers:claim-run:"
 )
 
 // ADOProvider implements repo, backlog, and trigger operations for Azure DevOps.
@@ -313,7 +314,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		"sourceRefName": sourceRefName,
 		"targetRefName": targetRefName,
 		"title":         req.Title,
-		"description":   withRunIDFooter(req.Body, req.RunID),
+		"description":   adoPullRequestDescription(req.Body, req.RunID),
 		"isDraft":       req.Draft,
 	}
 	var out adoPullRequest
@@ -355,7 +356,7 @@ func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequ
 	}
 	body := map[string]interface{}{
 		"title":       req.Title,
-		"description": withRunIDFooter(req.Body, req.RunID),
+		"description": adoPullRequestDescription(req.Body, req.RunID),
 		"isDraft":     req.Draft,
 	}
 	var out adoPullRequest
@@ -372,6 +373,23 @@ func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequ
 		out.Links.Web.Href = existing.Links.Web.Href
 	}
 	return adoPullRequestResult(out), nil
+}
+
+func adoPullRequestDescription(body, runID string) string {
+	description := withRunIDFooter(body, runID)
+	runes := []rune(description)
+	if len(runes) <= adoPullRequestDescriptionLimit {
+		return description
+	}
+	if runID == "" {
+		return string(runes[:adoPullRequestDescriptionLimit])
+	}
+	suffix := []rune("\n\n---\n" + runFooter(runID))
+	if len(suffix) >= adoPullRequestDescriptionLimit {
+		return string(suffix[:adoPullRequestDescriptionLimit])
+	}
+	bodyRunes := []rune(body)
+	return string(bodyRunes[:adoPullRequestDescriptionLimit-len(suffix)]) + string(suffix)
 }
 
 func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
@@ -1421,9 +1439,9 @@ func adoBuildState(status, result string) CheckState {
 		return CheckStatePending
 	}
 	switch strings.ToLower(result) {
-	case "succeeded", "partiallysucceeded":
+	case "succeeded":
 		return CheckStatePassing
-	case "failed", "canceled":
+	case "partiallysucceeded", "failed", "canceled":
 		return CheckStateFailing
 	default:
 		return CheckStatePending

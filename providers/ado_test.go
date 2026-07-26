@@ -533,6 +533,69 @@ func TestADOProviderUpdatesExistingPullRequestOnRepass(t *testing.T) {
 	}
 }
 
+func TestADOProviderBoundsPullRequestDescriptionOnCreateAndUpdate(t *testing.T) {
+	var descriptions []string
+	active := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if active {
+				writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{{"pullRequestId": 12}}})
+			} else {
+				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+			}
+		case http.MethodPost:
+			var body map[string]interface{}
+			decodeJSON(t, r, &body)
+			descriptions = append(descriptions, body["description"].(string))
+			active = true
+			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		var body map[string]interface{}
+		decodeJSON(t, r, &body)
+		descriptions = append(descriptions, body["description"].(string))
+		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	request := PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Bound the description",
+		Body:       strings.Repeat("界", adoPullRequestDescriptionLimit+100),
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		RunID:      "run-1",
+	}
+	if _, err := provider.OpenPullRequest(context.Background(), request); err != nil {
+		t.Fatalf("create pull request: %v", err)
+	}
+	request.Body += "updated"
+	if _, err := provider.OpenPullRequest(context.Background(), request); err != nil {
+		t.Fatalf("update pull request: %v", err)
+	}
+
+	if len(descriptions) != 2 {
+		t.Fatalf("descriptions = %d, want create and update", len(descriptions))
+	}
+	suffix := "\n\n---\n" + runFooter(request.RunID)
+	for i, description := range descriptions {
+		if got := len([]rune(description)); got != adoPullRequestDescriptionLimit {
+			t.Errorf("description %d length = %d, want %d", i, got, adoPullRequestDescriptionLimit)
+		}
+		if !strings.HasSuffix(description, suffix) {
+			t.Errorf("description %d does not preserve run footer", i)
+		}
+	}
+}
+
 func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
@@ -618,11 +681,11 @@ func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 	if result.ReviewDecision != ReviewDecisionChangesRequested || result.RequestedChanges != 1 {
 		t.Fatalf("review state = %q, requested changes = %d", result.ReviewDecision, result.RequestedChanges)
 	}
-	if result.CheckState != CheckStatePassing || len(result.Checks) != 2 {
+	if result.CheckState != CheckStateFailing || len(result.Checks) != 2 {
 		t.Fatalf("check state = %q, checks = %#v", result.CheckState, result.Checks)
 	}
 	if result.Checks[0].Name != "provider-ci" || result.Checks[0].URL != "build-url" ||
-		result.Checks[1].State != CheckStatePassing {
+		result.Checks[1].State != CheckStateFailing {
 		t.Fatalf("checks = %#v", result.Checks)
 	}
 }
@@ -706,7 +769,7 @@ func TestADOProviderReviewBuildAndTerminalMappings(t *testing.T) {
 		{status: "notStarted", want: CheckStatePending},
 		{status: "inProgress", want: CheckStatePending},
 		{status: "completed", result: "succeeded", want: CheckStatePassing},
-		{status: "completed", result: "partiallySucceeded", want: CheckStatePassing},
+		{status: "completed", result: "partiallySucceeded", want: CheckStateFailing},
 		{status: "completed", result: "failed", want: CheckStateFailing},
 		{status: "completed", result: "canceled", want: CheckStateFailing},
 		{status: "completed", result: "none", want: CheckStatePending},

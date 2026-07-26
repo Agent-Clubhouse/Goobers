@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -204,7 +205,7 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 
 func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_PROJECT\" \"$GOOBERS_REPO_NAME\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_PROJECT\" \"$GOOBERS_REPO_NAME\" \"$GOOBERS_REPO_BRANCH\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,6 +217,7 @@ func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) 
 		Owner:    "organization",
 		Project:  "project",
 		Name:     "repository",
+		Branch:   "trunk",
 	}
 
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
@@ -227,8 +229,63 @@ func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) 
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "ado|organization|project|repository" {
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "ado|organization|project|repository|trunk" {
 		t.Fatalf("stdout = %q, want routed ADO repository context", got)
+	}
+}
+
+func TestShellExecutor_ADOOpenPRScopesWorkloadIdentityEnvironment(t *testing.T) {
+	t.Setenv("AZURE_TENANT_ID", "tenant-id")
+	t.Setenv("AZURE_CLIENT_ID", "client-id")
+	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/run/secrets/azure/tokens/identity-token")
+	t.Setenv("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com/")
+	t.Setenv("AZURE_CLIENT_SECRET", "must-not-pass")
+
+	for _, test := range []struct {
+		name         string
+		capabilities []string
+		want         string
+	}{
+		{
+			name:         "declared provider capability",
+			capabilities: []string{string(capability.ProviderPRWrite)},
+			want:         "tenant-id|client-id|/var/run/secrets/azure/tokens/identity-token|https://login.microsoftonline.com/|",
+		},
+		{name: "undeclared provider capability", want: "||||"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := filepath.Join(t.TempDir(), "goobers")
+			script := "#!/bin/sh\n" +
+				"printf '%s|%s|%s|%s|%s' \"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" \"$AZURE_CLIENT_SECRET\"\n" +
+				"printf '{\"opened\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
+			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			exec, rec := newTestExecutor(t, nil)
+			exec.SelfBin = stub
+			env := baseEnvelope(t)
+			env.Capabilities = test.capabilities
+			env.RepoRef = apiv1.RepoRef{
+				Provider: apiv1.ProviderADO,
+				Owner:    "organization",
+				Project:  "project",
+				Name:     "repository",
+			}
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"goobers", "open-pr"},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != test.want {
+				t.Fatalf("stdout = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

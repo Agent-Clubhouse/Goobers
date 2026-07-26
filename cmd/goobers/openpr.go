@@ -10,7 +10,12 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -43,12 +48,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := pullRequestProviderToken(repo)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	provider, err := newOpenPRProviderForRepo(repo, token)
+	provider, err := newOpenPRProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -61,7 +61,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
-	base := providerInput("base", "main")
+	base := providerInput("base", providerTargetBranch())
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
@@ -267,15 +267,61 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newOpenPRProviderForRepo(repo providers.RepositoryRef, token string) (providers.Provider, error) {
+func newOpenPRProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
 	switch repo.Provider {
 	case providers.ProviderGitHub:
+		token, err := pullRequestProviderToken(repo)
+		if err != nil {
+			return nil, err
+		}
 		return newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"})), nil
 	case providers.ProviderADO:
-		return newADOProvider(repo.Owner, repo.Project, token), nil
+		cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+		if err != nil {
+			return nil, fmt.Errorf("load ADO repository authentication: %w", err)
+		}
+		configured, ok := adoRepoForGaggle(cfg, apiv1.RepoRef{
+			Provider: apiv1.ProviderADO,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+		if !ok {
+			return nil, fmt.Errorf("ADO repository %s/%s/%s is not configured", repo.Owner, repo.Project, repo.Name)
+		}
+
+		var source providers.ADOCredentialSource
+		authKind := instance.ADOAuthPAT
+		if configured.Auth != nil {
+			authKind = configured.Auth.Kind
+		}
+		if authKind == instance.ADOAuthPAT {
+			token, err := pullRequestProviderToken(repo)
+			if err != nil {
+				return nil, err
+			}
+			source = providers.NewADOPATCredentialSource("goobers", token)
+		} else {
+			stores, err := secretstore.NewRegistry(cfg.SecretStores)
+			if err != nil {
+				return nil, fmt.Errorf("configure ADO secret stores: %w", err)
+			}
+			source, err = adoauth.Source(configured, nil, stores)
+			if err != nil {
+				return nil, fmt.Errorf("configure ADO pull request authentication: %w", err)
+			}
+		}
+		return newADOProvider(repo.Owner, repo.Project, "", providers.WithADOCredentialSource(source)), nil
 	default:
 		return nil, fmt.Errorf("unsupported repository provider %q", repo.Provider)
 	}
+}
+
+func providerTargetBranch() string {
+	if branch := os.Getenv(executor.RepoBranchEnvVar); branch != "" {
+		return branch
+	}
+	return "main"
 }
 
 func pullRequestProviderToken(repo providers.RepositoryRef) (string, error) {
