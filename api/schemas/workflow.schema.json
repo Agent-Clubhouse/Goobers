@@ -93,7 +93,7 @@
         "branches": { "type": "array", "minItems": 2, "description": "Statically declared branches, assigned deterministic branch IDs in declaration order.", "items": { "$ref": "#/$defs/branch" } },
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
-        "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Wall-clock bound for each branch. A timeout is handled as a branch failure." },
+        "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared branch budget used only for compile-time task-timeout coherence checks. The runner does not currently enforce a branch wall-clock timeout." },
         "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Branch execution limit. Omit or set to 1 for the local runner's supported sequential execution; values greater than 1 are rejected because concurrent branch execution is not yet implemented." }
       },
       "allOf": [
@@ -384,8 +384,8 @@
           "additionalProperties": false,
           "properties": {
             "approvers": { "type": "array", "description": "Optional identities or groups allowed to approve the gate.", "items": { "type": "string" } },
-            "timeoutSeconds": { "type": "integer", "minimum": 0, "description": "Maximum seconds to wait for a decision. Zero or omitted leaves the wait unbounded." },
-            "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"], "description": "Action taken when the human decision timeout elapses." }
+            "timeoutSeconds": { "type": "integer", "minimum": 0, "description": "Reserved human-decision timeout. Only zero or omission is currently supported; nonzero values are rejected and the runner waits for an explicit decision." },
+            "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"], "description": "Reserved timeout action. Human timeout behavior is not currently supported, so configuring this field is rejected." }
           }
         },
         "maxRepasses": {
