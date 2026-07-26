@@ -87,6 +87,19 @@ func init() {
 			withHelp("scaffold an instance root", initHelp).
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		groupCommand(
+			"examples",
+			runExamples,
+			subcommand("examples list", "list", apicontract.ActionReadOnlyNavigation, runExamplesList).
+				withHelp("list canonical embedded workflow examples", examplesListHelp).
+				withExamples("goobers examples list"),
+			subcommand("examples show", "show", apicontract.ActionReadOnlyNavigation, runExamplesShow).
+				withHelp("print a canonical embedded workflow example", examplesShowHelp).
+				withExamples("goobers examples show implementation"),
+		).
+			withSynopsis(synopsisByID["examples"]).
+			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
+			withExamples("goobers examples list", "goobers examples show implementation"),
+		groupCommand(
 			"scaffold",
 			runScaffold,
 			subcommand(
