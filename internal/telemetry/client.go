@@ -14,7 +14,6 @@ import (
 	"os"
 	"strings"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -114,8 +113,6 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	tracerProvider := sdktrace.NewTracerProvider(options...)
 	meterProvider := metric.NewMeterProvider(metric.WithResource(res))
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetMeterProvider(meterProvider)
 
 	client := &Client{
 		tracerProvider: tracerProvider,

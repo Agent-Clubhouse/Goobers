@@ -410,13 +410,19 @@ spec:
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
                         type=schedule.
                       type: string
+                    labelPredicate:
+                      description: |-
+                        LabelPredicate is a CEL expression over the item's label set. The only
+                        supported operations are string membership in `labels` and boolean
+                        composition with &&, ||, and !. It is ANDed with Selector.
+                      minLength: 1
+                      type: string
                     selector:
                       additionalProperties:
                         type: string
                       description: |-
                         Selector configures backlog-item filtering. Keys are required labels and
-                        values are ignored; full k8s-style selector matching remains V1
-                        (WF-040, SCH-010).
+                        values are ignored.
                       type: object
                     signal:
                       description: Signal is the named external signal for type=signal.

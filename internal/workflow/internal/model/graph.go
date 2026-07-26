@@ -19,15 +19,17 @@ type Graph struct {
 // GraphNodeKind identifies the visual and execution kind of a graph node.
 type GraphNodeKind string
 
-// Graph node kinds distinguish task execution from gate evaluation.
+// Graph node kinds distinguish task execution from gate evaluation and
+// parallel fan-out.
 const (
 	GraphNodeDeterministic GraphNodeKind = "deterministic"
 	GraphNodeAgentic       GraphNodeKind = "agentic"
 	GraphNodeGate          GraphNodeKind = "gate"
+	GraphNodeParallel      GraphNodeKind = "parallel"
 )
 
-// GraphNode is one task or gate in a workflow graph. Owner is the goober that
-// executes an agentic task or evaluates an agentic gate.
+// GraphNode is one task, gate, or parallel in a workflow graph. Owner is the
+// goober that executes an agentic task or evaluates an agentic gate.
 type GraphNode struct {
 	ID        string              `json:"id"`
 	Kind      GraphNodeKind       `json:"kind"`
@@ -47,11 +49,16 @@ const (
 
 // GraphEdge is one declared transition. Target retains the machine target,
 // including the empty successful-completion target and reserved targets.
+//
+// Branch names the parallel branch an edge belongs to, for the fan-out edges
+// leaving a parallel state and for the join/failure edges leaving it. It is
+// empty on ordinary sequential edges.
 type GraphEdge struct {
 	Source   string        `json:"source"`
 	Target   string        `json:"target"`
 	Outcome  string        `json:"outcome,omitempty"`
 	Terminal GraphTerminal `json:"terminal,omitempty"`
+	Branch   string        `json:"branch,omitempty"`
 }
 
 // Graph returns the interpreter-built canonical graph for the compiled machine.

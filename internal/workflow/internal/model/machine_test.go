@@ -17,6 +17,7 @@ func TestMachineRuntimeLookups(t *testing.T) {
 		Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}, Gates: []apiv1.Gate{gate}}},
 		map[string]apiv1.Task{task.Name: task},
 		map[string]apiv1.Gate{gate.Name: gate},
+		nil,
 		Graph{},
 	)
 	if err != nil {
@@ -45,7 +46,7 @@ func TestMachineRuntimeLookups(t *testing.T) {
 
 func TestMachineDigestAndTargets(t *testing.T) {
 	def := Definition{Name: "digest", Version: 1}
-	machine, err := NewMachine(def, map[string]apiv1.Task{}, map[string]apiv1.Gate{}, Graph{})
+	machine, err := NewMachine(def, map[string]apiv1.Task{}, map[string]apiv1.Gate{}, nil, Graph{})
 	if err != nil {
 		t.Fatal(err)
 	}

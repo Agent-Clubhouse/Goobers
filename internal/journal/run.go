@@ -31,6 +31,8 @@ type Run struct {
 	seq          uint64
 	phase        RunPhase
 	machineState string
+	branch       int
+	branches     []BranchCursor
 	reason       string
 	lastActivity time.Time
 	appendErr    error
@@ -273,6 +275,10 @@ func (r *Run) append(ev Event) error {
 	if r.appendErr != nil {
 		return fmt.Errorf("journal: append blocked after prior write failure: %w", r.appendErr)
 	}
+	// Attribute the event to the active branch unless the caller set one.
+	if ev.Branch == 0 {
+		ev.Branch = r.branch
+	}
 	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
 	if err != nil {
 		r.appendErr = err
@@ -344,6 +350,41 @@ func (r *Run) SetMachineState(state string) {
 	r.mu.Lock()
 	r.machineState = state
 	r.mu.Unlock()
+}
+
+// SetBranch stamps every subsequent append with a parallel branch id, so an
+// event is attributable to the branch that produced it without every call site
+// having to thread the id. 0 restores the run's root branch, which is what
+// every run that never forks stays on.
+//
+// An event that sets Branch explicitly keeps its own value.
+func (r *Run) SetBranch(branch int) {
+	r.mu.Lock()
+	r.branch = branch
+	r.mu.Unlock()
+}
+
+// SetBranchCursors records the per-branch resume positions used in the next
+// checkpoint. Passing nil clears them, which is what the runner does once a
+// parallel has joined and the run is single-cursor again.
+//
+// Cursors are stored in the caller's order, which is declaration order — the
+// same order that assigns branch ids — so a checkpoint is deterministic.
+func (r *Run) SetBranchCursors(cursors []BranchCursor) {
+	r.mu.Lock()
+	if len(cursors) == 0 {
+		r.branches = nil
+	} else {
+		r.branches = append(r.branches[:0:0], cursors...)
+	}
+	r.mu.Unlock()
+}
+
+// BranchCursors returns the current per-branch resume positions, if any.
+func (r *Run) BranchCursors() []BranchCursor {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]BranchCursor(nil), r.branches...)
 }
 
 // Checkpoint writes state.json immediately, reflecting the current
@@ -472,6 +513,7 @@ func (r *Run) checkpoint() error {
 		RunID:        r.id.RunID,
 		Phase:        r.phase,
 		MachineState: r.machineState,
+		Branches:     append([]BranchCursor(nil), r.branches...),
 		Reason:       r.reason,
 		LastSeq:      r.seq,
 		UpdatedAt:    r.now(),

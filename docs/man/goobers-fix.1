@@ -1,0 +1,29 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FIX" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fix \- mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+.SH SYNOPSIS
+\fBgoobers fix\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fix --to <version> [--write] [path]
+
+Mechanically migrate every workflow in a config directory (default path
+".") from its current dslVersion to <version>, one registered version
+step at a time (DVL-6). Prints a reviewable unified diff per changed
+workflow file by default; --write applies the diff to each file in
+place instead. Refuses a workflow that is already at <version>, and
+refuses any jump for which no direct one-step migration is registered —
+chain multiple `fix` invocations for a multi-step upgrade, never a
+silent multi-step rewrite. Never runs automatically; this is always an
+author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
+migrate), 1 = one or more workflows could not be migrated,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers fix --to 2.0
+goobers fix --to 2.0 --write ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

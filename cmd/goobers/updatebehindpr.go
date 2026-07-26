@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -81,6 +82,12 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
 	}
+	prs, err = filterClaimAvailablePullRequests(
+		layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
+	)
+	if err != nil {
+		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
+	}
 
 	baseTips := map[string]string{}
 	behindByPR := map[int]bool{}
@@ -99,7 +106,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequest(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1

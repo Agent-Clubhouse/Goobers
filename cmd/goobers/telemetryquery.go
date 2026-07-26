@@ -27,18 +27,67 @@ type candidateFindingsArtifact struct {
 }
 
 const (
-	telemetryQueryNoRollupNote    = "no telemetry rollup yet"
-	telemetryQueryNoFindingsNote  = "telemetry rollup has no candidate findings in the requested window"
-	telemetryQueryCandidateFormat = "candidate-findings"
+	telemetryQueryNoRollupNote                   = "no telemetry rollup yet"
+	telemetryQueryNoFindingsNote                 = "telemetry rollup has no candidate findings in the requested window"
+	telemetryQueryNoEffectiveVersionChangeNote   = "workflow has no observed EffectiveVersion transition"
+	telemetryQueryCandidateFormat                = "candidate-findings"
+	telemetryQueryEffectiveVersionEfficacyFormat = "effective-version-efficacy"
 )
+
+const effectiveVersionEfficacySchemaVersion = "goobers.dev/effective-version-efficacy/v1"
+
+// effectiveVersionEfficacyArtifact is the --format effective-version-efficacy
+// wire artifact: whether a workflow's most recent EffectiveVersion
+// transition (the version-segmented cohort key from the Tutor v2 redesign,
+// docs/design/tutor-redesign.md §4.1) helped or regressed. OldVersion/
+// NewVersion are nil when the workflow has no observed transition.
+type effectiveVersionEfficacyArtifact struct {
+	Schema           string                   `json:"schema"`
+	Workflow         string                   `json:"workflow"`
+	Window           string                   `json:"window"`
+	Since            time.Time                `json:"since"`
+	OldVersion       *rollup.EffectiveVersion `json:"oldVersion,omitempty"`
+	NewVersion       *rollup.EffectiveVersion `json:"newVersion,omitempty"`
+	Verdict          rollup.EfficacyVerdict   `json:"verdict"`
+	FailureRateDelta float64                  `json:"failureRateDelta"`
+	Before           rollup.RunStats          `json:"before"`
+	After            rollup.RunStats          `json:"after"`
+	NoWork           bool                     `json:"noWork,omitempty"`
+	Note             string                   `json:"note,omitempty"`
+}
+
+func newEffectiveVersionEfficacyArtifact(window time.Duration, since time.Time, workflow string, result rollup.EffectiveVersionEfficacyResult) effectiveVersionEfficacyArtifact {
+	artifact := effectiveVersionEfficacyArtifact{
+		Schema:           effectiveVersionEfficacySchemaVersion,
+		Workflow:         workflow,
+		Window:           window.String(),
+		Since:            since,
+		Verdict:          result.Verdict,
+		FailureRateDelta: result.FailureRateDelta,
+		Before:           result.Before,
+		After:            result.After,
+	}
+	if result.OldVersionHash == "" && result.NewVersionHash == "" {
+		artifact.NoWork = true
+		artifact.Note = telemetryQueryNoEffectiveVersionChangeNote
+		return artifact
+	}
+	oldVersion := result.OldVersion
+	newVersion := result.NewVersion
+	artifact.OldVersion = &oldVersion
+	artifact.NewVersion = &newVersion
+	return artifact
+}
 
 type telemetryAggregate string
 
 const (
-	telemetryAggregateAll              telemetryAggregate = "all"
-	telemetryAggregateStageFailureRate telemetryAggregate = "stage-failure-rate"
-	telemetryAggregateErrorSignature   telemetryAggregate = "error-signature"
-	telemetryAggregateGateNoise        telemetryAggregate = "gate-noise"
+	telemetryAggregateAll                 telemetryAggregate = "all"
+	telemetryAggregateStageFailureRate    telemetryAggregate = "stage-failure-rate"
+	telemetryAggregateErrorSignature      telemetryAggregate = "error-signature"
+	telemetryAggregateGateNoise           telemetryAggregate = "gate-noise"
+	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
+	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
 )
 
 type telemetryAggregateValues []telemetryAggregate
@@ -62,8 +111,12 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateErrorSignature
 	case string(telemetryAggregateGateNoise):
 		aggregate = telemetryAggregateGateNoise
+	case string(telemetryAggregateWorkflowUntriggered):
+		aggregate = telemetryAggregateWorkflowUntriggered
+	case string(telemetryAggregateStageUnreached):
+		aggregate = telemetryAggregateStageUnreached
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -92,6 +145,14 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateGateNoise:
 			if kind == rollup.FindingGateNeverFails || kind == rollup.FindingGateRepassChurn {
+				return true
+			}
+		case telemetryAggregateWorkflowUntriggered:
+			if kind == rollup.FindingWorkflowUntriggered {
+				return true
+			}
+		case telemetryAggregateStageUnreached:
+			if kind == rollup.FindingStageUnreached {
 				return true
 			}
 		}
@@ -173,12 +234,17 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
 	"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n" +
 	"are fractions from 0 through 1; count thresholds are positive integers.\n\n" +
+	"--format effective-version-efficacy (requires --workflow) instead assesses\n" +
+	"the workflow's most recent EffectiveVersion transition — the version-\n" +
+	"segmented cohort key (workflow digest + goober digest + model + harness\n" +
+	"version) from the Tutor v2 design — and emits a helped/regressed/no-change/\n" +
+	"insufficient-data verdict.\n\n" +
 	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -189,9 +255,10 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	window := fs.Duration("window", 24*time.Hour, "lookback window (for example 24h or 168h)")
-	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings)")
+	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings, effective-version-efficacy)")
+	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
 		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
@@ -207,8 +274,12 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --window must be a positive duration, got %s\n", *window)
 		return 2
 	}
-	if *format != telemetryQueryCandidateFormat {
-		pf(stderr, "error: --format must be %q, got %q\n", telemetryQueryCandidateFormat, *format)
+	if *format != telemetryQueryCandidateFormat && *format != telemetryQueryEffectiveVersionEfficacyFormat {
+		pf(stderr, "error: --format must be %q or %q, got %q\n", telemetryQueryCandidateFormat, telemetryQueryEffectiveVersionEfficacyFormat, *format)
+		return 2
+	}
+	if *format == telemetryQueryEffectiveVersionEfficacyFormat && strings.TrimSpace(*workflow) == "" {
+		pf(stderr, "error: --format %s requires --workflow\n", telemetryQueryEffectiveVersionEfficacyFormat)
 		return 2
 	}
 	pathArg := ""
@@ -226,8 +297,14 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		pf(stderr, "note: no telemetry rollup at %s — if this persists, enable telemetry "+
 			"(instance.yaml telemetry.enabled) and run at least one workflow under `goobers up`: %v\n", dbPath, err)
+		if *format == telemetryQueryEffectiveVersionEfficacyFormat {
+			result := newEffectiveVersionEfficacyArtifact(*window, since, *workflow,
+				rollup.EffectiveVersionEfficacyResult{Workflow: *workflow, Verdict: rollup.EfficacyInsufficientData})
+			result.Note = telemetryQueryNoRollupNote
+			return writeJSONArtifact(result, stdout, stderr)
+		}
 		result := newCandidateFindingsArtifact(*window, since, nil, telemetryQueryNoRollupNote)
-		return writeCandidateFindingsArtifact(result, stdout, stderr)
+		return writeJSONArtifact(result, stdout, stderr)
 	}
 	db, err := openRollup(l, false)
 	if err != nil {
@@ -236,12 +313,21 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = db.Close() }()
 
+	if *format == telemetryQueryEffectiveVersionEfficacyFormat {
+		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(*workflow, since, rollup.EfficacyThresholds{MinSamples: thresholds.MinSamples})
+		if err != nil {
+			pf(stderr, "error: assess effective-version efficacy: %v\n", err)
+			return 1
+		}
+		return writeJSONArtifact(newEffectiveVersionEfficacyArtifact(*window, since, *workflow, assessment), stdout, stderr)
+	}
+
 	result, err := detectCandidateFindings(db, *window, since, os.Getenv("GOOBERS_GAGGLE"), aggregates, thresholds)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
 	}
-	return writeCandidateFindingsArtifact(result, stdout, stderr)
+	return writeJSONArtifact(result, stdout, stderr)
 }
 
 func detectCandidateFindings(
@@ -291,10 +377,10 @@ func newCandidateFindingsArtifact(window time.Duration, since time.Time, finding
 	}
 }
 
-func writeCandidateFindingsArtifact(result candidateFindingsArtifact, stdout, stderr io.Writer) int {
+func writeJSONArtifact(result any, stdout, stderr io.Writer) int {
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		pf(stderr, "error: encode candidate findings: %v\n", err)
+		pf(stderr, "error: encode telemetry-query artifact: %v\n", err)
 		return 1
 	}
 	out = append(out, '\n')

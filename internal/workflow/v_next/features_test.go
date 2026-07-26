@@ -122,7 +122,17 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	for _, feature := range features {
 		wantLevel := SupportGA
 		switch feature.ID {
-		case featureGaggleSandbox, featureGaggleCheckoutSparse:
+		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+			featureStageWorkspaceRepoReadOnly,
+			featureStageWorkspace,
+			featureGateAgenticWorkspace,
+			featureWorkflowParallels,
+			featureParallelFailurePolicy,
+			featureParallelBranches,
+			featureParallelJoin,
+			featureParallelOnFailure,
+			featureParallelBranchTimeout,
+			featureParallelMaxConcurrentBranches:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -484,7 +494,11 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			},
 			{
 				Name: "agent-salvage", Type: apiv1.TaskAgentic, Goal: "salvage",
-				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage, Next: "shell-repo",
+				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage,
+				// The agentic seam: a task-level workspace, which an agentic
+				// stage has no Run to express.
+				Workspace: apiv1.WorkspaceRepoReadOnly,
+				Next:      "shell-repo",
 			},
 			{
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
@@ -521,7 +535,8 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "agentic", Evaluator: apiv1.EvaluatorAgentic,
 				Agentic: &apiv1.AgenticGate{
 					Goober: "reviewer", TimeoutSeconds: 30,
-					Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+					Workspace: apiv1.WorkspaceRepoReadOnly,
+					Retry:     &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
 				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
@@ -529,6 +544,18 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			humanFeatureGate("human-escalate", "escalate", "human-reject"),
 			humanFeatureGate("human-reject", "reject", TerminalComplete),
 		},
+		Parallels: []apiv1.Parallel{{
+			Name:                  "fan",
+			FailurePolicy:         apiv1.BranchAllOrNothing,
+			Join:                  "collate",
+			OnFailure:             TargetEscalate,
+			BranchTimeoutSeconds:  900,
+			MaxConcurrentBranches: 2,
+			Branches: []apiv1.Branch{
+				{Name: "a", Start: "agent-fail"},
+				{Name: "b", Start: "agent-fail"},
+			},
+		}},
 	}}
 	goober := apiv1.GooberSpec{
 		Gaggle: "example", Role: "coder", DisplayName: "Coder", Instructions: "instructions.md",
@@ -536,6 +563,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		HarnessOptions: map[string]apiextensionsv1.JSON{"effort": {Raw: []byte(`"high"`)}},
 		TimeoutSeconds: 3600,
 		Capabilities:   []string{"repo:push"}, Skills: []string{"go"}, Tools: []string{"shell"},
+		MCPServers:  []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
 		ScaleFactor: 2, Workflows: []string{"all-features"},
 	}
 
@@ -724,6 +752,13 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.start",
 		"workflow.spec.tasks",
 		"workflow.spec.gates",
+		"workflow.spec.parallels",
+		"workflow.spec.parallels.failurePolicy",
+		"workflow.spec.parallels.branches",
+		"workflow.spec.parallels.join",
+		"workflow.spec.parallels.onFailure",
+		"workflow.spec.parallels.branchTimeoutSeconds",
+		"workflow.spec.parallels.maxConcurrentBranches",
 		"workflow.terminal.complete",
 		"workflow.terminal.abort",
 		"workflow.terminal.escalate",
@@ -739,6 +774,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.capabilities",
 		"goober.spec.skills",
 		"goober.spec.tools",
+		"goober.spec.mcpServers",
 		"goober.spec.scaleFactor",
 		"goober.spec.workflows",
 		"trigger.manual",
@@ -776,6 +812,9 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.run.syncBase",
 		"stage.run.workspace.repo",
 		"stage.run.workspace.scratch",
+		"stage.workspace",
+		"stage.workspace.repo-readonly",
+		"gate.evaluator.agentic.workspace",
 		"stage.resultFile",
 		"gate.name",
 		"gate.branches",

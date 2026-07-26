@@ -4,6 +4,7 @@
 # budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "1.4"
 metadata:
   name: pr-remediation
 spec:
@@ -42,8 +43,11 @@ spec:
   # past) so the two decider/executor cycles don't contend for the same PR
   # mid-read; this instance's open-PR volume is low, so hourly is ample.
   triggers:
+    # A due tick is sized to the unclaimed PRs that pass update-behind-pr's
+    # eligibility policy, then bounded by readiness below.
     - type: schedule
       schedule: "37 * * * *"
+      priority: 100
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 2
