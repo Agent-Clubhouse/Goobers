@@ -394,7 +394,7 @@ func loadTutorHoldouts(root, gaggle string) ([]tutorHoldoutRecord, error) {
 			return nil, fmt.Errorf("parse Tutor holdout %s: %w", entry.Name(), err)
 		}
 		if record.Schema != tutorHoldoutSchemaVersion {
-			return nil, fmt.Errorf("Tutor holdout %s has unsupported schema %q", entry.Name(), record.Schema)
+			return nil, fmt.Errorf("tutor holdout %s has unsupported schema %q", entry.Name(), record.Schema)
 		}
 		if gaggle == "" || record.Gaggle == gaggle {
 			records = append(records, record)
