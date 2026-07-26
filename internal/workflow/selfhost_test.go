@@ -433,7 +433,11 @@ func TestSelfhostTutorEnforcesFailFirst(t *testing.T) {
 // workflow definition, and its write boundary must be scoped to this
 // gaggle's own config subtree, not the whole (potentially multi-gaggle)
 // selfhost instance config — the hard silo, applied to the one shipped
-// tutor definition.
+// tutor definition. TUT-A5/#1217 widened the single configRoot boundary to
+// the per-target-action-root boundary (confineToActionRoots/actionRoots,
+// exclusive across roots) so the tutor can also author skill bodies; this
+// still must include the gaggle-scoped config root, not the whole selfhost
+// instance config.
 func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
 	raw, err := os.ReadFile(path)
@@ -459,12 +463,19 @@ func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 		if task.Name != "open-pr" {
 			continue
 		}
-		if task.Inputs["confineToConfigRoot"] != "true" {
-			t.Fatalf("open-pr confineToConfigRoot = %q, want %q", task.Inputs["confineToConfigRoot"], "true")
+		if task.Inputs["confineToActionRoots"] != "true" {
+			t.Fatalf("open-pr confineToActionRoots = %q, want %q", task.Inputs["confineToActionRoots"], "true")
 		}
 		wantRoot := "selfhost/gaggles/" + tutor.Spec.Gaggle
-		if got := task.Inputs["configRoot"]; got != wantRoot {
-			t.Fatalf("open-pr configRoot = %q, want %q (gaggle-scoped, not the whole selfhost instance config)", got, wantRoot)
+		found := false
+		for _, root := range strings.Split(task.Inputs["actionRoots"], ",") {
+			if strings.TrimSpace(root) == wantRoot {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("open-pr actionRoots = %q, want it to include %q (gaggle-scoped, not the whole selfhost instance config)", task.Inputs["actionRoots"], wantRoot)
 		}
 		return
 	}

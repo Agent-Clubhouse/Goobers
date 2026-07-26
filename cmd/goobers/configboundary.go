@@ -41,6 +41,27 @@ func confineDiffToDocsRoots(base string, docsRoots []string) error {
 	return configboundary.ConfineToAny(docsRoots, changed)
 }
 
+// confineDiffToActionRoots enforces the Tutor's per-target-action-class write
+// boundary (TUT-A5/#1217, docs/design/tutor-redesign.md §4.2): every file this
+// run's branch changes relative to base must resolve into the SAME single
+// declared action root — e.g. a run authoring a workflow-config change stays
+// within "selfhost", a run authoring a new skill's body stays within
+// "skills", but a single run may never do both at once. Unlike
+// confineDiffToDocsRoots's ConfineToAny (a docs-updater diff may legitimately
+// span several declared roots together), this refuses a diff that spans more
+// than one action root even though every individual path is within some
+// declared root (configboundary.ErrCrossRootAction). Fails CLOSED like every
+// other write-boundary check here: an unverifiable diff, an empty roots set,
+// or a cross-root diff all refuse the cycle rather than opening the PR.
+func confineDiffToActionRoots(base string, actionRoots []string) error {
+	changed, err := changedFilesVsBase(base)
+	if err != nil {
+		return fmt.Errorf("compute changed files vs %q: %w", base, err)
+	}
+	_, err = configboundary.ConfineExclusive(actionRoots, changed)
+	return err
+}
+
 // changedFilesVsBase returns the repo-relative paths this branch changes vs base
 // (three-dot: the diff since the merge-base, i.e. the PR's file set).
 // --no-renames so a file moved out of the config root surfaces as its new,
