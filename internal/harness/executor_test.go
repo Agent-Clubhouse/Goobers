@@ -239,7 +239,7 @@ func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
 	}
 	attrs := make(map[string]string)
 	for _, attr := range spans[0].Attributes() {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	if attrs[telemetry.AttrModel] != "gpt-5.6-sol" ||
 		attrs[telemetry.AttrHarnessVersion] != "copilot version 1.2.3" {

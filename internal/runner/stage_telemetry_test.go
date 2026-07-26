@@ -271,7 +271,7 @@ func TestAgenticTaskSpanCarriesProvenanceWhenPreparationFails(t *testing.T) {
 		}
 		attrs := make(map[string]string)
 		for _, attr := range span.Attributes() {
-			attrs[string(attr.Key)] = attr.Value.Emit()
+			attrs[string(attr.Key)] = attr.Value.String()
 		}
 		if attrs[telemetry.AttrModel] != "gpt-5.6-sol" ||
 			attrs[telemetry.AttrHarnessVersion] != "copilot version 1.2.3" {
@@ -515,7 +515,7 @@ func TestResumeFailedRunSpanMatchesJournalOutcome(t *testing.T) {
 		found = true
 		attrs := map[string]string{}
 		for _, attr := range span.Attributes() {
-			attrs[string(attr.Key)] = attr.Value.Emit()
+			attrs[string(attr.Key)] = attr.Value.String()
 		}
 		if got := attrs[telemetry.AttrOutcome]; got != telemetry.OutcomeFailure {
 			t.Errorf("run outcome = %q, want failure", got)

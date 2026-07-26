@@ -459,16 +459,16 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	sawScrubbedTelemetryCredential := false
 	for _, recorded := range exporter.Spans() {
 		for _, attr := range recorded.Attributes() {
-			if strings.Contains(attr.Value.Emit(), secret) {
+			if strings.Contains(attr.Value.String(), secret) {
 				t.Fatalf("MCP credential leaked into telemetry attribute %q", attr.Key)
 			}
 		}
 		for _, event := range recorded.Events() {
 			for _, attr := range event.Attributes {
-				if strings.Contains(attr.Value.Emit(), secret) {
+				if strings.Contains(attr.Value.String(), secret) {
 					t.Fatalf("MCP credential leaked into telemetry event attribute %q", attr.Key)
 				}
-				if attr.Key == "authorization" && strings.Contains(attr.Value.Emit(), journal.Redacted) {
+				if attr.Key == "authorization" && strings.Contains(attr.Value.String(), journal.Redacted) {
 					sawScrubbedTelemetryCredential = true
 				}
 			}

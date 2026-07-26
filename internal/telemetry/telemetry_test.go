@@ -768,7 +768,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	}
 	for _, event := range exported.Events() {
 		for _, attr := range event.Attributes {
-			if strings.Contains(attr.Value.Emit(), secret) {
+			if strings.Contains(attr.Value.String(), secret) {
 				t.Fatalf("registered credential leaked into span event: %+v", event)
 			}
 		}
@@ -955,7 +955,7 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 func attrMap(span sdktrace.ReadOnlySpan) map[string]string {
 	attrs := map[string]string{}
 	for _, attr := range span.Attributes() {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	return attrs
 }
