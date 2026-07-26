@@ -39,6 +39,19 @@ describe("runs history page", () => {
     const lastCall = listRuns.mock.calls.at(-1);
     expect(lastCall?.[0]?.cursor).toBeTruthy();
     expect(listRuns.mock.calls.length).toBeGreaterThan(callsBeforeLoadMore);
+
+    await user.click(screen.getByRole("button", { name: "Insight" }));
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    const callsBeforeRevisit = listRuns.mock.calls.length;
+    listRuns.mockImplementation(() => new Promise(() => {}));
+
+    await user.click(screen.getByRole("button", { name: "Runs" }));
+
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
+    ).toHaveLength(68);
+    expect(listRuns).toHaveBeenCalledTimes(callsBeforeRevisit);
   });
 
   it("maps filter chips onto server-side phase requests", async () => {

@@ -17,6 +17,7 @@ import {
   type LiveDataConfig,
   type LiveFreshness,
 } from "./liveData";
+import { dataCacheKey, SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
 import { populatedDaemonFixtures } from "./test/daemonFixtures";
 
@@ -26,6 +27,7 @@ const testConfig: LiveDataConfig = {
   reconnectMaxDelayMs: 200,
   failuresBeforePolling: 2,
   pollingIntervalMs: 200,
+  refreshMaxDelayMs: 1_000,
 };
 
 beforeEach(() => {
@@ -45,6 +47,76 @@ afterEach(() => {
 });
 
 describe("LiveDataController", () => {
+  it("invalidates the exact cached resources named by an SSE event", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const cache = new SessionDataCache();
+    const runOne = dataCacheKey("run-detail", "run-1");
+    const runTwo = dataCacheKey("run-detail", "run-2");
+    cache.set(runOne, "run one", [{ model: "run", runId: "run-1" }]);
+    cache.set(runTwo, "run two", [{ model: "run", runId: "run-2" }]);
+    const controller = new LiveDataController(client, testConfig, { cache });
+
+    controller.start();
+    await settle();
+    stream.push({
+      id: "session:1",
+      type: "invalidate",
+      data: { cursor: "session:1", models: ["run"], runIds: ["run-1"] },
+    });
+    await settle();
+
+    expect(cache.get(runOne)).toBeUndefined();
+    expect(cache.get(runTwo)).toBe("run two");
+    controller.stop();
+  });
+
+  // Uses an `invalidate` event rather than the connect `snapshot`: a cold connect
+  // already fires its own full refresh, so #1685 deliberately skips the snapshot
+  // that follows it. The behaviour under test here is the cache contract — an
+  // invalidating event must drop an in-flight write and force a refetch, so the
+  // response it was about to store cannot land as fresh.
+  it("refreshes again after an invalidation drops an in-flight cache write", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const cache = new SessionDataCache();
+    const controller = new LiveDataController(client, testConfig, { cache });
+    const firstRefresh = deferred<void>();
+    const key = dataCacheKey("run-detail", "run-1");
+    const dependencies = [{ model: "run" as const, runId: "run-1" }];
+    let attempt = 0;
+    const refresh = vi.fn(() => {
+      attempt += 1;
+      const revision = cache.beginWrite(key, dependencies);
+      if (attempt === 1) {
+        return firstRefresh.promise.then(() =>
+          cache.set(key, "first snapshot", dependencies, revision),
+        );
+      }
+      return cache.set(key, "refreshed snapshot", dependencies, revision);
+    });
+
+    controller.start();
+    controller.subscribe(["run"], refresh);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    stream.push({
+      id: "session:0",
+      type: "invalidate",
+      data: { cursor: "session:0", models: ["instance", "run", "workflow"] },
+    });
+    await settle();
+    firstRefresh.resolve();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(cache.get(key)).toBe("refreshed snapshot");
+    controller.stop();
+  });
+
   it("deduplicates ordered events into one effective model refresh window", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
@@ -107,8 +179,8 @@ describe("LiveDataController", () => {
     await settle();
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]));
-    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]));
+    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]), "refresh");
+    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]), "refresh");
     expect(unrelatedRun).not.toHaveBeenCalled();
     expect(unrelatedWorkflow).not.toHaveBeenCalled();
 
@@ -214,7 +286,7 @@ describe("LiveDataController", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
-    expect(refresh).toHaveBeenCalledWith(new Set(["run"]));
+    expect(refresh).toHaveBeenCalledWith(new Set(["run"]), "refresh");
 
     controller.stop();
   });
@@ -261,7 +333,7 @@ describe("LiveDataController", () => {
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]));
+    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]), "refresh");
 
     controller.stop();
   });
@@ -310,6 +382,80 @@ describe("LiveDataController", () => {
       { event: "reconnect", cause: "visibility-visible", delayMs: undefined },
       { event: "connect", cause: "visibility-visible" },
     ]);
+
+    controller.stop();
+  });
+
+  // A refresh fails exactly when the daemon is slow or erroring. Retrying it at a
+  // flat pollingIntervalMs meant the portal re-issued its whole snapshot every 5s
+  // forever against a backend that could not answer, which is what produced the
+  // observed proxy-error flood (#1710). Successive failures must space out.
+  it("backs off exponentially while refreshes keep failing, and resets on success", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh);
+    refresh.mockReset();
+    refresh.mockResolvedValue(false);
+
+    controller.start();
+    await settle();
+    stream.push(update("session:1", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    // First retry is one polling interval out.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    // Second retry must be 400ms, not another 200ms.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(3);
+
+    // Third retry must be 800ms.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refresh).toHaveBeenCalledTimes(4);
+
+    controller.stop();
+  });
+
+  // The counterpart to the escalation above: a recovered daemon must not stay
+  // penalised by the backoff it earned while it was failing.
+  it("resets refresh backoff after a success so a later failure retries at the base interval", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh);
+    refresh.mockReset();
+    // Fail once (escalating the delay to 400ms for the retry after next), then
+    // recover on the retry.
+    refresh.mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    stream.push(update("session:1", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(2); // succeeded -> backoff reset
+
+    // A fresh failure now must retry at the base interval, not the escalated one.
+    refresh.mockResolvedValue(false);
+    stream.push(update("session:2", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledTimes(4);
 
     controller.stop();
   });

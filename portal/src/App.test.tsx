@@ -177,6 +177,26 @@ describe("portal foundation", () => {
     );
   });
 
+  it("renders a revisited overview immediately from the session cache", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
+    );
+    await user.click(screen.getByRole("button", { name: "Workflows" }));
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Overview" }));
+
+    expect(screen.getByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Connecting to daemon" })).not.toBeInTheDocument();
+  });
+
   it("skips to main content without changing the active hash route", async () => {
     window.location.hash = "#/workflows";
     const user = userEvent.setup();

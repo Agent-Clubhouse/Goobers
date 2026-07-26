@@ -7,6 +7,7 @@ import type {
   TelemetryStatsOptions,
   TelemetryStatsResult,
 } from "./api/types";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 
 export type InsightWindow = "24h" | "7d" | "30d" | "all";
@@ -32,12 +33,17 @@ export function useInsightStats(
   retry: () => void;
   state: QueryState<InsightSnapshot>;
 } {
-  const [state, setState] = useState<QueryState<InsightSnapshot>>({ status: "loading" });
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("insight-stats", window);
+  const [state, setState] = useState<QueryState<InsightSnapshot>>(() => {
+    const cached = cache.get<InsightSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
   const request = useRef<AbortController | undefined>(undefined);
-  const { freshness, isFresh, subscribe } = useLiveData();
 
   const refresh = useCallback(() => {
     request.current?.abort();
+    const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
     const controller = new AbortController();
     request.current = controller;
     const filters = insightWindowFilters(window);
@@ -54,6 +60,7 @@ export function useInsightStats(
           return true;
         }
         const data = { filters, stats, window };
+        cache.set(cacheKey, data, RUN_DATA_DEPENDENCIES, cacheRevision);
         setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       },
@@ -71,15 +78,30 @@ export function useInsightStats(
         return false;
       },
     );
-  }, [client, gaggle, isFresh, window, workflow]);
+  }, [cache, cacheKey, client, gaggle, isFresh, window, workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh, { gaggle, workflow });
+    const cached = cache.get<InsightSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const current = reason === "initial" ? cache.get<InsightSnapshot>(cacheKey) : undefined;
+        if (current) {
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
+          return true;
+        }
+        return refresh();
+      },
+      { gaggle, workflow },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [gaggle, refresh, subscribe, workflow]);
+  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
 
   useEffect(() => {
     setState((current) => {
@@ -93,7 +115,11 @@ export function useInsightStats(
     });
   }, [freshness]);
 
-  return { retry: refresh, state };
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    return refresh();
+  }, [cache, cacheKey, refresh]);
+  return { retry, state };
 }
 
 export function useInsightErrorSignatures(
@@ -106,15 +132,19 @@ export function useInsightErrorSignatures(
   retry: () => void;
   state: QueryState<InsightErrorSignaturesSnapshot>;
 } {
-  const [state, setState] = useState<QueryState<InsightErrorSignaturesSnapshot>>({
-    status: "loading",
-  });
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
   const request = useRef<AbortController | undefined>(undefined);
-  const { freshness, isFresh, subscribe } = useLiveData();
   const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
+  const cacheKey = dataCacheKey("insight-error-signatures", requestKey);
+  const [state, setState] = useState<QueryState<InsightErrorSignaturesSnapshot>>(() => {
+    const cached = cache.get<InsightErrorSignaturesSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
 
   const refresh = useCallback(() => {
     request.current?.abort();
+    const dependencies = insightDependencies(gaggle, workflow);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
     const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
@@ -131,6 +161,7 @@ export function useInsightErrorSignatures(
           return true;
         }
         const data = { filters, requestKey, result };
+        cache.set(cacheKey, data, dependencies, cacheRevision);
         setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       },
@@ -148,15 +179,33 @@ export function useInsightErrorSignatures(
         return false;
       },
     );
-  }, [client, gaggle, isFresh, requestKey, stage, window, workflow]);
+  }, [cache, cacheKey, client, gaggle, isFresh, requestKey, stage, window, workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh, { gaggle, workflow });
+    const cached = cache.get<InsightErrorSignaturesSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const current =
+          reason === "initial"
+            ? cache.get<InsightErrorSignaturesSnapshot>(cacheKey)
+            : undefined;
+        if (current) {
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
+          return true;
+        }
+        return refresh();
+      },
+      { gaggle, workflow },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [gaggle, refresh, subscribe, workflow]);
+  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
 
   useEffect(() => {
     setState((current) => {
@@ -170,7 +219,20 @@ export function useInsightErrorSignatures(
     });
   }, [freshness]);
 
-  return { retry: refresh, state };
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    return refresh();
+  }, [cache, cacheKey, refresh]);
+  return { retry, state };
+}
+
+const RUN_DATA_DEPENDENCIES: readonly DataCacheDependency[] = [{ model: "run" }];
+
+function insightDependencies(
+  gaggle: string | undefined,
+  workflow: string | undefined,
+): readonly DataCacheDependency[] {
+  return [{ model: "run", gaggle, workflow }];
 }
 
 export function insightWindowFilters(

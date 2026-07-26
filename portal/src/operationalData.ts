@@ -19,6 +19,7 @@ import type {
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
 
 const PAGE_LIMIT = 100;
@@ -36,6 +37,13 @@ const RECENT_OUTCOME_LIMIT = 20;
 const WORKFLOW_RUN_LIMIT = 5;
 // Keep browser connection capacity available for unrelated daemon requests.
 const WORKFLOW_OUTCOME_CONCURRENCY = 4;
+const OPERATIONAL_SNAPSHOT_CACHE_KEY = dataCacheKey("operational-snapshot");
+const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
+const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
+  { model: "instance" },
+  { model: "workflow" },
+  { model: "run" },
+];
 
 export interface GaggleInventory {
   gaggle: Gaggle;
@@ -149,11 +157,18 @@ export function useOperationalSnapshot(
   client: DaemonClient,
   scope: { gaggle?: string; workflow?: string } = {},
 ): OperationalSnapshotQuery {
-  const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
-  const { freshness, isFresh, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const [state, setState] = useState<QueryState<OperationalSnapshot>>(() => {
+    const cached = cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
 
   const performRefresh = useCallback(
     async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(
+        OPERATIONAL_SNAPSHOT_CACHE_KEY,
+        OPERATIONAL_DEPENDENCIES,
+      );
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -165,6 +180,12 @@ export function useOperationalSnapshot(
         if (signal.aborted) {
           return false;
         }
+        cache.set(
+          OPERATIONAL_SNAPSHOT_CACHE_KEY,
+          data,
+          OPERATIONAL_DEPENDENCIES,
+          cacheRevision,
+        );
         setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       } catch (error: unknown) {
@@ -181,13 +202,30 @@ export function useOperationalSnapshot(
         return false;
       }
     },
-    [client, isFresh],
+    [cache, client, isFresh],
   );
   const refresh = useCoalescedOperationalRefresh(performRefresh);
 
   useEffect(
-    () => subscribe(["instance", "workflow", "run"], refresh, scope),
-    [refresh, scope.gaggle, scope.workflow, subscribe],
+    () =>
+      subscribe(
+        ["instance", "workflow", "run"],
+        (models, reason) => {
+          const cached =
+            reason === "initial"
+              ? cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY)
+              : undefined;
+          if (cached) {
+            setState(
+              isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+            );
+            return true;
+          }
+          return refresh(models);
+        },
+        scope,
+      ),
+    [cache, isFresh, refresh, scope.gaggle, scope.workflow, subscribe],
   );
 
   useEffect(() => {
@@ -204,7 +242,13 @@ export function useOperationalSnapshot(
 
   usePeriodicHealth(client, freshness, setState);
 
-  return { retry: () => void refresh(), state };
+  return {
+    retry: () => {
+      cache.remove(OPERATIONAL_SNAPSHOT_CACHE_KEY);
+      void refresh();
+    },
+    state,
+  };
 }
 
 export async function loadOperationalSnapshot(
@@ -330,12 +374,25 @@ export interface OverviewInventory {
   workflowNames: Map<string, string>;
 }
 
+/**
+ * Sections that failed to load while the rest of the Overview stayed valid.
+ * A section listed here is rendering either its previous value or an empty
+ * placeholder, and the page is expected to say so.
+ */
+export interface OverviewSectionErrors {
+  inventory?: Error;
+  runs?: Error;
+}
+
 export interface OperationalOverview {
   health: Health;
   instance: Instance;
   gaggleCount: number;
   workflowNames: Map<string, string>;
   groups: OperationalRunGroups;
+  // Present only when part of the Overview could not be read. Everything else
+  // on the object is still authoritative and renderable (#1709).
+  sectionErrors?: OverviewSectionErrors;
 }
 
 export interface OperationalOverviewQuery {
@@ -359,12 +416,19 @@ export function workflowDisplayName(
 }
 
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
-  const [state, setState] = useState<QueryState<OperationalOverview>>({ status: "loading" });
-  const data = useRef<OperationalOverview | undefined>(undefined);
-  const { freshness, isFresh, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cached = cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY);
+  const [state, setState] = useState<QueryState<OperationalOverview>>(() =>
+    cached ? { status: "ready", data: cached } : { status: "loading" },
+  );
+  const data = useRef<OperationalOverview | undefined>(cached);
 
   const performLoad = useCallback(
     async (models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(
+        OPERATIONAL_OVERVIEW_CACHE_KEY,
+        OPERATIONAL_DEPENDENCIES,
+      );
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -380,6 +444,12 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
           return false;
         }
         data.current = loaded;
+        cache.set(
+          OPERATIONAL_OVERVIEW_CACHE_KEY,
+          loaded,
+          OPERATIONAL_DEPENDENCIES,
+          cacheRevision,
+        );
         setState(
           isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded },
         );
@@ -398,13 +468,27 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
         return false;
       }
     },
-    [client, isFresh],
+    [cache, client, isFresh],
   );
   const load = useCoalescedOperationalRefresh(performLoad);
 
   useEffect(
-    () => subscribe(["instance", "workflow", "run"], (models) => load(models)),
-    [load, subscribe],
+    () =>
+      subscribe(["instance", "workflow", "run"], (models, reason) => {
+        const cached =
+          reason === "initial"
+            ? cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY)
+            : undefined;
+        if (cached) {
+          data.current = cached;
+          setState(
+            isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+          );
+          return true;
+        }
+        return load(models);
+      }),
+    [cache, isFresh, load, subscribe],
   );
 
   useEffect(() => {
@@ -424,7 +508,13 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
   }, []);
   usePeriodicHealth(client, freshness, setState, rememberOverview);
 
-  return { retry: () => void load(), state };
+  return {
+    retry: () => {
+      cache.remove(OPERATIONAL_OVERVIEW_CACHE_KEY);
+      void load();
+    },
+    state,
+  };
 }
 
 function usePeriodicHealth<T extends { health: Health }>(
@@ -500,7 +590,14 @@ export async function loadOperationalOverview(
   const wantRuns = previous === undefined || models === undefined || models.has("run");
   const requestOptions = { signal };
 
-  const [health, instance, inventory, groups] = await Promise.all([
+  // Settle the four sections independently. They are separately renderable, and
+  // failing the whole Overview because one of them is slow is what turned a
+  // degraded daemon into a blank "Daemon unavailable" page: during #1708 the
+  // run queries timed out while health, instance and the inventory had all
+  // returned 200, and the operator saw none of it. Health and instance are
+  // precisely what say *what* is wrong, so they must survive a run-list
+  // timeout (#1709).
+  const [health, instance, inventory, groups] = await Promise.allSettled([
     client.getHealth(requestOptions),
     client.getInstance(requestOptions),
     wantInventory
@@ -512,13 +609,62 @@ export async function loadOperationalOverview(
     wantRuns ? loadOverviewRunGroups(client, signal) : Promise.resolve(previous!.groups),
   ]);
 
-  return {
-    health,
-    instance,
-    gaggleCount: inventory.gaggleCount,
-    workflowNames: inventory.workflowNames,
-    groups,
+  // An aborted request is not a degraded section — the caller is discarding this
+  // load entirely — so fail fast rather than reporting every section as broken.
+  if (signal?.aborted) {
+    throw settledError(health) ?? new Error("Overview load was aborted.");
+  }
+
+  const resolvedHealth = settledValue(health) ?? previous?.health;
+  const resolvedInstance = settledValue(instance) ?? previous?.instance;
+  // With neither a fresh nor a previous value for the identity reads there is
+  // nothing to render, so this genuinely is a page-level failure.
+  if (resolvedHealth === undefined || resolvedInstance === undefined) {
+    throw (
+      settledError(health) ??
+      settledError(instance) ??
+      new Error("Unable to read daemon data.")
+    );
+  }
+
+  const resolvedInventory = settledValue(inventory) ?? {
+    gaggleCount: previous?.gaggleCount ?? 0,
+    workflowNames: previous?.workflowNames ?? new Map<string, string>(),
   };
+  const resolvedGroups = settledValue(groups) ??
+    previous?.groups ?? { active: [], attention: [], recent: [] };
+
+  const sectionErrors: OverviewSectionErrors = {};
+  const inventoryError = settledError(inventory);
+  const runsError = settledError(groups);
+  if (inventoryError) {
+    sectionErrors.inventory = inventoryError;
+  }
+  if (runsError) {
+    sectionErrors.runs = runsError;
+  }
+
+  return {
+    health: resolvedHealth,
+    instance: resolvedInstance,
+    gaggleCount: resolvedInventory.gaggleCount,
+    workflowNames: resolvedInventory.workflowNames,
+    groups: resolvedGroups,
+    ...(inventoryError || runsError ? { sectionErrors } : {}),
+  };
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | undefined {
+  return result.status === "fulfilled" ? result.value : undefined;
+}
+
+function settledError(result: PromiseSettledResult<unknown>): Error | undefined {
+  if (result.status !== "rejected") {
+    return undefined;
+  }
+  return result.reason instanceof Error
+    ? result.reason
+    : new Error("Unable to read daemon data.");
 }
 
 async function loadOverviewInventory(
@@ -553,16 +699,29 @@ async function loadOverviewRunGroups(
 ): Promise<OperationalRunGroups> {
   const byPhase = (phase: RunPhase, limit: number) =>
     client.listRuns({ phase, limit }, { signal });
-  const [running, escalated, failed, completed, aborted] = await Promise.all([
+  // One phase timing out must not void the other four: the phases are separate
+  // queries backing separate groups, and losing "active runs" because the
+  // "completed" page was slow discards exactly the data an operator is looking
+  // at during an incident (#1709).
+  const settled = await Promise.allSettled([
     byPhase("running", ACTIVE_RUN_LIMIT),
     byPhase("escalated", ATTENTION_RUN_LIMIT),
     byPhase("failed", ATTENTION_RUN_LIMIT),
     byPhase("completed", RECENT_OUTCOME_LIMIT),
     byPhase("aborted", RECENT_OUTCOME_LIMIT),
   ]);
+  // Every phase failing means the run list as a whole is unreadable, which the
+  // caller reports as a failed section rather than silently showing "no runs".
+  const firstError = settled.find((result) => result.status === "rejected");
+  if (firstError && settled.every((result) => result.status === "rejected")) {
+    throw settledError(firstError) ?? new Error("Unable to read runs.");
+  }
+  const [running, escalated, failed, completed, aborted] = settled.map((result) =>
+    settledValue(result)?.runs ?? [],
+  );
   return {
-    active: sortRuns(running.runs),
-    attention: sortRuns([...escalated.runs, ...failed.runs]).slice(0, ATTENTION_RUN_LIMIT),
-    recent: sortRuns([...completed.runs, ...aborted.runs]).slice(0, RECENT_OUTCOME_LIMIT),
+    active: sortRuns(running),
+    attention: sortRuns([...escalated, ...failed]).slice(0, ATTENTION_RUN_LIMIT),
+    recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
   };
 }
