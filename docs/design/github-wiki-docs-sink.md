@@ -81,8 +81,11 @@ these wiki-specific rules:
 2. `provider` must be `github`; `project`, `branch`, and `checkout` are
    forbidden.
 3. The case-insensitive `(provider, owner, name)` tuple must equal the
-   workflow gaggle's project identity. A wiki for an arbitrary repository is a
-   different docs source and must be owned by that repository's gaggle.
+   workflow gaggle's project identity, and the normalized GitHub endpoint
+   selected by the wiki-publisher binding must equal the endpoint selected by
+   the project's source-read binding. An omitted public endpoint and its
+   explicit equivalent normalize identically; the same owner and name on
+   different GitHub Enterprise hosts do not.
 4. `connectionRef` must differ from
    `Gaggle.spec.project.connectionRef` and select the independently scoped
    wiki-publisher credential.
@@ -90,8 +93,9 @@ these wiki-specific rules:
 Repeating the controlling repository identity is intentional: it makes the
 credential choice explicit while validation prevents the source and sink
 identities from drifting. The Git target is not the declared repository
-itself. The runner constructs the target from the validated GitHub endpoint,
-owner, and repository name as `<endpoint>/<owner>/<name>.wiki.git`. When the
+itself. The runner constructs the target from the shared validated GitHub
+endpoint, owner, and repository name as
+`<endpoint>/<owner>/<name>.wiki.git`. When the
 configured source clone URL is the starting representation, derivation first
 removes one terminal `.git` path suffix, if present, and then appends
 `.wiki.git`: both `https://github.com/acme/product` and
@@ -285,8 +289,8 @@ Admission finishes before either checkout and before any commit or push:
 
 1. Resolve the workflow's gaggle project, exclusive sink kind, exact page
    ownership, publication policy, and non-overlap across the config set.
-2. Validate the repeated repository identity against the source and resolve
-   distinct source-read and wiki-publisher bindings.
+2. Resolve distinct source-read and wiki-publisher bindings, then validate the
+   repeated repository identity and normalized endpoint against the source.
 3. Resolve the source credential and target App private-key source. Mint the
    installation token for the controlling repository with requested
    `contents: write`, and require the mint response to report that permission
