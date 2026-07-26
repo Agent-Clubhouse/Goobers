@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const traceTimelineWidth = 120
@@ -33,6 +34,12 @@ type traceTimelineAttempt struct {
 	InFlight       bool                 `json:"inFlight,omitempty"`
 	Gates          []traceTimelineGate  `json:"gates,omitempty"`
 	Usage          []traceTimelineUsage `json:"usage,omitempty"`
+	// RequestedModel is the requested/selected model (e.g. "auto") indexed
+	// from the attempt's agent-invocation span — the config's spec.model
+	// value, distinct from Usage[].Model which is the harness-observed
+	// resolved model per LLM call. Empty when telemetry hasn't ingested a
+	// matching span yet.
+	RequestedModel string `json:"requestedModel,omitempty"`
 	startedSeq     uint64
 	finishedSeq    uint64
 }
@@ -81,6 +88,7 @@ func buildTraceTimeline(
 	detail readservice.RunDetail,
 	events []readservice.RunEvent,
 	transcripts []readservice.TranscriptContent,
+	telemetryAttempts []rollup.StageAttempt,
 	now time.Time,
 ) []traceTimelineStage {
 	timeline := make([]traceTimelineStage, 0)
@@ -199,7 +207,47 @@ func buildTraceTimeline(
 		}
 	}
 	attachTimelineUsage(timeline, transcripts)
+	attachTimelineRequestedModel(timeline, telemetryAttempts)
 	return timeline
+}
+
+// attachTimelineRequestedModel fills in each attempt's RequestedModel from the
+// rollup-indexed stage attempt with the closest start time among those
+// sharing the same stage and attempt number — attempt numbers can repeat
+// across repass visits, so start-time proximity disambiguates them the same
+// way the rollup ingester matches a span to its traversal.
+func attachTimelineRequestedModel(timeline []traceTimelineStage, telemetryAttempts []rollup.StageAttempt) {
+	for stageIndex := range timeline {
+		stage := timeline[stageIndex].Stage
+		for attemptIndex := range timeline[stageIndex].Attempts {
+			attempt := &timeline[stageIndex].Attempts[attemptIndex]
+			var best *rollup.StageAttempt
+			var bestDiff time.Duration
+			for i := range telemetryAttempts {
+				candidate := telemetryAttempts[i]
+				if candidate.Stage != stage || candidate.Attempt != attempt.Number || candidate.Model == "" {
+					continue
+				}
+				if attempt.StartedAt == nil || candidate.StartedAt.IsZero() {
+					if best == nil {
+						best = &telemetryAttempts[i]
+					}
+					continue
+				}
+				diff := attempt.StartedAt.Sub(candidate.StartedAt)
+				if diff < 0 {
+					diff = -diff
+				}
+				if best == nil || diff < bestDiff {
+					best = &telemetryAttempts[i]
+					bestDiff = diff
+				}
+			}
+			if best != nil {
+				attempt.RequestedModel = best.Model
+			}
+		}
+	}
 }
 
 func findTimelineAttempt(timeline []traceTimelineStage, event journal.Event) *timelineAttemptRef {
@@ -489,7 +537,11 @@ func formatTimelineAttempt(attempt traceTimelineAttempt) string {
 	} else if status == "" {
 		status = "partial"
 	}
-	return fmt.Sprintf("%s %s %s", label, duration, traceTimelineText(status))
+	line := fmt.Sprintf("%s %s %s", label, duration, traceTimelineText(status))
+	if attempt.RequestedModel != "" {
+		line += " requested-model=" + traceTimelineText(attempt.RequestedModel)
+	}
+	return line
 }
 
 func formatTimelineUsage(usage traceTimelineUsage) string {

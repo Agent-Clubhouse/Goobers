@@ -89,6 +89,7 @@ type OfflineRuns interface {
 	Artifact(context.Context, string, string) (ArtifactContent, error)
 	RunTranscripts(context.Context, string, string) ([]TranscriptContent, error)
 	RunSpans(context.Context, string) ([]rollup.SpanSummary, error)
+	RunTelemetryStageAttempts(context.Context, string) ([]rollup.StageAttempt, error)
 	RunEscalation(context.Context, string) (*TraceEscalation, error)
 	RunTraceRepassCount(context.Context, string) (int, error)
 }
@@ -273,10 +274,15 @@ type StageAttempt struct {
 	// ID is opaque and remains stable when a live attempt completes.
 	ID string `json:"id"`
 	// Visit groups retries under the same per-stage graph traversal.
-	Visit          int                  `json:"visit"`
-	Number         int                  `json:"number"`
-	Class          string               `json:"class"`
-	Status         string               `json:"status"`
+	Visit  int    `json:"visit"`
+	Number int    `json:"number"`
+	Class  string `json:"class"`
+	Status string `json:"status"`
+	// Model is the requested/selected model (e.g. "auto") indexed from the
+	// attempt's agent-invocation span, when the telemetry rollup has ingested
+	// it. Empty when telemetry is unavailable or the attempt has no matching
+	// span yet.
+	Model          string               `json:"model,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -909,7 +915,70 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 	}
 
 	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
+	if telemetryAttempts, err := s.telemetryStageAttempts(run.identity.RunID); err == nil {
+		attachStageAttemptModels(attempts, stage, telemetryAttempts)
+	}
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
+}
+
+// attachStageAttemptModels fills in Model on each attempt of stage from the
+// matching rollup-indexed stage attempt, correlated by durable traversal
+// (Visit) and attempt number. Best-effort: an attempt with no telemetry match
+// simply keeps an empty Model.
+func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAttempts []rollup.StageAttempt) {
+	for i := range attempts {
+		for _, ta := range telemetryAttempts {
+			if ta.Stage == stage && ta.Traversal == attempts[i].Visit && ta.Attempt == attempts[i].Number && ta.Model != "" {
+				attempts[i].Model = ta.Model
+				break
+			}
+		}
+	}
+}
+
+// telemetryStageAttempts returns rollup-ingested stage attempts (each
+// carrying its indexed requested model, when present) for runID. A missing
+// telemetry database is a valid empty result, matching RunSpans' contract:
+// model provenance is informational and must never make StageAttempts fail.
+func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, error) {
+	empty := []rollup.StageAttempt{}
+	db := s.sources.Telemetry
+	if db == nil {
+		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return empty, nil
+			}
+			return nil, err
+		}
+		var err error
+		db, err = rollup.Open(s.sources.Layout.TelemetryDB())
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = db.Close() }()
+	}
+	return db.StageAttempts(runID)
+}
+
+// RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
+// attempt's indexed requested model) for the whole run, across every stage.
+// Best-effort, same contract as RunSpans: a missing telemetry database is a
+// valid empty result.
+func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := s.openRun(runID); err != nil {
+		return nil, err
+	}
+	attempts, err := s.telemetryStageAttempts(runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return attempts, nil
 }
 
 // Artifact returns bytes only for a digest recorded as an artifact in this run.

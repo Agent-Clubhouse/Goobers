@@ -3,6 +3,7 @@ import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
+  | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight" }
@@ -43,6 +44,9 @@ export function parseRoute(hash = window.location.hash): Route {
       ? { page: "workflow", gaggle: id, id: decodeURIComponent(second) }
       : { page: "workflow", id };
   }
+  if (area === "gaggle" && id) {
+    return { page: "gaggle", id };
+  }
   if (area === "run" && id) {
     return { page: "run", id };
   }
@@ -82,6 +86,9 @@ export function parseRoute(hash = window.location.hash): Route {
 }
 
 export function routeHash(route: Route): string {
+  if (route.page === "gaggle") {
+    return `#/gaggle/${encodeURIComponent(route.id)}`;
+  }
   if (route.page === "workflow") {
     const identity = route.gaggle
       ? `${encodeURIComponent(route.gaggle)}/${encodeURIComponent(route.id)}`
@@ -115,7 +122,7 @@ export function routeHash(route: Route): string {
 }
 
 export function activeArea(route: Route): PrimaryArea {
-  if (route.page === "workflow") {
+  if (route.page === "gaggle" || route.page === "workflow") {
     return "workflows";
   }
   if (route.page === "run") {

@@ -8,7 +8,30 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+// TestAttachStageAttemptModelsMatchesTraversalAndAttempt (issue #1550) proves
+// the requested/selected model is correlated to the right attempt by durable
+// traversal (Visit) and attempt number, scoped to the requested stage — not
+// just attempt number, which repeats across repass visits and across stages.
+func TestAttachStageAttemptModelsMatchesTraversalAndAttempt(t *testing.T) {
+	attempts := []StageAttempt{
+		{Visit: 1, Number: 1},
+		{Visit: 2, Number: 1},
+	}
+	attachStageAttemptModels(attempts, "implement", []rollup.StageAttempt{
+		{Stage: "implement", Traversal: 1, Attempt: 1, Model: "auto"},
+		{Stage: "implement", Traversal: 2, Attempt: 1, Model: "gpt-5.4"},
+		{Stage: "other-stage", Traversal: 1, Attempt: 1, Model: "should-not-match"},
+	})
+	if attempts[0].Model != "auto" {
+		t.Fatalf("visit 1 model = %q, want auto", attempts[0].Model)
+	}
+	if attempts[1].Model != "gpt-5.4" {
+		t.Fatalf("visit 2 model = %q, want gpt-5.4", attempts[1].Model)
+	}
+}
 
 // TestStageAttemptsClosesOpenAttemptAtRunTermination is the DASH-20 regression
 // guard: a gate whose evaluation errors terminally opens an attempt but emits

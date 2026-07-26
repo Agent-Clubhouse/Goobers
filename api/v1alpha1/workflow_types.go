@@ -484,6 +484,89 @@ type WorkflowSpec struct {
 	// Gates are the validation/branching states of the machine.
 	// +optional
 	Gates []Gate `json:"gates,omitempty" yaml:"gates,omitempty"`
+	// Parallels are the fan-out/fan-in states of the machine: a parallel forks
+	// the run into a statically-declared set of named branches and joins them at
+	// a single successor once every branch has settled
+	// (docs/design/static-fan-out-fan-in.md).
+	// +optional
+	Parallels []Parallel `json:"parallels,omitempty" yaml:"parallels,omitempty"`
+}
+
+// BranchFailurePolicy declares what a parallel does when one of its branches
+// fails. It is required — there is no default — because parallelism without an
+// explicit failure policy bakes ambiguity in permanently (#1310).
+type BranchFailurePolicy string
+
+const (
+	// BranchFailFast abandons not-yet-started branches and cancels started
+	// siblings at their next stage boundary, skips the join, and routes to
+	// OnFailure.
+	BranchFailFast BranchFailurePolicy = "fail_fast"
+	// BranchAllOrNothing lets every branch finish, then skips the join and
+	// routes to OnFailure if any branch failed.
+	BranchAllOrNothing BranchFailurePolicy = "all_or_nothing"
+	// BranchContinueOnError always runs the join, which owns the decision via
+	// the branch completeness record.
+	BranchContinueOnError BranchFailurePolicy = "continue_on_error"
+)
+
+// Branch is one statically-declared arm of a Parallel. Its body is ordinary
+// tasks and gates declared in the same Tasks/Gates lists; a branch is not a
+// nested scope but a named entry point into a subgraph the compiler proves is
+// disjoint from every other branch's.
+type Branch struct {
+	// Name identifies the branch in journal events, the completeness record,
+	// and branch-qualified inputsFrom references. Unique within its parallel.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// Start is the name of the branch's first state (task or gate).
+	// +kubebuilder:validation:Required
+	Start string `json:"start" yaml:"start"`
+}
+
+// Parallel is a fan-out/fan-in state. Branch width is fixed at author time;
+// dynamic (data-driven) width is deliberately not supported (#817).
+type Parallel struct {
+	// Name identifies this state; it is a valid next/branches target like any
+	// other state name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// FailurePolicy declares what happens when a branch fails. Required.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=fail_fast;all_or_nothing;continue_on_error
+	FailurePolicy BranchFailurePolicy `json:"failurePolicy" yaml:"failurePolicy"`
+	// Branches are the statically-declared arms, at least two. Branch ids are
+	// assigned by declaration order (from 1; 0 is the run's root branch), so
+	// they are deterministic and reproducible across runs and runners.
+	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:Required
+	Branches []Branch `json:"branches" yaml:"branches"`
+	// Join is the state that runs exactly once, after every branch has settled.
+	// It may only be entered through this parallel.
+	// +kubebuilder:validation:Required
+	Join string `json:"join" yaml:"join"`
+	// OnFailure is the transition target when the policy is fail_fast or
+	// all_or_nothing and a branch failed — a state name or a reserved terminal
+	// target, so failure is always a defined branch and never a silent stop
+	// (mirroring GT-002). Required for those two policies and FORBIDDEN under
+	// continue_on_error, where the join always runs and owns the decision;
+	// declaring both would name two contradictory owners of the same failure.
+	// +optional
+	OnFailure string `json:"onFailure,omitempty" yaml:"onFailure,omitempty"`
+	// BranchTimeoutSeconds bounds one branch. A branch exceeding it terminates
+	// at its next stage boundary, is recorded timed-out, and is then handled as
+	// a failure under the declared policy — so a branch that never settles is a
+	// defined outcome rather than a hang.
+	// +optional
+	BranchTimeoutSeconds int32 `json:"branchTimeoutSeconds,omitempty" yaml:"branchTimeoutSeconds,omitempty"`
+	// MaxConcurrentBranches bounds how many branches execute at once. Unset
+	// means 1 — deterministic sequential execution unless the author opts into
+	// concurrency. Concurrent repo-backed branches additionally require the
+	// read-only workspace mode, because every stage worktree is otherwise
+	// created on one run branch and git forbids two worktrees on one branch.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxConcurrentBranches int32 `json:"maxConcurrentBranches,omitempty" yaml:"maxConcurrentBranches,omitempty"`
 }
 
 // TutorScopeTier is the topology tier of a Tutor-role workflow (TUT-A4).

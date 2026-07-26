@@ -15,6 +15,7 @@ var synopsisByID = map[string]string{
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
 	"init":                   "  goobers init [--guided | --demo | --template=quickstart] [path]\n                                scaffold an instance root\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
+	"agent-kit":              "  goobers agent-kit install|check|update [flags] [path]\n                                install, inspect, or explicitly update the release-matched agent toolkit\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)\n",
 	"fix":                    "  goobers fix --to <version> [--write] [path]\n                                mechanically migrate workflows to a target dslVersion, one step at a time\n",

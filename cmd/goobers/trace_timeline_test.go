@@ -11,7 +11,48 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+// TestBuildTraceTimelineAttachesRequestedModel proves the requested/selected
+// model (issue #1550) surfaces on its owning attempt, disambiguated from a
+// same-numbered attempt in a different repass visit by start-time proximity,
+// and renders alongside the existing resolved-model usage line.
+func TestBuildTraceTimelineAttachesRequestedModel(t *testing.T) {
+	base := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	repassBase := base.Add(10 * time.Minute)
+	timeline := buildTraceTimeline(
+		readservice.RunDetail{RunSummary: readservice.RunSummary{Phase: journal.PhaseCompleted}},
+		timelineRunEvents(
+			journal.Event{Seq: 1, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, Time: base},
+			journal.Event{Seq: 2, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess), Time: base.Add(time.Minute)},
+			journal.Event{Seq: 3, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, Time: repassBase},
+			journal.Event{Seq: 4, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess), Time: repassBase.Add(time.Minute)},
+		),
+		nil,
+		[]rollup.StageAttempt{
+			{Stage: "implement", Traversal: 1, Attempt: 1, Model: "auto", StartedAt: base},
+			{Stage: "implement", Traversal: 2, Attempt: 1, Model: "gpt-5.4", StartedAt: repassBase},
+		},
+		base.Add(20*time.Minute),
+	)
+	if len(timeline) != 1 || len(timeline[0].Attempts) != 2 {
+		t.Fatalf("timeline = %+v", timeline)
+	}
+	if got := timeline[0].Attempts[0].RequestedModel; got != "auto" {
+		t.Fatalf("first attempt requested model = %q, want auto", got)
+	}
+	if got := timeline[0].Attempts[1].RequestedModel; got != "gpt-5.4" {
+		t.Fatalf("repass attempt requested model = %q, want gpt-5.4", got)
+	}
+
+	var output bytes.Buffer
+	printTraceTimeline(&output, timeline, nil)
+	if !strings.Contains(output.String(), "requested-model=auto") ||
+		!strings.Contains(output.String(), "requested-model=gpt-5.4") {
+		t.Fatalf("timeline text missing requested-model:\n%s", output.String())
+	}
+}
 
 func TestTraceTimelineCompletedRunTextAndJSON(t *testing.T) {
 	root := t.TempDir()
@@ -166,6 +207,7 @@ func TestBuildTraceTimelineRetriesGateUsageAndTornEvents(t *testing.T) {
 		readservice.RunDetail{RunSummary: readservice.RunSummary{Phase: journal.PhaseCompleted}},
 		events,
 		transcripts,
+		nil,
 		base.Add(20*time.Minute),
 	)
 	if len(timeline) != 2 || timeline[0].Stage != "implement" || timeline[1].Stage != "torn-stage" {
@@ -237,6 +279,7 @@ func TestBuildTraceTimelinePairsInterruptedResumeAttempt(t *testing.T) {
 			},
 		),
 		nil,
+		nil,
 		base.Add(6*time.Minute),
 	)
 
@@ -279,6 +322,7 @@ func TestBuildTraceTimelinePreservesErrorOnlyTornAttempt(t *testing.T) {
 			},
 		}),
 		nil,
+		nil,
 		finishedAt,
 	)
 
@@ -309,6 +353,7 @@ func TestBuildTraceTimelineLiveAttemptUsesElapsedSoFar(t *testing.T) {
 			journal.Event{Seq: 3, Branch: 2, Type: journal.EventStageStarted, Stage: "parallel-check", Attempt: 1, Time: base.Add(30 * time.Second)},
 		),
 		nil,
+		nil,
 		base.Add(90*time.Second),
 	)
 	attempt := timeline[0].Attempts[0]
@@ -332,6 +377,7 @@ func TestBuildTraceTimelineAssociatesGateWithItsBranch(t *testing.T) {
 			journal.Event{Seq: 4, Branch: 2, Type: journal.EventStageFinished, Stage: "branch-two", Attempt: 1, Status: string(apiv1.ResultSuccess), Time: base.Add(time.Minute)},
 			journal.Event{Seq: 5, Branch: 1, Type: journal.EventGateEvaluated, Gate: "review-one", Verdict: string(apiv1.VerdictPass), Target: "done", Time: base.Add(2 * time.Minute)},
 		),
+		nil,
 		nil,
 		base.Add(3*time.Minute),
 	)

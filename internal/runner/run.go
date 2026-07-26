@@ -916,6 +916,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	workspaceBranch := seed.workspaceBranch
 	branchRecorded := seed.branchRecorded
 	humanDecision := seed.humanDecision
+	// Live parallel state. nil whenever the run is single-cursor, which is
+	// every run that never forks — so the sequential path is untouched.
+	var par *parallelExec
 	steps := 0
 
 	for {
@@ -923,6 +926,112 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		if steps > r.maxSteps {
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
+		// A branch reached @join: settle it and move to the next declared
+		// branch, or close the parallel and continue at its join state.
+		if state == workflow.TargetJoin {
+			if par == nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: reached %q outside a parallel branch", workflow.TargetJoin))
+			}
+			settling := par.current()
+			status := branchStatusFor(lastResult, settling.artifacts)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventBranchFinished, Branch: settling.id,
+				Parallel: par.spec.Name, BranchName: settling.name,
+				BranchStatus: status,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			next, more := par.advance(status)
+			// fail_fast abandons the branches that have not started. At
+			// maxConcurrentBranches=1 that is all cancellation can mean —
+			// nothing is in flight to interrupt — and each abandonment is
+			// journaled so the record shows why a branch never ran.
+			if more && par.spec.FailurePolicy == apiv1.BranchFailFast && par.anyFailed() {
+				for _, cancelled := range par.cancelRemaining() {
+					if err := jr.Append(journal.Event{
+						Type: journal.EventBranchFinished, Branch: cancelled.id,
+						Parallel: par.spec.Name, BranchName: cancelled.name,
+						BranchStatus: journal.BranchCancelled,
+					}); err != nil {
+						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+					}
+				}
+				next, more = nil, false
+			}
+			jr.SetBranchCursors(par.cursors())
+			if more {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: next.id,
+					Parallel: par.spec.Name, BranchName: next.name, Stage: next.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
+				jr.SetBranch(next.id)
+				state = next.start
+				continue
+			}
+			joined := par
+			par = nil
+			jr.SetBranch(0)
+			jr.SetBranchCursors(nil)
+			target, runJoin := joined.route()
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelFinished, Parallel: joined.spec.Name,
+				Completeness: joined.completeness(), Target: target,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			if !runJoin {
+				// The failure policy routed past the join. onFailure is a
+				// state name or a reserved terminal, never nothing — the
+				// compiler requires it for exactly these two policies, so a
+				// branch failure is always a DEFINED branch (GT-002's rule).
+				switch target {
+				case workflow.TargetAbort:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseAborted, joined.spec.Name, steps)
+					return res, ferr
+				case workflow.TargetEscalate:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseEscalated, joined.spec.Name, steps)
+					return res, ferr
+				}
+			}
+			state = target
+			continue
+		}
+
+		// Entering a parallel: fan out into its declared branches.
+		if p, ok := in.Machine.Parallel(state); ok {
+			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
+			}
+			if p.MaxConcurrentBranches > 1 {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: maxConcurrentBranches %d is declared but concurrent branch execution is not yet implemented; branches run sequentially",
+						p.Name, p.MaxConcurrentBranches))
+			}
+			par = newParallelExec(p)
+			jr.SetMachineState(state)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelStarted, Parallel: p.Name,
+				Completeness: par.completeness(),
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			first := par.current()
+			jr.SetBranchCursors(par.cursors())
+			if err := jr.Append(journal.Event{
+				Type: journal.EventBranchStarted, Branch: first.id,
+				Parallel: p.Name, BranchName: first.name, Stage: first.start,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			jr.SetBranch(first.id)
+			state = first.start
+			continue
+		}
+
 		jr.SetMachineState(state)
 
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
@@ -1157,6 +1266,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			state = next
 			continue
+		}
+
+		// A parallel state compiles and validates (FO-2) but the walk is still
+		// single-cursor, so executing one is not yet possible. Fail closed with
+		// a message that names the reason rather than the generic
+		// unknown-state error a reader would otherwise take for a config bug.
+		if _, ok := in.Machine.Parallel(state); ok {
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+				fmt.Errorf("runner: workflow state %q is a parallel; executing parallel branches is not yet implemented", state))
 		}
 
 		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
