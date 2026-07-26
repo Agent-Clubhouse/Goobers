@@ -15,6 +15,7 @@ _goobers_completion()
             'version:print build version, commit, and date (--json for structured output)'
             'versions:print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)'
             'init:scaffold an instance root'
+            'examples:browse canonical workflow examples embedded in the binary'
             'scaffold:scaffold a goober or workflow in a gaggle'
             'agent-kit:install, inspect, or update the release-matched agent toolkit'
             'validate:validate an instance or checked-in config source tree'
@@ -22,6 +23,7 @@ _goobers_completion()
             'fix:mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)'
             'doctor:preflight a Kubernetes cluster against the documented infra shape'
             'config:inspect, materialize, and compare instance configuration'
+            'speech:preflight and test local speech notifications'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'service:install and manage the platform-supervised daemon'
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
@@ -110,6 +112,12 @@ _goobers_completion()
             case "${words[3]:-}" in
                 diff) flags+=(--against) ;;
                 show) flags+=(--json) ;;
+            esac
+            ;;
+        speech)
+            case "${words[3]:-}" in
+                preflight) flags+=(--json) ;;
+                test) flags+=(--json) ;;
             esac
             ;;
         up)
@@ -201,6 +209,17 @@ _goobers_completion()
     fi
 
     case "${command}" in
+        examples)
+            if (( CURRENT == 3 )); then
+                candidates=(list show)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
+                candidates=("${(@f)$(command goobers __complete examples 2>/dev/null)}")
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow)
@@ -218,6 +237,13 @@ _goobers_completion()
         config)
             if (( CURRENT == 3 )); then
                 candidates=(diff materialize show)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        speech)
+            if (( CURRENT == 3 )); then
+                candidates=(preflight test)
                 _describe -V 'command' candidates
                 return
             fi

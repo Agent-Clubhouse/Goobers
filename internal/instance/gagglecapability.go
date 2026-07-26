@@ -16,7 +16,7 @@ import (
 // declares (MGV-1/#1009).
 const LocalCIStageName = "local-ci"
 
-// ApplyGaggleCICommand rewrites the command of every workflow's deterministic
+// ApplyGaggleCICommand rewrites the run form of every workflow's deterministic
 // local-ci stage to its gaggle's declared GaggleSpec.CICommand, when the gaggle
 // declares one (MGV-1/#1009). It resolves the effective config in place before
 // the workflows are compiled, so the compiled machine — and therefore the
@@ -52,6 +52,7 @@ func ApplyGaggleCICommand(set *ConfigSet) {
 			// Copy so a later mutation of one workflow's slice can never alias
 			// the gaggle's declared command (or another workflow's).
 			t.Run.Command = append([]string(nil), command...)
+			t.Run.Script = ""
 		}
 	}
 }

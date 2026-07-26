@@ -38,6 +38,9 @@
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
+| [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
@@ -85,6 +88,9 @@
 | [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
+| [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
+| [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
+| [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
 | [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
@@ -783,6 +789,70 @@ Show an escalation's structured cause and per-stage artifact timeline.
 
 ~~~console
 $ goobers escalations show <run-id>
+~~~
+
+## `goobers examples`
+
+browse canonical workflow examples embedded in the binary
+
+~~~text
+Usage: goobers examples <list|show> [name]
+
+Browse the canonical workflow examples embedded in this binary. No source
+checkout or instance root is required.
+
+Commands:
+  list         print the available example names
+  show <name>  print an example's exact Workflow YAML
+
+Run `goobers examples list -h` or `goobers examples show -h` for details.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+$ goobers examples show implementation
+~~~
+
+## `goobers examples list`
+
+list canonical embedded workflow examples
+
+~~~text
+Usage: goobers examples list
+
+Print the names of the canonical embedded workflow examples, one per line.
+Pass one of these names to `goobers examples show` to print its YAML.
+
+Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+~~~
+
+## `goobers examples show`
+
+print a canonical embedded workflow example
+
+~~~text
+Usage: goobers examples show <name>
+
+Print the exact canonical Workflow YAML embedded in this binary. Use
+`goobers examples list` to discover names. No source checkout or instance
+root is required.
+
+Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
+2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples show implementation
 ~~~
 
 ## `goobers features`
@@ -1885,6 +1955,68 @@ not observe a terminal phase.
 
 ~~~console
 $ goobers signal deploy-approved
+~~~
+
+## `goobers speech`
+
+preflight and test local speech notifications
+
+~~~text
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech test
+~~~
+
+## `goobers speech preflight`
+
+check the configured local speech engine without emitting sound
+
+~~~text
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech preflight --json ./instance
+~~~
+
+## `goobers speech test`
+
+speak the fixed local readiness phrase
+
+~~~text
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech test
+$ goobers speech test --json ./instance
 ~~~
 
 ## `goobers stats`

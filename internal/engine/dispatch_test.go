@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // TestRegisterRejectsSchemaInvalidShapes is #626's registry acceptance: the
@@ -113,6 +114,47 @@ func TestDeterministicDispatchFailsClosed(t *testing.T) {
 				t.Fatalf("executor dispatched %d times, want 0 — an empty command must never execute", got)
 			}
 		})
+	}
+}
+
+func TestDeterministicScriptDispatch(t *testing.T) {
+	const script = "echo inline"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "run inline check",
+			Run:  &apiv1.DeterministicRun{Script: script, Workspace: apiv1.WorkspaceScratch},
+		}},
+	}
+	registry := NewRegistryWithPreviewFeatures(true)
+	if _, err := registry.RegisterDefinition(wf.Definition{
+		Name:       "inline",
+		DSLVersion: "2.0",
+		Spec:       spec,
+	}); err != nil {
+		t.Fatalf("RegisterDefinition: %v", err)
+	}
+
+	det := &capturingDeterministic{}
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
+	input := runInput("inline", spec)
+	input.DSLVersion = "2.0"
+	env.ExecuteWorkflow(Run, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	runs := det.capturedRuns()
+	if len(runs) != 1 {
+		t.Fatalf("deterministic dispatches = %d, want 1", len(runs))
+	}
+	if runs[0].Script != script || runs[0].Command != nil {
+		t.Fatalf("dispatched run = %+v, want preserved inline script", runs[0])
 	}
 }
 

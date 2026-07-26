@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS EXAMPLES SHOW" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers examples show \- print a canonical embedded workflow example
+.SH SYNOPSIS
+\fBgoobers examples show\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers examples show <name>
+
+Print the exact canonical Workflow YAML embedded in this binary. Use
+`goobers examples list` to discover names. No source checkout or instance
+root is required.
+
+Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
+2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers examples show implementation
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

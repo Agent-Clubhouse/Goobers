@@ -87,6 +87,19 @@ func init() {
 			withHelp("scaffold an instance root", initHelp).
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		groupCommand(
+			"examples",
+			runExamples,
+			subcommand("examples list", "list", apicontract.ActionReadOnlyNavigation, runExamplesList).
+				withHelp("list canonical embedded workflow examples", examplesListHelp).
+				withExamples("goobers examples list"),
+			subcommand("examples show", "show", apicontract.ActionReadOnlyNavigation, runExamplesShow).
+				withHelp("print a canonical embedded workflow example", examplesShowHelp).
+				withExamples("goobers examples show implementation"),
+		).
+			withSynopsis(synopsisByID["examples"]).
+			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
+			withExamples("goobers examples list", "goobers examples show implementation"),
+		groupCommand(
 			"scaffold",
 			runScaffold,
 			subcommand(
@@ -157,6 +170,19 @@ func init() {
 			withSynopsis(synopsisByID["config"]).
 			withHelp("inspect, materialize, and compare instance configuration", configHelp).
 			withExamples("goobers config show", "goobers config materialize ./instance", "goobers config diff ./instance"),
+		groupCommand(
+			"speech",
+			runSpeech,
+			subcommand("speech preflight", "preflight", apicontract.ActionReadOnlyNavigation, runSpeechPreflight).
+				withHelp("check the configured local speech engine without emitting sound", speechPreflightHelp).
+				withExamples("goobers speech preflight", "goobers speech preflight --json ./instance"),
+			subcommand("speech test", "test", apicontract.ActionMaintenance, runSpeechTest).
+				withHelp("speak the fixed local readiness phrase", speechTestHelp).
+				withExamples("goobers speech test", "goobers speech test --json ./instance"),
+		).
+			withSynopsis(synopsisByID["speech"]).
+			withHelp("preflight and test local speech notifications", speechHelp).
+			withExamples("goobers speech preflight", "goobers speech test"),
 		command("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).

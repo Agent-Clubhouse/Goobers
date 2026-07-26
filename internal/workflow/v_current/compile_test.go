@@ -56,6 +56,25 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsRunScriptInFrozenDSL(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run:  &apiv1.DeterministicRun{Script: "printf 'ok\n'"},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "run.script is not supported in DSL 1.4") {
+		t.Fatalf("Compile error = %v, want frozen-DSL run.script rejection", err)
+	}
+}
+
 func TestCompileAllowsHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

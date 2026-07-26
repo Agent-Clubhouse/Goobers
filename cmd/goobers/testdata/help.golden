@@ -6,6 +6,8 @@ Usage:
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
   goobers init [--guided | --demo | --template=quickstart] [path]
                                 scaffold an instance root
+  goobers examples list | show <name>
+                                browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers agent-kit install|check|update [flags] [path]
@@ -18,6 +20,8 @@ Usage:
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|materialize|diff [flags] [path]
                                 inspect, materialize, or compare instance configuration
+  goobers speech preflight|test [--json] [path]
+                                preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -129,6 +133,8 @@ Usage:
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
   goobers init [--guided | --demo | --template=quickstart] [path]
                                 scaffold an instance root
+  goobers examples list | show <name>
+                                browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers agent-kit install|check|update [flags] [path]
@@ -141,6 +147,8 @@ Usage:
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|materialize|diff [flags] [path]
                                 inspect, materialize, or compare instance configuration
+  goobers speech preflight|test [--json] [path]
+                                preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -613,6 +621,36 @@ escalation cause and the artifacts available before and after each stage.
 Usage: goobers escalations show [--json] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
+
+### examples
+Usage: goobers examples <list|show> [name]
+
+Browse the canonical workflow examples embedded in this binary. No source
+checkout or instance root is required.
+
+Commands:
+  list         print the available example names
+  show <name>  print an example's exact Workflow YAML
+
+Run `goobers examples list -h` or `goobers examples show -h` for details.
+
+### examples list
+Usage: goobers examples list
+
+Print the names of the canonical embedded workflow examples, one per line.
+Pass one of these names to `goobers examples show` to print its YAML.
+
+Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
+
+### examples show
+Usage: goobers examples show <name>
+
+Print the exact canonical Workflow YAML embedded in this binary. Use
+`goobers examples list` to discover names. No source checkout or instance
+root is required.
+
+Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
+2 = usage error.
 
 ### features
 Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
@@ -1206,6 +1244,32 @@ none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for
 mixed outcomes; successful submission-only modes exit 0 because they do
 not observe a terminal phase.
+
+### speech
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+
+### speech preflight
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+
+### speech test
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
 
 ### stats
 Usage: goobers stats [--since <duration>] [--json] [path]

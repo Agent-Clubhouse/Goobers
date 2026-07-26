@@ -36,7 +36,7 @@ type completionCommand struct {
 	desc    string               // registry short help (renders as the zsh description)
 	subs    []completionCommand  // nested subcommands, from the registry
 	flags   []completionFlagSpec // annotated flags (completionFlagSpecs[id])
-	argKind string               // dynamic positional arg kind (workflows|runs|escalations)
+	argKind string               // dynamic positional arg kind (workflows|runs|escalations|examples)
 }
 
 // completionFlagSpec annotates one flag for completion. takesArg mirrors
@@ -59,6 +59,7 @@ var completionPositionalArgKinds = map[string]string{
 	"run abort":        "runs",
 	"trace":            "runs",
 	"escalations show": "escalations",
+	"examples show":    "examples",
 	"workflow show":    "workflows",
 }
 
@@ -106,6 +107,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
+	},
+	"speech preflight": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"speech test": {
+		{name: "json", desc: "Emit JSON"},
 	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},

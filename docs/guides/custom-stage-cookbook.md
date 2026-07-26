@@ -1,7 +1,85 @@
 # Custom deterministic stage cookbook
 
-Use this pattern when an existing script should run as a workflow stage and a
-gate should branch on one of its numeric results. The runnable reference copy is
+Custom deterministic checks have two forms:
+
+| Form | Use it when | Definition |
+|---|---|---|
+| **Inline workflow script** | The check is short workflow or gate logic and needs no project build/toolchain context. This is the default for simple gate predicates. | `run.script: |` in the workflow YAML |
+| **In-repo project script** | The check needs the project worktree, build toolchain, substantial logic, or its own tests. | A project file invoked by `run.command` |
+
+The trust boundaries differ. An inline script is reviewed only through the
+instance-config review that changes the workflow. An in-repo script is also
+reviewed through the target project's own pull-request process. Both execute as
+native host processes with the task's declared capabilities; inline does not
+imply extra sandboxing.
+
+## Inline workflow script
+
+Pin the workflow to DSL 2.0 and put a short script directly under `run.script`.
+The existing shell-stage executor invokes the script through the host's native
+command interpreter: `sh -c` on Unix or `cmd.exe /D /S /C` on Windows. Write
+scripts in that interpreter's syntax and declare an OS runner requirement when
+the syntax is platform-specific. Do not set `command` and `script` together;
+validation rejects that ambiguity.
+
+The runnable reference is
+[`workflows/inline-policy-check.yaml`](../../config-examples/gaggles/acme-web/workflows/inline-policy-check.yaml):
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: inline-policy-check
+spec:
+  gaggle: acme-web
+  triggers:
+    - type: schedule
+      schedule: "@weekly"
+  start: check-label
+  tasks:
+    - name: check-label
+      type: deterministic
+      goal: Check whether the configured labels include the required review label.
+      run:
+        script: |
+          set -eu
+          labels=",${GOOBERS_INPUT_LABELS},"
+          required=",${GOOBERS_INPUT_REQUIREDLABEL},"
+          case "$labels" in
+            *"$required"*) allowed=true ;;
+            *) allowed=false ;;
+          esac
+          printf '{"allowed":%s}\n' "$allowed" >"$GOOBERS_INPUT_RESULTFILE"
+        workspace: scratch
+      inputs:
+        labels: "ready,security-reviewed"
+        requiredLabel: "security-reviewed"
+        resultFile: "policy-result.json"
+      requiredCapabilities: ["os=linux"]
+      expectedOutputs: [allowed]
+      next: label-policy
+  gates:
+    - name: label-policy
+      evaluator: automated
+      automated:
+        check: output-equals
+        params: {key: allowed, equals: "true"}
+      branches:
+        pass: ""
+        fail: "@abort"
+```
+
+This example uses POSIX syntax, so `requiredCapabilities: ["os=linux"]` keeps it
+off Windows runners. `workspace: scratch` makes the no-repository dependency
+explicit. Omit it when the inline check needs to inspect the project worktree.
+Keep inline scripts small; move growing logic into the project repository so it
+can have dedicated tests and project review.
+
+## In-repo project script
+
+Use this form when an existing script should run as a workflow stage and a gate
+should branch on one of its numeric results. The runnable reference is
 [`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web):
 
 - `scripts/check-todos.sh` counts tracked TODO markers;
@@ -11,7 +89,7 @@ The stage runs in the configured project's fresh worktree. Put the script in the
 **project repository**, not only in the Goobers instance's `config/` directory,
 and commit it on the configured project branch.
 
-## 1. Write the script
+### 1. Write the script
 
 Create `scripts/check-todos.sh` in the project repository:
 
@@ -50,7 +128,7 @@ errors remain nonzero failures. The full listing goes to stdout; Goobers records
 stdout as an artifact. The declared result file carries the small scalar that
 the gate consumes.
 
-## 2. Declare the stage and gate
+### 2. Declare the stage and gate
 
 Add this workflow under the gaggle's `workflows/` directory in the instance
 config. Set `spec.gaggle` to the `metadata.name` from that gaggle's
@@ -118,7 +196,7 @@ This script only reads the worktree and needs no external credential, so the
 capability list is explicitly empty. Declare any capability the command really
 uses; undeclared capabilities receive no credential and fail closed.
 
-## 3. Understand `resultFile`
+### 3. Understand `resultFile`
 
 The script writes a **flat JSON object**, not a complete
 `ResultEnvelope`. After the command exits, the shell executor:
@@ -194,7 +272,7 @@ the `todos-found` gate must evaluate.
   whose command is the `goobers` CLI. It also does not inherit arbitrary daemon
   variables or undeclared secrets.
 
-## 4. Validate, run, and trace
+### 4. Validate, run, and trace
 
 From the Goobers repository, validate the instance and run the workflow:
 

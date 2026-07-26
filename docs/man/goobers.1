@@ -117,6 +117,15 @@ list escalated runs newest first
 \fBgoobers escalations show\fR
 show escalation cause + per-stage artifact timeline
 .TP
+\fBgoobers examples\fR
+browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers examples list\fR
+list canonical embedded workflow examples
+.TP
+\fBgoobers examples show\fR
+print a canonical embedded workflow example
+.TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
 .TP
@@ -258,6 +267,15 @@ assign an existing milestone to an issue (a workflow stage)
 \fBgoobers signal\fR
 fire an external signal to subscribed workflows
 .TP
+\fBgoobers speech\fR
+preflight and test local speech notifications
+.TP
+\fBgoobers speech preflight\fR
+check the configured local speech engine without emitting sound
+.TP
+\fBgoobers speech test\fR
+speak the fixed local readiness phrase
+.TP
 \fBgoobers stats\fR
 show the instance lifetime summary card
 .TP
@@ -345,6 +363,9 @@ show a workflow as a text DAG
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
+\fBgoobers-examples\fR(1),
+\fBgoobers-examples-list\fR(1),
+\fBgoobers-examples-show\fR(1),
 \fBgoobers-features\fR(1),
 \fBgoobers-fix\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
@@ -392,6 +413,9 @@ show a workflow as a text DAG
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),
+\fBgoobers-speech\fR(1),
+\fBgoobers-speech-preflight\fR(1),
+\fBgoobers-speech-test\fR(1),
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),

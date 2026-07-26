@@ -56,6 +56,65 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompilePreservesRunScriptForShellExecutor(t *testing.T) {
+	script := "set -eu\nprintf 'ok\\n'"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Script:    script,
+				Env:       map[string]string{"LC_ALL": "C"},
+				Workspace: apiv1.WorkspaceScratch,
+			},
+		}},
+	}
+
+	machine, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	task, ok := machine.Task("check")
+	if !ok {
+		t.Fatal("compiled machine has no check task")
+	}
+	if task.Run.Command != nil {
+		t.Fatalf("compiled command = %#v, want nil", task.Run.Command)
+	}
+	if task.Run.Script != script {
+		t.Fatalf("compiled script = %q, want %q", task.Run.Script, script)
+	}
+	if task.Run.Env["LC_ALL"] != "C" || task.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Fatalf("compiled run lost options: %+v", task.Run)
+	}
+}
+
+func TestCompileRejectsRunCommandAndScript(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Command: []string{"true"},
+				Script:  "printf 'ok\n'",
+			},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "run.command and run.script are mutually exclusive") {
+		t.Fatalf("Compile error = %v, want mutual-exclusion rejection", err)
+	}
+}
+
 func TestCompileAllowsHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

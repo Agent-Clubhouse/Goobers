@@ -285,6 +285,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "stage.run.script",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "stage.run.syncBase",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -357,6 +362,11 @@
     {
       "name": "task.inputsFrom",
       "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.inputsFrom.stageQualified",
+      "stability": "preview",
       "sinceVersion": "dev"
     },
     {
