@@ -156,6 +156,14 @@ make verify-full # merge plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities
 ```
 
+Portal builders can append `?portal-diagnostics=1` before the hash route (for
+example, `http://localhost:5173/?portal-diagnostics=1#/runs`) to enable an
+ephemeral `console.debug` stream with daemon request timing/status and the
+initiating page, overlapping-request burst counts and elapsed time, and SSE
+connect/disconnect/reconnect causes. This is default-off development tooling
+for diagnosing the portal itself, not partner-facing workflow telemetry, and
+it does not persist or send the events anywhere.
+
 CI runs the same merge-tier implementation on every PR to `main`. See the
 [`validation tier contract`](CONTRIBUTING.md#validation-tier-contract) for
 audience guidance, CI job mapping, and per-platform prerequisites.

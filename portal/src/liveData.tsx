@@ -14,6 +14,7 @@ import type {
   ModelInvalidation,
   UpdateModel,
 } from "./api/types";
+import type { PortalDiagnostics } from "./portalDiagnostics";
 
 const ALL_MODELS: UpdateModel[] = ["instance", "run", "workflow"];
 const CURSOR_STORAGE_KEY = "goobers-live-event-cursor";
@@ -53,6 +54,10 @@ export interface LiveDataScope {
   workflow?: string;
 }
 
+export interface LiveDataDependencies {
+  diagnostics?: PortalDiagnostics;
+}
+
 interface LiveDataContextValue {
   freshness: LiveFreshness;
   isFresh: () => boolean;
@@ -70,13 +75,16 @@ export function LiveDataProvider({
   children,
   client,
   config,
+  diagnostics,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
+  diagnostics?: PortalDiagnostics;
 }) {
   const controller = useMemo(
-    () => new LiveDataController(client, { ...defaultConfig, ...config }),
+    () =>
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics }),
     [
       client,
       config?.failuresBeforePolling,
@@ -84,6 +92,7 @@ export function LiveDataProvider({
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
       config?.reconnectMaxDelayMs,
+      diagnostics,
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
@@ -148,6 +157,7 @@ export class LiveDataController {
   constructor(
     private readonly client: DaemonClient,
     private readonly config: LiveDataConfig = defaultConfig,
+    private readonly dependencies: LiveDataDependencies = {},
   ) {}
 
   readonly isFresh = (): boolean => this.freshness === "connected";
@@ -207,7 +217,7 @@ export class LiveDataController {
       this.setFreshness("stale");
       return;
     }
-    this.connect();
+    this.connect("initial");
   }
 
   stop(): void {
@@ -218,7 +228,7 @@ export class LiveDataController {
     window.removeEventListener("online", this.onOnline);
     window.removeEventListener("offline", this.onOffline);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
-    this.closeConnection();
+    this.closeConnection("provider-stop");
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
@@ -231,7 +241,7 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect();
+    this.connect("online");
     this.resumeInvalidations();
   };
 
@@ -240,7 +250,7 @@ export class LiveDataController {
       return;
     }
     this.invalidationsPaused = true;
-    this.closeConnection();
+    this.closeConnection("offline");
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
@@ -253,7 +263,7 @@ export class LiveDataController {
     }
     if (document.visibilityState === "hidden") {
       this.invalidationsPaused = true;
-      this.closeConnection();
+      this.closeConnection("visibility-hidden");
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
@@ -266,23 +276,30 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect();
+    this.connect("visibility-visible");
     this.resumeInvalidations();
   };
 
-  private connect(): void {
+  private connect(cause: string, delayMs?: number): void {
     if (!this.started || !navigator.onLine || document.visibilityState === "hidden") {
       return;
     }
+    if (cause !== "initial") {
+      this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause, delayMs });
+    }
     this.clearReconnectTimer();
-    this.closeConnection();
+    this.closeConnection("replaced");
     const generation = this.generation;
     const controller = new AbortController();
     this.connectController = controller;
-    void this.consumeStream(generation, controller);
+    void this.consumeStream(generation, controller, cause);
   }
 
-  private async consumeStream(generation: number, controller: AbortController): Promise<void> {
+  private async consumeStream(
+    generation: number,
+    controller: AbortController,
+    cause: string,
+  ): Promise<void> {
     let stream: DaemonEventStream | undefined;
     let receivedEvent = false;
     const resumeCursor = this.cursor;
@@ -296,6 +313,7 @@ export class LiveDataController {
         return;
       }
       this.activeStream = stream;
+      this.dependencies.diagnostics?.recordSSE({ event: "connect", cause });
       this.clearPollingTimer();
       this.setFreshness(resumeCursor ? "connected" : "stale");
       this.skipNextSnapshotRefresh = !resumeCursor;
@@ -312,7 +330,7 @@ export class LiveDataController {
         this.applyEvent(event);
       }
       if (this.isCurrent(generation, controller)) {
-        this.handleDisconnect();
+        this.handleDisconnect("stream-ended");
       }
     } catch (error) {
       if (!this.isCurrent(generation, controller)) {
@@ -325,7 +343,7 @@ export class LiveDataController {
       if (receivedEvent) {
         this.failureCount = 0;
       }
-      this.handleDisconnect();
+      this.handleDisconnect("stream-error");
     } finally {
       if (this.activeStream === stream) {
         this.activeStream = undefined;
@@ -380,18 +398,18 @@ export class LiveDataController {
   }
 
   private recoverStaleCursor(): void {
-    this.closeConnection();
+    this.closeConnection("stale-cursor");
     this.cursor = undefined;
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
     window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
     this.failureCount = 0;
     this.setFreshness("stale");
-    this.scheduleReconnect(0);
+    this.scheduleReconnect(0, "stale-cursor");
   }
 
-  private handleDisconnect(): void {
-    this.closeConnection();
+  private handleDisconnect(cause: string): void {
+    this.closeConnection(cause);
     if (!navigator.onLine) {
       this.clearPollingTimer();
       this.setFreshness("offline");
@@ -408,7 +426,7 @@ export class LiveDataController {
       this.config.reconnectBaseDelayMs * 2 ** exponent,
       this.config.reconnectMaxDelayMs,
     );
-    this.scheduleReconnect(delay);
+    this.scheduleReconnect(delay, cause);
   }
 
   private startPollingFallback(): void {
@@ -431,20 +449,24 @@ export class LiveDataController {
     }, this.config.pollingIntervalMs);
   }
 
-  private scheduleReconnect(delay: number): void {
+  private scheduleReconnect(delay: number, cause: string): void {
     this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      this.connect();
+      this.connect(cause, delay);
     }, delay);
   }
 
-  private closeConnection(): void {
+  private closeConnection(cause: string): void {
+    const connected = this.activeStream !== undefined;
     this.generation += 1;
     this.connectController?.abort();
     this.connectController = undefined;
     this.activeStream?.close();
     this.activeStream = undefined;
+    if (connected) {
+      this.dependencies.diagnostics?.recordSSE({ event: "disconnect", cause });
+    }
   }
 
   private clearReconnectTimer(): void {

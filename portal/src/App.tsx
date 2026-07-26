@@ -9,6 +9,10 @@ import {
   useConfigurationWarnings,
 } from "./configurationWarnings";
 import { LiveDataProvider } from "./liveData";
+import {
+  createPortalDiagnostics,
+  type PortalDiagnostics,
+} from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -22,7 +26,8 @@ import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
-const daemonClient = new HttpDaemonClient();
+const portalDiagnostics = createPortalDiagnostics();
+const daemonClient = new HttpDaemonClient({ diagnostics: portalDiagnostics });
 const noWarnings: readonly ValidationWarning[] = [];
 
 // Warning reads are their own seam, defaulting to the daemon client: in
@@ -32,14 +37,19 @@ const noWarnings: readonly ValidationWarning[] = [];
 export function App({
   client = daemonClient,
   warningClient = client,
-}: { client?: DaemonClient; warningClient?: ConfigurationWarningClient } = {}) {
+  diagnostics = portalDiagnostics,
+}: {
+  client?: DaemonClient;
+  warningClient?: ConfigurationWarningClient;
+  diagnostics?: PortalDiagnostics;
+} = {}) {
   const standalone =
     document
       .querySelector('meta[name="goobers-dashboard-mode"]')
       ?.getAttribute("content") === "standalone";
 
   return (
-    <LiveDataProvider client={client}>
+    <LiveDataProvider client={client} diagnostics={diagnostics}>
       <Portal client={client} standalone={standalone} warningClient={warningClient} />
     </LiveDataProvider>
   );
