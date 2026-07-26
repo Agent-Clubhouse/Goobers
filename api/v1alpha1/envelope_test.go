@@ -175,6 +175,23 @@ func TestOrdinaryGateVerdictHasNoPRLifecycleFields(t *testing.T) {
 	}
 }
 
+// TestSeverityRank pins the ordering pr-remediation's minSeverity policy
+// (#941/PRR-6) relies on: strictly increasing info < warning < error <
+// critical, and an unknown value ranking below every real severity so a
+// typo'd threshold fails toward "nothing meets this bar" rather than
+// silently matching everything.
+func TestSeverityRank(t *testing.T) {
+	if SeverityInfo.Rank() >= SeverityWarning.Rank() ||
+		SeverityWarning.Rank() >= SeverityError.Rank() ||
+		SeverityError.Rank() >= SeverityCritical.Rank() {
+		t.Fatalf("severity ranks are not strictly increasing: info=%d warning=%d error=%d critical=%d",
+			SeverityInfo.Rank(), SeverityWarning.Rank(), SeverityError.Rank(), SeverityCritical.Rank())
+	}
+	if got := Severity("bogus").Rank(); got >= SeverityInfo.Rank() {
+		t.Fatalf("unknown severity ranked %d, want below SeverityInfo's %d", got, SeverityInfo.Rank())
+	}
+}
+
 func TestFindingClassValidity(t *testing.T) {
 	for _, c := range []FindingClass{FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked} {
 		if !c.IsValid() {
