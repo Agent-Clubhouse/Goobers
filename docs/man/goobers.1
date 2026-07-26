@@ -27,6 +27,18 @@ first-pass review and hot-file evidence.
 .fi
 .SH COMMANDS
 .TP
+\fBgoobers agent-kit\fR
+install, inspect, or update the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit check\fR
+report agent toolkit version and drift
+.TP
+\fBgoobers agent-kit install\fR
+install the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit update\fR
+review or explicitly apply an agent toolkit update
+.TP
 \fBgoobers apply-verdict\fR
 publish a merge-review verdict as a native review (a workflow stage)
 .TP
@@ -104,6 +116,9 @@ show escalation cause + per-stage artifact timeline
 .TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
+.TP
+\fBgoobers fix\fR
+mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
 \fBgoobers gate-removal-guard\fR
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
@@ -288,6 +303,10 @@ inspect workflows
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .SH SEE ALSO
+\fBgoobers-agent-kit\fR(1),
+\fBgoobers-agent-kit-check\fR(1),
+\fBgoobers-agent-kit-install\fR(1),
+\fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply-verdict\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
@@ -314,6 +333,7 @@ show a workflow as a text DAG
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-features\fR(1),
+\fBgoobers-fix\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
