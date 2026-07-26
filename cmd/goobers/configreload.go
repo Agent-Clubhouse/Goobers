@@ -214,11 +214,11 @@ func configReloadErrorMessage(err error) string {
 
 // configDirectoryDigest fingerprints the config directory so the reloader can
 // tell a real change from a no-op. It tracks YAML definitions, their referenced
-// goober instructions, and every file in a goober assets directory; unrelated
-// config-tree churn remains excluded.
+// goober instructions and skill bodies, and every file in a goober assets
+// directory; unrelated config-tree churn remains excluded.
 func configDirectoryDigest(root string) (string, error) {
 	hash := sha256.New()
-	instructionPaths := make(map[string]struct{})
+	contentPaths := make(map[string]struct{})
 	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -287,16 +287,16 @@ func configDirectoryDigest(root string) (string, error) {
 		if err := writeEntry(path, 0, content); err != nil {
 			return err
 		}
-		for _, instructionPath := range gooberInstructionReferences(path, content) {
-			instructionPaths[instructionPath] = struct{}{}
+		for _, contentPath := range gooberContentReferences(root, path, content) {
+			contentPaths[contentPath] = struct{}{}
 		}
 		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("digest config directory: %w", err)
 	}
-	paths := make([]string, 0, len(instructionPaths))
-	for path := range instructionPaths {
+	paths := make([]string, 0, len(contentPaths))
+	for path := range contentPaths {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
@@ -306,7 +306,7 @@ func configDirectoryDigest(root string) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("digest config directory: stat goober instructions: %w", err)
+			return "", fmt.Errorf("digest config directory: stat resolved goober content: %w", err)
 		}
 		if !info.Mode().IsRegular() {
 			continue
@@ -316,7 +316,7 @@ func configDirectoryDigest(root string) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("digest config directory: read goober instructions: %w", err)
+			return "", fmt.Errorf("digest config directory: read resolved goober content: %w", err)
 		}
 		if err := writeEntry(path, 0, content); err != nil {
 			return "", fmt.Errorf("digest config directory: %w", err)
@@ -328,11 +328,12 @@ func configDirectoryDigest(root string) (string, error) {
 type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
-		Instructions string `json:"instructions"`
+		Instructions string   `json:"instructions"`
+		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
 
-func gooberInstructionReferences(definitionPath string, content []byte) []string {
+func gooberContentReferences(configDir, definitionPath string, content []byte) []string {
 	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(content), 4096)
 	var paths []string
 	for {
@@ -346,9 +347,16 @@ func gooberInstructionReferences(definitionPath string, content []byte) []string
 			// diagnostic for malformed documents.
 			return paths
 		}
-		if document.Kind != "Goober" || document.Spec.Instructions == "" {
+		if document.Kind != "Goober" {
 			continue
 		}
-		paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
+		if document.Spec.Instructions != "" {
+			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
+		}
+		for _, skill := range document.Spec.Skills {
+			if skillPath, ok := skillBodyPath(configDir, skill); ok {
+				paths = append(paths, skillPath)
+			}
+		}
 	}
 }

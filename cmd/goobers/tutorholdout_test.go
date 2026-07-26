@@ -109,6 +109,73 @@ func TestPrepareTutorHoldoutPinsPreAndPostVersionAxes(t *testing.T) {
 	}
 }
 
+func TestPrepareTutorHoldoutPinsSkillBodyTransition(t *testing.T) {
+	root := initDemo(t)
+	const (
+		gaggle = "example"
+		runID  = "tutor-skill-authoring"
+	)
+	liveConfig := instance.NewLayout(root).ConfigDir()
+	liveSkillPath := filepath.Join(root, "skills", "implement", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(liveSkillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := []byte("# Implement\n\nUse the original approach.\n")
+	if err := os.WriteFile(liveSkillPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	proposedRoot := t.TempDir()
+	proposedConfig := filepath.Join(proposedRoot, "proposed")
+	if err := os.CopyFS(proposedConfig, os.DirFS(liveConfig)); err != nil {
+		t.Fatalf("copy config: %v", err)
+	}
+	proposedSkillPath := filepath.Join(proposedRoot, "skills", "implement", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(proposedSkillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	after := []byte("# Implement\n\nUse the improved approach.\n")
+	if err := os.WriteFile(proposedSkillPath, after, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "tutor", Gaggle: gaggle,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordStageArtifact("analyze", 1, "", "finding.md", []byte("skill gap")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := prepareTutorHoldout(
+		root,
+		gaggle,
+		runID,
+		proposedConfig,
+		tutorChangeClassification{Types: []tutorChangeType{tutorChangeSkill}},
+		[]tutorFileChange{{Path: filepath.ToSlash(proposedSkillPath), Before: before, After: after}},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("prepareTutorHoldout: %v", err)
+	}
+	if record == nil || len(record.Targets) != 1 || record.Targets[0].Workflow != "default-implement" {
+		t.Fatalf("record = %+v, want default-implement skill holdout", record)
+	}
+	target := record.Targets[0]
+	if target.OldAxes.WorkflowDigest != target.NewAxes.WorkflowDigest {
+		t.Fatalf("skill-only change moved workflow digest: %+v", target)
+	}
+	if target.OldAxes.GooberDigest == target.NewAxes.GooberDigest {
+		t.Fatalf("skill-only change did not move goober digest: %+v", target)
+	}
+}
+
 func TestPrepareTutorHoldoutSkipsOptionalPersonaChange(t *testing.T) {
 	record, err := prepareTutorHoldout(
 		"", "", "", "",

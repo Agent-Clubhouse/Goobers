@@ -123,7 +123,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	}
 }
 
-func TestUpReloadsGooberInstructionContentForNextRun(t *testing.T) {
+func TestUpReloadsResolvedGooberContentForNextRun(t *testing.T) {
 	previousReloadInterval := configReloadInterval
 	previousDelegationInterval := delegationSweepInterval
 	configReloadInterval = 20 * time.Millisecond
@@ -153,6 +153,8 @@ spec:
       goober: coder
       goal: Complete the fixture task.
 `)
+	skillPath := filepath.Join(root, "skills", "implement", "SKILL.md")
+	writeFixture(t, skillPath, "# Original implementation skill\n")
 
 	fixtureRepo := newDaemonFixtureRepo(t)
 	previousRepoCloneURL := repoCloneURL
@@ -229,6 +231,20 @@ spec:
 	}
 	if before.WorkflowDigest != after.WorkflowDigest {
 		t.Fatalf("workflow digest changed after instructions edit: before=%q after=%q", before.WorkflowDigest, after.WorkflowDigest)
+	}
+
+	instructionHealth := readDaemonHealth(t, address)
+	if err := os.WriteFile(skillPath, []byte("# Reloaded implementation skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
+	waitForDefinitionsReload(t, address, instructionHealth.Freshness.DefinitionsLoadedAt)
+	afterSkill := runIdentity()
+	if after.GooberDigest == afterSkill.GooberDigest {
+		t.Fatalf("goober digest did not change after skill edit: %q", afterSkill.GooberDigest)
+	}
+	if after.WorkflowDigest != afterSkill.WorkflowDigest {
+		t.Fatalf("workflow digest changed after skill edit: before=%q after=%q", after.WorkflowDigest, afterSkill.WorkflowDigest)
 	}
 }
 
@@ -345,11 +361,20 @@ func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gooberDir, "goober.yaml"), []byte(`kind: Goober
 spec:
   instructions: instructions.md
+  skills:
+    - implement
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	instructionsPath := filepath.Join(gooberDir, "instructions.md")
 	if err := os.WriteFile(instructionsPath, []byte("# Original instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(filepath.Dir(root), "skills", "implement", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("# Original skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	baseline, err := configDirectoryDigest(root)
@@ -396,6 +421,17 @@ spec:
 		t.Fatalf("referenced instruction edit did not change digest: %s", withInstructions)
 	}
 
+	if err := os.WriteFile(skillPath, []byte("# Updated skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withSkill, err := configDirectoryDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withSkill == withInstructions {
+		t.Fatalf("referenced skill edit did not change digest: %s", withSkill)
+	}
+
 	asset := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets", ".hidden", "reference.txt")
 	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
 		t.Fatal(err)
@@ -407,7 +443,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withAsset == withInstructions {
+	if withAsset == withSkill {
 		t.Fatalf("asset addition did not change digest: %s", withAsset)
 	}
 

@@ -48,7 +48,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, firstDigests, err := compiledMachinesWithGooberDigests(set, goobers, firstInstructions)
+	first, firstDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, firstInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, secondDigests, err := compiledMachinesWithGooberDigests(set, goobers, secondInstructions)
+	second, secondDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, secondInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -326,7 +326,7 @@ func tutorConfigVersions(configDir, gaggle string, names []string) (map[string]t
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachinesWithGooberDigests(set, goobers, instructions)
+	machines, gooberDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}

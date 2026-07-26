@@ -14,6 +14,7 @@ type effectiveGoober struct {
 	Name           string                     `json:"name"`
 	Instructions   string                     `json:"instructions"`
 	Skills         []string                   `json:"skills,omitempty"`
+	SkillBodies    []effectiveSkillBody       `json:"skillBodies,omitempty"`
 	Model          string                     `json:"model,omitempty"`
 	Harness        string                     `json:"harness"`
 	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
@@ -21,9 +22,19 @@ type effectiveGoober struct {
 	Tools          []string                   `json:"tools,omitempty"`
 }
 
+type effectiveSkillBody struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 // ComputeGooberDigest returns the stable content identity of the resolved
 // goobers that participate in def.
-func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (string, error) {
+func ComputeGooberDigest(
+	def Definition,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	skillBodies map[string]string,
+) (string, error) {
 	names := participatingGoobers(def)
 	effective := make([]effectiveGoober, 0, len(names))
 	for _, name := range names {
@@ -53,6 +64,7 @@ func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, in
 			Name:           name,
 			Instructions:   content,
 			Skills:         canonicalSet(spec.Skills),
+			SkillBodies:    resolvedSkillBodies(spec.Skills, skillBodies),
 			Model:          spec.Model,
 			Harness:        string(harness),
 			HarnessOptions: options,
@@ -61,6 +73,16 @@ func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, in
 		})
 	}
 	return canonicalDigest(effective)
+}
+
+func resolvedSkillBodies(skills []string, bodies map[string]string) []effectiveSkillBody {
+	var resolved []effectiveSkillBody
+	for _, name := range canonicalSet(skills) {
+		if content, ok := bodies[name]; ok {
+			resolved = append(resolved, effectiveSkillBody{Name: name, Content: content})
+		}
+	}
+	return resolved
 }
 
 func canonicalMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {

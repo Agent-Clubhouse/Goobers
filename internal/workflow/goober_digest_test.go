@@ -35,7 +35,11 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			{Name: "remote", URL: "https://mcp.example.test"},
 		},
 	}
-	digest := func(spec apiv1.GooberSpec, instructions string) string {
+	baseSkillBodies := map[string]string{
+		"go":      "Use idiomatic Go.",
+		"testing": "Run targeted tests.",
+	}
+	digest := func(spec apiv1.GooberSpec, instructions string, skillBodies map[string]string) string {
 		t.Helper()
 		value, err := ComputeGooberDigest(
 			def,
@@ -50,6 +54,7 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 				"coder":  instructions,
 				"unused": "unused instructions",
 			},
+			skillBodies,
 		)
 		if err != nil {
 			t.Fatalf("compute digest: %v", err)
@@ -60,13 +65,18 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 		return value
 	}
 
-	original := digest(base, "original instructions")
+	original := digest(base, "original instructions", baseSkillBodies)
 	for _, tc := range []struct {
 		name         string
 		spec         apiv1.GooberSpec
 		instructions string
+		skillBodies  map[string]string
 	}{
 		{name: "instructions content", spec: base, instructions: "changed instructions"},
+		{name: "skill body", spec: base, instructions: "original instructions", skillBodies: map[string]string{
+			"go":      "Use idiomatic Go.",
+			"testing": "Run the full test suite.",
+		}},
 		{name: "skills", spec: func() apiv1.GooberSpec {
 			spec := base
 			spec.Skills = []string{"testing", "go", "security"}
@@ -102,7 +112,11 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 		}(), instructions: "original instructions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			changed := digest(tc.spec, tc.instructions)
+			skillBodies := tc.skillBodies
+			if skillBodies == nil {
+				skillBodies = baseSkillBodies
+			}
+			changed := digest(tc.spec, tc.instructions, skillBodies)
 			if changed == original {
 				t.Fatalf("goober digest did not change: %s", changed)
 			}
@@ -114,7 +128,11 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	reordered.Skills = []string{"go", "testing", "go"}
 	reordered.Tools = []string{"reachability", "shell", "shell"}
 	reordered.MCPServers = []apiv1.MCPServer{base.MCPServers[1], base.MCPServers[0]}
-	equivalent := digest(reordered, "original instructions")
+	equivalent := digest(reordered, "original instructions", map[string]string{
+		"testing": "Run targeted tests.",
+		"unused":  "Not used by coder.",
+		"go":      "Use idiomatic Go.",
+	})
 	if equivalent != original {
 		t.Fatalf("path or set ordering changed goober digest: %s != %s", equivalent, original)
 	}
