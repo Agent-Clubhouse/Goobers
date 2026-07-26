@@ -989,6 +989,87 @@ func TestTraceOmitsEscalationSummaryForCompletedRun(t *testing.T) {
 	}
 }
 
+// TestTraceShowsOutcomeForCompletedRunWithGateDecision proves #851's
+// business-decision axis surfaces in both trace output shapes: the text
+// "outcome:" line and the JSON outcome field, naming the last gate
+// evaluated before completion.
+func TestTraceShowsOutcomeForCompletedRunWithGateDecision(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "completed-run-with-outcome"
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: "local-ci"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "outcome:  gate=review verdict=pass target=local-ci") {
+		t.Fatalf("trace text missing the outcome line:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var result traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not the JSON trace: %v\n%s", err, stdout)
+	}
+	if result.Outcome == nil || result.Outcome.Gate != "review" || result.Outcome.Verdict != "pass" || result.Outcome.Target != "local-ci" {
+		t.Fatalf("JSON outcome = %+v", result.Outcome)
+	}
+}
+
+// TestTraceOmitsOutcomeLineWhenNoGateDecided proves a completed run whose
+// path evaluated no gate at all prints no "outcome:" line — the JSON outcome
+// object still exists (all-empty), but the text rendering skips a
+// gate-less/empty line as noise.
+func TestTraceOmitsOutcomeLineWhenNoGateDecided(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "completed-run-no-gate"
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "outcome:") {
+		t.Fatalf("gate-less trace unexpectedly prints an outcome line:\n%s", stdout)
+	}
+}
+
 func TestTraceResolvesUniqueRunIDPrefix(t *testing.T) {
 	root := t.TempDir()
 	const runID = "dd57a3c2f0d27ea99ca7fa84db6ecab4"

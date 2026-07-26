@@ -54,15 +54,16 @@ func verifyPrivate(path string) error {
 		return fmt.Errorf("%w: %s: cannot resolve tolerated system SIDs: %w", ErrNotPrivate, path, err)
 	}
 
-	// Only ACCESS_ALLOWED aces can expose the secret; a DENY ace merely
-	// restricts. GetAce avoids unsafe pointer arithmetic over the
-	// variable-length ACL, which is invalid under the race detector's checkptr.
+	// Only simple ACCESS_ALLOWED and ACCESS_DENIED ACEs have layouts this check
+	// can verify. GetAce avoids unsafe pointer arithmetic over the variable-length
+	// ACL, which is invalid under the race detector's checkptr.
 	for i := uint16(0); i < dacl.AceCount; i++ {
 		var allowed *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, uint32(i), &allowed); err != nil {
 			return fmt.Errorf("%w: %s: cannot read ACE %d: %w", ErrNotPrivate, path, i, err)
 		}
-		if allowed.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
+		switch allowed.Header.AceType {
+		case windows.ACCESS_ALLOWED_ACE_TYPE:
 			if allowed.Mask != 0 {
 				sid := (*windows.SID)(unsafe.Pointer(&allowed.SidStart))
 				if !sidIn(sid, tolerated) {
@@ -71,6 +72,12 @@ func verifyPrivate(path string) error {
 						ErrNotPrivate, path, sid.String(), path)
 				}
 			}
+		case windows.ACCESS_DENIED_ACE_TYPE:
+			// A simple deny ACE only restricts access.
+		default:
+			return fmt.Errorf("%w: %s contains unsupported ACE type %d at index %d; "+
+				"cannot verify privacy; run: icacls %q /inheritance:r /grant:r %%USERNAME%%:F",
+				ErrNotPrivate, path, allowed.Header.AceType, i, path)
 		}
 	}
 	return nil

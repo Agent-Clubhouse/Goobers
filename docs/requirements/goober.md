@@ -39,9 +39,52 @@ cloud cluster without change.
 | Assets | Optional static files under `assets/`, available to every invocation at workspace path `.goober-assets/`. |
 | Skills | Skill set available to the goober. |
 | Tools | MCP servers / tools it can use (incl. management tools — see telemetry), declared as a capability allowlist. |
+| MCP servers | Invocation-scoped external stdio or HTTP MCP servers, with credentials bound only through declared capabilities. |
 | Harness binding | The harness adapter it runs on (first adapter: GitHub Copilot CLI). |
 | Scale factor | Desired replica count for concurrent work. |
 | Workflow association | Which workflow(s) invoke this goober (and for which tasks). |
+
+### External MCP servers
+
+`spec.mcpServers` is an additive list of local stdio or remote HTTP servers.
+Credentials are capability references, never inline values:
+
+```yaml
+capabilities: [contents:read, github:issues:write]
+tools: [lookup-issue, read-context]
+mcpServers:
+  - name: local-context
+    command: context-server
+    args: [--stdio]
+    credentialRefs:
+      - capability: contents:read
+        env: CONTEXT_TOKEN
+  - name: remote-context
+    url: https://mcp.example.test/api
+    credentialRefs:
+      - capability: github:issues:write
+        header: Authorization
+        scheme: bearer
+```
+
+Each referenced capability must also be declared by the invoking stage. The
+runner resolves only those invocation-scoped credentials and materializes the
+MCP configuration in a fresh harness configuration directory. Remote servers
+with credential references must use HTTPS; plaintext HTTP is allowed only for
+exact `localhost` or loopback-IP endpoints used for local development and tests.
+Remote URLs cannot contain query strings or fragments; credentials must use
+`credentialRefs`. Each external server receives only the explicit names in
+`spec.tools`; an omitted tool is unavailable, and an empty list denies all
+external MCP tools.
+
+External MCP servers currently require `harness: copilot` (or the default
+Copilot harness). Other harnesses reject non-empty `mcpServers` declarations
+until their adapters implement equivalent invocation-scoped isolation.
+
+The scoped Copilot home intentionally excludes ambient OAuth and BYOK
+credentials. A Copilot invocation with external MCP servers therefore requires
+a resolver-materialized `agent:model` credential; MCP-free invocations may
+continue to use the CLI's stored authentication.
 
 ## Invocation contract (runtime)
 
