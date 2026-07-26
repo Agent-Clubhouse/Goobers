@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -200,6 +201,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	printDSLVersionSummary(stdout, set.Workflows)
 	if *strict && len(report.Warnings()) > 0 {
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
@@ -334,6 +336,38 @@ const (
 const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
+
+// printDSLVersionSummary renders each workflow's dslVersion pin and its
+// lifecycle level against this binary's supportmatrix.SupportMatrix (DVL-3,
+// #863) — the line that makes version drift visible at a glance. Every level
+// prints (including the common "supported" case) so an author can see the
+// full picture in one place; api/validate's checkWorkflowDSLVersion is what
+// actually blocks/warns on a problematic pin — this is a summary, not a
+// second enforcement path.
+func printDSLVersionSummary(stdout io.Writer, workflows []apiv1.Workflow) {
+	matrix := supportmatrix.GetDSL()
+	for _, w := range workflows {
+		version := w.DSLVersion
+		defaulted := ""
+		if version == "" {
+			version = supportmatrix.CurrentDSLVersion
+			defaulted = " (defaulted; no dslVersion pin)"
+		}
+		support, ok := matrix.Lookup(version)
+		if !ok {
+			pf(stdout, "DSLVERSION Workflow/%s: %s%s, unrecognized by this binary\n", w.Name, version, defaulted)
+			continue
+		}
+		detail := string(support.Level)
+		if support.Replacement != "" {
+			detail += fmt.Sprintf(", replacement %s", support.Replacement)
+		}
+		if support.UnsupportedAfter != "" {
+			detail += fmt.Sprintf(", unsupported after %s", support.UnsupportedAfter)
+		}
+		pf(stdout, "DSLVERSION Workflow/%s: %s%s (%s)\n", w.Name, version, defaulted, detail)
+	}
+}
 
 // targetRepositorySize resolves a GitHub repo's size in KB for the
 // oversized-repo warning (#1547). Overridable in tests. ADO has no
