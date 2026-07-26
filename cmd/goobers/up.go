@@ -469,7 +469,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())

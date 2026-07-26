@@ -16,6 +16,10 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+// ErrTerminalGenerationChanged means an intervention was validated against an
+// earlier terminal segment than the one currently recorded in the journal.
+var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
+
 // ResumeInput identifies an interrupted run to pick back up. Everything
 // recoverable from the journal is read from it (Gaggle, Trigger, the
 // snapshotted Item); RepoRef and Machine are NOT journaled — RunIdentity
@@ -71,6 +75,9 @@ type ResumeFromTerminalInput struct {
 	Gate         string
 	Decision     string
 	Rationale    string
+	// ExpectedTerminalSeq binds the action to the run.finished event observed
+	// when the intervention was validated.
+	ExpectedTerminalSeq uint64
 }
 
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
@@ -178,6 +185,9 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	if in.Actor == "" {
 		return Result{}, fmt.Errorf("runner: terminal resume actor is required")
 	}
+	if in.ExpectedTerminalSeq == 0 {
+		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
+	}
 	in.Action = strings.TrimSpace(in.Action)
 	in.Gate = strings.TrimSpace(in.Gate)
 	in.Decision = strings.TrimSpace(in.Decision)
@@ -206,6 +216,13 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		}
 		if phase != journal.PhaseEscalated && phase != journal.PhaseFailed {
 			return Result{}, fmt.Errorf("runner: run %q is %s; only escalated or failed runs can be resumed by a human", in.RunID, phase)
+		}
+		events, err := rd.Events()
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: read events for run %q terminal resume: %w", in.RunID, err)
+		}
+		if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
+			return Result{}, err
 		}
 		if id.WorkflowDigest == "" {
 			return Result{}, fmt.Errorf("runner: run %q has no pinned workflow digest, refusing terminal resume (WF-016)", in.RunID)
@@ -251,6 +268,22 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 			RunID: in.RunID, Machine: in.Machine, GooberDigest: in.GooberDigest, RepoRef: in.RepoRef,
 		}, jr, registrar, dir)
 	})
+}
+
+func validateTerminalGeneration(runID string, events []journal.Event, expected uint64) error {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != journal.EventRunFinished {
+			continue
+		}
+		if events[i].Seq != expected {
+			return fmt.Errorf(
+				"runner: run %q terminal sequence changed from %d to %d: %w",
+				runID, expected, events[i].Seq, ErrTerminalGenerationChanged,
+			)
+		}
+		return nil
+	}
+	return fmt.Errorf("runner: run %q has no terminal journal event", runID)
 }
 
 func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (result Result, retErr error) {

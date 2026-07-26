@@ -38,6 +38,7 @@ func TestRerunStageRejectsGooberDigestMismatch(t *testing.T) {
 	_, err = r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, GooberDigest: replacement, RepoRef: repo,
 		Stage: "implement", Actor: "maintainer", InstructionAddendum: "Try again.",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err == nil || !strings.Contains(err.Error(), "goober digest") || !strings.Contains(err.Error(), "WF-016") {
 		t.Fatalf("RerunStage error = %v, want goober identity refusal", err)
@@ -81,6 +82,7 @@ func TestResumeFromTerminalRejectsGooberDigestMismatch(t *testing.T) {
 		RunID: runID, Machine: machine, GooberDigest: replacement,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Target:  "implement", Actor: "maintainer",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err == nil || !strings.Contains(err.Error(), "goober digest") || !strings.Contains(err.Error(), "WF-016") {
 		t.Fatalf("ResumeFromTerminal error = %v, want goober identity refusal", err)

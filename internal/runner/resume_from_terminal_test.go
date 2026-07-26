@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,25 @@ func createTerminalResumeRun(t *testing.T, runsDir, runID string, machine *workf
 	}
 }
 
+func terminalRunSequence(t *testing.T, runsDir, runID string) uint64 {
+	t.Helper()
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunFinished {
+			return events[i].Seq
+		}
+	}
+	t.Fatalf("run %q has no terminal event", runID)
+	return 0
+}
+
 func terminalResumeRunner(t *testing.T, runsDir, fixtureRepo string, wtMgr *worktree.Manager, det invoke.Deterministic) *Runner {
 	t.Helper()
 	r, err := New(Config{
@@ -75,6 +95,7 @@ func TestResumeFromTerminalIsDurableAndReexecutesTarget(t *testing.T) {
 		RunID: runID, Machine: machine, RepoRef: repoRef,
 		Target: "implement", Actor: "operator@example.test",
 		Action: "override", Gate: "review", Decision: "pass", Rationale: "accepted risk",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("ResumeFromTerminal: %v", err)
@@ -177,6 +198,7 @@ func TestResumeFromTerminalRefusesChangedWorkflowPin(t *testing.T) {
 		RunID: runID, Machine: changed,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Target:  "implement", Actor: "operator@example.test",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err == nil || !strings.Contains(err.Error(), "WF-016") {
 		t.Fatalf("ResumeFromTerminal error = %v, want WF-016 pin refusal", err)
@@ -217,6 +239,7 @@ func TestResumeFromTerminalAcceptsFailedRunAndGateTarget(t *testing.T) {
 		RunID: runID, Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Target:  "review", Actor: "operator@example.test",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("ResumeFromTerminal: %v", err)
@@ -253,6 +276,7 @@ func TestResumeFromTerminalCanSelectCompletionBranch(t *testing.T) {
 		RepoRef:  apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Complete: true, Actor: "operator@example.test",
 		Action: "override", Gate: "review", Decision: "pass", Rationale: "approved terminal outcome",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("ResumeFromTerminal: %v", err)
@@ -414,6 +438,13 @@ func TestResumeFromTerminalValidatesActionBeforeJournalAccess(t *testing.T) {
 			},
 			want: "actor is required",
 		},
+		{
+			name: "missing terminal sequence",
+			in: ResumeFromTerminalInput{
+				RunID: "valid-run", Machine: machine, Target: "implement", Actor: "operator",
+			},
+			want: "expected terminal sequence is required",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -422,6 +453,60 @@ func TestResumeFromTerminalValidatesActionBeforeJournalAccess(t *testing.T) {
 				t.Fatalf("ResumeFromTerminal error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestResumeFromTerminalRejectsStaleTerminalGeneration(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-stale-terminal-generation"
+	createTerminalResumeRun(t, runsDir, runID, machine, journal.PhaseEscalated)
+	staleSeq := terminalRunSequence(t, runsDir, runID)
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated),
+		Actor: "first-operator", Target: "implement",
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	_, err = r.ResumeFromTerminal(context.Background(), ResumeFromTerminalInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Target:  "implement", Actor: "delayed-operator", ExpectedTerminalSeq: staleSeq,
+	})
+	if !errors.Is(err, ErrTerminalGenerationChanged) {
+		t.Fatalf("ResumeFromTerminal error = %v, want ErrTerminalGenerationChanged", err)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumes := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunResumed {
+			resumes++
+		}
+	}
+	if resumes != 1 {
+		t.Fatalf("run.resumed events = %d, want only the newer segment's event", resumes)
 	}
 }
 

@@ -536,6 +536,64 @@ func TestRunInterventionReacquiresClaimsAndAdmissionUntilTerminal(t *testing.T) 
 	}
 }
 
+func TestRunInterventionProtectsReacquiredClaimsBeforeJournalResume(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, _ := newInterventionServiceTestRun(t, machine, "run-recovery-window", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	if err := service.instanceLog.Append(journal.Event{
+		Type: journal.EventClaimAcquired, Name: "466", Gaggle: "example",
+		RunID: "run-recovery-window", Workflow: machine.Def.Name,
+		Runner: map[string]any{"claimProvider": "github", "claimExternalId": "466"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.resolve("run-recovery-window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := service.beginExecution(resolved, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = lease.releaseReacquiredClaims()
+		lease.Close()
+	}()
+
+	type recoveryResult struct {
+		released []localscheduler.ClaimEntry
+		err      error
+	}
+	done := make(chan recoveryResult, 1)
+	go func() {
+		released, err := recoverClaims(service.layout, service.instanceLog, time.Now(), service.interventionActive)
+		done <- recoveryResult{released: released, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if len(result.released) != 0 {
+			t.Fatalf("recovery released active intervention claims: %+v", result.released)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("claim recovery did not finish")
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
+	if entry, held := ledger.LookupScoped(key); !held || entry.RunID != "run-recovery-window" {
+		t.Fatalf("claim in pre-resume window = (%+v, %v)", entry, held)
+	}
+}
+
 func TestRunInterventionRetainsResourcesAcrossAnotherHumanPause(t *testing.T) {
 	machine := interventionTwoGateMachine(t)
 	service, _ := newInterventionServiceTestRun(t, machine, "run-repaused", []journal.Event{
@@ -593,6 +651,72 @@ func TestRunInterventionRetainsResourcesAcrossAnotherHumanPause(t *testing.T) {
 		t.Fatalf("completed re-paused run retained admission: %s", reason)
 	} else {
 		release()
+	}
+}
+
+func TestRunInterventionRejectsDelayedDuplicateFromPriorTerminalSegment(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, runDir := newInterventionServiceTestRun(t, machine, "run-delayed-duplicate", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	stale, err := service.resolve("run-delayed-duplicate")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, _, err := journal.Recover(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated),
+			Actor: "first-operator", Action: "override", Gate: "review", Decision: "pass", Target: "implement",
+			WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+		},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	} {
+		if err := recovered.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.execute(context.Background(), stale, true, func(ctx context.Context) (runner.Result, error) {
+		return stale.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
+			RunID: stale.runID, Machine: stale.machine, GooberDigest: stale.gooberDigest, RepoRef: stale.repoRef,
+			Target: "finish", Actor: "delayed-operator", Action: "override", Gate: "review", Decision: "pass",
+			Rationale: "stale approval", ExpectedTerminalSeq: stale.terminalSeq,
+		})
+	})
+	err = interventionExecutionError("override", err)
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) ||
+		interventionErr.Status != http.StatusConflict ||
+		interventionErr.Code != "terminal_generation_changed" {
+		t.Fatalf("delayed duplicate error = %#v, want terminal_generation_changed", err)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumes := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunResumed {
+			resumes++
+		}
+	}
+	if resumes != 1 {
+		t.Fatalf("run.resumed events = %d, want no stale duplicate", resumes)
 	}
 }
 

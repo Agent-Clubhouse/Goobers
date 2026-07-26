@@ -170,6 +170,7 @@ func TestRunnerRerunStageAppliesAddendumToOneAgenticTaskAttempt(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "implement",
 		Actor: actor, InstructionAddendum: addendum,
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)
@@ -518,6 +519,7 @@ func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "review",
 		Actor: "release-manager", InstructionAddendum: addendum,
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)

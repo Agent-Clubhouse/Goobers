@@ -90,6 +90,7 @@ type resolvedInterventionRun struct {
 	workflow     string
 	phase        journal.RunPhase
 	events       []journal.Event
+	terminalSeq  uint64
 }
 
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup) *runInterventionService {
@@ -169,6 +170,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 				Target: target, Complete: target == workflow.TerminalComplete,
 				Actor: input.Actor, Action: "approve", Gate: input.Stage, Decision: decision,
+				ExpectedTerminalSeq: resolved.terminalSeq,
 			})
 		})
 	default:
@@ -223,6 +225,7 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Target: target, Complete: target == workflow.TerminalComplete,
 			Actor: input.Actor, Action: "override", Gate: input.Stage, Decision: decision, Rationale: rationale,
+			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
 	})
 	if err != nil {
@@ -250,6 +253,7 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
+			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
 	})
 	if err != nil {
@@ -344,6 +348,15 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
 		)
 	}
+	terminalSeq := uint64(0)
+	if phase == journal.PhaseEscalated || phase == journal.PhaseFailed {
+		terminalSeq = latestTerminalSequence(events)
+		if terminalSeq == 0 {
+			return resolvedInterventionRun{}, httpapi.NewInterventionError(
+				http.StatusInternalServerError, "run_read_failed", "terminal run has no run.finished event", nil,
+			)
+		}
+	}
 	return resolvedInterventionRun{
 		runID:        runID,
 		runner:       runRunner,
@@ -355,7 +368,17 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		workflow:     identity.Workflow,
 		phase:        phase,
 		events:       events,
+		terminalSeq:  terminalSeq,
 	}, nil
+}
+
+func latestTerminalSequence(events []journal.Event) uint64 {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunFinished {
+			return events[i].Seq
+		}
+	}
+	return 0
 }
 
 type interventionExecutionLease struct {
@@ -465,6 +488,13 @@ func (s *runInterventionService) trackActiveIntervention(runID string) (func(), 
 			s.activeMu.Unlock()
 		})
 	}, true
+}
+
+func (s *runInterventionService) interventionActive(runID string) bool {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	_, active := s.active[runID]
+	return active
 }
 
 func (l *interventionExecutionLease) Close() {
@@ -677,6 +707,12 @@ func interventionExecutionError(action string, err error) error {
 	var interventionErr *httpapi.InterventionError
 	if errors.As(err, &interventionErr) {
 		return err
+	}
+	if errors.Is(err, runner.ErrTerminalGenerationChanged) {
+		return interventionConflict(
+			"terminal_generation_changed",
+			"the run reached a newer terminal segment before the intervention was applied",
+		)
 	}
 	return httpapi.NewInterventionError(
 		http.StatusInternalServerError,

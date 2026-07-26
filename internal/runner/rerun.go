@@ -23,6 +23,9 @@ type RerunStageInput struct {
 	Stage               string
 	Actor               string
 	InstructionAddendum string
+	// ExpectedTerminalSeq binds the request to the escalation that was
+	// inspected before the operator action was accepted.
+	ExpectedTerminalSeq uint64
 }
 
 type rerunContext struct {
@@ -55,6 +58,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	addendum := strings.TrimSpace(in.InstructionAddendum)
 	if addendum == "" {
 		return Result{}, fmt.Errorf("runner: InstructionAddendum is required")
+	}
+	if in.ExpectedTerminalSeq == 0 {
+		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
 	}
 
 	isGate, err := validateRerunTarget(in.Machine, in.Stage)
@@ -102,6 +108,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		events, err := rd.Events()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
+		}
+		if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
+			return Result{}, err
 		}
 		seedEvents, err := rerunSeedEvents(events, in.Stage, isGate)
 		if err != nil {
