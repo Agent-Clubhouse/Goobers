@@ -265,7 +265,8 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 
 func quoteShellArg(arg, goos string) string {
 	if goos == "windows" {
-		return `"` + arg + `"`
+		// nextCommand targets PowerShell, where single-quoted strings are literal.
+		return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 	}
 	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
