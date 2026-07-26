@@ -180,7 +180,7 @@ func TestProviderFixtureWorkflowIsInertAndSeparatesOutcomes(t *testing.T) {
 		"Verify explicit provisioning",
 		"Provider contract assertions",
 		"Normalized fixture drift",
-		"actions/upload-artifact@v5",
+		"actions/upload-artifact@v7",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("provider fixture workflow does not contain %q", want)
