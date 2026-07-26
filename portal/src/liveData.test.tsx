@@ -266,12 +266,14 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
-  it("reports SSE connect, disconnect, and reconnect causes", async () => {
+  it("reports SSE causes across retries and visibility changes", async () => {
     const first = new ControlledEventStream();
     const second = new ControlledEventStream();
+    const third = new ControlledEventStream();
     const client = new ScriptedClient([
       () => Promise.resolve(first),
       () => Promise.resolve(second),
+      () => Promise.resolve(third),
     ]);
     const recordSSE = vi.fn();
     const diagnostics: PortalDiagnostics = {
@@ -287,11 +289,26 @@ describe("LiveDataController", () => {
     await vi.advanceTimersByTimeAsync(100);
     await settle();
 
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+
     expect(recordSSE.mock.calls.map((call) => call[0])).toEqual([
       { event: "connect", cause: "initial" },
       { event: "disconnect", cause: "stream-ended" },
       { event: "reconnect", cause: "stream-ended", delayMs: 100 },
       { event: "connect", cause: "stream-ended" },
+      { event: "disconnect", cause: "visibility-hidden" },
+      { event: "reconnect", cause: "visibility-visible", delayMs: undefined },
+      { event: "connect", cause: "visibility-visible" },
     ]);
 
     controller.stop();

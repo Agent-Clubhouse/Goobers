@@ -58,6 +58,26 @@ describe("portal diagnostics", () => {
     ]);
   });
 
+  it("does not report a lone request as a concurrent burst", () => {
+    const debug = vi.fn();
+    const times = [10, 25];
+    const diagnostics = createPortalDiagnostics({
+      search: "?portal-diagnostics=1",
+      debug,
+      now: () => times.shift() ?? 0,
+      timestamp: () => "2026-07-26T19:00:00.000Z",
+      page: () => "#/runs",
+    });
+
+    diagnostics?.startRequest({ endpoint: "/api/v1/runs", method: "GET" }).finish(200);
+
+    expect(debug).toHaveBeenCalledOnce();
+    expect(debug.mock.calls[0]?.[1]).toMatchObject({
+      type: "request",
+      endpoint: "/api/v1/runs",
+    });
+  });
+
   it("logs SSE lifecycle events with their causes", () => {
     const debug = vi.fn();
     const diagnostics = createPortalDiagnostics({

@@ -88,7 +88,7 @@ class ConsolePortalDiagnostics implements PortalDiagnostics {
         });
 
         this.activeRequests -= 1;
-        if (this.activeRequests === 0 && this.burst) {
+        if (this.activeRequests === 0 && this.burst && this.burst.count > 1) {
           this.debug(LOG_PREFIX, {
             type: "request-burst",
             timestamp: this.timestamp(),
@@ -96,6 +96,8 @@ class ConsolePortalDiagnostics implements PortalDiagnostics {
             totalElapsedMs: milliseconds(finishedAt - this.burst.startedAt),
             initiatedBy: this.burst.initiatedBy,
           });
+        }
+        if (this.activeRequests === 0) {
           this.burst = undefined;
         }
       },
