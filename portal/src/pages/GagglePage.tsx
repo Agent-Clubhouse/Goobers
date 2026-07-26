@@ -23,7 +23,7 @@ export function GagglePage({
   navigate: Navigate;
   standalone: boolean;
 }) {
-  const query = useOperationalSnapshot(client);
+  const query = useOperationalSnapshot(client, { gaggle: gaggleName });
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;

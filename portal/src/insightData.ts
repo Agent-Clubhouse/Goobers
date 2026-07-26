@@ -26,6 +26,8 @@ export interface InsightErrorSignaturesSnapshot {
 export function useInsightStats(
   client: DaemonClient,
   window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
 ): {
   retry: () => void;
   state: QueryState<InsightSnapshot>;
@@ -69,15 +71,15 @@ export function useInsightStats(
         return false;
       },
     );
-  }, [client, isFresh, window]);
+  }, [client, gaggle, isFresh, window, workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh);
+    const unsubscribe = subscribe(["run"], refresh, { gaggle, workflow });
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [refresh, subscribe]);
+  }, [gaggle, refresh, subscribe, workflow]);
 
   useEffect(() => {
     setState((current) => {
@@ -149,12 +151,12 @@ export function useInsightErrorSignatures(
   }, [client, gaggle, isFresh, requestKey, stage, window, workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh);
+    const unsubscribe = subscribe(["run"], refresh, { gaggle, workflow });
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [refresh, subscribe]);
+  }, [gaggle, refresh, subscribe, workflow]);
 
   useEffect(() => {
     setState((current) => {

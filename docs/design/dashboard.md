@@ -323,6 +323,12 @@ their original IDs before continuing live delivery. Replay history is bounded.
 A malformed cursor returns `400 invalid_cursor`; a cursor from an older daemon
 session or outside the retained window returns `409 stale_cursor`.
 
+The portal closes its connection while the tab is hidden and resumes with its
+last cursor when visible again. An accepted resume refreshes only subscribers
+matched by replayed invalidations; it does not trigger a blanket refetch. A full
+refresh occurs only for the initial snapshot, after a missing or stale cursor,
+or while polling as the recovery fallback.
+
 The stream sends `heartbeat` events without IDs during idle periods. A client
 is connected after the initial snapshot or replay completes, reconnecting
 after a transport disconnect, and stale after `409 stale_cursor`. Slow clients

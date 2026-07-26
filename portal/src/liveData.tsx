@@ -11,6 +11,7 @@ import type {
   DaemonClient,
   DaemonEventStream,
   DaemonUpdateEvent,
+  ModelInvalidation,
   UpdateModel,
 } from "./api/types";
 
@@ -46,11 +47,21 @@ type ModelListener = (
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness) => void;
 
+export interface LiveDataScope {
+  gaggle?: string;
+  runId?: string;
+  workflow?: string;
+}
+
 interface LiveDataContextValue {
   freshness: LiveFreshness;
   isFresh: () => boolean;
   refresh: (models?: readonly UpdateModel[]) => void;
-  subscribe: (models: readonly UpdateModel[], listener: ModelListener) => () => void;
+  subscribe: (
+    models: readonly UpdateModel[],
+    listener: ModelListener,
+    scope?: LiveDataScope,
+  ) => () => void;
 }
 
 const LiveDataContext = createContext<LiveDataContextValue | undefined>(undefined);
@@ -111,9 +122,10 @@ export class LiveDataController {
   private readonly listeners = new Set<{
     listener: ModelListener;
     models: ReadonlySet<UpdateModel>;
+    scope: LiveDataScope | undefined;
   }>();
   private readonly stateListeners = new Set<StateListener>();
-  private readonly pendingModels = new Set<UpdateModel>();
+  private readonly pendingInvalidations: ModelInvalidation[] = [];
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventOrder: string[] = [];
   private activeStream: DaemonEventStream | undefined;
@@ -128,6 +140,7 @@ export class LiveDataController {
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
+  private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
 
@@ -139,14 +152,12 @@ export class LiveDataController {
   readonly isFresh = (): boolean => this.freshness === "connected";
 
   readonly refresh = (models: readonly UpdateModel[] = ALL_MODELS): void => {
-    this.queueRefresh(models, this.config.invalidationWindowMs);
+    this.queueRefresh({ cursor: "", models: [...models] }, this.config.invalidationWindowMs);
   };
 
-  private queueRefresh(models: readonly UpdateModel[], delay: number): void {
+  private queueRefresh(invalidation: ModelInvalidation, delay: number): void {
     this.invalidationRevision += 1;
-    for (const model of models) {
-      this.pendingModels.add(model);
-    }
+    this.pendingInvalidations.push(copyInvalidation(invalidation));
     if (delay === 0) {
       this.clearInvalidationTimer();
       void this.flushInvalidations();
@@ -158,10 +169,11 @@ export class LiveDataController {
   readonly subscribe = (
     models: readonly UpdateModel[],
     listener: ModelListener,
+    scope?: LiveDataScope,
   ): (() => void) => {
-    const subscription = { listener, models: new Set(models) };
+    const subscription = { listener, models: new Set(models), scope };
     this.listeners.add(subscription);
-    if (!this.started || this.freshness !== "reconnecting") {
+    if (!this.started || this.freshness !== "reconnecting" || this.cursor) {
       listener(new Set(models));
     }
     return () => this.listeners.delete(subscription);
@@ -205,7 +217,7 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.pendingModels.clear();
+    this.pendingInvalidations.length = 0;
   }
 
   private readonly onOnline = (): void => {
@@ -224,7 +236,7 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.pendingModels.clear();
+    this.pendingInvalidations.length = 0;
     this.setFreshness("offline");
   };
 
@@ -237,7 +249,7 @@ export class LiveDataController {
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
-      this.pendingModels.clear();
+      this.pendingInvalidations.length = 0;
       this.setFreshness("stale");
       return;
     }
@@ -264,9 +276,10 @@ export class LiveDataController {
   private async consumeStream(generation: number, controller: AbortController): Promise<void> {
     let stream: DaemonEventStream | undefined;
     let receivedEvent = false;
+    const resumeCursor = this.cursor;
     try {
       stream = await this.client.connectEvents(
-        this.cursor ? { cursor: this.cursor } : undefined,
+        resumeCursor ? { cursor: resumeCursor } : undefined,
         { signal: controller.signal },
       );
       if (!this.isCurrent(generation, controller)) {
@@ -275,8 +288,11 @@ export class LiveDataController {
       }
       this.activeStream = stream;
       this.clearPollingTimer();
-      this.setFreshness("stale");
-      this.queueRefresh(ALL_MODELS, 0);
+      this.setFreshness(resumeCursor ? "connected" : "stale");
+      this.skipNextSnapshotRefresh = !resumeCursor;
+      if (!resumeCursor) {
+        this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
+      }
 
       for await (const event of stream) {
         if (!this.isCurrent(generation, controller)) {
@@ -316,9 +332,11 @@ export class LiveDataController {
     this.rememberEvent(event.id);
     this.cursor = event.id;
     window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
-    if (event.type === "invalidate") {
-      this.refresh(event.data.models);
+    if (event.type === "snapshot" && this.skipNextSnapshotRefresh) {
+      this.skipNextSnapshotRefresh = false;
+      return;
     }
+    this.queueRefresh(event.data, this.config.invalidationWindowMs);
   }
 
   private hasApplied(id: string): boolean {
@@ -394,7 +412,7 @@ export class LiveDataController {
   }
 
   private async runPollingCycle(): Promise<void> {
-    await this.runRefresh(new Set(ALL_MODELS));
+    await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
     if (!this.polling || !this.started) {
       return;
     }
@@ -459,7 +477,7 @@ export class LiveDataController {
     const flush = this.drainInvalidations().finally(() => {
       if (this.invalidationFlush === flush) {
         this.invalidationFlush = undefined;
-        if (this.pendingModels.size > 0 && this.invalidationTimer === undefined) {
+        if (this.pendingInvalidations.length > 0 && this.invalidationTimer === undefined) {
           void this.flushInvalidations();
         }
       }
@@ -469,24 +487,21 @@ export class LiveDataController {
   }
 
   private async drainInvalidations(): Promise<void> {
-    while (this.pendingModels.size > 0) {
+    while (this.pendingInvalidations.length > 0) {
       const revision = this.invalidationRevision;
-      const models = new Set(this.pendingModels);
-      this.pendingModels.clear();
+      const invalidations = this.pendingInvalidations.splice(0);
       const stream = this.activeStream;
       const restoreConnected = stream !== undefined;
       if (restoreConnected) {
         this.setFreshness("stale");
       }
-      const refreshed = await this.runRefresh(models);
+      const refreshed = await this.runRefresh(invalidations);
       if (!this.started) {
         return;
       }
       if (!refreshed && stream === this.activeStream) {
         this.invalidationRevision += 1;
-        for (const model of models) {
-          this.pendingModels.add(model);
-        }
+        this.pendingInvalidations.unshift(...invalidations);
         this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
         return;
       }
@@ -497,7 +512,7 @@ export class LiveDataController {
         restoreConnected &&
         refreshed &&
         stream === this.activeStream &&
-        this.pendingModels.size === 0 &&
+        this.pendingInvalidations.length === 0 &&
         revision === this.invalidationRevision
       ) {
         this.setFreshness("connected");
@@ -505,8 +520,8 @@ export class LiveDataController {
     }
   }
 
-  private runRefresh(models: ReadonlySet<UpdateModel>): Promise<boolean> {
-    const refresh = this.refreshQueue.then(() => this.notifyListeners(models));
+  private runRefresh(invalidations: readonly ModelInvalidation[]): Promise<boolean> {
+    const refresh = this.refreshQueue.then(() => this.notifyListeners(invalidations));
     this.refreshQueue = refresh.then(
       () => undefined,
       () => undefined,
@@ -514,10 +529,21 @@ export class LiveDataController {
     return refresh;
   }
 
-  private async notifyListeners(models: ReadonlySet<UpdateModel>): Promise<boolean> {
+  private async notifyListeners(invalidations: readonly ModelInvalidation[]): Promise<boolean> {
     const refreshes: Promise<boolean | void>[] = [];
     for (const subscription of this.listeners) {
-      if ([...subscription.models].some((model) => models.has(model))) {
+      const models = new Set<UpdateModel>();
+      for (const invalidation of invalidations) {
+        if (!matchesScope(invalidation, subscription.scope)) {
+          continue;
+        }
+        for (const model of invalidation.models) {
+          if (subscription.models.has(model)) {
+            models.add(model);
+          }
+        }
+      }
+      if (models.size > 0) {
         refreshes.push(Promise.resolve(subscription.listener(models)));
       }
     }
@@ -545,6 +571,47 @@ function isStaleCursorError(error: unknown): boolean {
     error instanceof DaemonApiError &&
     (error.code === "stale_cursor" || error.code === "invalid_cursor")
   );
+}
+
+function copyInvalidation(invalidation: ModelInvalidation): ModelInvalidation {
+  return {
+    cursor: invalidation.cursor,
+    models: [...invalidation.models],
+    ...(invalidation.runIds ? { runIds: [...invalidation.runIds] } : {}),
+    ...(invalidation.workflows
+      ? { workflows: invalidation.workflows.map((workflow) => ({ ...workflow })) }
+      : {}),
+  };
+}
+
+function matchesScope(
+  invalidation: ModelInvalidation,
+  scope: LiveDataScope | undefined,
+): boolean {
+  if (!scope) {
+    return true;
+  }
+  if (
+    scope.runId &&
+    invalidation.runIds &&
+    invalidation.runIds.length > 0 &&
+    !invalidation.runIds.includes(scope.runId)
+  ) {
+    return false;
+  }
+  if (
+    (scope.gaggle || scope.workflow) &&
+    invalidation.workflows &&
+    invalidation.workflows.length > 0 &&
+    !invalidation.workflows.some(
+      (workflow) =>
+        (!scope.gaggle || workflow.gaggle === scope.gaggle) &&
+        (!scope.workflow || workflow.name === scope.workflow),
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function parseCursor(cursor: string | undefined):

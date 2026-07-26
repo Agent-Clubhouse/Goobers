@@ -130,7 +130,10 @@ export function useRunsHistory(
   }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh);
+    const unsubscribe = subscribe(["run"], refresh, {
+      gaggle: scope.gaggle,
+      workflow: scope.workflow,
+    });
     return () => {
       unsubscribe();
       request.current?.abort();

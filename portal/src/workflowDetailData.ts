@@ -69,7 +69,10 @@ export function useWorkflowDetail(
 
   useEffect(() => {
     setState({ status: "loading" });
-    const unsubscribe = subscribe(["workflow", "run"], refresh);
+    const unsubscribe = subscribe(["workflow", "run"], refresh, {
+      gaggle,
+      workflow: workflowName,
+    });
     return () => {
       unsubscribe();
       request.current?.abort();
