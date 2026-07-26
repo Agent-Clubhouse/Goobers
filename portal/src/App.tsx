@@ -206,6 +206,7 @@ function Portal({
             client={client}
             configurationWarnings={configurationWarnings}
             gaggle={route.gaggle}
+            key={`${route.gaggle}/${route.id}`}
             navigate={navigate}
             standalone={standalone}
             workflowName={route.id}

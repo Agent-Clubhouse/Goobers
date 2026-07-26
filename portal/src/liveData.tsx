@@ -14,6 +14,7 @@ import type {
   ModelInvalidation,
   UpdateModel,
 } from "./api/types";
+import { SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
 
 const ALL_MODELS: UpdateModel[] = ["instance", "run", "workflow"];
@@ -45,6 +46,7 @@ const defaultConfig: LiveDataConfig = {
 
 type ModelListener = (
   models: ReadonlySet<UpdateModel>,
+  reason: "initial" | "refresh",
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness) => void;
 
@@ -56,9 +58,13 @@ export interface LiveDataScope {
 
 export interface LiveDataDependencies {
   diagnostics?: PortalDiagnostics;
+  // Injected so a test (or a future caller) can observe cache behaviour; the
+  // controller owns a session-scoped default when none is supplied.
+  cache?: SessionDataCache;
 }
 
 interface LiveDataContextValue {
+  cache: SessionDataCache;
   freshness: LiveFreshness;
   isFresh: () => boolean;
   refresh: (models?: readonly UpdateModel[]) => void;
@@ -82,10 +88,12 @@ export function LiveDataProvider({
   config?: Partial<LiveDataConfig>;
   diagnostics?: PortalDiagnostics;
 }) {
+  const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
     () =>
-      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics }),
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache }),
     [
+      cache,
       client,
       config?.failuresBeforePolling,
       config?.invalidationWindowMs,
@@ -108,12 +116,13 @@ export function LiveDataProvider({
 
   const value = useMemo<LiveDataContextValue>(
     () => ({
+      cache,
       freshness,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       subscribe: controller.subscribe,
     }),
-    [controller, freshness],
+    [cache, controller, freshness],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -150,6 +159,7 @@ export class LiveDataController {
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
+  private readonly cache: SessionDataCache;
   private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
@@ -158,7 +168,9 @@ export class LiveDataController {
     private readonly client: DaemonClient,
     private readonly config: LiveDataConfig = defaultConfig,
     private readonly dependencies: LiveDataDependencies = {},
-  ) {}
+  ) {
+    this.cache = dependencies.cache ?? new SessionDataCache();
+  }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
 
@@ -187,7 +199,7 @@ export class LiveDataController {
     const subscription = { listener, models: new Set(models), scope };
     this.listeners.add(subscription);
     if (!this.started || this.freshness !== "reconnecting" || this.cursor) {
-      listener(new Set(models));
+      listener(new Set(models), "initial");
     }
     return () => this.listeners.delete(subscription);
   };
@@ -363,6 +375,7 @@ export class LiveDataController {
       this.skipNextSnapshotRefresh = false;
       return;
     }
+    this.cache.invalidate(event.data);
     this.queueRefresh(event.data, this.config.invalidationWindowMs);
   }
 
@@ -588,7 +601,7 @@ export class LiveDataController {
         }
       }
       if (models.size > 0) {
-        refreshes.push(Promise.resolve(subscription.listener(models)));
+        refreshes.push(Promise.resolve(subscription.listener(models, "refresh")));
       }
     }
     const results = await Promise.all(refreshes);

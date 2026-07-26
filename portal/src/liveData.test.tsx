@@ -17,6 +17,7 @@ import {
   type LiveDataConfig,
   type LiveFreshness,
 } from "./liveData";
+import { dataCacheKey, SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
 import { populatedDaemonFixtures } from "./test/daemonFixtures";
 
@@ -45,6 +46,30 @@ afterEach(() => {
 });
 
 describe("LiveDataController", () => {
+  it("invalidates the exact cached resources named by an SSE event", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const cache = new SessionDataCache();
+    const runOne = dataCacheKey("run-detail", "run-1");
+    const runTwo = dataCacheKey("run-detail", "run-2");
+    cache.set(runOne, "run one", [{ model: "run", runId: "run-1" }]);
+    cache.set(runTwo, "run two", [{ model: "run", runId: "run-2" }]);
+    const controller = new LiveDataController(client, testConfig, { cache });
+
+    controller.start();
+    await settle();
+    stream.push({
+      id: "session:1",
+      type: "invalidate",
+      data: { cursor: "session:1", models: ["run"], runIds: ["run-1"] },
+    });
+    await settle();
+
+    expect(cache.get(runOne)).toBeUndefined();
+    expect(cache.get(runTwo)).toBe("run two");
+    controller.stop();
+  });
+
   it("deduplicates ordered events into one effective model refresh window", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);

@@ -7,6 +7,7 @@ import type {
   WorkflowGraph,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 
 export type RunNodeState =
@@ -30,12 +31,18 @@ export interface RunDetailQuery {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const [state, setState] = useState<QueryState<RunDetailSnapshot>>({ status: "loading" });
+  const { cache, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("run-detail", runId);
+  const [state, setState] = useState<QueryState<RunDetailSnapshot>>(() => {
+    const cached = cache.get<RunDetailSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
   const request = useRef<AbortController | undefined>(undefined);
-  const { subscribe } = useLiveData();
 
   const refresh = useCallback((): Promise<boolean> => {
     request.current?.abort();
+    const dependencies = runDetailDependencies(runId);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
     setState((current) =>
@@ -52,6 +59,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         if (request.current === controller) {
           request.current = undefined;
         }
+        cache.set(cacheKey, data, dependencies, cacheRevision);
         setState({ status: "ready", data });
         return true;
       },
@@ -72,22 +80,40 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         return false;
       },
     );
-  }, [client, runId]);
+  }, [cache, cacheKey, client, runId]);
 
   useEffect(() => {
-    setState({ status: "loading" });
-    const unsubscribe = subscribe(["run"], refresh, { runId });
+    const cached = cache.get<RunDetailSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const current = reason === "initial" ? cache.get<RunDetailSnapshot>(cacheKey) : undefined;
+        if (current) {
+          setState({ status: "ready", data: current });
+          return true;
+        }
+        return refresh();
+      },
+      { runId },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
       request.current = undefined;
     };
-  }, [refresh, subscribe]);
+  }, [cache, cacheKey, refresh, subscribe]);
 
   const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    setState({ status: "loading" });
     void refresh();
-  }, [refresh]);
+  }, [cache, cacheKey, refresh]);
   return { retry, state };
+}
+
+function runDetailDependencies(runId: string): readonly DataCacheDependency[] {
+  return [{ model: "run", runId }];
 }
 
 export async function loadRunDetail(
