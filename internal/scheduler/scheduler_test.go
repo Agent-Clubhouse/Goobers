@@ -243,7 +243,7 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 			found = true
 			attrs := map[string]string{}
 			for _, attr := range sp.Attributes() {
-				attrs[string(attr.Key)] = attr.Value.Emit()
+				attrs[string(attr.Key)] = attr.Value.String()
 			}
 			if attrs[telemetry.AttrRunID] == "" ||
 				attrs[telemetry.AttrWorkflowVersion] != "1" ||

@@ -81,7 +81,7 @@ func TestClientRateLimitObserverExportsStandaloneSafeEvent(t *testing.T) {
 	}
 	attrs := make(map[string]string, len(events[0].Attributes))
 	for _, attr := range events[0].Attributes {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	if attrs["provider"] != "ado" ||
 		attrs["scope"] != "dev.azure.com/org/project/_apis/wit/wiql" ||

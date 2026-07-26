@@ -313,7 +313,7 @@ func (e *JournalSpanExporter) stringifyAttrs(kvs []attribute.KeyValue) map[strin
 	}
 	out := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		out[redactWith(e.scrubber, string(kv.Key))] = redactWith(e.scrubber, kv.Value.Emit())
+		out[redactWith(e.scrubber, string(kv.Key))] = redactWith(e.scrubber, kv.Value.String())
 	}
 	return out
 }
