@@ -250,6 +250,7 @@ describe("replay scrubber", () => {
           gate: "review",
           verdict: "fail",
           target: "@escalate",
+          escalated: true,
         }),
         ev(2, "2026-01-01T00:00:01Z", {
           type: "run.finished",
