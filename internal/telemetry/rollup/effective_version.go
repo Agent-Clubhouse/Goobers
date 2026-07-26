@@ -63,12 +63,18 @@ type agentProvenance struct {
 	harnessVersion string
 }
 
-func (db *DB) agentProvenanceByRun(workflow string) (map[string]agentProvenance, error) {
-	rows, err := db.sql.Query(`
+func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string]agentProvenance, error) {
+	query := `
 		SELECT ai.run_id, ai.model, ai.harness_version
 		FROM agent_invocations ai
 		JOIN runs r ON r.run_id = ai.run_id
-		WHERE r.workflow = ?`, workflow)
+		WHERE r.workflow = ?`
+	args := []any{workflow}
+	if gaggle != "" {
+		query += " AND r.gaggle = ?"
+		args = append(args, gaggle)
+	}
+	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query agent provenance for %q: %w", workflow, err)
 	}
@@ -105,16 +111,18 @@ func (db *DB) agentProvenanceByRun(workflow string) (map[string]agentProvenance,
 	return out, nil
 }
 
-// effectiveVersionRows returns workflow's runs (optionally bounded to
-// since), each assigned its EffectiveVersion cohort, in chronological order.
-func (db *DB) effectiveVersionRows(workflow string, since time.Time) ([]effectiveVersionRun, error) {
-	provenance, err := db.agentProvenanceByRun(workflow)
+func (db *DB) effectiveVersionRowsForGaggle(gaggle, workflow string, since time.Time) ([]effectiveVersionRun, error) {
+	provenance, err := db.agentProvenanceByRunForGaggle(gaggle, workflow)
 	if err != nil {
 		return nil, err
 	}
 
 	clauses := []string{"r.workflow = ?"}
 	args := []any{workflow}
+	if gaggle != "" {
+		clauses = append(clauses, "r.gaggle = ?")
+		args = append(args, gaggle)
+	}
 	if !since.IsZero() {
 		clauses = append(clauses, "r.started_at >= ?")
 		args = append(args, formatTime(since).String)
@@ -178,12 +186,27 @@ type EffectiveVersionChange struct {
 	ChangedAt   time.Time
 }
 
+// EffectiveVersionCohort is one contiguous observed cohort for a workflow.
+type EffectiveVersionCohort struct {
+	Version   EffectiveVersion
+	Hash      string
+	StartedAt time.Time
+	Stats     RunStats
+}
+
 // DigestHistoryByEffectiveVersion returns every EffectiveVersion transition
 // for workflow, in chronological order, mirroring DigestHistory but keyed on
 // the full cohort (workflow + goober + model + harness) rather than
 // workflow_digest alone.
 func (db *DB) DigestHistoryByEffectiveVersion(workflow string) ([]EffectiveVersionChange, error) {
-	rows, err := db.effectiveVersionRows(workflow, time.Time{})
+	return db.DigestHistoryByEffectiveVersionForGaggle("", workflow)
+}
+
+// DigestHistoryByEffectiveVersionForGaggle is the gaggle-scoped form used by
+// Tutor holdouts. Workflow names are only unique within a gaggle, so a
+// cross-run verifier must never pool same-named workflows from other silos.
+func (db *DB) DigestHistoryByEffectiveVersionForGaggle(gaggle, workflow string) ([]EffectiveVersionChange, error) {
+	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("rollup: effective version history for %q: %w", workflow, err)
 	}
@@ -208,6 +231,46 @@ func (db *DB) DigestHistoryByEffectiveVersion(workflow string) ([]EffectiveVersi
 		prev = row
 	}
 	return changes, nil
+}
+
+// FirstEffectiveVersionCohortForGaggle returns the first contiguous cohort
+// observed after since with the requested configuration axes. An empty digest
+// is a wildcard. Model and harness remain part of the exact cohort boundary.
+func (db *DB) FirstEffectiveVersionCohortForGaggle(
+	gaggle, workflow, workflowDigest, gooberDigest string,
+	since time.Time,
+) (*EffectiveVersionCohort, error) {
+	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, since)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: effective version cohort for %q: %w", workflow, err)
+	}
+	var selected []effectiveVersionRun
+	for _, row := range rows {
+		if row.Excluded {
+			continue
+		}
+		if len(selected) == 0 {
+			if (workflowDigest != "" && row.Version.WorkflowDigest != workflowDigest) ||
+				(gooberDigest != "" && row.Version.GooberDigest != gooberDigest) {
+				continue
+			}
+			selected = append(selected, row)
+			continue
+		}
+		if row.Hash != selected[0].Hash {
+			break
+		}
+		selected = append(selected, row)
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	return &EffectiveVersionCohort{
+		Version:   selected[0].Version,
+		Hash:      selected[0].Hash,
+		StartedAt: selected[0].StartedAt,
+		Stats:     aggregateRunStats(workflow, selected),
+	}, nil
 }
 
 // aggregateRunStats reduces a set of effectiveVersionRun rows (already
@@ -250,17 +313,17 @@ func aggregateRunStats(workflow string, rows []effectiveVersionRun) RunStats {
 	return s
 }
 
-// runStatsByEffectiveVersion is runStatsByDigest narrowed to one exact
-// EffectiveVersion cohort hash. Excluded runs never match any hash, so they
-// are implicitly dropped rather than counted toward either segment.
-func (db *DB) runStatsByEffectiveVersion(workflow, hash string, since time.Time) (RunStats, error) {
-	rows, err := db.effectiveVersionRows(workflow, since)
+func (db *DB) runStatsByEffectiveVersionForGaggle(
+	gaggle, workflow, hash string,
+	since, before time.Time,
+) (RunStats, error) {
+	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, since)
 	if err != nil {
 		return RunStats{}, err
 	}
 	var matched []effectiveVersionRun
 	for _, r := range rows {
-		if r.Excluded || r.Hash != hash {
+		if r.Excluded || r.Hash != hash || (!before.IsZero() && !r.StartedAt.Before(before)) {
 			continue
 		}
 		matched = append(matched, r)
@@ -273,11 +336,16 @@ func (db *DB) runStatsByEffectiveVersion(workflow, hash string, since time.Time)
 // ("before") against runs under NewVersion ("after") — AssessEfficacy's
 // cohort-aware counterpart (TUT-P3).
 type EffectiveVersionEfficacyRequest struct {
-	Workflow   string
-	OldVersion EffectiveVersion
-	NewVersion EffectiveVersion
-	Since      time.Time
-	Thresholds EfficacyThresholds
+	Gaggle      string
+	Workflow    string
+	OldVersion  EffectiveVersion
+	NewVersion  EffectiveVersion
+	Since       time.Time
+	BeforeSince time.Time
+	AfterSince  time.Time
+	BeforeUntil time.Time
+	AfterUntil  time.Time
+	Thresholds  EfficacyThresholds
 }
 
 // EffectiveVersionEfficacyResult is one before/after EffectiveVersion
@@ -306,11 +374,19 @@ func (db *DB) AssessEfficacyByEffectiveVersion(req EffectiveVersionEfficacyReque
 	oldHash := req.OldVersion.Hash()
 	newHash := req.NewVersion.Hash()
 
-	before, err := db.runStatsByEffectiveVersion(req.Workflow, oldHash, req.Since)
+	beforeSince := req.Since
+	if !req.BeforeSince.IsZero() {
+		beforeSince = req.BeforeSince
+	}
+	afterSince := req.Since
+	if !req.AfterSince.IsZero() {
+		afterSince = req.AfterSince
+	}
+	before, err := db.runStatsByEffectiveVersionForGaggle(req.Gaggle, req.Workflow, oldHash, beforeSince, req.BeforeUntil)
 	if err != nil {
 		return EffectiveVersionEfficacyResult{}, fmt.Errorf("rollup: assess effective-version efficacy (before segment): %w", err)
 	}
-	after, err := db.runStatsByEffectiveVersion(req.Workflow, newHash, req.Since)
+	after, err := db.runStatsByEffectiveVersionForGaggle(req.Gaggle, req.Workflow, newHash, afterSince, req.AfterUntil)
 	if err != nil {
 		return EffectiveVersionEfficacyResult{}, fmt.Errorf("rollup: assess effective-version efficacy (after segment): %w", err)
 	}

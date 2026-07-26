@@ -173,7 +173,7 @@ func TestEffectiveVersionExcludesMixedModelRuns(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRows("tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestEffectiveVersionExcludesUndefinedWorkflowDigest(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRows("tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}
@@ -266,14 +266,14 @@ func TestAssessEfficacyByEffectiveVersionExcludesMixedRunsFromComparison(t *test
 		t.Fatalf("changes = %+v, want exactly 1 transition (mixed run invisible)", changes)
 	}
 
-	before, err := db.runStatsByEffectiveVersion("tutor", changes[0].FromHash, time.Time{})
+	before, err := db.runStatsByEffectiveVersionForGaggle("", "tutor", changes[0].FromHash, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("runStatsByEffectiveVersion (before): %v", err)
 	}
 	if before.TotalRuns != 5 {
 		t.Errorf("before.TotalRuns = %d, want 5 (mixed run excluded)", before.TotalRuns)
 	}
-	after, err := db.runStatsByEffectiveVersion("tutor", changes[0].ToHash, time.Time{})
+	after, err := db.runStatsByEffectiveVersionForGaggle("", "tutor", changes[0].ToHash, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("runStatsByEffectiveVersion (after): %v", err)
 	}
@@ -311,7 +311,7 @@ func TestEffectiveVersionNonAgenticRunIsWellDefined(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRows("tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}

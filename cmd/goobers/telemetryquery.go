@@ -32,6 +32,7 @@ const (
 	telemetryQueryNoEffectiveVersionChangeNote   = "workflow has no observed EffectiveVersion transition"
 	telemetryQueryCandidateFormat                = "candidate-findings"
 	telemetryQueryEffectiveVersionEfficacyFormat = "effective-version-efficacy"
+	telemetryQueryTutorHoldoutsFormat            = "tutor-live-verification"
 )
 
 const effectiveVersionEfficacySchemaVersion = "goobers.dev/effective-version-efficacy/v1"
@@ -234,7 +235,7 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy] [--workflow <name>] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
@@ -244,7 +245,11 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 	"the workflow's most recent EffectiveVersion transition — the version-\n" +
 	"segmented cohort key (workflow digest + goober digest + model + harness\n" +
 	"version) from the Tutor v2 design — and emits a helped/regressed/no-change/\n" +
-	"insufficient-data verdict.\n\n" +
+	"insufficient-data verdict. --format tutor-live-verification evaluates all\n" +
+	"durable mandatory Tutor holdouts for the current gaggle from each PR's\n" +
+	"merge time and first observed post-merge configuration transition. Exact\n" +
+	"EffectiveVersion cohorts verify transitions and additions; a removal is\n" +
+	"verified when the workflow is absent from the live reconciled config.\n\n" +
 	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -255,7 +260,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	window := fs.Duration("window", 24*time.Hour, "lookback window (for example 24h or 168h)")
-	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings, effective-version-efficacy)")
+	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings, effective-version-efficacy, tutor-live-verification)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
 	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)")
@@ -274,8 +279,15 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --window must be a positive duration, got %s\n", *window)
 		return 2
 	}
-	if *format != telemetryQueryCandidateFormat && *format != telemetryQueryEffectiveVersionEfficacyFormat {
-		pf(stderr, "error: --format must be %q or %q, got %q\n", telemetryQueryCandidateFormat, telemetryQueryEffectiveVersionEfficacyFormat, *format)
+	if *format != telemetryQueryCandidateFormat &&
+		*format != telemetryQueryEffectiveVersionEfficacyFormat &&
+		*format != telemetryQueryTutorHoldoutsFormat {
+		pf(stderr, "error: --format must be %q, %q, or %q, got %q\n",
+			telemetryQueryCandidateFormat,
+			telemetryQueryEffectiveVersionEfficacyFormat,
+			telemetryQueryTutorHoldoutsFormat,
+			*format,
+		)
 		return 2
 	}
 	if *format == telemetryQueryEffectiveVersionEfficacyFormat && strings.TrimSpace(*workflow) == "" {
@@ -288,7 +300,14 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	since := time.Now().UTC().Add(-*window)
-	l := layoutFor(providerStageRoot(pathArg))
+	root := providerStageRoot(pathArg)
+	if *format == telemetryQueryTutorHoldoutsFormat {
+		if err := refreshTutorHoldoutMergeStateFromProvider(root, os.Getenv("GOOBERS_GAGGLE")); err != nil {
+			pf(stderr, "error: refresh Tutor live holdout merge state: %v\n", err)
+			return 1
+		}
+	}
+	l := layoutFor(root)
 	dbPath := l.TelemetryDB()
 	if _, err := os.Stat(dbPath); err != nil {
 		if !os.IsNotExist(err) {
@@ -303,6 +322,27 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			result.Note = telemetryQueryNoRollupNote
 			return writeJSONArtifact(result, stdout, stderr)
 		}
+		if *format == telemetryQueryTutorHoldoutsFormat {
+			efficacyThresholds := rollup.DefaultEfficacyThresholds()
+			efficacyThresholds.MinSamples = thresholds.MinSamples
+			result, verifyErr := verifyTutorHoldouts(
+				root,
+				os.Getenv("GOOBERS_GAGGLE"),
+				nil,
+				*window,
+				since,
+				time.Now().UTC(),
+				efficacyThresholds,
+			)
+			if verifyErr != nil {
+				pf(stderr, "error: verify Tutor live holdouts: %v\n", verifyErr)
+				return 1
+			}
+			if !result.NoWork {
+				result.Note = telemetryQueryNoRollupNote
+			}
+			return writeJSONArtifact(result, stdout, stderr)
+		}
 		result := newCandidateFindingsArtifact(*window, since, nil, telemetryQueryNoRollupNote)
 		return writeJSONArtifact(result, stdout, stderr)
 	}
@@ -314,12 +354,32 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = db.Close() }()
 
 	if *format == telemetryQueryEffectiveVersionEfficacyFormat {
-		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(*workflow, since, rollup.EfficacyThresholds{MinSamples: thresholds.MinSamples})
+		efficacyThresholds := rollup.DefaultEfficacyThresholds()
+		efficacyThresholds.MinSamples = thresholds.MinSamples
+		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(*workflow, since, efficacyThresholds)
 		if err != nil {
 			pf(stderr, "error: assess effective-version efficacy: %v\n", err)
 			return 1
 		}
 		return writeJSONArtifact(newEffectiveVersionEfficacyArtifact(*window, since, *workflow, assessment), stdout, stderr)
+	}
+	if *format == telemetryQueryTutorHoldoutsFormat {
+		efficacyThresholds := rollup.DefaultEfficacyThresholds()
+		efficacyThresholds.MinSamples = thresholds.MinSamples
+		result, err := verifyTutorHoldouts(
+			root,
+			os.Getenv("GOOBERS_GAGGLE"),
+			db,
+			*window,
+			since,
+			time.Now().UTC(),
+			efficacyThresholds,
+		)
+		if err != nil {
+			pf(stderr, "error: verify Tutor live holdouts: %v\n", err)
+			return 1
+		}
+		return writeJSONArtifact(result, stdout, stderr)
 	}
 
 	result, err := detectCandidateFindings(db, *window, since, os.Getenv("GOOBERS_GAGGLE"), aggregates, thresholds)

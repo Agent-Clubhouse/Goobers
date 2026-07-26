@@ -20,6 +20,14 @@ import (
 func writeEffectiveVersionFixtureRun(
 	t *testing.T, root, runID, workflow, workflowDigest, gooberDigest, model, harnessVersion string, status journal.RunPhase,
 ) {
+	writeEffectiveVersionFixtureRunForGaggle(
+		t, root, "example", runID, workflow, workflowDigest, gooberDigest, model, harnessVersion, status,
+	)
+}
+
+func writeEffectiveVersionFixtureRunForGaggle(
+	t *testing.T, root, gaggle, runID, workflow, workflowDigest, gooberDigest, model, harnessVersion string, status journal.RunPhase,
+) {
 	t.Helper()
 	l := instance.NewLayout(root)
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
@@ -28,7 +36,7 @@ func writeEffectiveVersionFixtureRun(
 		WorkflowVersion: 1,
 		WorkflowDigest:  workflowDigest,
 		GooberDigest:    gooberDigest,
-		Gaggle:          "example",
+		Gaggle:          gaggle,
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
 	}, nil)
 	if err != nil {
@@ -128,6 +136,7 @@ func TestTelemetryQueryEffectiveVersionEfficacyDetectsModelOnlyTransition(t *tes
 	for i := 0; i < 5; i++ {
 		writeEffectiveVersionFixtureRun(t, root, "ev-before-"+string(rune('a'+i)), "tutor", "sha256:aaaa", "sha256:goob1", "claude-sonnet-5", "1.0.0", journal.PhaseFailed)
 	}
+
 	for i := 0; i < 5; i++ {
 		writeEffectiveVersionFixtureRun(t, root, "ev-after-"+string(rune('a'+i)), "tutor", "sha256:aaaa", "sha256:goob1", "claude-opus-5", "1.0.0", journal.PhaseCompleted)
 	}
@@ -154,5 +163,30 @@ func TestTelemetryQueryEffectiveVersionEfficacyDetectsModelOnlyTransition(t *tes
 	}
 	if got.OldVersion.Model != "claude-sonnet-5" || got.NewVersion.Model != "claude-opus-5" {
 		t.Fatalf("compared %+v -> %+v, want sonnet -> opus", got.OldVersion, got.NewVersion)
+	}
+}
+
+func TestTelemetryQueryEffectiveVersionEfficacyPreservesNoChangeThreshold(t *testing.T) {
+	root := initDemo(t)
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRun(t, root, "same-before-"+string(rune('a'+i)), "tutor", "sha256:aaaa", "sha256:goob1", "model-a", "1.0.0", journal.PhaseCompleted)
+	}
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRun(t, root, "same-after-"+string(rune('a'+i)), "tutor", "sha256:bbbb", "sha256:goob2", "model-a", "1.0.0", journal.PhaseCompleted)
+	}
+	rebuildTelemetryQueryRollup(t, root)
+
+	code, stdout, stderr := runArgs(t,
+		"telemetry-query", "--format", "effective-version-efficacy", "--workflow", "tutor",
+		"--threshold", "min-samples=5", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var got effectiveVersionEfficacyArtifact
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("output is not parseable JSON: %v\n%s", err, stdout)
+	}
+	if got.Verdict != rollup.EfficacyNoChange {
+		t.Fatalf("verdict = %q, want no-change: %+v", got.Verdict, got)
 	}
 }
