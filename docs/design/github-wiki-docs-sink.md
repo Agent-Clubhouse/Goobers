@@ -83,15 +83,22 @@ these wiki-specific rules:
 3. The case-insensitive `(provider, owner, name)` tuple must equal the
    workflow gaggle's project identity. A wiki for an arbitrary repository is a
    different docs source and must be owned by that repository's gaggle.
-4. `connectionRef` must differ from the source project's read connection and
-   select the independently scoped wiki-publisher credential.
+4. `connectionRef` must differ from
+   `Gaggle.spec.project.connectionRef` and select the independently scoped
+   wiki-publisher credential.
 
 Repeating the controlling repository identity is intentional: it makes the
 credential choice explicit while validation prevents the source and sink
 identities from drifting. The Git target is not the declared repository
-itself. The runner derives it by appending `.wiki.git` to the validated
-project repository URL on the same configured GitHub endpoint. A workflow
-cannot supply a clone URL, wiki repository name, or branch.
+itself. The runner constructs the target from the validated GitHub endpoint,
+owner, and repository name as `<endpoint>/<owner>/<name>.wiki.git`. When the
+configured source clone URL is the starting representation, derivation first
+removes one terminal `.git` path suffix, if present, and then appends
+`.wiki.git`: both `https://github.com/acme/product` and
+`https://github.com/acme/product.git` derive
+`https://github.com/acme/product.wiki.git`, never
+`product.git.wiki.git`. A workflow cannot supply a clone URL, wiki repository
+name, or branch.
 
 The wiki default branch is provider-owned. Admission resolves and pins the
 symbolic `HEAD` advertised by the companion repository; definitions do not
@@ -108,9 +115,8 @@ sink.
 - Each value is one filename ending in `.md`, with no directory separator,
   leading dot, `.` or `..` segment, control character, or GitHub-forbidden
   filename character.
-- Names are unique under Unicode case folding. Case-only aliases are rejected
-  because they are not portable across runner filesystems and can resolve to
-  one wiki page.
+- Names are unique under the canonical Gollum page key defined below, not only
+  under filesystem spelling.
 - `Home.md`, `_Sidebar.md`, and `_Footer.md` are ordinary owned page files and
   may change only when listed.
 - An owned page may be created or updated. Page deletion and rename are not
@@ -123,6 +129,25 @@ The filename is the page mapping. For example, `Getting-Started.md` owns the
 wiki page GitHub renders from that file; no second title, slug, source path, or
 position-based mapping exists. This keeps links and ownership stable when the
 source documentation layout changes.
+
+For collision validation, the canonical Gollum page key is computed by
+removing the terminal `.md`, applying Unicode case folding, and replacing each
+maximal run of ASCII spaces and hyphens with one `-`. Thus
+`Getting Started.md`, `getting-started.md`, and `GETTING--STARTED.md` have one
+page identity. Other characters, including the leading underscores in
+`_Sidebar.md` and `_Footer.md`, remain significant.
+
+Admission computes that key for every declared `pageFile` and every root
+Markdown file in the pinned wiki tree. A key may map to only one physical
+filename across the whole tree, including preserved unlisted pages. The one
+allowed match is an owned `pageFile` whose spelling exactly equals the existing
+filename it updates. A differently spelled existing file is not silently
+claimed or renamed: for example, declaring `Getting-Started.md` when the
+unlisted `Getting Started.md` exists is a collision and fails admission.
+Existing unlisted-to-unlisted collisions also fail closed because the remote
+wiki does not have an unambiguous page identity. The same inventory check runs
+again on the proposed tree before review or publication, so an agent cannot
+create an alias of a preserved page.
 
 ## Ownership and overlap
 
@@ -181,6 +206,47 @@ the source reader and wiki publisher deliberately refer to the same
 controlling repository. Selection by first match, list order, ambient
 `GH_TOKEN`, or fallback to the source credential is forbidden.
 
+The local `instance.yaml` schema therefore adds `bindingName` to each
+`repos[]` entry. It names a credential binding, not a repository, and uses the
+same identifier rules as Manifest `Connection.name`. Binding names are
+non-empty, case-sensitive, and unique within the instance:
+
+```yaml
+repos:
+  - bindingName: product-source-reader
+    provider: github
+    owner: acme
+    name: product
+    token: {env: PRODUCT_SOURCE_READ_TOKEN}
+  - bindingName: product-wiki-publisher
+    provider: github
+    owner: acme
+    name: product
+    auth:
+      kind: github-app
+      appId: 123456
+      installationId: 987654
+      privateKey: {env: PRODUCT_WIKI_APP_KEY}
+```
+
+`Gaggle.spec.project.connectionRef: product-source-reader` selects the first
+binding, while the sink's
+`repository.connectionRef: product-wiki-publisher` selects the second. At
+local tiers, `connectionRef` is a direct exact lookup by
+`repos[].bindingName`; only after that lookup does validation require the
+selected binding's normalized `(provider, owner, name)` to equal the declaring
+`RepoRef`. At Manifest-backed tiers it remains a direct exact lookup by
+`Connection.name`, followed by the same provider, identity, and auth checks.
+
+An unnamed local binding remains valid only for legacy identity-selected
+workflows when its normalized repository identity occurs once. If an identity
+has multiple `repos[]` entries, every entry for it must have a distinct
+`bindingName`, and every declaration that uses that identity must carry the
+intended `connectionRef`. Missing names, missing references, duplicate names,
+identity mismatches, and references that resolve more than once are admission
+errors. Neither deployment shape falls back from a missing `connectionRef` to
+identity-only selection.
+
 Secret isolation follows the foreign-sink contract:
 
 - Source gathering can resolve only the source read grant.
@@ -210,7 +276,9 @@ Admission finishes before either checkout and before any commit or push:
    at `write`.
 4. Probe the controlling repository and require that its wiki is enabled.
 5. Probe the exact derived `.wiki.git` URL with command-scoped authentication.
-   Resolve a non-empty symbolic `HEAD` and pin its commit SHA.
+   Resolve a non-empty symbolic `HEAD`, pin its commit SHA, read the root tree
+   at that SHA, and validate canonical page keys against owned and preserved
+   pages.
 6. Pin the source revision, wiki endpoint/identity, wiki branch and head SHA,
    page files, publication policy, and credential-route identities in the run
    input, without credential material.
@@ -229,8 +297,10 @@ After preflight, the runtime transaction is fixed:
    any source remote credentials and make the wiki the docs agent's only
    writable repository workspace.
 3. Apply the docs update. Validate that every changed path exactly matches an
-   admitted `pageFile`, that no page was deleted or renamed, and that unowned
-   files are unchanged. An empty diff follows the existing `no-work` path.
+   admitted `pageFile`, that no page was deleted or renamed, that unowned files
+   are unchanged, and that the resulting root Markdown inventory remains
+   unique by canonical Gollum page key. An empty diff follows the existing
+   `no-work` path.
 4. Run the workflow's deterministic wiki validation in that same proposed
    tree. The source project's CI command is not implicitly reused because a
    wiki companion need not contain the source build.
@@ -278,9 +348,10 @@ Runtime work starts only after #1495 has shipped the accepted `docsSink`
 foundation, GitHub App connection adaptation, repository-qualified write
 grants, and dual-workspace transaction. The wiki implementation then owns the
 additive `github-wiki` schema/deep-copy/validation surface, purpose-qualified
-credential binding, derived companion checkout, page boundary, review-gate
-validation, direct fast-forward publisher, journal evidence, and hermetic
-tests for stale-head and retry behavior.
+credential binding (including local `repos[].bindingName` lookup), derived
+companion checkout, page boundary and canonical collision validation,
+review-gate validation, direct fast-forward publisher, journal evidence, and
+hermetic tests for stale-head and retry behavior.
 
 This decision does not provision or initialize a wiki, permit arbitrary wiki
 URLs, make `AdditionalRepos` writable, publish to an Azure DevOps wiki, allow
