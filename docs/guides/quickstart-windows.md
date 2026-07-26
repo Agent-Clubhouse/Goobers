@@ -162,6 +162,23 @@ Set the repository token reference to `env: GOOBERS_GITHUB_TOKEN` or
 goobers validate C:\goobers\my-instance
 ```
 
+GNU Make is not installed by default on Windows, and Goobers does not require
+or auto-install it (bring-your-own runner). A gaggle's `ciCommand`
+(`GaggleSpec.CICommand`) overrides the `local-ci` stage's default `["make",
+"ci"]`, so point it at a make-free command your project actually has —
+e.g. for a Go project:
+
+```yaml
+gaggles:
+  - name: my-app
+    ciCommand: ["go", "test", "./..."]
+```
+
+Before any run executes, Goobers resolves `ciCommand`'s first token through
+`PATH` and fails the run immediately (as `ci-command-preflight`) if it can't
+be found, naming the missing executable — rather than retrying a command that
+was never going to work.
+
 ## 6. Drive a first run
 
 Run one configured workflow manually:

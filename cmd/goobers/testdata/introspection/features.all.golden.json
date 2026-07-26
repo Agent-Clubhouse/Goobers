@@ -465,6 +465,41 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.parallels",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.branchTimeoutSeconds",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.branches",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.failurePolicy",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.join",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.maxConcurrentBranches",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.onFailure",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.readiness",
       "stability": "ga",
       "sinceVersion": "dev"

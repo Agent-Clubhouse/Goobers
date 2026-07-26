@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -102,6 +103,11 @@ const (
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
+	errorLabelPredicateGaggle     WarningCode = "LBL001"
+	errorLabelPredicateTrigger    WarningCode = "LBL002"
+	errorLabelPredicateTaskBlank  WarningCode = "LBL003"
+	errorLabelPredicateTask       WarningCode = "LBL004"
+	errorTutorScopeTarget         WarningCode = "TUT001"
 )
 
 // Issue is a single validation finding.
@@ -722,6 +728,7 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleBranchNamespace(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
+	ix.checkLabelPredicates(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -785,6 +792,74 @@ func (ix *index) crossCheck(r *Report) {
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 	}
+}
+
+func (ix *index) checkLabelPredicates(r *Report) {
+	for name, gaggle := range ix.gaggles {
+		expression := gaggle.Spec.Backlog.LabelPredicate
+		if expression == "" {
+			continue
+		}
+		if _, err := labelpredicate.Compile(expression, gaggle.Spec.Backlog.Labels, nil); err != nil {
+			r.add(errorLabelPredicateGaggle, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.labelPredicate is invalid: %v", err)
+		}
+	}
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, trigger := range workflow.Spec.Triggers {
+			if trigger.LabelPredicate == "" {
+				continue
+			}
+			required := make([]string, 0, len(trigger.Selector))
+			for label := range trigger.Selector {
+				required = append(required, label)
+			}
+			if _, err := labelpredicate.Compile(trigger.LabelPredicate, required, nil); err != nil {
+				r.add(errorLabelPredicateTrigger, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.triggers[%d].labelPredicate is invalid: %v", i, err)
+			}
+		}
+		for i, task := range workflow.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			expression, ok := task.Inputs["labelPredicate"]
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(expression) == "" {
+				r.add(errorLabelPredicateTaskBlank, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: CEL expression must not be blank", i)
+				continue
+			}
+			if _, err := labelpredicate.Compile(
+				expression,
+				splitLabelInput(task.Inputs["requireLabels"]),
+				splitLabelInput(task.Inputs["excludeLabels"]),
+			); err != nil {
+				r.add(errorLabelPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+func isBacklogQueryTask(task apiv1.Task) bool {
+	return task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		filepath.Base(task.Run.Command[0]) == "goobers" &&
+		task.Run.Command[1] == "backlog-query"
+}
+
+func splitLabelInput(value string) []string {
+	var labels []string
+	for _, label := range strings.Split(value, ",") {
+		if label = strings.TrimSpace(label); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
 }
 
 func (ix *index) allowPreviewFeatures(r *Report) bool {
@@ -972,6 +1047,13 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		states[g.Name] = true
 	}
 
+	for _, p := range w.Spec.Parallels {
+		if states[p.Name] {
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", p.Name)
+		}
+		states[p.Name] = true
+	}
+
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
 	}
@@ -988,6 +1070,35 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 	}
 
+	// Tutor topology (TUT-A4, Tutor v2 design doc §4.3): a per-workflow
+	// tutor's target must be explicit and must name a real workflow in the
+	// SAME gaggle — a tutor confined to another gaggle's workflow would defeat
+	// the hard silo Gaggle already establishes for this definition itself. A
+	// per-gaggle tutor has no target (the whole gaggle is already its scope).
+	if ts := w.Spec.TutorScope; ts != nil {
+		switch ts.Tier {
+		case apiv1.TutorScopePerWorkflow:
+			switch ts.Target {
+			case "":
+				r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.target is required when spec.tutorScope.tier is %q", ts.Tier)
+			case w.Name:
+				r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.target %q must not name this workflow itself", ts.Target)
+			default:
+				if _, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: ts.Target}]; !ok {
+					r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name,
+						"spec.tutorScope.target names %q, but no Workflow/%s definition was found in gaggle %q",
+						ts.Target, ts.Target, w.Spec.Gaggle)
+				}
+			}
+		case apiv1.TutorScopePerGaggle:
+			if ts.Target != "" {
+				r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.target must be empty when spec.tutorScope.tier is %q, got %q", ts.Tier, ts.Target)
+			}
+		default:
+			r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.tier %q is not one of per-workflow, per-gaggle", ts.Tier)
+		}
+	}
+
 	for _, t := range w.Spec.Tasks {
 		if t.Type == apiv1.TaskAgentic && t.Goober != "" {
 			goober, ok := ix.goobers[t.Goober]
@@ -1000,7 +1111,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
-		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
+		if t.Next != "" && !wf.IsReservedAnyTarget(t.Next) && !states[t.Next] {
 			r.add(errorTaskNextState, Error, file, "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
 		}
 	}
@@ -1020,9 +1131,10 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 		for outcome, next := range g.Branches {
 			// Empty means the success terminal (TerminalComplete); "@abort"
-			// and "@escalate" are reserved terminal targets — neither is a
-			// dangling reference (workflow.IsReservedTarget).
-			if next != "" && !wf.IsReservedTarget(next) && !states[next] {
+			// and "@escalate" are reserved terminal targets and "@join" is a
+			// reserved branch target — none is a dangling reference
+			// (workflow.IsReservedAnyTarget).
+			if next != "" && !wf.IsReservedAnyTarget(next) && !states[next] {
 				r.add(errorGateBranch, Error, file, "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
 			}
 		}

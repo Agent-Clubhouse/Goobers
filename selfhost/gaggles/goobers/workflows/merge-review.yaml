@@ -138,7 +138,12 @@ spec:
         # reviewer's classification. Empty string when nothing overlaps (same
         # always-emitted, possibly-empty shape as reviewDigest above).
         - overlappingSiblingsCsv
-      next: review
+        # scopeGateParked (#1313): whether this PR is currently parked before
+        # review for exceeding the size threshold — scope-gate branches on
+        # this directly, so a stale/missing value here would silently let an
+        # oversized diff reach review.
+        - scopeGateParked
+      next: scope-gate
 
     - name: apply-verdict
       type: deterministic
@@ -394,6 +399,26 @@ spec:
       # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:
+    # Scope gate (#1313): escalates the advisory goobers:scope-drift flag
+    # (#1111) into an actual merge-review gate. gather-sibling-context
+    # already reconciled the goobers:scope-gate label/comment and reports
+    # the outcome as scopeGateParked — this gate just routes on it:
+    # not-parked proceeds to the ordinary review path unchanged; parked
+    # skips review entirely this cycle (the label/comment already explains
+    # why, and the run completes cleanly — merge-review re-evaluates fresh
+    # next cycle, self-healing the moment the diff shrinks or an operator
+    # acks it).
+    - name: scope-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: scopeGateParked
+          equals: "false"
+      branches:
+        pass: review
+        fail: ""
+
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
     # explicit reuse-over-new-goober call), evaluating gather-sibling-
     # context's own Outputs (the selected PR's identity/SHAs + every
