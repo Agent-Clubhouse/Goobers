@@ -178,6 +178,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `task.goober` | 2.0 | ga | supported | dev |
 | `task.inputs` | 2.0 | ga | supported | dev |
 | `task.inputsFrom` | 2.0 | ga | supported | dev |
+| `task.inputsFrom.stageQualified` | 2.0 | preview | supported | dev |
 | `task.limits` | 2.0 | ga | supported | dev |
 | `task.limits.maxCostUSD` | 2.0 | ga | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | dev |
@@ -223,6 +224,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
+- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.inputsFrom.stageQualified`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
 - Removed: none
 - Level changes: none

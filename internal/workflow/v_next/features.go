@@ -417,6 +417,7 @@ const (
 	featureTaskGoober                     FeatureID = "task.goober"
 	featureTaskInputs                     FeatureID = "task.inputs"
 	featureTaskInputsFrom                 FeatureID = "task.inputsFrom"
+	featureTaskInputsFromQualified        FeatureID = "task.inputsFrom.stageQualified"
 	featureTaskCapabilities               FeatureID = "task.capabilities"
 	featureTaskRetry                      FeatureID = "task.retry"
 	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
@@ -547,6 +548,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskGoober,
 		featureTaskInputs,
 		featureTaskInputsFrom,
+		featureTaskInputsFromQualified,
 		featureTaskCapabilities,
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
@@ -661,6 +663,11 @@ var previewFeatures = map[FeatureID]struct{}{
 	featureParallelOnFailure:             {},
 	featureParallelBranchTimeout:         {},
 	featureParallelMaxConcurrentBranches: {},
+	// Stage-qualified inputsFrom (#562) enters preview like every other new DSL
+	// surface. It is only resolvable at DSL versions that postdate it —
+	// workflow.SupportsStageQualifiedInputs gates the runner — so a 1.4
+	// workflow cannot reach it by accident.
+	featureTaskInputsFromQualified: {},
 }
 
 type featureSet map[FeatureID]struct{}
@@ -730,6 +737,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	}
 	for _, task := range def.Spec.Tasks {
 		addTaskFeatures(used, task)
+	}
+	if usesStageQualifiedInputs(def) {
+		used.add(featureTaskInputsFromQualified)
 	}
 	if def.Spec.Gates != nil {
 		used.add(featureWorkflowGates)
@@ -1028,4 +1038,26 @@ func addTargetFeature(used featureSet, target string) {
 	case TargetEscalate:
 		used.add(featureWorkflowTerminalEscalate)
 	}
+}
+
+// usesStageQualifiedInputs reports whether any inputsFrom value is a
+// stage-qualified reference (#562).
+//
+// The prefix must name a DECLARED task. A value like "legacy.dotted" whose
+// prefix is not a stage is an ordinary bare output key and must not be counted
+// — otherwise every workflow with a dotted output key would suddenly require
+// the preview opt-in without using the feature at all.
+func usesStageQualifiedInputs(def Definition) bool {
+	declared := make(map[string]bool, len(def.Spec.Tasks))
+	for _, task := range def.Spec.Tasks {
+		declared[task.Name] = true
+	}
+	for _, task := range def.Spec.Tasks {
+		for _, value := range task.InputsFrom {
+			if stage, _, ok := splitQualifiedRef(value); ok && declared[stage] {
+				return true
+			}
+		}
+	}
+	return false
 }
