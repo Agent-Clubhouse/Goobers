@@ -894,6 +894,22 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 			}
 			next, more := par.advance(status)
+			// fail_fast abandons the branches that have not started. At
+			// maxConcurrentBranches=1 that is all cancellation can mean —
+			// nothing is in flight to interrupt — and each abandonment is
+			// journaled so the record shows why a branch never ran.
+			if more && par.spec.FailurePolicy == apiv1.BranchFailFast && par.anyFailed() {
+				for _, cancelled := range par.cancelRemaining() {
+					if err := jr.Append(journal.Event{
+						Type: journal.EventBranchFinished, Branch: cancelled.id,
+						Parallel: par.spec.Name, BranchName: cancelled.name,
+						BranchStatus: journal.BranchCancelled,
+					}); err != nil {
+						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+					}
+				}
+				next, more = nil, false
+			}
 			jr.SetBranchCursors(par.cursors())
 			if more {
 				if err := jr.Append(journal.Event{
@@ -910,13 +926,28 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			par = nil
 			jr.SetBranch(0)
 			jr.SetBranchCursors(nil)
+			target, runJoin := joined.route()
 			if err := jr.Append(journal.Event{
 				Type: journal.EventParallelFinished, Parallel: joined.spec.Name,
-				Completeness: joined.completeness(), Target: joined.spec.Join,
+				Completeness: joined.completeness(), Target: target,
 			}); err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 			}
-			state = joined.spec.Join
+			if !runJoin {
+				// The failure policy routed past the join. onFailure is a
+				// state name or a reserved terminal, never nothing — the
+				// compiler requires it for exactly these two policies, so a
+				// branch failure is always a DEFINED branch (GT-002's rule).
+				switch target {
+				case workflow.TargetAbort:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseAborted, joined.spec.Name, steps)
+					return res, ferr
+				case workflow.TargetEscalate:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseEscalated, joined.spec.Name, steps)
+					return res, ferr
+				}
+			}
+			state = target
 			continue
 		}
 
