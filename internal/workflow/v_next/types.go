@@ -24,8 +24,20 @@ const (
 	TargetEscalate = model.TargetEscalate
 	// BranchEscalate routes forced escalation through a workflow branch.
 	BranchEscalate = model.BranchEscalate
+	// TargetJoin ends a parallel branch and is reserved but NOT terminal.
+	TargetJoin = model.TargetJoin
 )
 
+// isTerminal reports whether a target ends the run. TargetJoin is deliberately
+// excluded: it ends a BRANCH and the run continues at the join state, so
+// treating it as terminal would let a branch satisfy the canExit fixed point
+// while never reaching a real exit.
 func isTerminal(target string) bool {
 	return target == TerminalComplete || model.IsReservedTarget(target)
+}
+
+// isStateName reports whether a target must resolve to a declared state rather
+// than being a reserved word. Use it for dangling-reference checks.
+func isStateName(target string) bool {
+	return !isTerminal(target) && !model.IsReservedBranchTarget(target)
 }

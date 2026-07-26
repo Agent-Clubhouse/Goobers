@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,7 +24,9 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -1174,32 +1177,86 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	ref          string
-	repo         providers.RepositoryRef
-	labels       []string
-	resolver     credentials.Resolver
-	reg          runner.SecretRegistrar
-	schedulerDir string
-	quota        *localscheduler.ProviderQuotaState
+	mu             sync.Mutex
+	ref            string
+	repo           providers.RepositoryRef
+	labels         []string
+	labelPredicate *labelpredicate.Predicate
+	resolver       credentials.Resolver
+	reg            runner.SecretRegistrar
+	schedulerDir   string
+	quota          *localscheduler.ProviderQuotaState
+	cursor         string
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
-	var accounting *providerQuotaAccounting
-	if b.quota != nil {
-		accounting = &providerQuotaAccounting{state: b.quota}
-		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
-			accounting.prepaid = &reservation
-		}
-		defer accounting.RefundUnused()
-	}
-
-	token, err := b.resolver.Resolve(ctx, b.ref)
+	provider, cleanup, err := newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
-	b.reg.Register([]byte(token))
+	defer cleanup()
+
+	b.mu.Lock()
+	cursor := b.cursor
+	b.mu.Unlock()
+
+	const pageSize = 100
+	pageInfo := &providers.ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
+	})
+	if err != nil {
+		return 0, err
+	}
+	b.mu.Lock()
+	if pageInfo.HasNext {
+		b.cursor = pageInfo.NextCursor
+	} else {
+		b.cursor = ""
+	}
+	b.mu.Unlock()
+	count := 0
+	for _, item := range items {
+		matched, err := b.labelPredicate.Matches(item.Labels)
+		if err != nil {
+			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+		}
+		if matched {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func newCounterGitHubProvider(
+	ctx context.Context,
+	ref string,
+	schedulerDir string,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	quota *localscheduler.ProviderQuotaState,
+) (*providers.GitHubProvider, func(), error) {
+	var accounting *providerQuotaAccounting
+	if quota != nil {
+		accounting = &providerQuotaAccounting{state: quota}
+		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+			accounting.prepaid = &reservation
+		}
+	}
+	cleanup := func() {}
+	if accounting != nil {
+		cleanup = accounting.RefundUnused
+	}
+
+	token, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	reg.Register([]byte(token))
 	opts := []func(*providers.GitHubProvider){
-		apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx)),
+		apiReadCacheOptionForSnapshot(schedulerDir, providersnapshot.ID(ctx)),
 	}
 	if accounting != nil {
 		opts = append(opts,
@@ -1211,65 +1268,120 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	// reset-aware admission. Transport and 5xx retries remain enabled and each
 	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
-	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(items), nil
+	return newGitHubProvider(token, opts...), cleanup, nil
 }
 
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
 	return b.quota != nil
 }
 
-// buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
-// declared type=backlog-item trigger, if it has one (#344) — the daemon-
-// side fan-out counter, independent of and never dispatched through
-// `goobers backlog-query`'s own per-run claim (that stays the actual
-// claiming mechanism; this only estimates how many runs a Tick should fan
-// out to). Trigger.Selector (already declared in the schema, never
-// implemented until now — #342's own survey found it, like Signal, entirely
-// unwired) is a flat map; only its KEYS are used as required GitHub labels
-// — values are ignored, since GitHub issue labels are plain strings with no
-// key=value structure to match against, unlike a true k8s label selector.
+// buildBacklogCounter wires the daemon-side fan-out counter for a workflow's
+// declared type=backlog-item trigger (#344). It counts work items carrying
+// every selector key as a GitHub label. The per-run backlog-query stage remains
+// the actual claiming mechanism; this only estimates how many runs a Tick
+// should fan out to.
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
-		return nil
+		return nil, nil
 	}
 	var selector map[string]string
+	var expression string
 	found := false
 	for _, tr := range wf.Spec.Triggers {
 		if tr.Type == apiv1.TriggerBacklogItem {
 			selector = tr.Selector
+			expression = tr.LabelPredicate
 			found = true
 			break
 		}
 	}
 	if !found {
-		return nil
+		return nil, nil
 	}
 	labels := make([]string, 0, len(selector))
 	for k := range selector {
 		labels = append(labels, k)
 	}
 	sort.Strings(labels)
+	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
+	}
 	counter := &backlogCounter{
-		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
-		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
-		labels:       labels,
-		resolver:     resolver,
-		reg:          reg,
-		schedulerDir: schedulerDir,
+		ref:            cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:         labels,
+		labelPredicate: predicate,
+		resolver:       resolver,
+		reg:            reg,
+		schedulerDir:   schedulerDir,
 	}
 	if quota != nil {
 		counter.quota = quota
 	}
-	return counter
+	return counter, nil
+}
+
+// buildScheduleDemandCounter recognizes the built-in update-behind-pr selector
+// and sizes each due schedule tick to its unclaimed eligible PR set.
+func buildScheduleDemandCounter(
+	cfg *instance.Config,
+	wf *apiv1.Workflow,
+	repoRef apiv1.RepoRef,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	schedulerDir, branchNamespace string,
+	quota *localscheduler.ProviderQuotaState,
+) localscheduler.BacklogCounter {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	hasSchedule := false
+	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule {
+			hasSchedule = true
+			break
+		}
+	}
+	base, headPrefix, ok := remediationCounterScope(wf, branchNamespace)
+	if !hasSchedule || !ok {
+		return nil
+	}
+	return &remediationDemandCounter{
+		ref:          repoRef.Owner + "/" + repoRef.Name,
+		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		base:         base,
+		headPrefix:   headPrefix,
+		gaggle:       wf.Spec.Gaggle,
+		resolver:     resolver,
+		reg:          reg,
+		schedulerDir: schedulerDir,
+		quota:        quota,
+	}
+}
+
+func remediationCounterScope(wf *apiv1.Workflow, branchNamespace string) (base, headPrefix string, ok bool) {
+	for _, task := range wf.Spec.Tasks {
+		if task.Name != wf.Spec.Start || task.Run == nil ||
+			len(task.Run.Command) != 2 ||
+			task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "update-behind-pr" {
+			continue
+		}
+		base = task.Inputs["base"]
+		if base == "" {
+			base = "main"
+		}
+		headPrefix = task.Inputs["headPrefix"]
+		if headPrefix == "" {
+			headPrefix = providers.NormalizeBranchNamespace(branchNamespace)
+		}
+		return base, headPrefix, true
+	}
+	return "", "", false
 }
 
 type providerQuotaAccounting struct {
@@ -1523,6 +1635,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if !ok {
 				return nil, fmt.Errorf("goober %q not found in config", gooberName)
 			}
+			harnessName := spec.Harness
+			if harnessName == "" {
+				harnessName = apiv1.HarnessCopilot
+			}
+			if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+				return nil, fmt.Errorf("validate goober %q MCP config: %w", gooberName, err)
+			}
 			// The injector registers resolved secrets into the run's registrar AND
 			// the shared instance registry (#117 Piece B). reg (not the tee) is
 			// kept below for the journal.Scrubber assertion — it still accumulates
@@ -1531,10 +1650,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
 			if err != nil {
 				return nil, err
-			}
-			harnessName := spec.Harness
-			if harnessName == "" {
-				harnessName = apiv1.HarnessCopilot
 			}
 			adapter, err := adapterRegistry.Get(string(harnessName))
 			if err != nil {
@@ -1572,6 +1687,8 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
+				harness.WithMCPServers(spec.MCPServers),
+				harness.WithTools(spec.Tools),
 			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without
@@ -1632,6 +1749,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
+		// a real daemon run. Left nil in every runner-package test and any
+		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
+		// this is the one place that actually wants a host PATH check.
+		LookPathFunc: exec.LookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
@@ -1786,6 +1908,33 @@ func knownAutomatedCheckNames() []string {
 	return names
 }
 
+type gooberHarnessConfigError struct {
+	Goober string
+	Err    error
+}
+
+func (e *gooberHarnessConfigError) Error() string {
+	return fmt.Sprintf("validate goober %q harness config: %v", e.Goober, e.Err)
+}
+
+func (e *gooberHarnessConfigError) Unwrap() error {
+	return e.Err
+}
+
+type workflowCompileError struct {
+	Gaggle   string
+	Workflow string
+	Err      error
+}
+
+func (e *workflowCompileError) Error() string {
+	return fmt.Sprintf("compile workflow %q: %v", e.Workflow, e.Err)
+}
+
+func (e *workflowCompileError) Unwrap() error {
+	return e.Err
+}
+
 // compiledMachines compiles every workflow in set, admission-checked against
 // goobers (capabilities, harness, gate-outcome coverage, and known automated
 // check names — #124), keyed by gaggle and workflow name. WorkflowVersion is
@@ -1812,7 +1961,10 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			harnessName = apiv1.HarnessCopilot
 		}
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+			return nil, &gooberHarnessConfigError{Goober: name, Err: err}
+		}
+		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
@@ -1828,7 +1980,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}

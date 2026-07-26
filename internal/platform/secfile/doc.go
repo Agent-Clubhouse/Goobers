@@ -33,7 +33,8 @@
 // virtually every real token file while providing no additional protection —
 // the secret is already reachable by anyone holding those identities regardless
 // of the ACL. This matches how OpenSSH and the GitHub CLI (gh) treat Windows
-// key/credential files. A NULL DACL (grants Everyone full access) and any ACE
-// granting access to a non-tolerated trustee (Users, Authenticated Users,
-// Everyone, or a specific other user) are rejected.
+// key/credential files. A NULL DACL (grants Everyone full access), any simple
+// allow ACE granting access to a non-tolerated trustee (Users, Authenticated
+// Users, Everyone, or a specific other user), and any ACE type other than a
+// simple allow or deny are rejected.
 package secfile

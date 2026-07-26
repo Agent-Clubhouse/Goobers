@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -169,6 +170,12 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// pinned BaseSHA can drop a PR that was behind the live base tip.
 	candidates := nonBlocked
 	if !hasExistingClaim {
+		nonBlocked, err = filterClaimAvailablePullRequests(
+			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+		)
+		if err != nil {
+			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
+		}
 		fetchedBases := make(map[string]bool)
 		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
@@ -192,7 +199,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequest(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -269,7 +276,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// and needs this to arrive intact. selectedNumber is stringified for the
 	// exact same reason (matching pr-select's own strconv.Itoa convention).
 	hasSubstantiveFindings := "false"
-	if verdictHasSubstantiveFindingForPR(verdict, selected.Number) {
+	if verdictHasSubstantiveFindingForPR(verdict, selected.Number, resolveMinSeverity(stderr)) {
 		hasSubstantiveFindings = "true"
 	}
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
@@ -401,15 +408,13 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 	return remediationPriorityNone
 }
 
-// selectRemediationCandidates returns every open PR at the single strongest
-// remediation-priority tier present (needs-remediation, else failing CI),
-// so claimEligiblePullRequest can still try each in ascending-number order
-// for exactly-once selection across concurrent runs — returning only ONE
-// pre-picked PR here would mean a concurrent run's claim on that PR strands
-// every other eligible PR for a full cycle, regressing the pre-#596-fallback
-// contract of offering the WHOLE eligible set to the claim ledger.
+// selectRemediationCandidates returns every open PR carrying a strong
+// remediation signal, ordered by tier (needs-remediation, then failing CI) and
+// PR number. Offering all tiers to the claim ledger lets concurrent runs fall
+// through when stronger candidates are already claimed instead of leaving
+// lower-tier eligible work idle.
 //
-// Only when nothing clears either tier does a crowned lander merely behind its
+// Only when no PR clears either strong tier does a crowned lander merely behind its
 // base become eligible. A crown is materialized by at least one live parked
 // dependent naming the PR as a blocker. This keeps the rest of an overlapping
 // wave parked until its predecessor lands instead of eagerly rebasing every
@@ -417,20 +422,8 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 // fetching candidate branches, so behindBase is invoked only for crowns when
 // nothing stronger exists.
 func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDependents map[int]int, behindBase func(providers.PullRequestSummary) (bool, error)) ([]providers.PullRequestSummary, remediationPriority, error) {
-	var candidates []providers.PullRequestSummary
-	best := remediationPriorityNone
-	for _, pr := range prs {
-		switch p := remediationPriorityFor(pr); {
-		case p == remediationPriorityNone:
-			continue
-		case p > best:
-			best = p
-			candidates = []providers.PullRequestSummary{pr}
-		case p == best:
-			candidates = append(candidates, pr)
-		}
-	}
-	if best != remediationPriorityNone {
+	candidates, best := strongRemediationCandidates(prs)
+	if len(candidates) > 0 {
 		return candidates, best, nil
 	}
 
@@ -449,9 +442,40 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDepe
 		}
 	}
 	if len(candidates) > 0 {
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Number < candidates[j].Number
+		})
 		best = remediationPriorityBehindBase
 	}
 	return candidates, best, nil
+}
+
+func strongRemediationCandidates(prs []providers.PullRequestSummary) ([]providers.PullRequestSummary, remediationPriority) {
+	byPriority := map[remediationPriority][]providers.PullRequestSummary{}
+	best := remediationPriorityNone
+	for _, pr := range prs {
+		priority := remediationPriorityFor(pr)
+		if priority == remediationPriorityNone {
+			continue
+		}
+		byPriority[priority] = append(byPriority[priority], pr)
+		if priority > best {
+			best = priority
+		}
+	}
+	for _, priority := range []remediationPriority{
+		remediationPriorityNeedsRemediation,
+		remediationPriorityFailingCI,
+	} {
+		tier := byPriority[priority]
+		sort.Slice(tier, func(i, j int) bool {
+			return tier[i].Number < tier[j].Number
+		})
+		byPriority[priority] = tier
+	}
+	candidates := append([]providers.PullRequestSummary(nil), byPriority[remediationPriorityNeedsRemediation]...)
+	candidates = append(candidates, byPriority[remediationPriorityFailingCI]...)
+	return candidates, best
 }
 
 // verdictHasSubstantiveFindingForPR reports whether verdict carries a
@@ -474,13 +498,46 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDepe
 //   - Otherwise the finding describes a sibling's own issue and is excluded
 //     (#525: a plain-rebase PR must not be misrouted into agentic
 //     remediation by findings that aren't about it).
-func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) bool {
+//
+// minSeverity applies the declared remediation policy's severity floor
+// (issue #941/PRR-6, gate-time filtering): a finding below the floor never
+// makes this report true, but is NOT dropped from the brief — the full
+// verdict (every finding, any severity) still reaches the agentic context
+// via GatherPRContext.Verdict, so a sub-threshold finding remains visible
+// evidence, it just cannot by itself burn a remediation cycle.
+// resolveMinSeverity reads the declared minSeverity policy input (#941/
+// PRR-6), defaulting to apiv1.SeverityInfo — the liberal floor that counts
+// every substantive finding, reproducing today's behavior when the input is
+// unset. An unrecognized value falls back to the same liberal default rather
+// than silently ranking as "meets nothing" (Severity.Rank()'s own default),
+// since a typo'd policy value should fail open to today's behavior, not
+// closed to never-remediate.
+func resolveMinSeverity(stderr io.Writer) apiv1.Severity {
+	raw := providerInput("minSeverity", string(apiv1.SeverityInfo))
+	switch apiv1.Severity(raw) {
+	case apiv1.SeverityInfo, apiv1.SeverityWarning, apiv1.SeverityError, apiv1.SeverityCritical:
+		return apiv1.Severity(raw)
+	default:
+		pf(stderr, "warning: minSeverity %q is not one of info/warning/error/critical; using %q\n", raw, apiv1.SeverityInfo)
+		return apiv1.SeverityInfo
+	}
+}
+
+func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, minSeverity apiv1.Severity) bool {
 	if verdict == nil {
 		return false
 	}
 	target := strconv.Itoa(prNumber)
 	for _, finding := range verdict.Findings {
 		if finding.Class != apiv1.FindingSubstantive {
+			continue
+		}
+		// An unset Severity (verdicts recorded before this field existed, or
+		// any evaluator that never populates it) always counts — the
+		// liberal default must reproduce today's behavior exactly, and
+		// today's code never looked at Severity at all. Only an explicitly
+		// set Severity below the floor is filtered.
+		if finding.Severity != "" && finding.Severity.Rank() < minSeverity.Rank() {
 			continue
 		}
 		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)

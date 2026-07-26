@@ -63,6 +63,7 @@ type agentToolkitAsset struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
 }
 
 type agentToolkitAdapter struct {
@@ -125,6 +126,9 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 		CLICapabilities: agentToolkitCLICapabilities{
 			Required: []string{"version", "versions", "validate", "status", "trace", "workflow show"},
 			Optional: []string{
+				"agent-kit install",
+				"agent-kit check",
+				"agent-kit update",
 				"features",
 				"runs list",
 				"stats",
@@ -182,6 +186,7 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		source      string
 		destination string
 	}{
+		{"agent-toolkit/.gitattributes", ".gitattributes"},
 		{"agent-toolkit/README.md", "README.md"},
 		{"docs/ARCHITECTURE.md", "docs/ARCHITECTURE.md"},
 		{"docs/stage-contract.md", "docs/stage-contract.md"},
@@ -310,6 +315,7 @@ func newAgentToolkitPayloadAsset(path string, data []byte, mode fs.FileMode) age
 			Path:   path,
 			SHA256: fmt.Sprintf("%x", sum),
 			Size:   int64(len(data)),
+			Mode:   fmt.Sprintf("%04o", mode.Perm()),
 		},
 		data: append([]byte(nil), data...),
 		mode: mode,

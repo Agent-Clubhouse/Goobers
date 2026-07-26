@@ -10,6 +10,7 @@ import {
 } from "./configurationWarnings";
 import { LiveDataProvider } from "./liveData";
 import { ErrorsPage } from "./pages/ErrorsPage";
+import { GagglePage } from "./pages/GagglePage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -115,6 +116,11 @@ function Portal({
     }
   }, [config, theme]);
 
+  // approve/override/rerun (HITL-7/#469): registered now so the UI surface
+  // participates in the CLI/API/UI runtime-mutation parity check alongside
+  // the daemon's stub routes, but each handler is itself a stub — no
+  // intervention UI exists yet, and the underlying gate-resolution/rerun
+  // wiring is #466/#468's scope, not this seam's.
   const { navigate } = bindUIActions({
     navigate: (nextRoute: Route) => {
       const nextHash = routeHash(nextRoute);
@@ -123,6 +129,15 @@ function Portal({
       } else {
         window.location.hash = nextHash;
       }
+    },
+    approve: () => {
+      console.warn("goobers: approve is not implemented yet (HITL-7/#469)");
+    },
+    override: () => {
+      console.warn("goobers: override is not implemented yet (HITL-7/#469)");
+    },
+    rerun: () => {
+      console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
     },
   });
 
@@ -161,6 +176,14 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "gaggle" && (
+          <GagglePage
+            client={client}
+            gaggleName={route.id}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
         {route.page === "runs" && (
           <RunsPage client={client} filters={route.filters} standalone={standalone} />
         )}

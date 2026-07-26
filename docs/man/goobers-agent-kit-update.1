@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS AGENT KIT UPDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers agent-kit update \- review or explicitly apply an agent toolkit update
+.SH SYNOPSIS
+\fBgoobers agent-kit update\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers agent-kit update [--dry-run | --write [--replace-modified]] [path]
+
+Show a reviewable diff from the repository's current files to the toolkit
+bundled in this binary. The default and --dry-run never write. --write applies
+only manifest-owned changes and preserves user-created files. If the installed
+manifest has semantic drift or an owned file differs from its installed digest,
+--replace-modified is also required.
+
+Exit codes: 0 = diff shown or update written, 1 = unsafe target, ownership
+collision, unacknowledged modification, or write error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers agent-kit update ./config-repo
+goobers agent-kit update --write ./config-repo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

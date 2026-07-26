@@ -377,6 +377,13 @@ const (
 	featureWorkflowStart                  FeatureID = "workflow.spec.start"
 	featureWorkflowTasks                  FeatureID = "workflow.spec.tasks"
 	featureWorkflowGates                  FeatureID = "workflow.spec.gates"
+	featureWorkflowParallels              FeatureID = "workflow.spec.parallels"
+	featureParallelFailurePolicy          FeatureID = "workflow.spec.parallels.failurePolicy"
+	featureParallelBranches               FeatureID = "workflow.spec.parallels.branches"
+	featureParallelJoin                   FeatureID = "workflow.spec.parallels.join"
+	featureParallelOnFailure              FeatureID = "workflow.spec.parallels.onFailure"
+	featureParallelBranchTimeout          FeatureID = "workflow.spec.parallels.branchTimeoutSeconds"
+	featureParallelMaxConcurrentBranches  FeatureID = "workflow.spec.parallels.maxConcurrentBranches"
 	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
 	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
 	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
@@ -394,6 +401,7 @@ const (
 	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
 	featureGooberSkills                   FeatureID = "goober.spec.skills"
 	featureGooberTools                    FeatureID = "goober.spec.tools"
+	featureGooberMCPServers               FeatureID = "goober.spec.mcpServers"
 	featureGooberScaleFactor              FeatureID = "goober.spec.scaleFactor"
 	featureGooberWorkflows                FeatureID = "goober.spec.workflows"
 	featureTriggerManual                  FeatureID = "trigger.manual"
@@ -431,6 +439,9 @@ const (
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
 	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
+	featureStageWorkspaceRepoReadOnly     FeatureID = "stage.workspace.repo-readonly"
+	featureStageWorkspace                 FeatureID = "stage.workspace"
+	featureGateAgenticWorkspace           FeatureID = "gate.evaluator.agentic.workspace"
 	featureStageSyncBase                  FeatureID = "stage.run.syncBase"
 	featureStageResultFile                FeatureID = "stage.resultFile"
 	featureGateName                       FeatureID = "gate.name"
@@ -497,6 +508,13 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowStart,
 		featureWorkflowTasks,
 		featureWorkflowGates,
+		featureWorkflowParallels,
+		featureParallelFailurePolicy,
+		featureParallelBranches,
+		featureParallelJoin,
+		featureParallelOnFailure,
+		featureParallelBranchTimeout,
+		featureParallelMaxConcurrentBranches,
 		featureWorkflowTerminalComplete,
 		featureWorkflowTerminalAbort,
 		featureWorkflowTerminalEscalate,
@@ -514,6 +532,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGooberCapabilities,
 		featureGooberSkills,
 		featureGooberTools,
+		featureGooberMCPServers,
 		featureGooberScaleFactor,
 		featureGooberWorkflows,
 		featureTriggerManual,
@@ -551,6 +570,9 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
 		featureStageWorkspaceScratch,
+		featureStageWorkspaceRepoReadOnly,
+		featureStageWorkspace,
+		featureGateAgenticWorkspace,
 		featureStageSyncBase,
 		featureStageResultFile,
 		featureGateName,
@@ -629,6 +651,23 @@ var previewFeatures = map[FeatureID]struct{}{
 	// workflow.SupportsStageQualifiedInputs gates the runner — so a 1.4
 	// workflow cannot reach it by accident.
 	featureTaskInputsFromQualified: {},
+	// The read-only repo workspace and the task/gate-level workspace seam are
+	// preview alongside the fan-out work they exist for (#1562): they change
+	// where a stage runs, and only the fan-out conformance corpus exercises
+	// the concurrent case they were added for.
+	featureStageWorkspaceRepoReadOnly: {},
+	featureStageWorkspace:             {},
+	featureGateAgenticWorkspace:       {},
+	// Static fan-out/fan-in enters preview: the DSL surface and its compile-time
+	// validation land first, and the runner still refuses to EXECUTE a parallel.
+	// These graduate to GA once the conformance corpus is green (FO-8, #1566).
+	featureWorkflowParallels:             {},
+	featureParallelFailurePolicy:         {},
+	featureParallelBranches:              {},
+	featureParallelJoin:                  {},
+	featureParallelOnFailure:             {},
+	featureParallelBranchTimeout:         {},
+	featureParallelMaxConcurrentBranches: {},
 }
 
 type featureSet map[FeatureID]struct{}
@@ -708,7 +747,37 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	for _, gate := range def.Spec.Gates {
 		addGateFeatures(used, gate)
 	}
+	if def.Spec.Parallels != nil {
+		used.add(featureWorkflowParallels)
+	}
+	for _, parallel := range def.Spec.Parallels {
+		addParallelFeatures(used, parallel)
+	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+// addParallelFeatures records the DSL surface a parallel state uses. Every
+// field is preview until the conformance corpus is green, so any workflow that
+// declares a parallel needs the goobers.dev/allow-preview-features opt-in.
+func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
+	if parallel.FailurePolicy != "" {
+		used.add(featureParallelFailurePolicy)
+	}
+	if parallel.Branches != nil {
+		used.add(featureParallelBranches)
+	}
+	if parallel.Join != "" {
+		used.add(featureParallelJoin)
+	}
+	if parallel.OnFailure != "" {
+		used.add(featureParallelOnFailure)
+	}
+	if parallel.BranchTimeoutSeconds != 0 {
+		used.add(featureParallelBranchTimeout)
+	}
+	if parallel.MaxConcurrentBranches != 0 {
+		used.add(featureParallelMaxConcurrentBranches)
+	}
 }
 
 // FeaturesForGoober returns registry metadata for the DSL features used by
@@ -743,6 +812,9 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	if spec.Tools != nil {
 		used.add(featureGooberTools)
 	}
+	if spec.MCPServers != nil {
+		used.add(featureGooberMCPServers)
+	}
 	used.add(featureGooberScaleFactor)
 	if spec.Workflows != nil {
 		used.add(featureGooberWorkflows)
@@ -769,6 +841,12 @@ func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {
 }
 
 func addTaskFeatures(used featureSet, task apiv1.Task) {
+	if task.Workspace != "" {
+		used.add(featureStageWorkspace)
+		if task.Workspace == apiv1.WorkspaceRepoReadOnly {
+			used.add(featureStageWorkspaceRepoReadOnly)
+		}
+	}
 	used.add(featureTaskName, featureTaskGoal)
 	switch task.Type {
 	case apiv1.TaskDeterministic:
@@ -854,6 +932,8 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageWorkspaceRepo)
 	case apiv1.WorkspaceScratch:
 		used.add(featureStageWorkspaceScratch)
+	case apiv1.WorkspaceRepoReadOnly:
+		used.add(featureStageWorkspaceRepoReadOnly)
 	}
 	if task.Run.SyncBase {
 		used.add(featureStageSyncBase)
@@ -915,6 +995,12 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 		}
 		if gate.Agentic.TimeoutSeconds != 0 {
 			used.add(featureEvaluatorAgenticTimeout)
+		}
+		if gate.Agentic.Workspace != "" {
+			used.add(featureGateAgenticWorkspace)
+			if gate.Agentic.Workspace == apiv1.WorkspaceRepoReadOnly {
+				used.add(featureStageWorkspaceRepoReadOnly)
+			}
 		}
 		addRetryFeatures(used, gate.Agentic.Retry, retryFeatureIDs{
 			policy:      featureEvaluatorAgenticRetry,

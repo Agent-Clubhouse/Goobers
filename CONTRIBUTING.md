@@ -224,6 +224,35 @@ it `deprecated`. Adding deprecated and unsupported history in one change does
 not satisfy the released-minor window; before the first tag, no version may
 become unsupported.
 
+## Binary maintenance policy
+
+The `goobers` **binary** (distinct from the DSL compatibility policy above) is
+maintained **forward-only**, as a *resourcing* stance while the team is
+small — not an architectural promise (`docs/design/dsl-version-lifecycle.md`
+§3.5, DVL-9/#869). We do not cut backport releases of old binaries; a fix
+ships in the next release, and you get it by upgrading forward. Upgrading
+must never break a pinned DSL version: a newer binary still carries every
+interpreter still listed in its `SupportMatrix`.
+
+**PATCH means no author-visible contract change.** A binary release that
+fixes interpreter/runtime behavior without changing any DSL version's
+observable contract is a patch. If a "fix" changes what a workflow observes,
+it is a new DSL minor or major, not a patch — see the DSL compatibility
+policy above.
+
+A **frozen** interpreter package (`internal/workflow/v_current`, once
+`v_next` supersedes it in turn) may only receive contract-preserving
+patches; a feature or semantic change belongs in a copied-forward
+interpreter instead. This is enforced, not just documented: each frozen
+package's `testdata/golden/PATCH_LOG.json` pins its `digests.json` by
+sha256 and records every reviewed patch, so a compiled-digest change with
+no accompanying patch entry fails CI (see that package's `README.md`).
+
+The theoretical case of a correctness/security bug *inside* a frozen
+interpreter that authors can't quickly migrate off is intentionally out of
+scope for now (design doc §8.7) — with a small team and few coexisting
+versions, the answer is fix-forward-and-migrate.
+
 ## Commit messages
 
 Use a short imperative subject (`area: do the thing`), a body explaining *why* when it's

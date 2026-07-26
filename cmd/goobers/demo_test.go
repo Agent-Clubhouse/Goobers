@@ -197,6 +197,68 @@ func TestInitDemoRejectsUnsupportedPlatform(t *testing.T) {
 	}
 }
 
+// TestInitDemoInsecureScaffoldsOnUnsupportedPlatform proves #1545's opt-in:
+// --demo --insecure on a platform without enforced network isolation
+// scaffolds the demo anyway (unlike the plain --demo hard-fail) and reports
+// the isolation limitation clearly.
+func TestInitDemoInsecureScaffoldsOnUnsupportedPlatform(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", "--insecure", root}, strings.NewReader(""), &stdout, &stderr, "windows")
+	if code != 0 {
+		t.Fatalf("init --demo --insecure: code = %d, stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("init --demo --insecure stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "created  config") {
+		t.Fatalf("init --demo --insecure did not scaffold config:\n%s", stdout.String())
+	}
+	for _, want := range []string{
+		"WITHOUT enforced network isolation",
+		"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("init --demo --insecure output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "instance.yaml")); err != nil {
+		t.Fatalf("insecure demo did not create its target: %v", err)
+	}
+}
+
+// TestInitInsecureRequiresDemo proves --insecure is only meaningful paired
+// with --demo, rather than silently doing nothing on its own.
+func TestInitInsecureRequiresDemo(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--insecure", root}, strings.NewReader(""), &stdout, &stderr, "linux")
+	if code != 2 {
+		t.Fatalf("init --insecure (no --demo): code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--insecure requires --demo") {
+		t.Fatalf("init --insecure stderr = %q", stderr.String())
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("misused --insecure created its target: %v", err)
+	}
+}
+
+// TestInitDemoInsecureIsANoOpOnSupportedPlatforms proves --insecure changes
+// nothing on Linux/macOS: no warning banner, byte-identical to plain --demo
+// apart from the flag itself.
+func TestInitDemoInsecureIsANoOpOnSupportedPlatforms(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", "--insecure", root}, strings.NewReader(""), &stdout, &stderr, "linux")
+	if code != 0 {
+		t.Fatalf("init --demo --insecure (linux): code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "WITHOUT enforced network isolation") {
+		t.Fatalf("linux --demo --insecure unexpectedly warned about isolation:\n%s", stdout.String())
+	}
+}
+
 func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("demo requires enforced network isolation")

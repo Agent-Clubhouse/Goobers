@@ -1,5 +1,17 @@
 {
   "navigate": {
     "class": "read-only-navigation"
+  },
+  "approve": {
+    "class": "runtime-mutation",
+    "capability": "approve"
+  },
+  "override": {
+    "class": "runtime-mutation",
+    "capability": "override"
+  },
+  "rerun": {
+    "class": "runtime-mutation",
+    "capability": "rerun"
   }
 }

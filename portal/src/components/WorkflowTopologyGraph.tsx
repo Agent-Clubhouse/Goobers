@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { RefObject } from "react";
 import type { WorkflowGraph, WorkflowGraphNode } from "../api/types";
 import type { RunNodeState } from "../runDetailData";
 import {
@@ -23,6 +24,19 @@ const FALLBACK_VIEWPORT_HEIGHT = 360;
 const PAN_DISTANCE = 120;
 const ZOOM_STEP = 0.1;
 const WHEEL_ZOOM_SENSITIVITY = 0.002;
+const FALLBACK_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "area[href]",
+  "button",
+  'input:not([type="hidden"])',
+  "select",
+  "textarea",
+  "summary",
+  '[contenteditable="true"]',
+  "[tabindex]",
+].join(", ");
+
+export type WorkflowGraphFullscreenMode = "none" | "native" | "fallback";
 
 interface PointerPosition {
   x: number;
@@ -52,6 +66,8 @@ export function WorkflowTopologyGraph({
   nodeStates,
   stateSeq,
   causalNodeId,
+  fullscreenTargetRef,
+  onFullscreenModeChange,
 }: {
   graph: WorkflowGraph;
   onSelectStage: (stageId: string, revealInspector?: boolean) => void;
@@ -62,6 +78,8 @@ export function WorkflowTopologyGraph({
   stateSeq?: number;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
+  fullscreenTargetRef?: RefObject<HTMLElement | null>;
+  onFullscreenModeChange?: (mode: WorkflowGraphFullscreenMode) => void;
 }) {
   const layout = useMemo(() => layoutWorkflowGraph(graph), [graph]);
   const markerId = `workflow-arrow-${useId().replaceAll(":", "")}`;
@@ -76,22 +94,18 @@ export function WorkflowTopologyGraph({
     width: FALLBACK_VIEWPORT_WIDTH,
     height: FALLBACK_VIEWPORT_HEIGHT,
   });
-  const [fitActive, setFitActive] = useState(true);
-  const [zoom, setZoom] = useState(() =>
-    fitGraphZoom(
-      layout.width,
-      layout.height,
-      FALLBACK_VIEWPORT_WIDTH,
-      FALLBACK_VIEWPORT_HEIGHT,
-    ),
-  );
+  const [fitActive, setFitActive] = useState(false);
+  const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(zoom);
   const [dragging, setDragging] = useState(false);
-  const [fullscreenMode, setFullscreenMode] = useState<"none" | "native" | "fallback">(
-    "none",
-  );
+  const [fullscreenMode, setFullscreenMode] =
+    useState<WorkflowGraphFullscreenMode>("none");
   const [fullscreenError, setFullscreenError] = useState("");
   zoomRef.current = zoom;
+  const getFullscreenTarget = useCallback(
+    () => fullscreenTargetRef?.current ?? shellRef.current,
+    [fullscreenTargetRef],
+  );
 
   const setZoomAround = useCallback(
     (
@@ -193,7 +207,8 @@ export function WorkflowTopologyGraph({
   useEffect(() => {
     const syncFullscreenState = () => {
       setFullscreenMode((current) => {
-        if (shellRef.current && document.fullscreenElement === shellRef.current) {
+        const target = getFullscreenTarget();
+        if (target && document.fullscreenElement === target) {
           return "native";
         }
         return current === "native" ? "none" : current;
@@ -201,7 +216,11 @@ export function WorkflowTopologyGraph({
     };
     document.addEventListener("fullscreenchange", syncFullscreenState);
     return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
-  }, []);
+  }, [getFullscreenTarget]);
+
+  useEffect(() => {
+    onFullscreenModeChange?.(fullscreenMode);
+  }, [fullscreenMode, onFullscreenModeChange]);
 
   useEffect(() => {
     if (fullscreenMode !== "fallback") {
@@ -213,34 +232,44 @@ export function WorkflowTopologyGraph({
         fullscreenButtonRef.current?.focus();
         return;
       }
-      if (event.key !== "Tab" || !shellRef.current) {
+      const target = getFullscreenTarget();
+      if (event.key !== "Tab" || !target) {
         return;
       }
       const focusable = [
-        ...shellRef.current.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
-        ),
-      ];
+        ...target.querySelectorAll<HTMLElement>(FALLBACK_FOCUSABLE_SELECTOR),
+      ]
+        .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled"))
+        .sort((left, right) => {
+          if (left === right) {
+            return 0;
+          }
+          return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING
+            ? -1
+            : 1;
+        });
       const first = focusable[0];
       const last = focusable.at(-1);
       if (!first || !last) {
         return;
       }
-      if (
-        event.shiftKey &&
-        (document.activeElement === first ||
-          !shellRef.current.contains(document.activeElement))
-      ) {
+      const activeIndex = focusable.findIndex(
+        (element) => element === document.activeElement,
+      );
+      if (activeIndex < 0) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && activeIndex === 0) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && activeIndex === focusable.length - 1) {
         event.preventDefault();
         first.focus();
       }
     };
     window.addEventListener("keydown", containFallbackFocus);
     return () => window.removeEventListener("keydown", containFallbackFocus);
-  }, [fullscreenMode]);
+  }, [fullscreenMode, getFullscreenTarget]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -425,8 +454,8 @@ export function WorkflowTopologyGraph({
     }
   };
   const toggleFullscreen = async () => {
-    const shell = shellRef.current;
-    if (!shell) {
+    const target = getFullscreenTarget();
+    if (!target) {
       return;
     }
     setFullscreenError("");
@@ -443,12 +472,12 @@ export function WorkflowTopologyGraph({
       }
       return;
     }
-    if (typeof shell.requestFullscreen !== "function") {
+    if (typeof target.requestFullscreen !== "function") {
       setFullscreenMode("fallback");
       return;
     }
     try {
-      await shell.requestFullscreen();
+      await target.requestFullscreen();
       setFullscreenMode("native");
     } catch {
       setFullscreenMode("fallback");
@@ -467,15 +496,26 @@ export function WorkflowTopologyGraph({
     <div
       className={[
         "workflow-graph-shell",
-        fullscreenMode === "fallback" ? "workflow-graph-shell-expanded" : "",
+        fullscreenTargetRef ? "" : "workflow-graph-fullscreen-target",
+        fullscreenMode === "fallback" && !fullscreenTargetRef
+          ? "workflow-graph-shell-expanded"
+          : "",
       ]
         .filter(Boolean)
         .join(" ")}
-      aria-label={fullscreenMode === "fallback" ? "Workflow graph fullscreen view" : undefined}
-      aria-modal={fullscreenMode === "fallback" ? "true" : undefined}
+      aria-label={
+        fullscreenMode === "fallback" && !fullscreenTargetRef
+          ? "Workflow graph fullscreen view"
+          : undefined
+      }
+      aria-modal={
+        fullscreenMode === "fallback" && !fullscreenTargetRef ? "true" : undefined
+      }
       data-fullscreen={fullscreenMode}
       ref={shellRef}
-      role={fullscreenMode === "fallback" ? "dialog" : undefined}
+      role={
+        fullscreenMode === "fallback" && !fullscreenTargetRef ? "dialog" : undefined
+      }
     >
       {nodeStates && (
         <p className="run-graph-pin">

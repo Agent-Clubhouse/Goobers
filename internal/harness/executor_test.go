@@ -133,6 +133,9 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	adapter := &FakeAdapter{
 		Transcript: []byte("implementing... done"),
 		Act: func(ctx context.Context, req RunRequest) error {
+			if got := strings.Join(req.Tools, ","); got != "shell,reachability" {
+				return fmt.Errorf("tools = %q, want executor-scoped allowlist", got)
+			}
 			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "did the thing",
@@ -141,7 +144,16 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "be a good coder")
+	exec, err := NewExecutor(
+		adapter,
+		injector,
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"be a good coder",
+		WithTools([]string{"shell", "reachability"}),
+	)
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}

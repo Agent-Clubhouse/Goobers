@@ -53,6 +53,29 @@ A root that is itself bogus (absolute, `.`, `..`, or escaping) is treated as
 *unset* (the whole-repo floor) rather than trusted — a bad root can never widen
 the boundary.
 
+## TUT-A5: a second action root for skill bodies
+
+The Tutor's write authority was originally a single config root. TUT-A5
+(#1217, docs/design/tutor-redesign.md §4.2/D3) widens it to a **second,
+independent target**: the instance's skills tree (`skills/` on the dogfood
+repo), so the Tutor can author a new skill's *body content*, not just edit a
+goober's skills-*list*.
+
+This is not a plain multi-root OR the way the docs-updater boundary works (a
+docs run may legitimately touch several declared docs roots together in one
+change). Each of the Tutor's actions is confined to **exactly one** target
+root per run — a skill-authoring action must never also rewrite a workflow,
+and vice versa. `open-pr` enforces this via a second, opt-in check:
+`confineToActionRoots=true` with a comma/newline `actionRoots` list (e.g.
+`selfhost,skills`) and `internal/configboundary.ConfineExclusive`, which
+requires every changed file to resolve into the *same single* declared root —
+refusing a diff that spans two roots even though each individual path is
+legitimately within some declared root (`ErrCrossRootAction`). The dogfood
+`tutor.yaml` uses this in place of the plain single-root
+`confineToConfigRoot`/`configRoot` inputs described above, with
+`actionRoots: "selfhost,skills"` — an all-`selfhost` diff and an all-`skills`
+diff both still pass; a diff mixing the two does not.
+
 ## Governance: CODEOWNERS + branch protection
 
 Path-scoping keeps the Tutor *in* config; it does not decide whether a config
@@ -61,9 +84,15 @@ change is *good*. That judgement is a human's, enforced by review:
 - **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns `/selfhost/`, so a
   Tutor PR to the config root requests a CODEOWNER and — once branch protection
   requires CODEOWNER review — cannot merge without a maintainer's approval.
+- **Change-type classification.** `open-pr` stamps Tutor PR bodies with a
+  deterministic classification. Persona/instruction and gate-calibration-only
+  changes may enter the ordinary merge-review path. Workflow topology, gate
+  removal/routing, skill-body, and validation-stage changes remain manual-only.
+  `pr-select` excludes those classes and `merge-pr` independently reclassifies
+  the live diff as a fail-closed backstop, so they are never auto-merged.
 - **Branch protection on `main`.** The instance never merges (there is no merge
-  stage in any workflow); the required `make ci` check plus a human review are
-  the only path to `main`. See `selfhost/README.md`.
+  stage in the Tutor workflow itself); the required checks plus the applicable
+  review path are the only route to `main`. See `selfhost/README.md`.
 
 ## Enablement checklist (before turning the Tutor on for the dogfood repo)
 

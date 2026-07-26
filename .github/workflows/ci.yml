@@ -408,6 +408,25 @@ jobs:
       - name: go vet (windows/amd64)
         run: go vet ./...
 
+      # #1603: on Windows, GNU Make invokes $(shell ...) through cmd.exe, not
+      # a POSIX shell — the Makefile's DATE variable used a Linux-only
+      # `date -u +%Y-%m-%dT%H:%M:%SZ`, which cmd.exe's own `date` builtin
+      # doesn't understand at all, corrupting the linker's -X ldflags
+      # argument. Nothing in this job exercised the Makefile itself (only raw
+      # `go build`), so this regressed silently. Installing `make` via
+      # Chocolatey (pre-installed on GitHub-hosted Windows runners)
+      # reproduces the real failure mode exactly, rather than assuming some
+      # possibly-different make is already on PATH. scheduler is a
+      # portal-free command (unlike goobers, whose build-goobers target also
+      # runs a full npm portal rebuild), so this stays a cheap, direct guard
+      # on the Makefile's own cross-platform shell portability rather than a
+      # portal build smoke test — that's covered elsewhere.
+      - name: Install make (windows)
+        run: choco install make --no-progress -y
+
+      - name: make build (windows)
+        run: make build-scheduler
+
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
