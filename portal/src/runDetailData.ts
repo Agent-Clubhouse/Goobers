@@ -85,7 +85,6 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
   }, [refresh, subscribe]);
 
   const retry = useCallback(() => {
-    setState({ status: "loading" });
     void refresh();
   }, [refresh]);
   return { retry, state };

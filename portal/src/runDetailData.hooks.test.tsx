@@ -63,6 +63,22 @@ describe("useRunDetail", () => {
       }),
     );
 
+    client.failure = undefined;
+    act(() => result.current.retry());
+    await waitFor(() => expect(client.signals).toHaveLength(6));
+    expect(result.current.state).toEqual({ status: "stale", data: retained });
+
+    const retryError = new Error("retry failed");
+    client.failure = retryError;
+    act(() => client.release(2));
+    await waitFor(() =>
+      expect(result.current.state).toEqual({
+        status: "stale",
+        data: retained,
+        error: retryError,
+      }),
+    );
+
     unmount();
   });
 });

@@ -437,6 +437,19 @@ describe("run detail", () => {
     expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
     expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+
+    client.holdRefresh();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
+
+    act(() => client.failRefresh(new Error("Still unable to refresh this run.")));
+
+    expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
+    expect(screen.getByText("Still unable to refresh this run.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
   });
 
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
