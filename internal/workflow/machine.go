@@ -26,6 +26,9 @@ const (
 	TerminalComplete = model.TerminalComplete
 	// TargetAbort ends a run as blocked.
 	TargetAbort = model.TargetAbort
+	// TargetJoin ends a parallel BRANCH. It is reserved but not terminal: the
+	// run continues at the parallel's join state once every branch settles.
+	TargetJoin = model.TargetJoin
 	// TargetEscalate ends a run as needing human intervention.
 	TargetEscalate = model.TargetEscalate
 	// BranchEscalate routes forced escalation through a workflow branch.
