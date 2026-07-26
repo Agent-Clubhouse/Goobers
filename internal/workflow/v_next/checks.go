@@ -119,21 +119,43 @@ func CheckGateParameters(def Definition) []string {
 func workspaceProblems(def Definition) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
+		switch task.Workspace {
+		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly:
+		default:
+			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo, scratch, or repo-readonly)", task.Name, task.Workspace))
+		}
+		// Run.Workspace is authoritative for a deterministic task, so declaring
+		// both is a contradiction the author almost certainly did not intend.
+		if task.Workspace != "" && task.Run != nil && task.Run.Workspace != "" && task.Workspace != task.Run.Workspace {
+			problems = append(problems, fmt.Sprintf(
+				"task %q declares workspace %q and run.workspace %q; run.workspace wins, so remove one",
+				task.Name, task.Workspace, task.Run.Workspace))
+		}
 		if task.Run == nil {
 			continue
 		}
 		switch task.Run.Workspace {
-		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch:
+		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly:
 		default:
-			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo or scratch)", task.Name, task.Run.Workspace))
+			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo, scratch, or repo-readonly)", task.Name, task.Run.Workspace))
 		}
-		if task.Run.SyncBase && task.Run.Workspace == apiv1.WorkspaceScratch {
-			problems = append(problems, fmt.Sprintf("task %q: syncBase requires a repo workspace", task.Name))
+		if task.Run.SyncBase && !task.Run.Workspace.IsWritableRepo() && task.Run.Workspace != "" {
+			problems = append(problems, fmt.Sprintf("task %q: syncBase requires a writable repo workspace", task.Name))
 		}
 		switch task.Run.Network {
 		case "", apiv1.NetworkNone:
 		default:
 			problems = append(problems, fmt.Sprintf("task %q: unknown network mode %q (want none)", task.Name, task.Run.Network))
+		}
+	}
+	for _, gate := range def.Spec.Gates {
+		if gate.Agentic == nil {
+			continue
+		}
+		switch gate.Agentic.Workspace {
+		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly:
+		default:
+			problems = append(problems, fmt.Sprintf("gate %q: unknown workspace %q (want repo, scratch, or repo-readonly)", gate.Name, gate.Agentic.Workspace))
 		}
 	}
 	return problems

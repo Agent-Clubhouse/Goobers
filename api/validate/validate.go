@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -667,6 +668,9 @@ func (ix *index) crossCheck(r *Report) {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
 			r.add(Error, file, "Goober", g.Name, "%s", message)
+		}
+		if err := mcpconfig.ValidateForHarness(g.Spec.Harness, g.Spec.MCPServers, g.Spec.Capabilities, g.Spec.Tools); err != nil {
+			r.add(Error, file, "Goober", g.Name, "spec.%v", err)
 		}
 		if g.Spec.Instructions != "" {
 			p := filepath.Join(ix.gooberDir[g.Name], g.Spec.Instructions)

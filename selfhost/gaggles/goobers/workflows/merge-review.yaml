@@ -74,17 +74,19 @@ spec:
       next: pr-select
 
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI implementation or docs-updater PR
-    # not already carrying a merge-review label. The selected PR is leased in
-    # the same claim namespace gather-pr-context uses, excluding concurrent
-    # review/remediation of one PR.
+    # PRs): one open, non-draft, green-CI implementation, docs-updater, or
+    # low-risk Tutor PR not already carrying a merge-review label. pr-select
+    # classifies Tutor diffs and excludes structure/skill/validation changes;
+    # those remain manual-only even if every ordinary merge gate passes.
+    # The selected PR is leased in the same claim namespace
+    # gather-pr-context uses, excluding concurrent review/remediation of one PR.
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.
       run:
         command: ["goobers", "pr-select"]
       inputs:
-        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write

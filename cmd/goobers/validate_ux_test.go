@@ -90,6 +90,8 @@ func TestValidateCheckRepos(t *testing.T) {
 
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
 
 	called := 0
 	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
@@ -102,12 +104,23 @@ func TestValidateCheckRepos(t *testing.T) {
 		}
 		return nil
 	}
+	sizeCalled := 0
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		sizeCalled++
+		return 100, nil
+	}
 	code, stdout, stderr := runArgs(t, "validate", "--check-repos", root)
 	if code != 0 {
 		t.Fatalf("validate --check-repos: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if called != 1 || !strings.Contains(stdout, "REPOSITORY repos[0] your-org/your-repo: reachable") {
 		t.Fatalf("repository check calls=%d stdout=%q", called, stdout)
+	}
+	if sizeCalled != 1 {
+		t.Fatalf("size check calls=%d, want 1", sizeCalled)
+	}
+	if strings.Contains(stdout, "checkout-size threshold") {
+		t.Fatalf("did not expect oversized-repo warning for a small repo:\n%s", stdout)
 	}
 
 	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
@@ -212,6 +225,67 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	}}, nil, &stdout)
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
+	}
+}
+
+func TestCheckTargetRepositoriesWarnsOnOversizedGitHubRepo(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN_TEST_1547", "test-token")
+	originalReachable := targetRepositoryReachable
+	t.Cleanup(func() { targetRepositoryReachable = originalReachable })
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
+		return nil
+	}
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		return 2 * oversizedRepoThresholdKB, nil
+	}
+
+	var stdout strings.Builder
+	ok := checkTargetRepositories([]instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monorepo",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
+	}}, nil, &stdout)
+	if !ok {
+		t.Fatalf("checkTargetRepositories() = %v, want true (a size warning is advisory, not a failure)", ok)
+	}
+	for _, want := range []string{
+		"REPOSITORY repos[0] acme/monorepo: WARNING: repository is 2048 MB, larger than the 1024 MB checkout-size threshold",
+		"AdditionalRepos",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("checkTargetRepositories() output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN_TEST_1547", "test-token")
+	originalReachable := targetRepositoryReachable
+	t.Cleanup(func() { targetRepositoryReachable = originalReachable })
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
+		return nil
+	}
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		return 0, errors.New("rate limited")
+	}
+
+	var stdout strings.Builder
+	ok := checkTargetRepositories([]instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monorepo",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
+	}}, nil, &stdout)
+	if !ok {
+		t.Fatalf("checkTargetRepositories() = %v, want true (size-check failure must not fail --check-repos)", ok)
+	}
+	if !strings.Contains(stdout.String(), "REPOSITORY repos[0] acme/monorepo: could not determine repository size: rate limited") {
+		t.Fatalf("checkTargetRepositories() output missing size-check-failure diagnostic:\n%s", stdout.String())
 	}
 }
 

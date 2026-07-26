@@ -536,6 +536,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		HarnessOptions: map[string]apiextensionsv1.JSON{"effort": {Raw: []byte(`"high"`)}},
 		TimeoutSeconds: 3600,
 		Capabilities:   []string{"repo:push"}, Skills: []string{"go"}, Tools: []string{"shell"},
+		MCPServers:  []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
 		ScaleFactor: 2, Workflows: []string{"all-features"},
 	}
 
@@ -739,6 +740,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.capabilities",
 		"goober.spec.skills",
 		"goober.spec.tools",
+		"goober.spec.mcpServers",
 		"goober.spec.scaleFactor",
 		"goober.spec.workflows",
 		"trigger.manual",

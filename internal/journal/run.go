@@ -31,6 +31,7 @@ type Run struct {
 	seq          uint64
 	phase        RunPhase
 	machineState string
+	branches     []BranchCursor
 	reason       string
 	lastActivity time.Time
 	appendErr    error
@@ -346,6 +347,29 @@ func (r *Run) SetMachineState(state string) {
 	r.mu.Unlock()
 }
 
+// SetBranchCursors records the per-branch resume positions used in the next
+// checkpoint. Passing nil clears them, which is what the runner does once a
+// parallel has joined and the run is single-cursor again.
+//
+// Cursors are stored in the caller's order, which is declaration order — the
+// same order that assigns branch ids — so a checkpoint is deterministic.
+func (r *Run) SetBranchCursors(cursors []BranchCursor) {
+	r.mu.Lock()
+	if len(cursors) == 0 {
+		r.branches = nil
+	} else {
+		r.branches = append(r.branches[:0:0], cursors...)
+	}
+	r.mu.Unlock()
+}
+
+// BranchCursors returns the current per-branch resume positions, if any.
+func (r *Run) BranchCursors() []BranchCursor {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]BranchCursor(nil), r.branches...)
+}
+
 // Checkpoint writes state.json immediately, reflecting the current
 // MachineState. Most transitions checkpoint implicitly as part of Append or
 // RecordArtifact; call Checkpoint directly when a transition pauses without
@@ -472,6 +496,7 @@ func (r *Run) checkpoint() error {
 		RunID:        r.id.RunID,
 		Phase:        r.phase,
 		MachineState: r.machineState,
+		Branches:     append([]BranchCursor(nil), r.branches...),
 		Reason:       r.reason,
 		LastSeq:      r.seq,
 		UpdatedAt:    r.now(),
