@@ -3,6 +3,7 @@ package vnext
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
@@ -39,9 +40,165 @@ func parallelProblems(m *Machine) []string {
 
 	problems = append(problems, joinEntryProblems(m)...)
 	problems = append(problems, strayJoinProblems(m, owner)...)
+	problems = append(problems, branchInputsFromProblems(m)...)
 
 	sort.Strings(problems)
 	return problems
+}
+
+type branchInputReference struct {
+	parallel  string
+	branch    string
+	stage     string
+	key       string
+	shorthand bool
+}
+
+func splitBranchInputReference(value string) (branchInputReference, bool) {
+	parts := strings.SplitN(value, ".", 4)
+	switch len(parts) {
+	case 3:
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return branchInputReference{}, false
+		}
+		return branchInputReference{
+			parallel:  parts[0],
+			branch:    parts[1],
+			key:       parts[2],
+			shorthand: true,
+		}, true
+	case 4:
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+			return branchInputReference{}, false
+		}
+		return branchInputReference{
+			parallel: parts[0],
+			branch:   parts[1],
+			stage:    parts[2],
+			key:      parts[3],
+		}, true
+	default:
+		return branchInputReference{}, false
+	}
+}
+
+func branchInputsFromProblems(m *Machine) []string {
+	joins := make(map[string]apiv1.Parallel, len(m.Def.Spec.Parallels))
+	for _, parallel := range m.Def.Spec.Parallels {
+		joins[parallel.Join] = parallel
+	}
+
+	var problems []string
+	for _, task := range m.Def.Spec.Tasks {
+		join, isJoin := joins[task.Name]
+		for _, inputKey := range sortedKeys(task.InputsFrom) {
+			value := task.InputsFrom[inputKey]
+			ref, parsed := splitBranchInputReference(value)
+			_, knownParallel := m.Parallel(ref.parallel)
+			if parsed {
+				if _, stageQualified := m.Task(ref.parallel); stageQualified {
+					continue
+				}
+			}
+			if !isJoin && (!parsed || !knownParallel) {
+				continue
+			}
+			if !parsed {
+				if isJoin && strings.Count(value, ".") >= 2 {
+					problems = append(problems, fmt.Sprintf(
+						"task %q inputsFrom %q has malformed branch-qualified reference %q; use <parallel>.<branch>.<stage>.<outputKey>",
+						task.Name, inputKey, value))
+				}
+				continue
+			}
+			if !knownParallel {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references unknown parallel %q",
+					task.Name, inputKey, ref.parallel))
+				continue
+			}
+			if !isJoin {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q uses branch-qualified reference %q but is not a parallel join",
+					task.Name, inputKey, value))
+				continue
+			}
+			if ref.parallel != join.Name {
+				problems = append(problems, fmt.Sprintf(
+					"task %q is the join of parallel %q but inputsFrom %q references parallel %q",
+					task.Name, join.Name, inputKey, ref.parallel))
+				continue
+			}
+
+			var branch apiv1.Branch
+			foundBranch := false
+			for _, candidate := range join.Branches {
+				if candidate.Name == ref.branch {
+					branch = candidate
+					foundBranch = true
+					break
+				}
+			}
+			if !foundBranch {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references unknown branch %q of parallel %q",
+					task.Name, inputKey, ref.branch, ref.parallel))
+				continue
+			}
+
+			if ref.shorthand {
+				terminals := joinTerminalStates(m, branch.Start)
+				if len(terminals) != 1 {
+					problems = append(problems, fmt.Sprintf(
+						"parallel %q branch has %d join-terminal stages, qualify the stage (branch %q, task %q inputsFrom %q)",
+						join.Name, len(terminals), branch.Name, task.Name, inputKey))
+					continue
+				}
+				ref.stage = terminals[0]
+			}
+
+			inBranch := false
+			for _, state := range branchBody(m, branch.Start) {
+				if state == ref.stage {
+					inBranch = true
+					break
+				}
+			}
+			if !inBranch {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references unknown stage %q in parallel %q branch %q",
+					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
+				continue
+			}
+			producer, isTask := m.Task(ref.stage)
+			if !isTask {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references stage %q in parallel %q branch %q, but it is not a task and produces no outputs",
+					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
+				continue
+			}
+			if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, ref.key) {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references output %q from parallel %q branch %q stage %q, but that stage declares outputs %v",
+					task.Name, inputKey, ref.key, ref.parallel, ref.branch, ref.stage, producer.ExpectedOutputs))
+			}
+		}
+	}
+	return problems
+}
+
+func joinTerminalStates(m *Machine, start string) []string {
+	var terminals []string
+	for _, state := range branchBody(m, start) {
+		for _, target := range m.Outgoing(state) {
+			if target == TargetJoin {
+				terminals = append(terminals, state)
+				break
+			}
+		}
+	}
+	sort.Strings(terminals)
+	return terminals
 }
 
 // branchRef names the parallel and branch a state belongs to.

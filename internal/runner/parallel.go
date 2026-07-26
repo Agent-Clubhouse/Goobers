@@ -7,6 +7,10 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// BranchCompletenessInput is the join invocation input containing one terminal
+// outcome for every declared branch, in declaration order.
+const BranchCompletenessInput = "branchCompleteness"
+
 // branchState is one branch's live execution state inside a parallel.
 type branchState struct {
 	id        int
@@ -15,6 +19,10 @@ type branchState struct {
 	machine   string // the branch's current cursor; empty once settled
 	status    journal.BranchStatus
 	artifacts int
+	pointers  []apiv1.ContextPointer
+	produced  bool
+	failed    bool
+	noOutput  bool
 	settled   bool
 }
 
@@ -50,6 +58,95 @@ func (p *parallelExec) current() *branchState {
 		return nil
 	}
 	return p.branches[p.active]
+}
+
+func (p *parallelExec) branch(name string) *branchState {
+	for _, branch := range p.branches {
+		if branch.name == name {
+			return branch
+		}
+	}
+	return nil
+}
+
+func (p *parallelExec) currentPointers(root []apiv1.ContextPointer) []apiv1.ContextPointer {
+	current := p.current()
+	size := len(root)
+	if current != nil {
+		size += len(current.pointers)
+	}
+	out := make([]apiv1.ContextPointer, 0, size)
+	out = append(out, root...)
+	if current != nil {
+		out = append(out, current.pointers...)
+	}
+	return out
+}
+
+func (p *parallelExec) recordCurrent(outputs map[string]any, pointers []apiv1.ContextPointer) {
+	current := p.current()
+	if current == nil {
+		return
+	}
+	current.pointers = append(current.pointers, pointers...)
+	for _, pointer := range pointers {
+		if pointer.Artifact != nil {
+			current.artifacts++
+		}
+	}
+	if len(outputs) > 0 || len(pointers) > 0 {
+		current.produced = true
+	}
+}
+
+func (p *parallelExec) recordCurrentPointer(pointer apiv1.ContextPointer) {
+	p.recordCurrent(nil, []apiv1.ContextPointer{pointer})
+}
+
+func (p *parallelExec) markCurrentFailed() {
+	if current := p.current(); current != nil {
+		current.failed = true
+	}
+}
+
+func (p *parallelExec) markCurrentNoOutput() {
+	if current := p.current(); current != nil {
+		current.noOutput = true
+	}
+}
+
+func (p *parallelExec) currentStatus() journal.BranchStatus {
+	current := p.current()
+	if current == nil {
+		return journal.BranchCancelled
+	}
+	if current.failed {
+		return journal.BranchFailed
+	}
+	if current.noOutput {
+		return journal.BranchNoOutput
+	}
+	if current.produced {
+		return journal.BranchSucceeded
+	}
+	return journal.BranchNoOutput
+}
+
+func (p *parallelExec) joinPointers(root []apiv1.ContextPointer) []apiv1.ContextPointer {
+	size := len(root)
+	for _, branch := range p.branches {
+		size += len(branch.pointers)
+	}
+	out := make([]apiv1.ContextPointer, 0, size)
+	out = append(out, root...)
+	for _, branch := range p.branches {
+		for _, pointer := range branch.pointers {
+			pointer.Branch = branch.id
+			pointer.BranchName = branch.name
+			out = append(out, pointer)
+		}
+	}
+	return out
 }
 
 // advance settles the active branch and moves to the next unsettled one.

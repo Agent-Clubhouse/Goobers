@@ -224,9 +224,12 @@ type Task struct {
 	// discarded so downstream tasks cannot consume partial results.
 	// +optional
 	ContinueOnError bool `json:"continueOnError,omitempty" yaml:"continueOnError,omitempty"`
-	// InputsFrom declares an explicit, small output->input handoff from the
-	// immediately preceding task's ResultEnvelope.Outputs into this task's
-	// Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
+	// InputsFrom declares an explicit, small output->input handoff into this
+	// task's Inputs: InputsFrom[inputKey] = outputKey. A bare outputKey reads the
+	// immediately preceding task. DSL 2.0 also admits <stage>.<outputKey> and,
+	// on a parallel join, <parallel>.<branch>.<stage>.<outputKey>; the stage may
+	// be omitted only when that branch has one @join-terminal stage.
+	// Unlike a gate (which receives
 	// every upstream Output key flattened automatically, per
 	// internal/gate/automated.go's runner-contract convention — a gate never
 	// mutates run state, so a wide-open read is safe), a task-to-task handoff

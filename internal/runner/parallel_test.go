@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -24,6 +25,62 @@ func TestNewParallelExecAssignsIdsByDeclarationOrder(t *testing.T) {
 		if got.id != want.id || got.name != want.name {
 			t.Errorf("branch %d = {id:%d name:%q}, want {id:%d name:%q}; declaration order assigns ids and 0 is the root",
 				i, got.id, got.name, want.id, want.name)
+		}
+	}
+}
+
+func TestParallelJoinPointersAreDeclarationOrderedAndBranchTagged(t *testing.T) {
+	spec := apiv1.Parallel{
+		Name: "fan",
+		Branches: []apiv1.Branch{
+			{Name: "security", Start: "a"},
+			{Name: "perf", Start: "b"},
+			{Name: "coverage", Start: "c"},
+		},
+	}
+	pointer := func(name string) apiv1.ContextPointer {
+		return apiv1.ContextPointer{
+			Name: name,
+			Artifact: &apiv1.ArtifactPointer{
+				Path:   "artifacts/" + name,
+				Digest: apiv1.Digest([]byte(name)),
+			},
+		}
+	}
+	build := func(arrival []string) []apiv1.ContextPointer {
+		p := newParallelExec(spec)
+		byBranch := map[string][]apiv1.ContextPointer{
+			"security": {pointer("security-0"), pointer("security-1")},
+			"perf":     {pointer("perf-0")},
+			"coverage": {pointer("coverage-0")},
+		}
+		for _, name := range arrival {
+			p.branch(name).pointers = append(p.branch(name).pointers, byBranch[name]...)
+		}
+		return p.joinPointers(nil)
+	}
+
+	first := build([]string{"coverage", "security", "perf"})
+	second := build([]string{"perf", "coverage", "security"})
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstJSON) != string(secondJSON) {
+		t.Fatalf("join pointer JSON differs by arrival order:\n%s\n%s", firstJSON, secondJSON)
+	}
+
+	wantNames := []string{"security-0", "security-1", "perf-0", "coverage-0"}
+	wantBranches := []int{1, 1, 2, 3}
+	wantBranchNames := []string{"security", "security", "perf", "coverage"}
+	for i := range wantNames {
+		if first[i].Name != wantNames[i] || first[i].Branch != wantBranches[i] || first[i].BranchName != wantBranchNames[i] {
+			t.Errorf("pointer %d = %+v, want name=%q branch=%d branchName=%q",
+				i, first[i], wantNames[i], wantBranches[i], wantBranchNames[i])
 		}
 	}
 }

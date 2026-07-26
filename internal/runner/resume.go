@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -341,6 +342,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	seed := walkSeed{
 		pointers:     reconstructPointers(seedEvents),
 		stageOutputs: reconstructStageOutputs(seedEvents),
+		fanIn:        pendingFanIn(seedEvents, in.Machine),
 	}
 	if humanProgress.waiting {
 		seed.humanDecision = in.HumanDecision
@@ -777,13 +779,47 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 // accumulated them.
 func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 	var out []apiv1.ContextPointer
+	var branchNames map[int]string
+	var branchPointers map[int][]apiv1.ContextPointer
+	flushBranches := func(order []journal.BranchOutcome) {
+		for _, branch := range order {
+			out = append(out, branchPointers[branch.Branch]...)
+		}
+		branchNames = nil
+		branchPointers = nil
+	}
+	record := func(branch int, pointers []apiv1.ContextPointer) {
+		if branch <= 0 {
+			out = append(out, pointers...)
+			return
+		}
+		if branchPointers == nil {
+			branchPointers = map[int][]apiv1.ContextPointer{}
+		}
+		for i := range pointers {
+			pointers[i].Branch = branch
+			pointers[i].BranchName = branchNames[branch]
+		}
+		branchPointers[branch] = append(branchPointers[branch], pointers...)
+	}
 	for _, e := range events {
 		switch e.Type {
+		case journal.EventParallelStarted:
+			branchNames = map[int]string{}
+			branchPointers = map[int][]apiv1.ContextPointer{}
+			for _, branch := range e.Completeness {
+				branchNames[branch.Branch] = branch.Name
+			}
+		case journal.EventBranchStarted:
+			if branchNames == nil {
+				branchNames = map[int]string{}
+			}
+			branchNames[e.Branch] = e.BranchName
 		case journal.EventStageFinished:
 			if isInterruptedAttemptMarker(e) {
 				continue
 			}
-			out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
+			record(e.Branch, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts)))
 		case journal.EventGateEvaluated:
 			if e.Ref == nil {
 				continue
@@ -792,13 +828,55 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 			case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
 				continue
 			}
-			out = append(out, apiv1.ContextPointer{
+			record(e.Branch, []apiv1.ContextPointer{{
 				Name:     e.Gate + ".verdict",
 				Artifact: &apiv1.ArtifactPointer{Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size, MediaType: "application/json"},
-			})
+			}})
+		case journal.EventParallelFinished:
+			flushBranches(e.Completeness)
+		}
+	}
+	if len(branchPointers) > 0 {
+		ids := make([]int, 0, len(branchPointers))
+		for branch := range branchPointers {
+			ids = append(ids, branch)
+		}
+		sort.Ints(ids)
+		for _, branch := range ids {
+			out = append(out, branchPointers[branch]...)
 		}
 	}
 	return out
+}
+
+func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelExec {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelFinished {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if !ok || event.Target != spec.Join {
+			continue
+		}
+		for _, later := range events[i+1:] {
+			if later.Type == journal.EventStageFinished && later.Stage == spec.Join && !isInterruptedAttemptMarker(later) {
+				return nil
+			}
+		}
+		fanIn := newParallelExec(spec)
+		for _, outcome := range event.Completeness {
+			branch := fanIn.branch(outcome.Name)
+			if branch == nil {
+				continue
+			}
+			branch.status = outcome.Status
+			branch.artifacts = outcome.Artifacts
+			branch.settled = true
+		}
+		return fanIn
+	}
+	return nil
 }
 
 // lastWorkspaceBranch rebuilds walk's run-scoped workspace-branch binding

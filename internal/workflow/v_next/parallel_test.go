@@ -69,6 +69,90 @@ func TestParallelBaselineCompiles(t *testing.T) {
 	}
 }
 
+func fanInDef() Definition {
+	def := parallelDef()
+	def.Spec.Tasks[1].ExpectedOutputs = []string{"findings"}
+	def.Spec.Tasks[2].ExpectedOutputs = []string{"findings"}
+	def.Spec.Tasks[3].InputsFrom = map[string]string{
+		"security": "fan.security.review-security.findings",
+		"perf":     "fan.perf.findings",
+	}
+	return def
+}
+
+func TestParallelBranchQualifiedInputsFromCompiles(t *testing.T) {
+	if err := compileParallel(t, fanInDef()); err != nil {
+		t.Fatalf("branch-qualified inputsFrom should compile: %v", err)
+	}
+}
+
+func TestParallelJoinPreservesStageQualifiedDottedOutputKeys(t *testing.T) {
+	def := fanInDef()
+	def.Spec.Tasks[0].ExpectedOutputs = []string{"legacy.dotted"}
+	def.Spec.Tasks[3].InputsFrom["legacy"] = "churn.legacy.dotted"
+	if err := compileParallel(t, def); err != nil {
+		t.Fatalf("stage-qualified dotted output at a join should compile: %v", err)
+	}
+}
+
+func TestParallelBranchQualifiedInputsFromRejectsUnknownReferences(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "parallel", value: "missing.security.review-security.findings", want: "unknown parallel"},
+		{name: "branch", value: "fan.missing.review-security.findings", want: "unknown branch"},
+		{name: "stage", value: "fan.security.missing.findings", want: "unknown stage"},
+		{name: "output", value: "fan.security.review-security.missing", want: "declares outputs"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			def := fanInDef()
+			def.Spec.Tasks[3].InputsFrom = map[string]string{"findings": tc.value}
+			mustReject(t, def, tc.want)
+		})
+	}
+}
+
+func TestParallelBranchQualifiedInputsFromRejectsAmbiguousShorthand(t *testing.T) {
+	def := fanInDef()
+	def.Spec.Tasks[1].Next = "choose-security"
+	def.Spec.Tasks = append(def.Spec.Tasks,
+		apiv1.Task{
+			Name: "security-a", Type: apiv1.TaskDeterministic, Goal: "security a",
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			ExpectedOutputs: []string{"findings"},
+			Next:            TargetJoin,
+		},
+		apiv1.Task{
+			Name: "security-b", Type: apiv1.TaskDeterministic, Goal: "security b",
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			ExpectedOutputs: []string{"findings"},
+			Next:            TargetJoin,
+		},
+	)
+	def.Spec.Gates = append(def.Spec.Gates, apiv1.Gate{
+		Name:      "choose-security",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{"pass": "security-a", "fail": "security-b"},
+	})
+	def.Spec.Tasks[3].InputsFrom = map[string]string{"security": "fan.security.findings"}
+	mustReject(t, def, "branch has 2 join-terminal stages, qualify the stage")
+}
+
+func TestParallelAndBranchNamesMayNotContainDots(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Parallels[0].Name = "fan.out"
+	def.Spec.Tasks[0].Next = "fan.out"
+	mustReject(t, def, "parallel name")
+
+	def = parallelDef()
+	def.Spec.Parallels[0].Branches[0].Name = "security.deep"
+	mustReject(t, def, "branch name")
+}
+
 // Preview gating: every parallel field is preview until FO-8, so a workflow
 // declaring one must not compile without the explicit opt-in.
 func TestParallelRequiresPreviewOptIn(t *testing.T) {
