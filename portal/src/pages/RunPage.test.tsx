@@ -180,6 +180,36 @@ describe("run detail", () => {
     );
   });
 
+  it("synchronizes graph, journal, and inspector when a replay chapter is selected", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.["01JZ455ESCALATE"];
+    const stageStart = eventList?.events.find((event) => event.seq === 2);
+    if (!stageStart) {
+      throw new Error("Expected completed run stage chapter.");
+    }
+    stageStart.category = "transition";
+    stageStart.replayChapter = true;
+    renderRun("01JZ455ESCALATE", new FixtureDaemonClient(fixtures));
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Go to Workflow transition chapter at event 2: Stage started/,
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: /^Select sequence 2:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("complementary", { name: "query attempt inspector" }),
+    ).toBeInTheDocument();
+  });
+
   it("follows appended live events without overwriting a historical selection", async () => {
     vi.useFakeTimers();
     const runId = "01JZ441DAEMONAPI";
@@ -330,6 +360,7 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+    expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 });
