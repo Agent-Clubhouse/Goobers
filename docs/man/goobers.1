@@ -207,8 +207,17 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
+\fBgoobers run approve\fR
+approve an escalated gate (not yet implemented, HITL-7/#469)
+.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
+.TP
+\fBgoobers run override\fR
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+.TP
+\fBgoobers run rerun\fR
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -363,7 +372,10 @@ show a workflow as a text DAG
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
+\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
+\fBgoobers-run-override\fR(1),
+\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),

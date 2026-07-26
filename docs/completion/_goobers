@@ -230,7 +230,7 @@ _goobers_completion()
             ;;
         run)
             if (( CURRENT == 3 )); then
-                candidates=(abort cancel)
+                candidates=(abort cancel approve override rerun)
                 candidates+=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
                 _describe -V 'workflow' candidates
                 return
