@@ -241,6 +241,26 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
+// Rank orders severities from least to most serious (1-4), for threshold
+// comparisons (e.g. pr-remediation's minSeverity policy, issue #941). An
+// unknown value ranks below SeverityInfo (0) so a typo in a declared
+// threshold fails toward "nothing meets this bar" rather than silently
+// matching every finding.
+func (s Severity) Rank() int {
+	switch s {
+	case SeverityInfo:
+		return 1
+	case SeverityWarning:
+		return 2
+	case SeverityError:
+		return 3
+	case SeverityCritical:
+		return 4
+	default:
+		return 0
+	}
+}
+
 // FindingClass routes a merge-review Finding to the right pr-remediation
 // action (issue #358, design docs/design/v0/pr-lifecycle-loop.md §4 D1).
 // Empty on an ordinary in-run gate Finding (implementation's reviewer gate,

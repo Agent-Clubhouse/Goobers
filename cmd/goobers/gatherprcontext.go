@@ -276,7 +276,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// and needs this to arrive intact. selectedNumber is stringified for the
 	// exact same reason (matching pr-select's own strconv.Itoa convention).
 	hasSubstantiveFindings := "false"
-	if verdictHasSubstantiveFindingForPR(verdict, selected.Number) {
+	if verdictHasSubstantiveFindingForPR(verdict, selected.Number, resolveMinSeverity(stderr)) {
 		hasSubstantiveFindings = "true"
 	}
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
@@ -498,13 +498,46 @@ func strongRemediationCandidates(prs []providers.PullRequestSummary) ([]provider
 //   - Otherwise the finding describes a sibling's own issue and is excluded
 //     (#525: a plain-rebase PR must not be misrouted into agentic
 //     remediation by findings that aren't about it).
-func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) bool {
+//
+// minSeverity applies the declared remediation policy's severity floor
+// (issue #941/PRR-6, gate-time filtering): a finding below the floor never
+// makes this report true, but is NOT dropped from the brief — the full
+// verdict (every finding, any severity) still reaches the agentic context
+// via GatherPRContext.Verdict, so a sub-threshold finding remains visible
+// evidence, it just cannot by itself burn a remediation cycle.
+// resolveMinSeverity reads the declared minSeverity policy input (#941/
+// PRR-6), defaulting to apiv1.SeverityInfo — the liberal floor that counts
+// every substantive finding, reproducing today's behavior when the input is
+// unset. An unrecognized value falls back to the same liberal default rather
+// than silently ranking as "meets nothing" (Severity.Rank()'s own default),
+// since a typo'd policy value should fail open to today's behavior, not
+// closed to never-remediate.
+func resolveMinSeverity(stderr io.Writer) apiv1.Severity {
+	raw := providerInput("minSeverity", string(apiv1.SeverityInfo))
+	switch apiv1.Severity(raw) {
+	case apiv1.SeverityInfo, apiv1.SeverityWarning, apiv1.SeverityError, apiv1.SeverityCritical:
+		return apiv1.Severity(raw)
+	default:
+		pf(stderr, "warning: minSeverity %q is not one of info/warning/error/critical; using %q\n", raw, apiv1.SeverityInfo)
+		return apiv1.SeverityInfo
+	}
+}
+
+func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, minSeverity apiv1.Severity) bool {
 	if verdict == nil {
 		return false
 	}
 	target := strconv.Itoa(prNumber)
 	for _, finding := range verdict.Findings {
 		if finding.Class != apiv1.FindingSubstantive {
+			continue
+		}
+		// An unset Severity (verdicts recorded before this field existed, or
+		// any evaluator that never populates it) always counts — the
+		// liberal default must reproduce today's behavior exactly, and
+		// today's code never looked at Severity at all. Only an explicitly
+		// set Severity below the floor is filtered.
+		if finding.Severity != "" && finding.Severity.Rank() < minSeverity.Rank() {
 			continue
 		}
 		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
