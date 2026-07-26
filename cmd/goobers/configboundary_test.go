@@ -200,6 +200,70 @@ func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 	}
 }
 
+// TestOpenPRActionRootsBoundaryAllowsSingleRootChange is TUT-A5/#1217's
+// positive case, exercised through the real open-pr stage: a run confined to
+// several declared action roots (config + skills) whose diff stays within a
+// SINGLE one of them passes and opens the PR — whichever root that is.
+func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+
+	wt := gitRepoWithRunBranchChanges(t, map[string]string{
+		"skills/new-skill/SKILL.md": "# new skill\n",
+	})
+	t.Chdir(wt)
+
+	code, stdout, stderr := runArgs(t, "open-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (skills-only change allowed); stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "pr #") {
+		t.Fatalf("stdout = %q, want an opened PR", stdout)
+	}
+	server.mu.Lock()
+	n := len(server.prs)
+	server.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("opened %d PR(s); want exactly 1", n)
+	}
+}
+
+// TestOpenPRActionRootsBoundaryRejectsCrossRootChange is TUT-A5/#1217's core
+// negative case: a run's diff spanning BOTH declared action roots at once
+// (config AND skills) is refused, even though every individual path is within
+// some declared root — a skill-authoring action must not also rewrite a
+// workflow in the same run.
+func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+
+	wt := gitRepoWithRunBranchChanges(t, map[string]string{
+		"selfhost/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
+		"skills/new-skill/SKILL.md":                     "# new skill\n",
+	})
+	t.Chdir(wt)
+
+	code, _, stderr := runArgs(t, "open-pr", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (cross-root change rejected); stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "action write-boundary") {
+		t.Fatalf("stderr = %q, want an action write-boundary error", stderr)
+	}
+	server.mu.Lock()
+	n := len(server.prs)
+	server.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("opened %d PR(s); a cross-root change must open none", n)
+	}
+}
+
 // TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff: when confinement is
 // requested but the diff can't be computed (CWD is not a git repo), the stage
 // refuses rather than opening the PR unverified.
