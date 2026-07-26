@@ -21,10 +21,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -68,7 +68,7 @@ jobs:
 
       - name: Upload normalized candidate
         if: ${{ !cancelled() && hashFiles('provider-fixture-candidate.json') != '' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: github-provider-fixture-${{ github.run_id }}-${{ github.run_attempt }}
           path: provider-fixture-candidate.json
