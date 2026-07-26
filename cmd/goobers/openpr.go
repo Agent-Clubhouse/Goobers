@@ -43,7 +43,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := pullRequestProviderToken(repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -276,6 +276,19 @@ func newOpenPRProviderForRepo(repo providers.RepositoryRef, token string) (provi
 	default:
 		return nil, fmt.Errorf("unsupported repository provider %q", repo.Provider)
 	}
+}
+
+func pullRequestProviderToken(repo providers.RepositoryRef) (string, error) {
+	token, err := providerToken(capability.ProviderPRWrite)
+	if err == nil {
+		return token, nil
+	}
+	if repo.Provider == providers.ProviderGitHub {
+		if legacyToken, legacyErr := providerToken(capability.GitHubPRWrite); legacyErr == nil {
+			return legacyToken, nil
+		}
+	}
+	return "", err
 }
 
 func providerWorkItemClosed(item providers.WorkItem) bool {

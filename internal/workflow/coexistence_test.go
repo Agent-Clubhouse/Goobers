@@ -28,7 +28,7 @@ func TestVersionedInterpreterFixturesCompileInOneBinary(t *testing.T) {
 		{
 			name:         "next",
 			path:         filepath.Join("v_next", "testdata", "golden", "runtime-policy.yaml"),
-			wantDigest:   "sha256:bfc92dc4f85277bc15aa4fe025bebdffec4bd8467c104ade629c84bfd60a99ae",
+			wantDigest:   "sha256:de0f8f6f656ab70841dd5a74886a4ec8118bd961fe9a0817f73465e21901b63f",
 			wantInterval: "10s",
 		},
 	}
@@ -82,7 +82,7 @@ func TestNextDefaultDoesNotAlterCurrentInterpreter(t *testing.T) {
 				"kind":                "ci-poll",
 				"pollIntervalSeconds": "30s",
 			},
-			Capabilities: []string{"github:pr:write"},
+			Capabilities: []string{"provider:pr:write"},
 			Next:         "ci",
 		}},
 		Gates: []apiv1.Gate{{

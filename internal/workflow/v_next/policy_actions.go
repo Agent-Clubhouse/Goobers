@@ -34,7 +34,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -152,7 +152,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 				continue
 			}
 			for _, required := range contract.requiredCapabilities {
-				if taskCapabilities[string(required)] {
+				if hasPolicyCapability(taskCapabilities, required) {
 					problems = append(problems, fmt.Sprintf(
 						"task %q grants capability %q for goober %q conditional policy action %q, but policyActions does not declare it",
 						task.Name, required, task.Goober, action))
@@ -204,7 +204,7 @@ func gooberPolicyActionProblems(name string, goober apiv1.GooberSpec, known []st
 			}
 			grants := toSet(goober.Capabilities)
 			for _, required := range contract.requiredCapabilities {
-				if !grants[string(required)] {
+				if !hasPolicyCapability(grants, required) {
 					problems = append(problems, fmt.Sprintf(
 						"goober %q policy action %q requires capability %q, but the goober does not grant it",
 						name, action, required))
@@ -219,13 +219,20 @@ func missingPolicyActionCapabilities(task apiv1.Task, action string, contract po
 	declared := toSet(task.Capabilities)
 	var problems []string
 	for _, required := range contract.requiredCapabilities {
-		if !declared[string(required)] {
+		if !hasPolicyCapability(declared, required) {
 			problems = append(problems, fmt.Sprintf(
 				"task %q policy action %q requires capability %q, but the task does not declare it",
 				task.Name, action, required))
 		}
 	}
 	return problems
+}
+
+func hasPolicyCapability(declared map[string]bool, required capability.Capability) bool {
+	if declared[string(required)] {
+		return true
+	}
+	return required == capability.ProviderPRWrite && declared[string(capability.GitHubPRWrite)]
 }
 
 func policyCommand(task apiv1.Task) string {

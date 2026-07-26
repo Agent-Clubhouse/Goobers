@@ -236,11 +236,11 @@ func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
 			continue
 		}
 		for _, declared := range task.Capabilities {
-			if declared == "github:pr:write" {
+			if declared == "provider:pr:write" {
 				return
 			}
 		}
-		t.Fatalf("ci-poll task %q capabilities = %v, want github:pr:write", task.Name, task.Capabilities)
+		t.Fatalf("ci-poll task %q capabilities = %v, want provider:pr:write", task.Name, task.Capabilities)
 	}
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }

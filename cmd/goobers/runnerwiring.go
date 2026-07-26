@@ -239,7 +239,7 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
@@ -556,7 +556,13 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 	}
-	token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+	credentialCapability := capability.ProviderPRWrite
+	if !containsCapability(env.Capabilities, string(credentialCapability)) &&
+		(env.RepoRef.Provider == "" || env.RepoRef.Provider == apiv1.ProviderGitHub) &&
+		containsCapability(env.Capabilities, string(capability.GitHubPRWrite)) {
+		credentialCapability = capability.GitHubPRWrite
+	}
+	token, err := set.Token(ctx, string(credentialCapability))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 	}
@@ -582,6 +588,15 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		return apiv1.ResultEnvelope{}, err
 	}
 	return ciPoll.Run(ctx, pollCfg)
+}
+
+func containsCapability(capabilities []string, required string) bool {
+	for _, declared := range capabilities {
+		if declared == required {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCIPollExecutor builds the registered ci-poll kind for a repo-backed

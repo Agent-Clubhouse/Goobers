@@ -616,7 +616,7 @@ func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	}
 }
 
-func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
+func TestCompileCIPollRequiresProviderPRWrite(t *testing.T) {
 	cases := []struct {
 		name    string
 		caps    []string
@@ -624,10 +624,14 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 	}{
 		{
 			name:    "missing required capability",
-			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "github:pr:write"`,
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
 		},
 		{
 			name: "required capability declared",
+			caps: []string{string(capability.ProviderPRWrite)},
+		},
+		{
+			name: "legacy GitHub capability remains valid",
 			caps: []string{string(capability.GitHubPRWrite)},
 		},
 	}

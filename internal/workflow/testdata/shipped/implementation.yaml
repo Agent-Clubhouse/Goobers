@@ -22,7 +22,7 @@ spec:
       goal: Implement the backlog item and open a PR.
       capabilities:
         - repo:push
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - modify-repository
         - open-or-update-pr
@@ -44,7 +44,7 @@ spec:
       type: deterministic
       goal: Poll the PR's CI checks until they conclude.
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       run:
         command: ["goobers", "ci-poll", "--wait"]
       next: ci-gate

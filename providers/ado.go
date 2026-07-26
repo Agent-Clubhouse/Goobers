@@ -289,18 +289,29 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }
 
-// OpenPullRequest opens an Azure DevOps pull request.
+// OpenPullRequest opens an Azure DevOps pull request, or updates the active
+// source/target pull request created by an earlier workflow attempt.
 func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
 	}
+	sourceRefName := "refs/heads/" + strings.TrimPrefix(req.Head, "refs/heads/")
+	targetRefName := "refs/heads/" + strings.TrimPrefix(req.Base, "refs/heads/")
+	existing, ok, err := p.findActivePullRequest(ctx, req.Repository, sourceRefName, targetRefName)
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	if ok {
+		return p.updatePullRequest(ctx, req, existing)
+	}
+
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
 		return PullRequestResult{}, err
 	}
 	body := map[string]interface{}{
-		"sourceRefName": "refs/heads/" + strings.TrimPrefix(req.Head, "refs/heads/"),
-		"targetRefName": "refs/heads/" + strings.TrimPrefix(req.Base, "refs/heads/"),
+		"sourceRefName": sourceRefName,
+		"targetRefName": targetRefName,
 		"title":         req.Title,
 		"description":   withRunIDFooter(req.Body, req.RunID),
 		"isDraft":       req.Draft,
@@ -309,11 +320,66 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
-	prURL := out.URL
-	if out.Links.Web.Href != "" {
-		prURL = out.Links.Web.Href
+	return adoPullRequestResult(out), nil
+}
+
+func (p *ADOProvider) findActivePullRequest(ctx context.Context, repo RepositoryRef, sourceRefName, targetRefName string) (adoPullRequest, bool, error) {
+	endpoint, err := p.repoURL(repo, "pullrequests")
+	if err != nil {
+		return adoPullRequest{}, false, err
 	}
-	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: prURL}, nil
+	endpoint, err = addQuery(endpoint, url.Values{
+		"searchCriteria.status":        []string{"active"},
+		"searchCriteria.sourceRefName": []string{sourceRefName},
+		"searchCriteria.targetRefName": []string{targetRefName},
+		"searchCriteria.includeLinks":  []string{"true"},
+		"$top":                         []string{"1"},
+	})
+	if err != nil {
+		return adoPullRequest{}, false, err
+	}
+	var out adoPullRequestsResponse
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return adoPullRequest{}, false, err
+	}
+	if len(out.Value) == 0 {
+		return adoPullRequest{}, false, nil
+	}
+	return out.Value[0], true, nil
+}
+
+func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequest, existing adoPullRequest) (PullRequestResult, error) {
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", strconv.Itoa(existing.PullRequestID))
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	body := map[string]interface{}{
+		"title":       req.Title,
+		"description": withRunIDFooter(req.Body, req.RunID),
+		"isDraft":     req.Draft,
+	}
+	var out adoPullRequest
+	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+		return PullRequestResult{}, err
+	}
+	if out.PullRequestID == 0 {
+		out.PullRequestID = existing.PullRequestID
+	}
+	if out.URL == "" {
+		out.URL = existing.URL
+	}
+	if out.Links.Web.Href == "" {
+		out.Links.Web.Href = existing.Links.Web.Href
+	}
+	return adoPullRequestResult(out), nil
+}
+
+func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
+	prURL := pr.URL
+	if pr.Links.Web.Href != "" {
+		prURL = pr.Links.Web.Href
+	}
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
 }
 
 // RequestReview requests Azure DevOps reviewers for a pull request.

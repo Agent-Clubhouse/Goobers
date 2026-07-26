@@ -150,7 +150,7 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 				Inputs: map[string]string{
 					"kind": "ci-poll",
 				},
-				Capabilities:   []string{"github:pr:write"},
+				Capabilities:   []string{"provider:pr:write"},
 				TimeoutSeconds: 20,
 				Next:           "ci",
 			}},

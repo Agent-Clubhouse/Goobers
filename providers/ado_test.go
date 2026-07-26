@@ -315,8 +315,14 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "url": "pr-url"})
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+		case http.MethodPost:
+			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "url": "pr-url"})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
 	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/qa-1", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPut)
@@ -398,13 +404,27 @@ func TestADOProviderCreatesPullRequest(t *testing.T) {
 	var body map[string]interface{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		decodeJSON(t, r, &body)
-		writeJSON(t, w, map[string]interface{}{
-			"pullRequestId": 12,
-			"url":           "api-pr-url",
-			"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
-		})
+		switch r.Method {
+		case http.MethodGet:
+			query := r.URL.Query()
+			if query.Get("searchCriteria.status") != "active" ||
+				query.Get("searchCriteria.sourceRefName") != "refs/heads/goobers/implementation/run-1" ||
+				query.Get("searchCriteria.targetRefName") != "refs/heads/main" ||
+				query.Get("searchCriteria.includeLinks") != "true" ||
+				query.Get("$top") != "1" {
+				t.Fatalf("unexpected pull request lookup query: %s", r.URL.RawQuery)
+			}
+			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+		case http.MethodPost:
+			decodeJSON(t, r, &body)
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -433,6 +453,82 @@ func TestADOProviderCreatesPullRequest(t *testing.T) {
 	}
 	description, _ := body["description"].(string)
 	if !strings.Contains(description, "Provider contract") || !strings.Contains(description, "run-1") {
+		t.Fatalf("description = %q", description)
+	}
+}
+
+func TestADOProviderUpdatesExistingPullRequestOnRepass(t *testing.T) {
+	var patchBody map[string]interface{}
+	postCalls := 0
+	patchCalls := 0
+	active := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if !active {
+				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+				return
+			}
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{{
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"sourceRefName": "refs/heads/goobers/implementation/run-1",
+				"targetRefName": "refs/heads/main",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			}}})
+		case http.MethodPost:
+			postCalls++
+			active = true
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		patchCalls++
+		decodeJSON(t, r, &patchBody)
+		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	request := PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Initial title",
+		Body:       "Initial body",
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		Draft:      true,
+		RunID:      "run-1",
+	}
+	first, err := provider.OpenPullRequest(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first OpenPullRequest returned error: %v", err)
+	}
+	request.Title = "Updated title"
+	request.Body = "Updated body"
+	result, err := provider.OpenPullRequest(context.Background(), request)
+	if err != nil {
+		t.Fatalf("repass OpenPullRequest returned error: %v", err)
+	}
+	if first.ID != "12" || result.ID != first.ID || result.Number != first.Number || result.URL != first.URL {
+		t.Fatalf("first result = %#v, repass result = %#v", first, result)
+	}
+	if postCalls != 1 || patchCalls != 1 {
+		t.Fatalf("POST calls = %d, PATCH calls = %d; want one creation and one repass update", postCalls, patchCalls)
+	}
+	if patchBody["title"] != "Updated title" || patchBody["isDraft"] != true {
+		t.Fatalf("patch body = %#v", patchBody)
+	}
+	description, _ := patchBody["description"].(string)
+	if !strings.Contains(description, "Updated body") || !strings.Contains(description, "goobers run-id: run-1") {
 		t.Fatalf("description = %q", description)
 	}
 }

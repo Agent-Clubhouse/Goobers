@@ -645,6 +645,9 @@ func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
 	if got[string(capability.RepoPush)] != "ado-token" {
 		t.Fatalf("repo:push = %q", got[string(capability.RepoPush)])
 	}
+	if got[string(capability.ProviderPRWrite)] != "ado-token" {
+		t.Fatalf("provider:pr:write = %q", got[string(capability.ProviderPRWrite)])
+	}
 }
 
 // TestBuildCredentialsGrantsReadOnlyAdditionalRepos proves the MGV-10 (#1285)
@@ -1482,7 +1485,7 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { newPRPoller = prev })
 
-	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)}), apiv1.DeterministicRun{})
+	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)}), apiv1.DeterministicRun{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1497,6 +1500,27 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	if len(reg.registered) != 1 || string(reg.registered[0]) != "ci-poll-token-value" {
 		t.Fatalf("registered secrets = %q, want the ci-poll token", reg.registered)
+	}
+}
+
+func TestCIPollRejectsGitHubCapabilityForADO(t *testing.T) {
+	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
+	called := false
+	prev := newPRPoller
+	newPRPoller = func(string) executor.PRPoller {
+		called = true
+		return &ciPollFakePoller{}
+	}
+	t.Cleanup(func() { newPRPoller = prev })
+
+	env := ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)})
+	env.RepoRef.Provider = apiv1.ProviderADO
+	_, err := deterministic.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
+		t.Fatalf("Run error = %v, want ErrUndeclaredCapability", err)
+	}
+	if called {
+		t.Fatal("PR poller constructed with a GitHub-only capability for ADO")
 	}
 }
 
@@ -1531,7 +1555,7 @@ func TestCIPollSelectsADOFromInvocationRepository(t *testing.T) {
 	t.Cleanup(func() { newADOProvider = previousADOProvider })
 
 	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
-	env := ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)})
+	env := ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)})
 	env.RepoRef = apiv1.RepoRef{
 		Provider: apiv1.ProviderADO,
 		Owner:    "organization",

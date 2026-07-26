@@ -194,7 +194,7 @@ spec:
         # merges into Outputs).
         resultFile: "pr-result.json"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:
@@ -227,7 +227,7 @@ spec:
         # flatten every upstream Output automatically.
         prNumber: prNumber
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       expectedOutputs:
         - ciStatus
       next: ci-gate
