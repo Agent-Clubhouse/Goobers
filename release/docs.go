@@ -43,8 +43,13 @@ const (
 		"Keep the default workflow selection, or explicitly select `implementation`, so\n" +
 		"the first manual run below uses the workflow the guided setup created. Guided\n" +
 		"setup validates the instance and refuses an already configured target.\n\n"
+	quickstartSourceOnboardingAssets = "For a first autonomous run against a disposable tutorial target, seed the\n" +
+		"versioned `quickstart@v1` template and copy its paired sample into a separate\n" +
+		"throwaway directory:\n\n" +
+		"```sh\n" +
+		"cp -R samples/getting-started-task-api ./getting-started-task-api\n" +
+		"```\n\n"
 	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
-	quickstartInstalledRun            = "goobers run implementation ./my-instance"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
 	linuxQuickstartSourceIntro        = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
@@ -125,7 +130,17 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		cleanup()
 		return "", nil, err
 	}
-	if err := adaptInstalledOnboarding(payloadDir, version); err != nil {
+	onboarding, err := stageOnboardingPayload(
+		repoRoot,
+		version,
+		commit,
+		filepath.Join(payloadDir, onboardingRoot),
+	)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := adaptInstalledOnboarding(payloadDir, version, onboarding.Samples[0].Version); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -169,7 +184,8 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	return payloadDir, cleanup, nil
 }
 
-func adaptInstalledOnboarding(payloadDir, version string) error {
+func adaptInstalledOnboarding(payloadDir, version, sampleVersion string) error {
+	releaseCommand := "goobers-" + version
 	rewrites := []struct {
 		path                 string
 		sections             []onboardingSectionRewrite
@@ -181,40 +197,76 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 			sections: []onboardingSectionRewrite{{
 				source: readmeSourceInstall,
 				installed: fmt.Sprintf(
-					"This copy is bundled with release `%s` and assumes `goobers` is installed on `PATH`.\n\n"+
-						"```sh\ngoobers --version\n```\n\n"+
+					"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
+						"a newer release cannot change this walkthrough:\n\n"+
+						"```sh\n%s --version\n```\n\n"+
 						"The release installer already ran guided setup at the requested instance path\n"+
 						"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
 						"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
 						"quoting it if needed.\n\n"+
-						"If you opened this README directly from an extracted archive instead, create the\n"+
-						"guided instance now:\n\n"+
-						"```sh\ngoobers init --guided ./my-instance\n\n",
+						"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
+						"below with `./goobers` and create the guided instance now:\n\n"+
+						"```sh\n%s init --guided ./my-instance\n\n",
 					version,
+					releaseCommand,
+					releaseCommand,
+					releaseCommand,
 				),
 			}},
 			sourceCommandPrefix:  "$HOME/.local/bin/goobers",
-			installedCommandName: "goobers",
+			installedCommandName: releaseCommand,
 		},
 		{
 			path: "docs/guides/quickstart.md",
 			sections: []onboardingSectionRewrite{
 				{
-					source: quickstartSourceBuild,
+					source: quickstartSourceOnboardingAssets,
 					installed: fmt.Sprintf(
-						"## 1. Confirm the installed binary\n\n"+
-							"This copy is bundled with release `%s` and uses the `goobers` executable from `PATH`.\n\n"+
-							"```sh\ngoobers --version\n```\n\n",
+						"For a first autonomous run against a disposable tutorial target, use the\n"+
+							"template and sample installed with this exact release. The installer prints the\n"+
+							"versioned data directory. If you used a custom data root, set `GOOBERS_RELEASE_ROOT`\n"+
+							"to that exact printed path. If you opened a platform archive directly, set it to\n"+
+							"the extracted directory and replace `%s` below with `./goobers`. The default installed\n"+
+							"location resolves with:\n\n"+
+							"```sh\n"+
+							"GOOBERS_DATA_ROOT=\"${GOOBERS_DOCS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/goobers}\"\n"+
+							"GOOBERS_RELEASE_ROOT=\"${GOOBERS_RELEASE_ROOT:-${GOOBERS_DATA_ROOT}/%s}\"\n"+
+							"cp -R \"${GOOBERS_RELEASE_ROOT}/onboarding/samples/getting-started-task-api@%s\" \\\n"+
+							"  ./getting-started-task-api\n"+
+							"```\n\n"+
+							"`%s init --template=quickstart` resolves `quickstart@v1` from the installed\n"+
+							"`%s` binary. Its emitted config matches\n"+
+							"`${GOOBERS_RELEASE_ROOT}/onboarding/templates/quickstart@v1` byte-for-byte; neither\n"+
+							"path reads the development repository's moving `main`.\n\n",
+						releaseCommand,
+						version,
+						sampleVersion,
+						releaseCommand,
 						version,
 					),
 				},
 				{
-					source:    quickstartSourceInit,
-					installed: quickstartInstalledInit,
+					source: quickstartSourceBuild,
+					installed: fmt.Sprintf(
+						"## 1. Confirm the installed binary\n\n"+
+							"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
+							"```sh\n%s --version\n```\n\n",
+						version,
+						releaseCommand,
+					),
+				},
+				{
+					source: quickstartSourceInit,
+					installed: strings.Replace(
+						quickstartInstalledInit,
+						"goobers init",
+						releaseCommand+" init",
+						1,
+					),
 				},
 				{
 					source:    quickstartSourceRun,
-					installed: quickstartInstalledRun,
+					installed: releaseCommand + " run implementation ./my-instance",
 				},
 				{
 					source:    quickstartSourceStatusWorkflow,
@@ -222,7 +274,7 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				},
 			},
 			sourceCommandPrefix:  "bin/goobers",
-			installedCommandName: "goobers",
+			installedCommandName: releaseCommand,
 		},
 		{
 			path: "docs/guides/quickstart-linux.md",

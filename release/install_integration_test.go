@@ -28,7 +28,7 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 
 	fakeBinary := filepath.Join(root, "goobers")
 	fakeBinaryData := []byte("#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> \"$GOOBERS_CALLS\"\n" +
+		"printf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$GOOBERS_CALLS\"\n" +
 		"if [ \"${1:-}\" = \"--version\" ]; then\n" +
 		"  printf 'goobers v1.2.3 (test)\\n'\n" +
 		"fi\n")
@@ -45,6 +45,13 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 			"```sh\ngoobers init --guided ./my-instance\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
 		"docs/guides/quickstart.md": []byte("# Quickstart v1.2.3\n"),
+		"onboarding/manifest.json":  []byte("{\"release\":{\"version\":\"v1.2.3\"}}\n"),
+		"onboarding/templates/quickstart@v1/manifest.yaml": []byte(
+			"apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+		),
+		"onboarding/samples/getting-started-task-api@1.0.0/seed-issues.json": []byte(
+			"{\"sample\":{\"version\":\"1.0.0\"}}\n",
+		),
 	}
 	for name, data := range releaseDocs {
 		path := filepath.Join(releaseRoot, filepath.FromSlash(name))
@@ -136,6 +143,13 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	if !bytes.Equal(installed, fakeBinaryData) {
 		t.Fatal("installed binary differs from the checksummed archive")
 	}
+	versionedInstalled, err := os.ReadFile(filepath.Join(installDir, "goobers-v1.2.3"))
+	if err != nil {
+		t.Fatalf("versioned installed binary: %v", err)
+	}
+	if !bytes.Equal(versionedInstalled, fakeBinaryData) {
+		t.Fatal("versioned installed binary differs from the checksummed archive")
+	}
 	installedDocsDir := filepath.Join(dataDir, "goobers", "v1.2.3")
 	for name, want := range releaseDocs {
 		got, err := os.ReadFile(filepath.Join(installedDocsDir, filepath.FromSlash(name)))
@@ -166,7 +180,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--version", "init --guided " + instancePath} {
+	for _, want := range []string{"goobers --version", "goobers-v1.2.3 init --guided " + instancePath} {
 		if !strings.Contains(string(calls), want) {
 			t.Errorf("binary calls lack %q:\n%s", want, calls)
 		}
@@ -205,8 +219,57 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(defaultCalls), "init --guided ./goobers-instance") {
+	if !strings.Contains(string(defaultCalls), "goobers-v1.2.3 init --guided ./goobers-instance") {
 		t.Errorf("default-path binary calls:\n%s", defaultCalls)
+	}
+
+	fakeBinaryV124 := filepath.Join(root, "goobers-v1.2.4-source")
+	fakeBinaryV124Data := []byte(strings.Replace(string(fakeBinaryData), "v1.2.3", "v1.2.4", 1))
+	if err := os.WriteFile(fakeBinaryV124, fakeBinaryV124Data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveV124, err := packageArchive(
+		Target{OS: "linux", Arch: "amd64"},
+		"v1.2.4",
+		fakeBinaryV124,
+		fixtures,
+		releaseRoot,
+	)
+	if err != nil {
+		t.Fatalf("package v1.2.4 archive: %v", err)
+	}
+	manifest, err = checksumsManifest([]string{archive, archiveV124})
+	if err != nil {
+		t.Fatalf("checksums for sequential install: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtures, "SHA256SUMS"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("sh", scriptPath, "v1.2.4", filepath.Join(root, "second-instance"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FIXTURE_DIR="+fixtures,
+		"CURL_CALLS="+curlCalls,
+		"GOOBERS_CALLS="+goobersCalls,
+		"GOOBERS_INSTALL_DIR="+installDir,
+		"XDG_DATA_HOME="+dataDir,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sequential v1.2.4 install: %v\n%s", err, output)
+	}
+	for name, want := range map[string][]byte{
+		"goobers":        fakeBinaryV124Data,
+		"goobers-v1.2.3": fakeBinaryData,
+		"goobers-v1.2.4": fakeBinaryV124Data,
+	} {
+		got, err := os.ReadFile(filepath.Join(installDir, name))
+		if err != nil {
+			t.Errorf("read sequentially installed %s: %v", name, err)
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("sequentially installed %s has unexpected bytes", name)
+		}
 	}
 
 	if err := os.WriteFile(archive, []byte("corrupt"), 0o644); err != nil {
@@ -229,6 +292,9 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 	if _, err := os.Stat(filepath.Join(failedInstallDir, "goobers")); !os.IsNotExist(err) {
 		t.Fatalf("checksum failure installed a binary: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(failedInstallDir, "goobers-v1.2.3")); !os.IsNotExist(err) {
+		t.Fatalf("checksum failure installed a versioned binary: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(failedDataDir, "goobers", "v1.2.3")); !os.IsNotExist(err) {
 		t.Fatalf("checksum failure installed documentation: %v", err)

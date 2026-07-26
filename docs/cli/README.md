@@ -38,6 +38,9 @@
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
+| [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
@@ -782,6 +785,70 @@ Show an escalation's structured cause and per-stage artifact timeline.
 
 ~~~console
 $ goobers escalations show <run-id>
+~~~
+
+## `goobers examples`
+
+browse canonical workflow examples embedded in the binary
+
+~~~text
+Usage: goobers examples <list|show> [name]
+
+Browse the canonical workflow examples embedded in this binary. No source
+checkout or instance root is required.
+
+Commands:
+  list         print the available example names
+  show <name>  print an example's exact Workflow YAML
+
+Run `goobers examples list -h` or `goobers examples show -h` for details.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+$ goobers examples show implementation
+~~~
+
+## `goobers examples list`
+
+list canonical embedded workflow examples
+
+~~~text
+Usage: goobers examples list
+
+Print the names of the canonical embedded workflow examples, one per line.
+Pass one of these names to `goobers examples show` to print its YAML.
+
+Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+~~~
+
+## `goobers examples show`
+
+print a canonical embedded workflow example
+
+~~~text
+Usage: goobers examples show <name>
+
+Print the exact canonical Workflow YAML embedded in this binary. Use
+`goobers examples list` to discover names. No source checkout or instance
+root is required.
+
+Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
+2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples show implementation
 ~~~
 
 ## `goobers features`
