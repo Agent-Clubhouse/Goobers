@@ -90,6 +90,47 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryReadyAgeFailureDoesNotLeakClaim(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Requeued item", "goobers:approved", "goobers:ready")
+	server.mu.Lock()
+	for i, event := range server.issueEvents {
+		if event.number == 7 && event.label == providers.LabelReady {
+			server.issueEvents = append(server.issueEvents[:i], server.issueEvents[i+1:]...)
+			break
+		}
+	}
+	server.mu.Unlock()
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 || !strings.Contains(stderr, "no active label-add event") {
+		t.Fatalf("missing ready event: code = %d, stderr = %q", code, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("failed query leaked claim: %+v", entry)
+	}
+
+	server.mu.Lock()
+	server.appendLabelEventLocked(7, providers.LabelReady, true, time.Now().UTC())
+	server.mu.Unlock()
+	t.Setenv("GOOBERS_RUN_ID", "run-2")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("retry after ready event: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
 func TestBacklogQueryLabelLists(t *testing.T) {
 	tests := []struct {
 		name          string

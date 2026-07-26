@@ -627,6 +627,17 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
+	// The lease is only committed once enrichment and result persistence finish.
+	// Otherwise a post-claim failure can hide the item from every later tick.
+	claimResultCommitted := false
+	defer func() {
+		if claimResultCommitted {
+			return
+		}
+		if releaseErr := releaseClaimsForRun(l, instanceLog, runID); releaseErr != nil {
+			pf(stderr, "error: roll back claims after backlog query failure: %v\n", releaseErr)
+		}
+	}()
 	if labelFilter.ReferencesLabel(providers.LabelReady) {
 		for i := range claimed {
 			if !claimed[i].HasLabel(providers.LabelReady) {
@@ -695,6 +706,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	} else {
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
+	claimResultCommitted = true
 	return 0
 }
 
