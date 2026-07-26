@@ -1,0 +1,218 @@
+{
+  "schemaVersion": "goobers.dev/features/v1",
+  "version": "dev",
+  "commit": "none",
+  "dslVersion": "all",
+  "features": [
+    {
+      "name": "goober.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.gaggle",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.harness.copilot",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.harnessOptions",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.instructions",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.model",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.role",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.scaleFactor",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.skills",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.tools",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.workflows",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "stage.resultFile",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "stage.run.command",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "stage.run.workspace.repo",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "stage.shell",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.agentic",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.deterministic",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.expectedOutputs",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.goal",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.goober",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.inputs",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.name",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.next",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.onTimeout.fail",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "trigger.schedule",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.gaggle",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.readiness",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.readiness.maxConcurrentRuns",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.readiness.maxRunsPerHour",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.start",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.tasks",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.spec.triggers",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "workflow.terminal.complete",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    }
+  ]
+}

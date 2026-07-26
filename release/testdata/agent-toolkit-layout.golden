@@ -6,6 +6,8 @@ payload/.goobers/agent-toolkit/adapters/copilot.md
 payload/.goobers/agent-toolkit/api/schemas/agent-toolkit-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/artifact-pointer.schema.json
 payload/.goobers/agent-toolkit/api/schemas/candidate-findings-v1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
+payload/.goobers/agent-toolkit/api/schemas/features.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
 payload/.goobers/agent-toolkit/api/schemas/invocation.schema.json
