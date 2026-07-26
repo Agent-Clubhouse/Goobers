@@ -151,6 +151,34 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 	}
 }
 
+func TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "config source O'Brien")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS(
+		[]string{
+			"--template=quickstart",
+			"--source-tree",
+			root,
+			"--json",
+		},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		"windows",
+	)
+	if code != 0 || stderr.String() != "" {
+		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var envelope configSourceActionEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	want := `goobers validate --source-tree --json "` + absolutePath(root) + `"`
+	if envelope.NextCommand != want {
+		t.Fatalf("nextCommand = %q, want %q", envelope.NextCommand, want)
+	}
+}
+
 func TestInitQuickstartConfigSourceFlagValidation(t *testing.T) {
 	t.Chdir(t.TempDir())
 	tests := []struct {
