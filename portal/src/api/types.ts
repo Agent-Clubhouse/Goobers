@@ -580,6 +580,7 @@ export interface TelemetryStageStats {
   gaggle: string;
   workflow: string;
   stage: string;
+  branch?: number;
   totalAttempts: number;
   succeededAttempts: number;
   failedAttempts: number;
@@ -607,6 +608,7 @@ export interface TelemetryUsageStats {
   gaggle?: string;
   workflow?: string;
   stage?: string;
+  branch?: number;
   totalAttempts: number;
   tokenSamples: number;
   p50Tokens?: number;

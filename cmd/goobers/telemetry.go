@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -203,20 +204,25 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 	return rollup.Open(l.TelemetryDB())
 }
 
-const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
+const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--branch=id] [--model=id] [--harness-version=version] [--group-by=branch|model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
 	"Success rate and duration aggregates per workflow and stage, plus curation\n" +
 	"actions and ready-pool health for unfiltered workflow views,\n" +
 	"across every run (default path \".\"). Agent filters retain matching agentic\n" +
-	"stage attempts; a run that used multiple grouped cohorts appears in each.\n" +
+	"stage attempts; --branch filters stage/usage rows by journal branch id.\n" +
+	"A run that used multiple grouped agent cohorts appears in each.\n" +
 	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
 
 type telemetryGroupBy struct {
+	branch         bool
 	model          bool
 	harnessVersion bool
 }
 
 func (g *telemetryGroupBy) String() string {
 	var values []string
+	if g.branch {
+		values = append(values, "branch")
+	}
 	if g.model {
 		values = append(values, "model")
 	}
@@ -228,12 +234,14 @@ func (g *telemetryGroupBy) String() string {
 
 func (g *telemetryGroupBy) Set(value string) error {
 	switch value {
+	case "branch":
+		g.branch = true
 	case "model":
 		g.model = true
 	case "harness-version":
 		g.harnessVersion = true
 	default:
-		return fmt.Errorf("unknown group dimension %q (allowed: model, harness-version)", value)
+		return fmt.Errorf("unknown group dimension %q (allowed: branch, model, harness-version)", value)
 	}
 	return nil
 }
@@ -244,10 +252,11 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
+	branchValue := fs.String("branch", "", "filter stage and usage rows to one non-negative journal branch id")
 	model := fs.String("model", "", "filter to one model id")
 	harnessVersion := fs.String("harness-version", "", "filter to one harness version")
 	var groupBy telemetryGroupBy
-	fs.Var(&groupBy, "group-by", "group by model or harness-version; repeat to group by both")
+	fs.Var(&groupBy, "group-by", "group stage and usage rows by branch, or all rows by model/harness-version; repeat for multiple")
 	sinceValue := fs.String("since", "", "include runs started at or after this RFC3339 timestamp")
 	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
@@ -258,6 +267,21 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
+	}
+	branchSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "branch" {
+			branchSet = true
+		}
+	})
+	var branchFilter *int
+	if branchSet {
+		branch, parseErr := strconv.Atoi(*branchValue)
+		if parseErr != nil || branch < 0 {
+			pf(stderr, "error: --branch must be a non-negative integer\n")
+			return 2
+		}
+		branchFilter = &branch
 	}
 	since, until, err := parseTelemetryWindow(*sinceValue, *untilValue)
 	if err != nil {
@@ -285,8 +309,10 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	result, err := queries.TelemetryStats(context.Background(), readservice.TelemetryStatsRequest{
 		Workflow:              *workflow,
 		Gaggle:                *gaggle,
+		Branch:                branchFilter,
 		Model:                 *model,
 		HarnessVersion:        *harnessVersion,
+		GroupByBranch:         groupBy.branch,
 		GroupByModel:          groupBy.model,
 		GroupByHarnessVersion: groupBy.harnessVersion,
 		Since:                 since,
@@ -324,11 +350,17 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 
 	pln(stdout, "\nSTAGE STATS")
 	pf(stdout, "%-16s  %-24s  %-16s  ", "GAGGLE", "WORKFLOW", "STAGE")
+	writeTelemetryBranchColumn(stdout, groupBy, "BRANCH")
 	writeTelemetryCohortColumns(stdout, groupBy, "MODEL", "HARNESS VERSION")
 	pf(stdout, "%9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
 		"ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, s := range result.Stages {
 		pf(stdout, "%-16s  %-24s  %-16s  ", s.Gaggle, s.Workflow, s.Stage)
+		branchValue := ""
+		if s.Branch != nil {
+			branchValue = strconv.Itoa(*s.Branch)
+		}
+		writeTelemetryBranchColumn(stdout, groupBy, branchValue)
 		writeTelemetryCohortColumns(stdout, groupBy, s.Model, s.HarnessVersion)
 		pf(stdout, "%9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
 			s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
@@ -372,6 +404,12 @@ func writeTelemetryCohortColumns(w io.Writer, groupBy telemetryGroupBy, model, h
 	}
 	if groupBy.harnessVersion {
 		pf(w, "%-24s  ", formatTelemetryDimension(harnessVersion))
+	}
+}
+
+func writeTelemetryBranchColumn(w io.Writer, groupBy telemetryGroupBy, branch string) {
+	if groupBy.branch {
+		pf(w, "%-8s  ", formatTelemetryDimension(branch))
 	}
 }
 

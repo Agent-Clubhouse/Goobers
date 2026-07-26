@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -564,6 +565,7 @@ func TestClientCancelledReadsAreQuiet(t *testing.T) {
 func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	since := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
 	until := since.Add(2 * time.Hour)
+	branch := 2
 	rate := 0.5
 	reader := &fakeReader{
 		stats: readservice.TelemetryStatsResult{
@@ -589,7 +591,7 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 
 	statsResponse := httptest.NewRecorder()
-	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=model,harness-version&since=" +
+	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&branch=2&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=branch,model,harness-version&since=" +
 		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
 	handler.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, statsURL, nil))
 	if statsResponse.Code != http.StatusOK {
@@ -598,14 +600,16 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	wantStatsReq := readservice.TelemetryStatsRequest{
 		Workflow:              "implement",
 		Gaggle:                "core",
+		Branch:                &branch,
 		Model:                 "gpt-5.6-sol",
 		HarnessVersion:        "1.2.3",
+		GroupByBranch:         true,
 		GroupByModel:          true,
 		GroupByHarnessVersion: true,
 		Since:                 since,
 		Until:                 until,
 	}
-	if reader.statsReq != wantStatsReq {
+	if !reflect.DeepEqual(reader.statsReq, wantStatsReq) {
 		t.Fatalf("stats request = %+v, want %+v", reader.statsReq, wantStatsReq)
 	}
 	var stats readservice.TelemetryStatsResult
@@ -696,6 +700,8 @@ func TestTelemetryQueryErrorsAreStructured(t *testing.T) {
 	}{
 		{name: "invalid time", path: TelemetryStatsPath + "?since=yesterday"},
 		{name: "reversed window", path: TelemetryStatsPath + "?since=2026-07-02T00:00:00Z&until=2026-07-01T00:00:00Z"},
+		{name: "invalid branch", path: TelemetryStatsPath + "?branch=-1"},
+		{name: "invalid group", path: TelemetryStatsPath + "?groupBy=branch-name"},
 		{name: "unknown parameter", path: TelemetryStatsPath + "?sort=recent"},
 		{name: "duplicate parameter", path: TelemetryStatsPath + "?workflow=a&workflow=b"},
 		{name: "invalid signature limit", path: TelemetryErrorSignaturesPath + "?limit=0"},

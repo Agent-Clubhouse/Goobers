@@ -27,6 +27,7 @@ type RunSummary struct {
 // StageAttempt is a queryable row from the stage_attempts table.
 type StageAttempt struct {
 	Stage                  string
+	Branch                 int
 	Traversal              int
 	Attempt                int
 	Model                  string
@@ -65,6 +66,7 @@ type AgentInvocation struct {
 // stage_attempts'/provider_mutations' runner_json convention.
 type GateVerdict struct {
 	Seq        uint64
+	Branch     int
 	Gate       string
 	Verdict    string
 	Target     string
@@ -288,12 +290,12 @@ func (db *DB) IndexedRunIDs() (map[string]struct{}, error) {
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	rows, err := db.sql.Query(`
-		SELECT sa.stage, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
+		SELECT sa.stage, sa.branch, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
 		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
 		FROM stage_attempts sa
 		LEFT JOIN stage_usage su
-			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal AND su.branch = sa.branch
 		LEFT JOIN agent_invocations ai
 			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
 			AND ai.kind = 'task'
@@ -310,7 +312,7 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
 		if err := rows.Scan(
-			&s.Stage, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
+			&s.Stage, &s.Branch, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
 			&class, &status, &startedAt, &finishedAt, &durationMs,
 			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
 		); err != nil {
@@ -377,7 +379,7 @@ func optionalFloat64(value sql.NullFloat64) *float64 {
 // GateVerdicts returns every gate evaluation for runID, in seq order.
 func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	rows, err := db.sql.Query(`
-		SELECT seq, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
+		SELECT seq, branch, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gate_verdicts: %w", err)
@@ -388,7 +390,7 @@ func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	for rows.Next() {
 		var g GateVerdict
 		var verdict, target, occurredAt, runnerJSON sql.NullString
-		if err := rows.Scan(&g.Seq, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
+		if err := rows.Scan(&g.Seq, &g.Branch, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
 		g.Verdict, g.Target, g.RunnerJSON = verdict.String, target.String, runnerJSON.String

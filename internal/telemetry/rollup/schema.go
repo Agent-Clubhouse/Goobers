@@ -466,4 +466,91 @@ WHERE first_pr_open_at IS NOT NULL
 		OR julianday(first_pr_open_at) < julianday(init_completed_at)
 	);
 `,
+	// v16 (issue #1699): journal events already carry the deterministic
+	// parallel-branch id. Preserve it on the attempt, usage, and gate projections
+	// that consumers use for branch-level outcome, duration, and cost queries.
+	// Existing rows predate this projection and therefore belong to root branch 0.
+	`
+ALTER TABLE stage_attempts RENAME TO stage_attempts_v15;
+ALTER TABLE stage_usage RENAME TO stage_usage_v15;
+ALTER TABLE gate_verdicts RENAME TO gate_verdicts_v15;
+
+CREATE TABLE stage_attempts (
+	run_id        TEXT NOT NULL,
+	stage         TEXT NOT NULL,
+	traversal     INTEGER NOT NULL,
+	attempt       INTEGER NOT NULL,
+	attempt_class TEXT,
+	status        TEXT,
+	started_at    TEXT,
+	finished_at   TEXT,
+	duration_ms   INTEGER,
+	error_code    TEXT,
+	error_class   TEXT,
+	runner_json   TEXT,
+	branch        INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_attempts (
+	run_id, stage, traversal, attempt, attempt_class, status, started_at,
+	finished_at, duration_ms, error_code, error_class, runner_json
+)
+SELECT
+	run_id, stage, traversal, attempt, attempt_class, status, started_at,
+	finished_at, duration_ms, error_code, error_class, runner_json
+FROM stage_attempts_v15;
+
+CREATE TABLE stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	branch                   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_usage (
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+)
+SELECT
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+FROM stage_usage_v15;
+
+CREATE TABLE gate_verdicts (
+	run_id      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	gate        TEXT NOT NULL,
+	verdict     TEXT,
+	target      TEXT,
+	occurred_at TEXT,
+	runner_json TEXT,
+	branch      INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (run_id, seq)
+);
+
+INSERT INTO gate_verdicts (
+	run_id, seq, gate, verdict, target, occurred_at, runner_json
+)
+SELECT
+	run_id, seq, gate, verdict, target, occurred_at, runner_json
+FROM gate_verdicts_v15;
+
+DROP TABLE stage_attempts_v15;
+DROP TABLE stage_usage_v15;
+DROP TABLE gate_verdicts_v15;
+
+CREATE INDEX idx_stage_attempts_run ON stage_attempts(run_id);
+CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
+CREATE INDEX idx_gate_verdicts_run ON gate_verdicts(run_id);
+CREATE INDEX idx_stage_attempts_branch ON stage_attempts(branch, run_id);
+CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
+CREATE INDEX idx_gate_verdicts_branch ON gate_verdicts(branch, run_id);
+`,
 }
