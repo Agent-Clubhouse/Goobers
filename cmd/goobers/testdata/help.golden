@@ -4,12 +4,8 @@ goobers — tier 1-2 local instance CLI
 Usage:
   goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
-  goobers init [--guided | --demo | --template=quickstart] [path]
-                                scaffold an instance root
-  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
-                                check WSL full-isolation readiness and optionally hand off a command
-  goobers onboarding stub-sample --destination <path> [--json]
-                                run non-interactive onboarding actions
+  goobers init [--guided | --demo | --template=quickstart [--source-tree <path> [--json]]] [path]
+                                scaffold an instance root or checked-in config source
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
@@ -135,12 +131,8 @@ goobers — tier 1-2 local instance CLI
 Usage:
   goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
-  goobers init [--guided | --demo | --template=quickstart] [path]
-                                scaffold an instance root
-  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
-                                check WSL full-isolation readiness and optionally hand off a command
-  goobers onboarding stub-sample --destination <path> [--json]
-                                run non-interactive onboarding actions
+  goobers init [--guided | --demo | --template=quickstart [--source-tree <path> [--json]]] [path]
+                                scaffold an instance root or checked-in config source
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
@@ -786,7 +778,7 @@ review. Exit codes: 0 = context gathered (possibly empty — no siblings
 is not an error), 1 = business error, 2 = usage/IO error.
 
 ### init
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]
+Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -796,15 +788,18 @@ with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
 then validates both. The source may be new or existing locally, cloned from
 GitHub, or optionally backed by a newly confirmed GitHub repository.
---template=quickstart seeds the versioned onboarding
-workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
+--template=quickstart seeds the versioned onboarding workflow; it is
+intentionally not production-safe. With --source-tree <path>, it instead
+seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
+and gaggles/) without runtime state. The source-tree action is non-interactive,
+preserves every existing file, and reports each created or skipped path;
+--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
 --insecure is also given, which scaffolds the demo anyway and reports the
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
-the general Windows sandbox policy (#651). Use `goobers preflight` to check and
-launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+the general Windows sandbox policy (#651). --insecure requires --demo.
 
 ### ios-simulator-test
 Usage: goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]
@@ -907,40 +902,6 @@ or still-pending-timeout — see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 
-### onboarding
-Usage: goobers onboarding <stub-sample> [flags]
-
-Run non-interactive, machine-readable onboarding actions. Actions never
-prompt, write secrets, create a remote, or touch a repository that was not
-explicitly named.
-
-Commands:
-  stub-sample  materialize the disposable Getting Started target
-
-Run `goobers onboarding stub-sample -h` for action flags.
-
-### onboarding stub-sample
-Usage: goobers onboarding stub-sample --destination <path> [flags]
-
-Materialize the embedded getting-started-task-api sample at an explicitly
-named destination. Existing matching files are skipped. A conflicting file
-fails the complete preflight without changing the destination unless --force
-is set; symbolic links are always refused.
-
-With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
-issues using the token named by --token-env. If the token is unset, report
-the issues pending and complete the local materialization without network
-access. No remote repository is created or pushed.
-
-Flags:
-  --destination <path>      required sample destination
-  --work-tracking <repo>    optional GitHub owner/repo to seed
-  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
-  --force                   replace conflicting regular files
-  --json                    emit the versioned action envelope
-
-Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
-
 ### open-pr
 Usage: goobers open-pr [path]
 
@@ -974,23 +935,6 @@ rewrite or deletion. Writes the
 selected PR's number/head/base/headSha/baseSha/url to the declared
 result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 2 = usage/IO error.
-
-### preflight
-Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
-
-On Windows, verify that the selected or default WSL distro can run the full
-isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
-goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
-
-With --launch-wsl, run the trailing Goobers command through that distro after
-the checks pass. Arguments are forwarded directly without shell evaluation,
-the WSL process starts in the current Windows directory, and its exit code is
-returned. Use paths relative to that directory or Linux paths in forwarded
-arguments.
-
-Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
-command failed, 2 = usage error. A forwarded command's non-zero exit code is
-preserved.
 
 ### push-branch
 Usage: goobers push-branch [path]
@@ -1407,13 +1351,12 @@ and symlinks are always preserved.
 Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 
 ### telemetry stats
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--branch=id] [--model=id] [--harness-version=version] [--group-by=branch|model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and stage, plus curation
 actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
-stage attempts; --branch filters stage/usage rows by journal branch id.
-A run that used multiple grouped agent cohorts appears in each.
+stage attempts; a run that used multiple grouped cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### telemetry-query

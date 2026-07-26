@@ -7,7 +7,8 @@ spec:
   gaggle: example
   displayName: Quickstart (onboarding only)
   triggers:
-    - type: manual
+    - type: schedule
+      schedule: "@yearly"
   readiness:
     maxConcurrentRuns: 1
   start: query-backlog

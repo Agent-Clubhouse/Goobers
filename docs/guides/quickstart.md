@@ -67,6 +67,15 @@ bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
 ```
 
+To seed the same template as a checked-in config source without runtime state,
+use the non-interactive source-tree action. Its JSON result lists every created
+or preserved file and the validation command to run next:
+
+```sh
+bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
+bin/goobers validate --source-tree --json ./tutorial-config
+```
+
 This linear template claims one approved issue, implements it, performs an
 advisory code-review task, pushes the run branch, and opens a pull request. It
 is **not for production**: it intentionally omits CI gates, remediation loops,
