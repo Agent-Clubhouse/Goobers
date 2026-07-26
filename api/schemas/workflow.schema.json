@@ -336,8 +336,7 @@
             "check": {
               "type": "string",
               "minLength": 1,
-              "enum": ["status-equals", "output-equals", "output-not-equals", "output-numeric-gte", "output-numeric-lte", "output-numeric-lt", "output-matches", "ci-status", "land-outcome", "queue-outcome"],
-              "description": "Built-in check name: status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, or queue-outcome."
+              "description": "Registered automated check name. Built-in names are status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, and queue-outcome."
             },
             "params": {
               "type": "object",
