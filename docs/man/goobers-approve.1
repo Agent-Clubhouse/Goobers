@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS APPROVE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers approve \- approve a paused or escalated gate
+.SH SYNOPSIS
+\fBgoobers approve\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Approve a paused human gate or an escalated human/reviewer gate. The daemon
+records the authenticated actor, decision, and resulting resume in the run
+journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+.fi
+.SH EXAMPLES
+.nf
+goobers approve <run-id> <gate>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

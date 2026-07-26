@@ -266,22 +266,22 @@ func init() {
 				withSynopsis(synopsisByID["run cancel"]).
 				withHelp("cancel a live in-flight run via the daemon", runCancelHelp).
 				withExamples("goobers run cancel <run-id>"),
-			runtimeSubcommand("run approve", "approve", "approve", runRunApprove).
-				withSynopsis(synopsisByID["run approve"]).
-				withHelp("approve an escalated gate (not yet implemented, HITL-7/#469)", runApproveHelp).
-				withExamples("goobers run approve <run-id> <stage>"),
-			runtimeSubcommand("run override", "override", "override", runRunOverride).
-				withSynopsis(synopsisByID["run override"]).
-				withHelp("force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)", runOverrideHelp).
-				withExamples("goobers run override <run-id> <stage>"),
-			runtimeSubcommand("run rerun", "rerun", "rerun", runRunRerun).
-				withSynopsis(synopsisByID["run rerun"]).
-				withHelp("rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)", runRerunHelp).
-				withExamples("goobers run rerun <run-id> <stage>"),
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
 			withExamples("goobers run default-implement", "goobers run default-implement --no-wait"),
+		runtimeCommand("approve", "approve", runApprove).
+			withSynopsis(synopsisByID["approve"]).
+			withHelp("approve a paused or escalated gate", approveHelp).
+			withExamples("goobers approve <run-id> <gate>"),
+		runtimeCommand("override", "override", runOverride).
+			withSynopsis(synopsisByID["override"]).
+			withHelp("override a nondeterministic gate with a rationale", overrideHelp).
+			withExamples(`goobers override --rationale="accepted risk" <run-id> <gate>`),
+		runtimeCommand("rerun-stage", "rerun", runRerunStage).
+			withSynopsis(synopsisByID["rerun-stage"]).
+			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
+			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
 		command(wslNetworkPreflightCommand, apicontract.ActionConfigTime, runWSLNetworkPreflight),
@@ -671,18 +671,6 @@ func runtimeCommand(
 ) cliCommand {
 	return withRuntimeCapability(
 		command(name, apicontract.ActionRuntimeMutation, handler),
-		capability,
-	)
-}
-
-func runtimeSubcommand(
-	id string,
-	name string,
-	capability apicontract.CapabilityID,
-	handler cliCommandHandler,
-) cliCommand {
-	return withRuntimeCapability(
-		subcommand(id, name, apicontract.ActionRuntimeMutation, handler),
 		capability,
 	)
 }

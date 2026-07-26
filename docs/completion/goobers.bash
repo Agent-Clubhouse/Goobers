@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up down apply self-update service worker dashboard run signal workflow runs status stats features schema explain reset-rate-limit workspace blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-assignment backlog-health backlog-query select-source validate-plan reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr pr-claim gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up down apply self-update service worker dashboard run approve override rerun-stage signal workflow runs status stats features schema explain reset-rate-limit workspace blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-assignment backlog-health backlog-query select-source validate-plan reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr pr-claim gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -193,7 +193,7 @@ _goobers_completion()
         run)
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
-                candidates="abort cancel approve override rerun $(command goobers __complete workflows 2>/dev/null)"
+                candidates="abort cancel $(command goobers __complete workflows 2>/dev/null)"
             elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"

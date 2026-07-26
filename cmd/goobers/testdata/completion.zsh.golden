@@ -34,6 +34,9 @@ _goobers_completion()
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
             'dashboard:serve and open the local operations portal'
             'run:trigger a run manually (still honors run conditions)'
+            'approve:approve a paused or escalated gate'
+            'override:override a nondeterministic gate with a rationale'
+            'rerun-stage:rerun a stage with a recorded instruction addendum'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
             'runs:list runs and report per-run disk usage'
@@ -292,7 +295,7 @@ _goobers_completion()
             ;;
         run)
             if (( CURRENT == 3 )); then
-                candidates=(abort cancel approve override rerun)
+                candidates=(abort cancel)
                 candidates+=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
                 _describe -V 'workflow' candidates
                 return

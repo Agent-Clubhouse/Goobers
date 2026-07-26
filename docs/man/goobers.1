@@ -45,6 +45,9 @@ reconcile a live daemon's workflow definitions now
 \fBgoobers apply-verdict\fR
 publish a managed or advisory merge-review verdict (a workflow stage)
 .TP
+\fBgoobers approve\fR
+approve a paused or escalated gate
+.TP
 \fBgoobers backlog-assignment\fR
 assign eligible backlog items from a configured roster (a workflow stage)
 .TP
@@ -201,6 +204,9 @@ materialize and optionally seed the disposable Getting Started target
 \fBgoobers open-pr\fR
 open or update the run's PR (a workflow stage)
 .TP
+\fBgoobers override\fR
+override a nondeterministic gate with a rationale
+.TP
 \fBgoobers post-merge\fR
 post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
@@ -237,6 +243,9 @@ durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 \fBgoobers report-pr-status\fR
 publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
 .TP
+\fBgoobers rerun-stage\fR
+rerun a stage with a recorded instruction addendum
+.TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
 .TP
@@ -249,17 +258,8 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
-\fBgoobers run approve\fR
-approve an escalated gate (not yet implemented, HITL-7/#469)
-.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
-.TP
-\fBgoobers run override\fR
-force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
-.TP
-\fBgoobers run rerun\fR
-rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -387,6 +387,7 @@ tear down and re-materialize a pinned repository workspace
 \fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply\fR(1),
 \fBgoobers-apply-verdict\fR(1),
+\fBgoobers-approve\fR(1),
 \fBgoobers-backlog-assignment\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
@@ -439,6 +440,7 @@ tear down and re-materialize a pinned repository workspace
 \fBgoobers-onboarding-stub-agent-instructions\fR(1),
 \fBgoobers-onboarding-stub-sample\fR(1),
 \fBgoobers-open-pr\fR(1),
+\fBgoobers-override\fR(1),
 \fBgoobers-post-merge\fR(1),
 \fBgoobers-pr-claim\fR(1),
 \fBgoobers-pr-select\fR(1),
@@ -451,14 +453,12 @@ tear down and re-materialize a pinned repository workspace
 \fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-report-pr-status\fR(1),
+\fBgoobers-rerun-stage\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
-\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
-\fBgoobers-run-override\fR(1),
-\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),

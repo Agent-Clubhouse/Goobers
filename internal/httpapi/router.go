@@ -166,7 +166,7 @@ type ErrorEnvelope = apicontract.ErrorEnvelope
 // APIError is a stable machine code and safe human-readable message.
 type APIError = apicontract.APIError
 
-// Router registers read-only routes behind an Authorizer.
+// Router registers versioned contract routes behind an Authorizer.
 type Router struct {
 	mux           *http.ServeMux
 	authenticator Authenticator
@@ -188,6 +188,7 @@ func (r *Router) ensureAdmission() {
 type handlerConfig struct {
 	events        eventSource
 	authenticator Authenticator
+	interventions InterventionService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -216,6 +217,17 @@ func WithAuthenticator(authenticator Authenticator) HandlerOption {
 			return errors.New("http API authenticator is required")
 		}
 		config.authenticator = authenticator
+		return nil
+	}
+}
+
+// WithInterventions enables the human-intervention mutation handlers.
+func WithInterventions(interventions InterventionService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if interventions == nil {
+			return errors.New("http API intervention service is required")
+		}
+		config.interventions = interventions
 		return nil
 	}
 }
@@ -342,7 +354,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	registerV1Routes(router, reader, errorLog)
+	registerV1Routes(router, reader, config.interventions, errorLog)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -360,7 +372,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+func registerV1Routes(router *Router, reader readservice.Reader, interventions InterventionService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -383,7 +395,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	registerMutationRoutes(router)
+	registerMutationRoutes(router, interventions, errorLog)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {

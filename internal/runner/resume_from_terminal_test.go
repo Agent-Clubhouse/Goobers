@@ -74,6 +74,7 @@ func TestResumeFromTerminalIsDurableAndReexecutesTarget(t *testing.T) {
 	result, err := r.ResumeFromTerminal(cancelled, ResumeFromTerminalInput{
 		RunID: runID, Machine: machine, RepoRef: repoRef,
 		Target: "implement", Actor: "operator@example.test",
+		Action: "override", Gate: "review", Decision: "pass", Rationale: "accepted risk",
 	})
 	if err != nil {
 		t.Fatalf("ResumeFromTerminal: %v", err)
@@ -138,7 +139,11 @@ func TestResumeFromTerminalIsDurableAndReexecutesTarget(t *testing.T) {
 		resumed.Target != "implement" ||
 		resumed.Status != string(journal.PhaseEscalated) ||
 		resumed.WorkflowVersion != machine.Def.Version ||
-		resumed.WorkflowDigest != machine.Digest() {
+		resumed.WorkflowDigest != machine.Digest() ||
+		resumed.Runner["interventionAction"] != "override" ||
+		resumed.Runner["interventionGate"] != "review" ||
+		resumed.Runner["interventionDecision"] != "pass" ||
+		resumed.Runner["interventionRationale"] != "accepted risk" {
 		t.Fatalf("run.resumed = %+v, want actor, target, prior phase, and immutable workflow pin", resumed)
 	}
 	if firstTerminal != 1 || secondTerminal != 1 {
@@ -236,6 +241,104 @@ func TestResumeFromTerminalAcceptsFailedRunAndGateTarget(t *testing.T) {
 	}
 }
 
+func TestResumeFromTerminalCanSelectCompletionBranch(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-human-complete"
+	createTerminalResumeRun(t, runsDir, runID, machine, journal.PhaseEscalated)
+
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	result, err := r.ResumeFromTerminal(context.Background(), ResumeFromTerminalInput{
+		RunID: runID, Machine: machine,
+		RepoRef:  apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Complete: true, Actor: "operator@example.test",
+		Action: "override", Gate: "review", Decision: "pass", Rationale: "approved terminal outcome",
+	})
+	if err != nil {
+		t.Fatalf("ResumeFromTerminal: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := events[len(events)-2]; got.Type != journal.EventRunResumed ||
+		got.Runner["interventionAction"] != "override" ||
+		got.Runner["interventionDecision"] != "pass" ||
+		got.Runner["interventionComplete"] != true {
+		t.Fatalf("run.resumed = %+v", got)
+	}
+	if got := events[len(events)-1]; got.Type != journal.EventRunFinished || got.Status != string(journal.PhaseCompleted) {
+		t.Fatalf("terminal event = %+v", got)
+	}
+}
+
+func TestResumeFinishesInterruptedCompletionIntervention(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-human-complete-crash"
+	createTerminalResumeRun(t, runsDir, runID, machine, journal.PhaseEscalated)
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated),
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+		Runner: map[string]any{
+			"interventionAction":   "override",
+			"interventionComplete": true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deterministic := &countingDeterministic{}
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, deterministic)
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+	if deterministic.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", deterministic.calls)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseCompleted) {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("completed run.finished events = %d, want 1", completed)
+	}
+}
+
 func TestResumeFromTerminalValidatesActionBeforeJournalAccess(t *testing.T) {
 	machine := fixtureMachine(t)
 	r := &Runner{}
@@ -264,6 +367,13 @@ func TestResumeFromTerminalValidatesActionBeforeJournalAccess(t *testing.T) {
 				RunID: "valid-run", Machine: machine, Actor: "operator",
 			},
 			want: "target is required",
+		},
+		{
+			name: "state and completion",
+			in: ResumeFromTerminalInput{
+				RunID: "valid-run", Machine: machine, Target: "implement", Complete: true, Actor: "operator",
+			},
+			want: "target a state and completion",
 		},
 		{
 			name: "missing actor",

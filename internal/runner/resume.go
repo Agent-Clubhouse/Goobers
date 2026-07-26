@@ -65,7 +65,12 @@ type ResumeFromTerminalInput struct {
 	GooberDigest string
 	RepoRef      apiv1.RepoRef
 	Target       string
+	Complete     bool
 	Actor        string
+	Action       string
+	Gate         string
+	Decision     string
+	Rationale    string
 }
 
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
@@ -163,13 +168,20 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 	in.Target = strings.TrimSpace(in.Target)
-	if in.Target == "" {
+	if in.Target == "" && !in.Complete {
 		return Result{}, fmt.Errorf("runner: terminal resume target is required")
+	}
+	if in.Target != "" && in.Complete {
+		return Result{}, fmt.Errorf("runner: terminal resume cannot target a state and completion together")
 	}
 	in.Actor = strings.TrimSpace(in.Actor)
 	if in.Actor == "" {
 		return Result{}, fmt.Errorf("runner: terminal resume actor is required")
 	}
+	in.Action = strings.TrimSpace(in.Action)
+	in.Gate = strings.TrimSpace(in.Gate)
+	in.Decision = strings.TrimSpace(in.Decision)
+	in.Rationale = strings.TrimSpace(in.Rationale)
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
@@ -208,12 +220,32 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 				in.Machine.Def.Name, in.Machine.Def.Version, in.Machine.Digest(), in.GooberDigest,
 			)
 		}
-		if _, task := in.Machine.Task(in.Target); !task {
-			if _, gate := in.Machine.Gate(in.Target); !gate {
-				return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
+		if !in.Complete {
+			if _, task := in.Machine.Task(in.Target); !task {
+				if _, gate := in.Machine.Gate(in.Target); !gate {
+					return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
+				}
 			}
 		}
 
+		intervention := map[string]any(nil)
+		if in.Action != "" {
+			intervention = map[string]any{
+				"interventionAction": in.Action,
+			}
+			if in.Complete {
+				intervention["interventionComplete"] = true
+			}
+			if in.Gate != "" {
+				intervention["interventionGate"] = in.Gate
+			}
+			if in.Decision != "" {
+				intervention["interventionDecision"] = in.Decision
+			}
+			if in.Rationale != "" {
+				intervention["interventionRationale"] = in.Rationale
+			}
+		}
 		if err := jr.Append(journal.Event{
 			Type:            journal.EventRunResumed,
 			Status:          string(phase),
@@ -221,8 +253,12 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 			Actor:           in.Actor,
 			WorkflowVersion: id.WorkflowVersion,
 			WorkflowDigest:  id.WorkflowDigest,
+			Runner:          intervention,
 		}); err != nil {
 			return Result{}, fmt.Errorf("runner: journal terminal resume for run %q: %w", in.RunID, err)
+		}
+		if in.Complete {
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, "", 0)
 		}
 
 		return r.resumeOwned(ctx, ResumeInput{
@@ -307,10 +343,14 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			return r.finish(in.RunID, jr, journal.PhaseEscalated, override.Gate, 0)
 		}
 	}
-	if resumed, ok := latestRunResume(events); ok &&
-		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
-		return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
-			fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
+	if resumed, ok := latestRunResume(events); ok {
+		if resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest {
+			return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
+				fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
+		}
+		if complete, _ := resumed.Runner["interventionComplete"].(bool); complete {
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, "", 0)
+		}
 	}
 	humanProgress := latestHumanGateProgress(events, in.Machine)
 	if in.HumanDecision == nil && humanProgress.waiting {
