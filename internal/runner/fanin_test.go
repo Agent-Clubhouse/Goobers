@@ -44,7 +44,10 @@ func fanInMachine(t *testing.T, failedPerformance bool) *workflow.Machine {
 		"security":    "fan.security.review-security.summary",
 		"performance": "fan.performance.summary",
 	}
-	if !failedPerformance {
+	if failedPerformance {
+		inputsFrom[BranchCompletenessInput] = "fan.performance.summary"
+	} else {
+		inputsFrom[BranchCompletenessInput] = "fan.security.summary"
 		tasks = append(tasks, branchTask("review-reliability", false))
 		branches = append(branches, apiv1.Branch{Name: "reliability", Start: "review-reliability"})
 		inputsFrom["reliability"] = "fan.reliability.review-reliability.summary"
@@ -70,6 +73,41 @@ func fanInMachine(t *testing.T, failedPerformance bool) *workflow.Machine {
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fan-in machine: %v", err)
+	}
+	return machine
+}
+
+func skippedJoinMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "skipped-join", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "prepare",
+			Tasks: []apiv1.Task{
+				task("prepare", "fan"),
+				task("review-security", workflow.TargetJoin),
+				task("review-performance", workflow.TargetJoin),
+				task("collate", workflow.TerminalComplete),
+				task("recover", workflow.TerminalComplete),
+			},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchFailFast, Join: "collate", OnFailure: "recover",
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile skipped-join machine: %v", err)
 	}
 	return machine
 }
@@ -187,6 +225,79 @@ func TestRunnerOmitsFailedBranchInputAndReportsCompleteness(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeAfterSkippedJoinKeepsOnlyRootPointers(t *testing.T) {
+	machine := skippedJoinMachine(t)
+	capturing := &capturingDeterministic{}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return capturing, nil
+	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "fan-in-skipped-resume", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("recover")
+	rootRef, err := jr.RecordArtifact("prepare.md", []byte("prepare"))
+	if err != nil {
+		t.Fatalf("record root artifact: %v", err)
+	}
+	branchRef, err := jr.RecordArtifact("security.md", []byte("security"))
+	if err != nil {
+		t.Fatalf("record branch artifact: %v", err)
+	}
+	events := []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "prepare", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "prepare", Attempt: 1, Status: string(apiv1.ResultSuccess),
+			Artifacts: []journal.Ref{{Path: rootRef.Path, Digest: rootRef.Digest, Size: rootRef.Size}}},
+		{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security"}, {Branch: 2, Name: "performance"},
+		}},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security", Stage: "review-security"},
+		{Type: journal.EventStageStarted, Stage: "review-security", Attempt: 1, Branch: 1},
+		{Type: journal.EventStageFinished, Stage: "review-security", Attempt: 1, Branch: 1, Status: string(apiv1.ResultFailure),
+			Artifacts: []journal.Ref{{Path: branchRef.Path, Digest: branchRef.Digest, Size: branchRef.Size}}},
+		{Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "security", BranchStatus: journal.BranchFailed},
+		{Type: journal.EventBranchFinished, Parallel: "fan", Branch: 2, BranchName: "performance", BranchStatus: journal.BranchCancelled},
+		{Type: journal.EventParallelFinished, Parallel: "fan", Target: "recover", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security", Status: journal.BranchFailed, Artifacts: 1},
+			{Branch: 2, Name: "performance", Status: journal.BranchCancelled},
+		}},
+	}
+	for _, event := range events {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Type, err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: "fan-in-skipped-resume", Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if capturing.calls != 1 {
+		t.Fatalf("onFailure calls = %d, want 1", capturing.calls)
+	}
+	if len(capturing.lastEnv.ContextPointers) != 1 {
+		t.Fatalf("onFailure pointers = %+v, want only the root pointer", capturing.lastEnv.ContextPointers)
+	}
+	pointer := capturing.lastEnv.ContextPointers[0]
+	if pointer.Name != "prepare.artifact[0]" || pointer.Artifact == nil || pointer.Artifact.Digest != rootRef.Digest {
+		t.Fatalf("onFailure pointer = %+v, want the root prepare artifact", pointer)
+	}
+}
+
 func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 	machine := fanInMachine(t, true)
 	events := []journal.Event{
@@ -207,7 +318,7 @@ func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 		}},
 	}
 
-	pointers := reconstructPointers(events)
+	pointers := reconstructPointers(events, machine)
 	if len(pointers) != 2 || pointers[0].BranchName != "security" || pointers[1].BranchName != "performance" {
 		t.Fatalf("reconstructed pointers = %+v, want declaration order with branch attribution", pointers)
 	}

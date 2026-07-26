@@ -139,7 +139,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Item:         item,
 			RunControls:  runControls,
 		}
-		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+		seed := walkSeed{pointers: reconstructPointers(seedEvents, in.Machine)}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
 		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		seed.branchRecorded = hasRunBranchRef(events)

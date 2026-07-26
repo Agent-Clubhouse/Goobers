@@ -355,7 +355,7 @@ func TestStageResultWithInterruptedErrorCodeIsNotRecoveryMarker(t *testing.T) {
 	if !ok || stage != "implement" || result.Error == nil || result.Error.Code != interruptedAttemptErrorCode {
 		t.Fatalf("last finished subject = (%q, %+v, %t)", stage, result, ok)
 	}
-	pointers := reconstructPointers(events)
+	pointers := reconstructPointers(events, machine)
 	if len(pointers) != 1 || pointers[0].Artifact == nil || pointers[0].Artifact.Digest != "sha256:stage-owned" {
 		t.Fatalf("reconstructed pointers = %+v", pointers)
 	}

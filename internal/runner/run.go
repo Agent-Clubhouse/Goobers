@@ -2614,9 +2614,6 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
 	env.InstructionAddendum = instructionAddendum
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
-	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {
@@ -2657,6 +2654,9 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
 		}
 		env.Inputs[inputKey] = v
+	}
+	if fanIn != nil && t.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
 	}
 
 	switch t.Type {

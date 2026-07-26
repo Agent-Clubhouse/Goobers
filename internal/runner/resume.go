@@ -340,7 +340,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
 	seed := walkSeed{
-		pointers:     reconstructPointers(seedEvents),
+		pointers:     reconstructPointers(seedEvents, in.Machine),
 		stageOutputs: reconstructStageOutputs(seedEvents),
 		fanIn:        pendingFanIn(seedEvents, in.Machine),
 	}
@@ -776,17 +776,21 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 // exactly as the live path would. Events are walked in their journaled
 // (chronological) order so a resumed run's pointers interleave stage
 // artifacts and verdict pointers identically to how a live run would have
-// accumulated them.
-func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
+// accumulated them. machine identifies whether a completed parallel routed to
+// its join; branches that routed to onFailure never expose their pointers.
+func reconstructPointers(events []journal.Event, machine *workflow.Machine) []apiv1.ContextPointer {
 	var out []apiv1.ContextPointer
 	var branchNames map[int]string
 	var branchPointers map[int][]apiv1.ContextPointer
+	discardBranches := func() {
+		branchNames = nil
+		branchPointers = nil
+	}
 	flushBranches := func(order []journal.BranchOutcome) {
 		for _, branch := range order {
 			out = append(out, branchPointers[branch.Branch]...)
 		}
-		branchNames = nil
-		branchPointers = nil
+		discardBranches()
 	}
 	record := func(branch int, pointers []apiv1.ContextPointer) {
 		if branch <= 0 {
@@ -833,7 +837,12 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 				Artifact: &apiv1.ArtifactPointer{Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size, MediaType: "application/json"},
 			}})
 		case journal.EventParallelFinished:
-			flushBranches(e.Completeness)
+			spec, ok := machine.Parallel(e.Parallel)
+			if ok && e.Target == spec.Join {
+				flushBranches(e.Completeness)
+			} else {
+				discardBranches()
+			}
 		}
 	}
 	if len(branchPointers) > 0 {
