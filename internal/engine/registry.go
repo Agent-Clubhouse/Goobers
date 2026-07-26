@@ -64,7 +64,7 @@ func (r *Registry) RegisterDefinition(def wf.Definition) (int, error) {
 
 // shapeProblems re-asserts the schema-owned task shape invariants at the
 // registry boundary (#626): agentic requires a goober and forbids a run
-// block; deterministic requires a run with a command and forbids a goober —
+// block; deterministic requires a run with a command or script and forbids a goober —
 // the same allOf rules api/schemas/workflow.schema.json enforces, which the
 // compiler deliberately does not own. Defense in depth: the schema remains
 // the owner, the registry mirrors it, so a definition the schema would
@@ -83,8 +83,8 @@ func shapeProblems(spec apiv1.WorkflowSpec) []string {
 		case apiv1.TaskDeterministic:
 			if t.Run == nil {
 				problems = append(problems, fmt.Sprintf("task %q is deterministic but declares no run (schema: deterministic requires run)", t.Name))
-			} else if len(t.Run.Command) == 0 {
-				problems = append(problems, fmt.Sprintf("task %q run declares no command (schema: run.command requires at least one element)", t.Name))
+			} else if len(t.Run.Command) == 0 && t.Run.Script == "" {
+				problems = append(problems, fmt.Sprintf("task %q run declares no command or script (schema: run.command requires at least one element or run.script requires at least one character)", t.Name))
 			}
 			if t.Goober != "" {
 				problems = append(problems, fmt.Sprintf("task %q is deterministic but names goober %q (schema: deterministic forbids goober)", t.Name, t.Goober))

@@ -17,6 +17,7 @@ func TestFeatureRegistryLookup(t *testing.T) {
 		"gate.evaluator.human",
 		"task.retry.backoff",
 		"goober.spec.model",
+		"stage.run.script",
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -164,7 +165,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 func TestStandardFeaturesAreGA(t *testing.T) {
 	for _, id := range []FeatureID{
 		featureTaskAgentic, featureGooberRole, featureGooberCapabilities,
-		featureWorkflowTriggers, featureStageShell, featureTaskRetry,
+		featureWorkflowTriggers, featureStageShell, featureTaskRetry, featureStageScript,
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -513,6 +514,11 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Name: "shell-scratch", Type: apiv1.TaskDeterministic, Goal: "scratch",
 				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "shell-script",
+			},
+			{
+				Name: "shell-script", Type: apiv1.TaskDeterministic, Goal: "inline",
+				Run:  &apiv1.DeterministicRun{Script: "true"},
 				Next: "ci-poll",
 			},
 			{
@@ -809,6 +815,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.shell",
 		"stage.ci-poll",
 		"stage.run.command",
+		"stage.run.script",
 		"stage.run.env",
 		"stage.run.network.none",
 		"stage.run.syncBase",

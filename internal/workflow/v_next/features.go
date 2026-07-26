@@ -435,6 +435,7 @@ const (
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageCommand                   FeatureID = "stage.run.command"
+	featureStageScript                    FeatureID = "stage.run.script"
 	featureStageEnv                       FeatureID = "stage.run.env"
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
@@ -566,6 +567,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageShell,
 		featureStageCIPoll,
 		featureStageCommand,
+		featureStageScript,
 		featureStageEnv,
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
@@ -914,7 +916,11 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 		return
 	}
-	used.add(featureStageCommand)
+	if task.Run.Script != "" {
+		used.add(featureStageScript)
+	} else {
+		used.add(featureStageCommand)
+	}
 	if task.Run.Env != nil {
 		used.add(featureStageEnv)
 	}
