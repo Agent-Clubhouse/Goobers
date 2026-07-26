@@ -64,19 +64,38 @@ export function RunPage({
       </section>
     );
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 
   return (
-    <RunDetailWorkspace
-      client={client}
-      events={query.state.data.events}
-      key={query.state.data.run.id}
-      navigate={navigate}
-      run={query.state.data.run}
-      runId={runId}
-    />
+    <>
+      {query.state.status === "stale" &&
+        (query.state.error ? (
+          <div className="run-stale-state run-stale-state-error" role="alert">
+            <span>
+              <strong>Run detail may be stale</strong>
+              <small>{query.state.error.message}</small>
+            </span>
+            <button className="text-button" onClick={query.retry} type="button">
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div aria-live="polite" className="run-stale-state" role="status">
+            <span aria-hidden="true" className="loading-mark" />
+            <span>Refreshing run detail…</span>
+          </div>
+        ))}
+      <RunDetailWorkspace
+        client={client}
+        events={query.state.data.events}
+        key={query.state.data.run.id}
+        navigate={navigate}
+        run={query.state.data.run}
+        runId={runId}
+      />
+    </>
   );
 }
 
