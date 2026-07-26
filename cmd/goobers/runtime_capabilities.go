@@ -128,11 +128,11 @@ func init() {
 		command("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --check-harness --check-repos"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
-			withExamples("goobers lint", "goobers lint --check-harness --check-repos"),
+			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos"),
 		command("fix", apicontract.ActionConfigTime, runFix).
 			withSynopsis(synopsisByID["fix"]).
 			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
@@ -250,7 +250,7 @@ func init() {
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
-			withExamples("goobers features", "goobers features --dsl-version 1.4", "goobers features --used"),
+			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
