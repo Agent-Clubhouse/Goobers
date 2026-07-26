@@ -2,7 +2,9 @@ package readservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -442,4 +444,60 @@ func TestListRunsIndexedReadsAreBoundedByPage(t *testing.T) {
 		t.Fatalf("indexed page opened %d journals for %d runs; expected bounded by page size, not O(total)", opened, total)
 	}
 	_ = runIDs(page)
+}
+
+// TestListRunsReconcileSkipsUnpublishedRunDirs proves reconcile never pays for a
+// directory that holds no run.yaml. Such a directory is not a journal — the span
+// exporter creates spans/ before a run publishes, and a run that never publishes
+// leaves the directory behind permanently — so IngestRun can only ever fail on
+// it. It used to fail expensively: WithPruneProtection took the run's journal
+// lock, creating a .lock file, before discovering there was no identity to read.
+// Because the failure left the directory un-indexed, every later pass retried it,
+// so on an instance where these outnumber the real ingest backlog by orders of
+// magnitude a pass could not finish and ListRuns never returned (#1708). The
+// absence of .lock is the precise regression signal.
+func TestListRunsReconcileSkipsUnpublishedRunDirs(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 6)
+	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
+
+	unpublished := []string{"unpublished-a", "unpublished-b", "unpublished-c"}
+	for _, name := range unpublished {
+		if err := os.MkdirAll(filepath.Join(layout.RunsDir(), name, "spans"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+
+	for _, name := range unpublished {
+		lock := filepath.Join(layout.RunsDir(), name, ".lock")
+		switch _, err := os.Stat(lock); {
+		case err == nil:
+			t.Errorf("reconcile took the journal lock on unpublished run dir %q; it must skip on the run.yaml stat", name)
+		case !errors.Is(err, os.ErrNotExist):
+			t.Fatalf("stat %s: %v", lock, err)
+		}
+	}
+}
+
+// TestListRunsReconcileStillIngestsPublishedRunMissingFromIndex guards the
+// skip above against over-reach: a real journal absent from the index is still
+// backfilled, which is reconcile's entire purpose.
+func TestListRunsReconcileStillIngestsPublishedRunMissingFromIndex(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	seedVariedRuns(t, layout, machine, 4)
+	// Index only one run, leaving the rest on disk but unknown to the index.
+	db := buildIndex(t, layout, "run-0000")
+	indexed, _ := indexedAndScanning(t, layout, db)
+
+	page, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(page.Runs) < 4 {
+		t.Fatalf("reconcile backfilled %d runs, want every published run on disk", len(page.Runs))
+	}
 }
