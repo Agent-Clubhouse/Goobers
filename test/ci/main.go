@@ -381,6 +381,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		),
 		group: groupUnit,
 	}
+	schemaDescriptionCoverageCheck := check{
+		label:   "schema-description-coverage",
+		command: tools.goCommand,
+		args:    []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"},
+		env:     testEnvironment,
+		group:   groupUnit,
+	}
 	shippedWorkflowCheck := check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
@@ -391,6 +398,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 
 	result = append(result,
 		shippedWorkflowCheck,
+		schemaDescriptionCoverageCheck,
 		testCheck,
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}, group: groupLint},
 		check{

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"sort"
 	"strconv"
@@ -22,7 +23,7 @@ type legacyUndocumented struct {
 	pathHash string
 }
 
-var authorFacingSchemas = map[string]bool{
+var authorFacingSchemaRoots = map[string]bool{
 	"gaggle.schema.json":     true,
 	"goober.schema.json":     true,
 	"invocation.schema.json": true,
@@ -33,7 +34,6 @@ var authorFacingSchemas = map[string]bool{
 // undocumented path without expanding this issue into unrelated contract prose.
 var legacyUndocumentedSchemas = map[string]legacyUndocumented{
 	"agent-toolkit-manifest.schema.json": {30, "5e796d83e2044f720341082f13f69e2f241b23cc87d9ddc7365926948f4bc70f"},
-	"artifact-pointer.schema.json":       {2, "1f9513580952a5c043ce6d8502e65b7683c1ebe26842f4c366d12bcd47fdfd24"},
 	"candidate-findings-v1.schema.json":  {9, "600935ca4f0646452c0d0970b304422d92b404ad6acb2304a81eaf98d89e1c39"},
 	"diagnostics.schema.json":            {15, "a3f0cbff08fe67441b672c651d5a5d46f62ddeff43288288021a7ee9d6445362"},
 	"features.schema.json":               {9, "5a63e854710cf8efb3add20719ff1900bd99cf314d05e6abc17fa6fb0552a391"},
@@ -55,7 +55,7 @@ func TestDescriptionCoverage(t *testing.T) {
 		t.Fatal("no embedded schemas found")
 	}
 
-	t.Log("JSON Schema description coverage:")
+	decoded := make(map[string]map[string]any, len(files))
 	for _, name := range files {
 		data, err := FS.ReadFile(name)
 		if err != nil {
@@ -65,10 +65,16 @@ func TestDescriptionCoverage(t *testing.T) {
 		if err := json.Unmarshal(data, &schema); err != nil {
 			t.Fatalf("decode %s: %v", name, err)
 		}
+		decoded[name] = schema
+	}
 
-		coverage := measureDescriptionCoverage(schema)
+	authorFacingSchemas := expandAuthorFacingSchemas(t, decoded)
+	var report strings.Builder
+	fmt.Fprintln(&report, "JSON Schema description coverage:")
+	for _, name := range files {
+		coverage := measureDescriptionCoverage(decoded[name])
 		documented := coverage.total - len(coverage.undocumented)
-		t.Logf("  %-42s %3d/%3d documented (%5.1f%%)",
+		fmt.Fprintf(&report, "  %-42s %3d/%3d documented (%5.1f%%)\n",
 			name, documented, coverage.total, float64(documented)*100/float64(coverage.total))
 
 		if authorFacingSchemas[name] {
@@ -90,6 +96,59 @@ func TestDescriptionCoverage(t *testing.T) {
 		if len(coverage.undocumented) != legacy.count || coverage.undocPathHash != legacy.pathHash {
 			t.Errorf("%s undocumented-field baseline changed; describe new fields and update the baseline only when legacy fields are documented\nmissing descriptions:\n%s",
 				name, strings.Join(coverage.undocumented, "\n"))
+		}
+	}
+	fmt.Print(report.String())
+}
+
+func expandAuthorFacingSchemas(t *testing.T, decoded map[string]map[string]any) map[string]bool {
+	t.Helper()
+
+	authorFacing := make(map[string]bool, len(authorFacingSchemaRoots))
+	queue := sortedKeys(authorFacingSchemaRoots)
+	for _, name := range queue {
+		authorFacing[name] = true
+	}
+
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		schema, ok := decoded[name]
+		if !ok {
+			t.Fatalf("author-facing schema %s is not embedded", name)
+		}
+
+		refs := make(map[string]bool)
+		collectExternalSchemaRefs(schema, refs)
+		for _, ref := range sortedKeys(refs) {
+			if _, ok := decoded[ref]; !ok {
+				t.Fatalf("author-facing schema %s references unembedded schema %s", name, ref)
+			}
+			if !authorFacing[ref] {
+				authorFacing[ref] = true
+				queue = append(queue, ref)
+			}
+		}
+	}
+	return authorFacing
+}
+
+func collectExternalSchemaRefs(node any, refs map[string]bool) {
+	switch value := node.(type) {
+	case map[string]any:
+		if ref, ok := value["$ref"].(string); ok {
+			target, _, _ := strings.Cut(ref, "#")
+			target = strings.TrimPrefix(target, BaseURI)
+			if target != "" {
+				refs[target] = true
+			}
+		}
+		for _, child := range value {
+			collectExternalSchemaRefs(child, refs)
+		}
+	case []any:
+		for _, child := range value {
+			collectExternalSchemaRefs(child, refs)
 		}
 	}
 }
