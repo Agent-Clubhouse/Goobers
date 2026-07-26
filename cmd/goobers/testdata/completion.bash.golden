@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version versions init preflight examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -19,6 +19,11 @@ _goobers_completion()
             ;;
         preflight)
             flags+=" --distro --launch-wsl"
+            ;;
+        onboarding)
+            case "${COMP_WORDS[2]:-}" in
+                stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
+            esac
             ;;
         scaffold)
             case "${COMP_WORDS[2]:-}" in
@@ -140,6 +145,11 @@ _goobers_completion()
 
     candidates=""
     case "${command}" in
+        onboarding)
+            if (( COMP_CWORD == 2 )); then
+                candidates="stub-sample"
+            fi
+            ;;
         examples)
             if (( COMP_CWORD == 2 )); then
                 candidates="list show"

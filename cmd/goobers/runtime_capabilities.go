@@ -91,6 +91,19 @@ func init() {
 			withHelp("check WSL full-isolation readiness and optionally hand off a command", wslPreflightHelp).
 			withExamples("goobers preflight", "goobers preflight --distro Ubuntu-24.04", "goobers preflight --launch-wsl -- run implementation ."),
 		groupCommand(
+			"onboarding",
+			runOnboarding,
+			subcommand("onboarding stub-sample", "stub-sample", apicontract.ActionConfigTime, runOnboardingStubSample).
+				withHelp("materialize and optionally seed the disposable Getting Started target", stubSampleHelp).
+				withExamples(
+					"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
+					"goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial",
+				),
+		).
+			withSynopsis(synopsisByID["onboarding"]).
+			withHelp("run non-interactive onboarding actions", onboardingHelp).
+			withExamples("goobers onboarding stub-sample --destination ./getting-started-task-api --json"),
+		groupCommand(
 			"examples",
 			runExamples,
 			subcommand("examples list", "list", apicontract.ActionReadOnlyNavigation, runExamplesList).
