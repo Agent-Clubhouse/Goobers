@@ -124,7 +124,7 @@ func runInitWithInputForOSAndGitHub(
 		return 2
 	}
 	if *sourceTree != "" {
-		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr)
+		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr, goos)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -219,7 +219,7 @@ type configSourceActionEnvelope struct {
 	NextCommand string   `json:"nextCommand"`
 }
 
-func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer) int {
+func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
 	result, err := instance.SeedQuickstartConfigSource(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -235,7 +235,7 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 		return code
 	}
 	abs := absolutePath(result.Root)
-	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs)
+	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs, goos)
 	envelope := configSourceActionEnvelope{
 		Action:      "seed-config-source",
 		Version:     configSourceActionVersion,
@@ -263,7 +263,10 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 	return 0
 }
 
-func quoteShellArg(arg string) string {
+func quoteShellArg(arg, goos string) string {
+	if goos == "windows" {
+		return `"` + arg + `"`
+	}
 	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
 
