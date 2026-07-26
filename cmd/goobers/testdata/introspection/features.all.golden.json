@@ -55,6 +55,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.evaluator.agentic.workspace",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gate.evaluator.automated",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -297,6 +302,16 @@
     {
       "name": "stage.shell",
       "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.workspace",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.workspace.repo-readonly",
+      "stability": "preview",
       "sinceVersion": "dev"
     },
     {

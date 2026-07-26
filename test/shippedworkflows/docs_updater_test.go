@@ -118,7 +118,7 @@ func TestDocsUpdaterWorkflowContract(t *testing.T) {
 	}
 }
 
-func TestMergeReviewSelectsOnlyImplementationAndDocsUpdaterPrefixes(t *testing.T) {
+func TestMergeReviewSelectsConfiguredAutomatedReviewPrefixes(t *testing.T) {
 	root := repositoryRoot(t)
 	configs := []struct {
 		path   string
@@ -136,6 +136,9 @@ func TestMergeReviewSelectsOnlyImplementationAndDocsUpdaterPrefixes(t *testing.T
 		selectTask := requireTask(t, mergeReview.Spec, "pr-select")
 		got := splitCommaList(selectTask.Inputs["headPrefixes"])
 		want := []string{"goobers/implementation/", "goobers/docs-updater/"}
+		if config.gaggle == "goobers" {
+			want = append(want, "goobers/tutor/")
+		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s merge-review headPrefixes = %v, want %v", config.path, got, want)
 		}

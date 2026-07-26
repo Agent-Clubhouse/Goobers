@@ -38,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -150,7 +151,7 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
-  it("stays stale until invalidations queued during the snapshot are applied", async () => {
+  it("collapses invalidation windows during a snapshot into one follow-up refresh", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
     const controller = new LiveDataController(client, testConfig);
@@ -169,6 +170,9 @@ describe("LiveDataController", () => {
     stream.push(update("session:1", ["run"]));
     await settle();
     await vi.advanceTimersByTimeAsync(10);
+    stream.push(update("session:2", ["workflow"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
 
     initial.resolve(true);
     await settle();
@@ -177,7 +181,40 @@ describe("LiveDataController", () => {
 
     replay.resolve(true);
     await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
     expect(controller.freshness).toBe("connected");
+
+    controller.stop();
+  });
+
+  it("hands off an immediate full refresh queued as a flush completes", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      invalidationWindowMs: 0,
+    });
+    const refresh = vi.fn().mockResolvedValue(true);
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockClear();
+
+    const internals = controller as unknown as {
+      drainInvalidations: () => Promise<void>;
+    };
+    const drainInvalidations = internals.drainInvalidations.bind(controller);
+    let queueAtCompletion = true;
+    vi.spyOn(internals, "drainInvalidations").mockImplementation(async () => {
+      await drainInvalidations();
+      if (queueAtCompletion) {
+        queueAtCompletion = false;
+        controller.refresh();
+      }
+    });
+
+    controller.start();
+    await settle();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
 
     controller.stop();
   });

@@ -157,6 +157,34 @@ type RunDetail struct {
 	Graph       *workflow.Graph  `json:"graph,omitempty"`
 	GraphStatus string           `json:"graphStatus"`
 	Escalation  *EscalationCause `json:"escalation,omitempty"`
+	Outcome     *RunOutcome      `json:"outcome,omitempty"`
+}
+
+// RunOutcome projects the business decision a completed run reached — the
+// second axis distinct from Phase (issue #851). Phase/Terminal answer "did
+// the machinery work" (the execution axis #849 fixed); Outcome answers "of a
+// completed run, what did it decide" (e.g. merge-review's merged / declined
+// to merge). Only present when Phase == journal.PhaseCompleted; non-nil but
+// all-empty for a completed run whose path evaluated no gate at all (a
+// purely deterministic workflow) — the axis is still meaningful, it just has
+// no gate decision to report, which a nil RunOutcome could not distinguish
+// from "not computed."
+//
+// Deliberately not a fixed enum: Verdict/Target are the terminal gate's own
+// values (per-workflow vocabulary), matching #851's explicit implementation
+// latitude rather than inventing a cross-workflow taxonomy. Rollup/dashboard
+// propagation and the curated no-work-run disposition are intentionally left
+// as follow-up work — this is the read-model projection only.
+type RunOutcome struct {
+	// Gate is the last gate evaluated before completion. Empty when the run
+	// completed with no gate evaluation.
+	Gate string `json:"gate,omitempty"`
+	// Verdict is that gate's decision.
+	Verdict string `json:"verdict,omitempty"`
+	// Target is the branch/state the gate selected.
+	Target string `json:"target,omitempty"`
+	// CausalEventSeq is the deciding gate.evaluated event's sequence number.
+	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
 }
 
 // EscalationCause projects the durable event that selected escalation.
@@ -829,6 +857,7 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		Graph:       graph,
 		GraphStatus: status,
 		Escalation:  escalation,
+		Outcome:     runOutcome(summary, run.records),
 	}, nil
 }
 
@@ -1504,6 +1533,30 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+// runOutcome derives the #851 business-decision axis for a completed run
+// from the last gate evaluated before completion — the same "walk backward
+// for the decisive gate" approach escalationCause uses for the escalated
+// case. Returns nil for a non-completed run.
+func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
+	if summary.Phase != journal.PhaseCompleted {
+		return nil
+	}
+	records = currentLifecycleRecords(records)
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated {
+			continue
+		}
+		return &RunOutcome{
+			Gate:           event.Gate,
+			Verdict:        event.Verdict,
+			Target:         event.Target,
+			CausalEventSeq: event.Seq,
+		}
+	}
+	return &RunOutcome{}
 }
 
 func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
