@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -257,6 +258,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 			return 1
 		}
 	}
+	printDSLVersionSummary(stdout, set.Workflows)
 	if options.strict && len(report.Warnings()) > 0 {
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
@@ -444,6 +446,38 @@ const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
 
+// printDSLVersionSummary renders each workflow's dslVersion pin and its
+// lifecycle level against this binary's supportmatrix.SupportMatrix (DVL-3,
+// #863) — the line that makes version drift visible at a glance. Every level
+// prints (including the common "supported" case) so an author can see the
+// full picture in one place; api/validate's checkWorkflowDSLVersion is what
+// actually blocks/warns on a problematic pin — this is a summary, not a
+// second enforcement path.
+func printDSLVersionSummary(stdout io.Writer, workflows []apiv1.Workflow) {
+	matrix := supportmatrix.GetDSL()
+	for _, w := range workflows {
+		version := w.DSLVersion
+		defaulted := ""
+		if version == "" {
+			version = supportmatrix.CurrentDSLVersion
+			defaulted = " (defaulted; no dslVersion pin)"
+		}
+		support, ok := matrix.Lookup(version)
+		if !ok {
+			pf(stdout, "DSLVERSION Workflow/%s: %s%s, unrecognized by this binary\n", w.Name, version, defaulted)
+			continue
+		}
+		detail := string(support.Level)
+		if support.Replacement != "" {
+			detail += fmt.Sprintf(", replacement %s", support.Replacement)
+		}
+		if support.UnsupportedAfter != "" {
+			detail += fmt.Sprintf(", unsupported after %s", support.UnsupportedAfter)
+		}
+		pf(stdout, "DSLVERSION Workflow/%s: %s%s (%s)\n", w.Name, version, defaulted, detail)
+	}
+}
+
 // targetRepositorySize resolves a GitHub repo's size in KB for the
 // oversized-repo warning (#1547). Overridable in tests. ADO has no
 // equivalent check yet — callers only invoke this for repo.Provider ==
@@ -473,32 +507,11 @@ func checkTargetRepositoriesAtFile(
 	for i, repo := range repos {
 		label := fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name)
 		refName := fmt.Sprintf("validate-repo-%d", i)
-		var token string
-		var err error
-		if repo.GitHubAppAuth() {
-			// Mint a real installation token (#686): the exchange itself is
-			// the preflight — a missing installation or rejected App key
-			// fails here with GitHub's diagnosis instead of mid-run. nil
-			// registrar matches the ADO preflight (no journal is written);
-			// scrubRepositoryError below keeps the token out of output.
-			var mint credentials.ResolveFunc
-			mint, err = newGitHubAppTokenSource(repo, nil, stores)
-			if err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-				token, err = mint(ctx)
-				cancel()
-			}
-		} else if repoUsesToken(repo) {
-			var resolver credentials.Resolver
-			resolver, err = credentials.NewResolverWithStores([]credentials.TokenRef{
-				repo.Token.CredentialTokenRef(refName),
-			}, stores)
-			if err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-				token, err = resolver.Resolve(ctx, refName)
-				cancel()
-			}
-		}
+		// Mint a real installation token for GitHub App auth (#686): the
+		// exchange itself is the preflight — a missing installation or
+		// rejected App key fails here with GitHub's diagnosis instead of
+		// mid-run. scrubRepositoryError below keeps the token out of output.
+		token, err := resolveRepoToken(repo, refName, stores)
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 			err = targetRepositoryReachable(ctx, repo, token, stores)
@@ -518,6 +531,35 @@ func checkTargetRepositoriesAtFile(
 		}
 	}
 	return ok
+}
+
+// resolveRepoToken resolves a usable access token for repo — a minted GitHub
+// App installation token, a static token ref, or "" when the repo needs
+// neither (e.g. non-PAT ADO auth) — shared by the repository preflight
+// (checkTargetRepositories) and `goobers doctor --repo` (#916), so both
+// preflight the exact credential path a real run would use.
+func resolveRepoToken(repo instance.RepoRef, refName string, stores credentials.StoreResolver) (string, error) {
+	if repo.GitHubAppAuth() {
+		mint, err := newGitHubAppTokenSource(repo, nil, stores)
+		if err != nil {
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+		defer cancel()
+		return mint(ctx)
+	}
+	if repoUsesToken(repo) {
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
+			repo.Token.CredentialTokenRef(refName),
+		}, stores)
+		if err != nil {
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+		defer cancel()
+		return resolver.Resolve(ctx, refName)
+	}
+	return "", nil
 }
 
 // warnOnOversizedRepository checks a GitHub target repo's size against

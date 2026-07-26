@@ -78,6 +78,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"scaffold workflow": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},
+	"agent-kit install": {
+		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
+	},
+	"agent-kit update": {
+		{name: "dry-run", desc: "Show the update diff without writing"},
+		{name: "write", desc: "Apply product-owned changes"},
+		{name: "replace-modified", desc: "Acknowledge replacement of modified owned files"},
+	},
 	"validate": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},

@@ -495,6 +495,8 @@ export interface StageAttempt {
   outputs?: Record<string, JsonValue>;
   artifacts: ArtifactMetadata[];
   error?: ErrorDetail;
+  /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
+  model?: string;
 }
 
 export interface ArtifactContent {

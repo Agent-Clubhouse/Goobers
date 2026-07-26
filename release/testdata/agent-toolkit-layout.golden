@@ -1,3 +1,4 @@
+payload/.goobers/agent-toolkit/.gitattributes
 payload/.goobers/agent-toolkit/README.md
 payload/.goobers/agent-toolkit/adapters/agents.md
 payload/.goobers/agent-toolkit/adapters/claude.md

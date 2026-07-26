@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -54,6 +55,25 @@ const (
 	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
 	WarningModelFallback WarningCode = "MODEL002"
+	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
+	// defaulted to supportmatrix.CurrentDSLVersion during the transition
+	// window (DVL-3, #863).
+	WarningMissingDSLVersion WarningCode = "DVL001"
+	// WarningPreviewDSLVersionOptedIn identifies a workflow pinned to a
+	// preview-level dslVersion on an instance that has opted in.
+	WarningPreviewDSLVersionOptedIn WarningCode = "DVL010"
+	// ErrorPreviewDSLVersionBlocked identifies a workflow pinned to a
+	// preview-level dslVersion on an instance that has NOT opted in —
+	// closed-by-default (DVL-3, #863).
+	ErrorPreviewDSLVersionBlocked WarningCode = "DVL011"
+	// WarningDeprecatedDSLVersion identifies a workflow pinned to a
+	// deprecated dslVersion — loads, but names its replacement and
+	// unsupported-after release.
+	WarningDeprecatedDSLVersion WarningCode = "DVL020"
+	// ErrorUnsupportedDSLVersion identifies a workflow pinned to a dslVersion
+	// this binary either does not recognize or has marked unsupported — fails
+	// load like a schema violation.
+	ErrorUnsupportedDSLVersion WarningCode = "DVL030"
 )
 
 const (
@@ -791,7 +811,77 @@ func (ix *index) crossCheck(r *Report) {
 	// Workflow state machine integrity.
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
+		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
 	}
+}
+
+// dslSupportMatrix resolves the current binary's DSL version support matrix.
+// A package var (rather than a direct supportmatrix.GetDSL() call) so tests
+// can exercise the preview/deprecated/unsupported diagnostics against a
+// synthetic matrix without mutating the live, compiled-in registry.
+var dslSupportMatrix = supportmatrix.GetDSL
+
+// checkWorkflowDSLVersion enforces the DSL version support lifecycle (DVL-3,
+// #863) at config-load time — the direct fix for the drift incident in
+// docs/design/dsl-version-lifecycle.md §1: a workflow's dslVersion pin is
+// checked against this binary's declared supportmatrix.SupportMatrix, so an
+// unsupported or blocked-preview pin fails here, with a clear diagnostic,
+// instead of surfacing later as an opaque interpreterForVersion compile
+// error. The default this applies to a missing pin (supportmatrix.
+// CurrentDSLVersion) is deliberately the exact same default
+// internal/workflow.Compile's own interpreterForVersion falls back to, so
+// this check can never disagree with what actually compiles and runs.
+//
+// This is the sole enforcement point for the lifecycle: internal/configsync's
+// daemon load path and instance.LoadConfigDir's offline CLI path both route
+// through this same Validator.ValidateDir → crossCheck call, so neither can
+// drift from the other.
+func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	version := w.DSLVersion
+	if version == "" {
+		version = supportmatrix.CurrentDSLVersion
+		r.addWarning(WarningMissingDSLVersion, file, w.Spec.Gaggle, "Workflow", w.Name,
+			"spec has no dslVersion pin; defaulting to %q during the transition window — pin an explicit dslVersion before this becomes a hard error", version)
+	}
+
+	support, ok := dslSupportMatrix().Lookup(version)
+	if !ok {
+		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
+			"dslVersion %q is not a version this binary recognizes; known versions: %s",
+			version, strings.Join(knownDSLVersions(), ", "))
+		return
+	}
+
+	switch support.Level {
+	case supportmatrix.LevelPreview:
+		if !allowPreview {
+			r.addCoded(ErrorPreviewDSLVersionBlocked, Error, file, "Workflow", w.Name,
+				"dslVersion %q is preview and this instance has not opted in; set metadata.annotations[%q]=%q on the Manifest to allow it",
+				version, wf.PreviewFeaturesAnnotation, "true")
+			return
+		}
+		r.addWarning(WarningPreviewDSLVersionOptedIn, file, w.Spec.Gaggle, "Workflow", w.Name,
+			"dslVersion %q is preview; this instance has opted in via metadata.annotations[%q]", version, wf.PreviewFeaturesAnnotation)
+	case supportmatrix.LevelDeprecated:
+		r.addWarning(WarningDeprecatedDSLVersion, file, w.Spec.Gaggle, "Workflow", w.Name,
+			"dslVersion %q is deprecated (replacement %q, unsupported after %s); migrate with `goobers fix --to %s`",
+			version, support.Replacement, support.UnsupportedAfter, support.Replacement)
+	case supportmatrix.LevelUnsupported:
+		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
+			"dslVersion %q is unsupported by this binary (replacement %q); migrate with `goobers fix --to %s` before upgrading",
+			version, support.Replacement, support.Replacement)
+	case supportmatrix.LevelSupported:
+		// Nothing to report — the common case.
+	}
+}
+
+func knownDSLVersions() []string {
+	versions := dslSupportMatrix().Versions()
+	names := make([]string, len(versions))
+	for i, v := range versions {
+		names[i] = v.Version
+	}
+	return names
 }
 
 func (ix *index) checkLabelPredicates(r *Report) {
