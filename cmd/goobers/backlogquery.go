@@ -882,10 +882,6 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 	return out
 }
 
-func sortEligibleFIFO(items []providers.WorkItem, priorityLabels []string) {
-	_ = sortEligibleByFields(items, priorityLabels, fieldpredicate.Order{})
-}
-
 // sortEligibleByFields applies opt-in label priority, then native-field
 // ordering, then the starvation-safe numeric-ID FIFO baseline.
 func sortEligibleByFields(items []providers.WorkItem, priorityLabels []string, fieldOrder fieldpredicate.Order) error {

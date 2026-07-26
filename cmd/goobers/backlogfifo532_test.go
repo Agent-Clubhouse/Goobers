@@ -19,7 +19,7 @@ import (
 // (newest-first default, per_page-capped pages, Link rel="next") — before the
 // fix, backlog-query's fetch window was max(maxItems, 20) filled newest-first,
 // so with 120 eligible items the oldest 100 were never fetched at all and
-// sortEligibleFIFO (#350) could only reorder the already-truncated tail
+// FIFO sorting (#350) could only reorder the already-truncated tail
 // (confirmed live: issue #441 sat goobers:ready 4+ hours with zero claim
 // attempts). 120 items also forces the ascending fetch across a Link-header
 // page boundary (per_page caps at 100), covering the paginated path, and
