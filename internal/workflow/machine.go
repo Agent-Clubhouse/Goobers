@@ -13,6 +13,7 @@ package workflow
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
+	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 )
 
 // Definition is a versioned snapshot pinned for a workflow run.
@@ -64,4 +65,23 @@ func IsReservedAnyTarget(target string) bool {
 // BranchTarget resolves a gate outcome to its declared transition target.
 func BranchTarget(gate apiv1.Gate, outcome string) (target string, ok bool) {
 	return model.BranchTarget(gate, outcome)
+}
+
+// SupportsStageQualifiedInputs reports whether a machine's pinned DSL version
+// resolves stage-qualified inputsFrom references ("<stage>.<key>", #562).
+//
+// This gate exists because inputsFrom resolution lives in the RUNNER, which is
+// shared by every interpreter — without it, adding the feature would change
+// what an already-released DSL version means underneath workflows authored
+// against it. That is precisely the silent-semantic-drift DVL exists to
+// prevent (docs/design/dsl-version-lifecycle.md §3.1: a field's meaning may
+// only change across a MAJOR bump).
+//
+// Concretely: under DSL 1.4 a value like "foo.bar" is always a bare output key,
+// even when a stage named "foo" happens to exist.
+func SupportsStageQualifiedInputs(m *Machine) bool {
+	if m == nil {
+		return false
+	}
+	return m.Def.DSLVersion != vcurrent.DSLVersion
 }

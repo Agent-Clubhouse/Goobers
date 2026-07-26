@@ -197,6 +197,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
 	problems = append(problems, parallelProblems(m)...)
+	problems = append(problems, dottedStateNameProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))

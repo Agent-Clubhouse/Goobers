@@ -133,6 +133,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 			featureParallelOnFailure,
 			featureParallelBranchTimeout,
 			featureParallelMaxConcurrentBranches:
+			featureTaskInputsFromQualified:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -507,7 +508,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
-				InputsFrom: map[string]string{"input": "output"}, Next: "shell-scratch",
+				InputsFrom: map[string]string{"input": "output", "qualified": "agent-fail.result"}, Next: "shell-scratch",
 			},
 			{
 				Name: "shell-scratch", Type: apiv1.TaskDeterministic, Goal: "scratch",
@@ -790,6 +791,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.goober",
 		"task.inputs",
 		"task.inputsFrom",
+		"task.inputsFrom.stageQualified",
 		"task.capabilities",
 		"task.retry",
 		"task.retry.maxAttempts",
