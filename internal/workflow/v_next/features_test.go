@@ -125,7 +125,14 @@ func TestCurrentFeatureClassification(t *testing.T) {
 		case featureGaggleSandbox, featureGaggleCheckoutSparse,
 			featureStageWorkspaceRepoReadOnly,
 			featureStageWorkspace,
-			featureGateAgenticWorkspace:
+			featureGateAgenticWorkspace,
+			featureWorkflowParallels,
+			featureParallelFailurePolicy,
+			featureParallelBranches,
+			featureParallelJoin,
+			featureParallelOnFailure,
+			featureParallelBranchTimeout,
+			featureParallelMaxConcurrentBranches:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -537,6 +544,18 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			humanFeatureGate("human-escalate", "escalate", "human-reject"),
 			humanFeatureGate("human-reject", "reject", TerminalComplete),
 		},
+		Parallels: []apiv1.Parallel{{
+			Name:                  "fan",
+			FailurePolicy:         apiv1.BranchAllOrNothing,
+			Join:                  "collate",
+			OnFailure:             TargetEscalate,
+			BranchTimeoutSeconds:  900,
+			MaxConcurrentBranches: 2,
+			Branches: []apiv1.Branch{
+				{Name: "a", Start: "agent-fail"},
+				{Name: "b", Start: "agent-fail"},
+			},
+		}},
 	}}
 	goober := apiv1.GooberSpec{
 		Gaggle: "example", Role: "coder", DisplayName: "Coder", Instructions: "instructions.md",
@@ -733,6 +752,13 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.start",
 		"workflow.spec.tasks",
 		"workflow.spec.gates",
+		"workflow.spec.parallels",
+		"workflow.spec.parallels.failurePolicy",
+		"workflow.spec.parallels.branches",
+		"workflow.spec.parallels.join",
+		"workflow.spec.parallels.onFailure",
+		"workflow.spec.parallels.branchTimeoutSeconds",
+		"workflow.spec.parallels.maxConcurrentBranches",
 		"workflow.terminal.complete",
 		"workflow.terminal.abort",
 		"workflow.terminal.escalate",

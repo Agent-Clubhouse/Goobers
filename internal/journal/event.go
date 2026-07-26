@@ -62,6 +62,23 @@ const (
 	// identical conformance views sandboxed or not.
 	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
 
+	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
+	// All four are conformance-normative: they and the completeness record are
+	// what a parallel MEANS, as distinct from the interleaving, which is a
+	// scheduling artefact.
+
+	// EventParallelStarted opens a parallel state, naming its declared branch
+	// set. Recorded on the root branch.
+	EventParallelStarted EventType = "parallel.started"
+	// EventBranchStarted opens one branch, carrying its Branch id and name.
+	EventBranchStarted EventType = "branch.started"
+	// EventBranchFinished closes one branch with its terminal BranchStatus.
+	EventBranchFinished EventType = "branch.finished"
+	// EventParallelFinished closes a parallel with the branch completeness
+	// record and the routing decision the failure policy produced. Recorded on
+	// the root branch.
+	EventParallelFinished EventType = "parallel.finished"
+
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
 	// envelope as a run journal's events.jsonl. EventRunStarted/EventRunFinished
@@ -229,6 +246,24 @@ type Event struct {
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
 
+	// --- parallel/branch payload (§6.2) ---
+
+	// Parallel is the name of the parallel state a branch belongs to, set on
+	// parallel.started/finished and branch.started/finished. Normative.
+	Parallel string `json:"parallel,omitempty"`
+	// BranchName is the declared name of the branch this event concerns. The
+	// numeric id lives in Branch; the name is what an author wrote and what
+	// branch-qualified references use. Normative.
+	BranchName string `json:"branchName,omitempty"`
+	// BranchStatus is the terminal status of a branch on branch.finished.
+	// Normative.
+	BranchStatus BranchStatus `json:"branchStatus,omitempty"`
+	// Completeness is the branch completeness record on parallel.finished: one
+	// entry per DECLARED branch, in declaration order, so "did every branch
+	// report?" is answerable from the journal alone. Normative — it, and not
+	// the interleaving, is what a parallel means.
+	Completeness []BranchOutcome `json:"completeness,omitempty"`
+
 	// --- instance-journal payload (scheduler/events.jsonl only; not used in a
 	// run's own events.jsonl, since a run event's identity is implicit from its
 	// directory) ---
@@ -246,6 +281,43 @@ type Event struct {
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
 	SkipCount int `json:"skipCount,omitempty"`
+}
+
+// BranchStatus is the terminal status of one parallel branch.
+type BranchStatus string
+
+const (
+	// BranchSucceeded means the branch reached @join with work done.
+	BranchSucceeded BranchStatus = "succeeded"
+	// BranchFailed means a stage in the branch failed terminally after its
+	// retry policy was exhausted.
+	BranchFailed BranchStatus = "failed"
+	// BranchTimedOut means the branch exceeded branchTimeoutSeconds and was
+	// terminated at its next stage boundary.
+	BranchTimedOut BranchStatus = "timed-out"
+	// BranchCancelled means a sibling's failure (or a whole-run exit) stopped
+	// this branch before it settled, under fail_fast.
+	BranchCancelled BranchStatus = "cancelled"
+	// BranchNoOutput means the branch settled without producing anything — a
+	// branch-scoped no-work, or one whose only substantive stage carried
+	// continueOnError. It is deliberately distinct from succeeded, which the
+	// other four statuses could not express: a join must be able to tell "ran
+	// and found nothing" from "ran and produced findings".
+	BranchNoOutput BranchStatus = "no-output"
+)
+
+// BranchOutcome is one entry in a parallel's completeness record.
+type BranchOutcome struct {
+	// Branch is the numeric branch id (from 1; 0 is the run's root).
+	Branch int `json:"branch"`
+	// Name is the declared branch name.
+	Name string `json:"name"`
+	// Status is the branch's terminal status.
+	Status BranchStatus `json:"status"`
+	// Artifacts is how many artifacts the branch recorded. It lets a join
+	// distinguish a branch that settled empty from one that produced work
+	// without resolving every pointer.
+	Artifacts int `json:"artifacts"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR

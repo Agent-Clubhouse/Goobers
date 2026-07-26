@@ -158,6 +158,19 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if hasAnyLabel(pr.Labels, excludeLabels) {
 			continue
 		}
+		if isTutorBranch(pr.Head, providerBranchNamespace()) {
+			classification, classifyErr := classifyRemoteTutorChanges(
+				ctx, provider, repo, strconv.Itoa(pr.Number), pr.BaseSHA, pr.HeadSHA,
+			)
+			if classifyErr != nil {
+				pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, classifyErr)
+				continue
+			}
+			if classification.RequiresHumanSignoff() {
+				pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
+				continue
+			}
+		}
 		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")

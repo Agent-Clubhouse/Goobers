@@ -520,6 +520,29 @@ summary:focus-visible {
   margin: 0;
 }
 
+.gaggle-detail-link {
+  align-items: center;
+  color: inherit;
+  display: inline-flex;
+  gap: 8px;
+  text-decoration: none;
+}
+
+.gaggle-detail-link .icon {
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.gaggle-detail-link:hover,
+.gaggle-detail-link:focus-visible {
+  color: var(--accent-ink);
+}
+
+.gaggle-detail-link:hover .icon,
+.gaggle-detail-link:focus-visible .icon {
+  transform: translateX(2px);
+}
+
 .gaggle-heading > div > p:last-child {
   color: var(--muted);
   font-size: 11px;
@@ -1853,6 +1876,112 @@ a.telemetry-error-row:hover {
   gap: 16px;
   grid-template-columns: minmax(0, 1fr) 300px;
   margin-top: 34px;
+}
+
+.gaggle-topology-panel {
+  margin-top: 34px;
+}
+
+.gaggle-workflow-topology {
+  background-color: var(--surface);
+  background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
+  background-size: 16px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 24px;
+}
+
+.gaggle-workflow-node {
+  min-width: 0;
+}
+
+.gaggle-workflow-node > a {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  height: 100%;
+  padding: 16px;
+  text-decoration: none;
+}
+
+.gaggle-workflow-node > a:hover {
+  border-color: var(--accent);
+}
+
+.gaggle-workflow-node > a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.gaggle-workflow-kind {
+  align-items: center;
+  color: var(--accent-ink);
+  display: flex;
+  font-size: 9px;
+  font-weight: 750;
+  gap: 5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.gaggle-workflow-node strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-node > a > p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 0;
+  min-height: 30px;
+}
+
+.gaggle-workflow-node dl {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 2px 0 0;
+  padding-top: 12px;
+}
+
+.gaggle-workflow-node dl > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gaggle-workflow-node dt {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.gaggle-workflow-node dd {
+  font-size: 10px;
+  font-weight: 650;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-node .status-badge {
+  width: fit-content;
+}
+
+.gaggle-workflow-no-runs {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .graph-panel,
@@ -3740,6 +3869,11 @@ a.telemetry-error-row:hover {
     height: 420px;
   }
 
+  .gaggle-workflow-topology {
+    background-image: none;
+    padding: 14px;
+  }
+
   .workflow-graph-fullscreen-target:fullscreen,
   .workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
     padding: 10px;
@@ -3990,6 +4124,11 @@ a.telemetry-error-row:hover {
   .page-content {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  .gaggle-workflow-topology,
+  .gaggle-workflow-node dl {
+    grid-template-columns: 1fr;
   }
 
   .filter-bar {

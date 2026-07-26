@@ -34,7 +34,19 @@ type State struct {
 	Phase RunPhase `json:"phase"`
 	// MachineState is the current workflow state-machine node (the state name
 	// the runner resumes at). Empty once the run is terminal.
+	//
+	// This remains the ROOT cursor and keeps its exact meaning: for every run
+	// that never forks it is the whole story, so existing readers are
+	// unaffected. When a run is inside a parallel it names the parallel state
+	// itself, and the per-branch positions live in Branches.
 	MachineState string `json:"machineState,omitempty"`
+	// Branches are the per-branch cursors while a run is inside a parallel,
+	// in declaration order. Empty for every run that never forks.
+	//
+	// Like the rest of State this is a DERIVED checkpoint, always
+	// reconstructable from the event journal — so adding it is a
+	// checkpoint-shape change, not a contract change.
+	Branches []BranchCursor `json:"branches,omitempty"`
 	// Reason is the human-facing explanation for a terminal run, mirrored
 	// from the run.finished event's own Error.Message when the terminal
 	// transition carried one (e.g. a WF-016 resume-refusal's digest-mismatch
@@ -49,4 +61,21 @@ type State struct {
 	LastSeq uint64 `json:"lastSeq"`
 	// UpdatedAt is when this checkpoint was written.
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// BranchCursor is one parallel branch's resume position.
+type BranchCursor struct {
+	// Branch is the numeric branch id (from 1; 0 is the run's root branch, and
+	// the root's position is State.MachineState rather than a cursor here).
+	Branch int `json:"branch"`
+	// Name is the declared branch name.
+	Name string `json:"name"`
+	// Parallel is the parallel state this branch belongs to.
+	Parallel string `json:"parallel"`
+	// MachineState is the state this branch resumes at. Empty once the branch
+	// has settled.
+	MachineState string `json:"machineState,omitempty"`
+	// Status is the branch's terminal status once it has settled; empty while
+	// the branch is still running.
+	Status BranchStatus `json:"status,omitempty"`
 }

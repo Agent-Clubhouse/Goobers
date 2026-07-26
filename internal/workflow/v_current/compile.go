@@ -215,7 +215,10 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	// DSL 1.4 has no fan-out construct: parallels are nil, so Has/Outgoing
+	// report nothing for them and a `parallels:` block is rejected as an
+	// unknown field by this version's schema.
+	return model.NewMachine(def, tasks, gates, nil, buildGraph(def))
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {

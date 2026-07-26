@@ -34,6 +34,15 @@ type siblingCacheEntry struct {
 	HeadSHA    string               `json:"headSha"`
 	CheckState providers.CheckState `json:"checkState"`
 	Files      []string             `json:"files"`
+	// Lines is the total changed-line count (sum of every file's
+	// Additions+Deletions) as of HeadSHA — the #1313 scope-gate's second
+	// magnitude, computed from the same PullRequestFiles call Files already
+	// comes from (no extra fetch). Reusable whenever Files is (a HeadSHA
+	// match), for every PR regardless of whether it's the selected PR or a
+	// sibling in this run — a PR gathered as a sibling today may be
+	// selected in a later run, and that later run's cache hit must not
+	// silently see a stale/zero Lines value.
+	Lines int `json:"lines"`
 }
 
 // siblingCacheFile is the cache's on-disk envelope. Entries is keyed by the

@@ -389,12 +389,15 @@ func validateSchedule(expr string) error {
 // stateNames returns every defined state name in definition order (tasks then
 // gates) — a deterministic order for stable problem reporting.
 func stateNames(def Definition) []string {
-	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	for _, t := range def.Spec.Tasks {
 		names = append(names, t.Name)
 	}
 	for _, g := range def.Spec.Gates {
 		names = append(names, g.Name)
+	}
+	for _, p := range def.Spec.Parallels {
+		names = append(names, p.Name)
 	}
 	return names
 }

@@ -336,6 +336,7 @@ function AttemptDetail({
         <span className={`attempt-state attempt-${status}`}>{status}</span>
         <span className="mono">{formatDuration(attempt.durationMillis)}</span>
         <span>{attemptLabel(attempt)}</span>
+        {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
       {attempt.error && (
         <p className="artifact-load-error">
