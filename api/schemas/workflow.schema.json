@@ -63,11 +63,43 @@
           }
         },
         "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
-        "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } }
+        "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } },
+        "parallels": { "type": "array", "items": { "$ref": "#/$defs/parallel" } }
       }
     }
   },
   "$defs": {
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "start"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "start": { "type": "string", "minLength": 1 }
+      }
+    },
+    "parallel": {
+      "description": "A fan-out/fan-in state: forks the run into a statically-declared set of named branches and joins them at a single successor once every branch has settled. failurePolicy is required — there is no default. onFailure is required for fail_fast/all_or_nothing and forbidden under continue_on_error, where the join always runs and owns the decision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "failurePolicy", "branches", "join"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "failurePolicy": { "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"] },
+        "branches": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/branch" } },
+        "join": { "type": "string", "minLength": 1 },
+        "onFailure": { "type": "string", "minLength": 1 },
+        "branchTimeoutSeconds": { "type": "integer", "minimum": 0 },
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "failurePolicy": { "const": "continue_on_error" } }, "required": ["failurePolicy"] },
+          "then": { "not": { "required": ["onFailure"] } },
+          "else": { "required": ["onFailure"] }
+        }
+      ]
+    },
     "metadata": {
       "description": "Deliberately left open (no additionalProperties:false) unlike the rest of this schema: k8s-style metadata objects tolerate forward-compatible extra fields (e.g. a future resourceVersion) by convention (#125).",
       "type": "object",

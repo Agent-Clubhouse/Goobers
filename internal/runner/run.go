@@ -1159,6 +1159,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			continue
 		}
 
+		// A parallel state compiles and validates (FO-2) but the walk is still
+		// single-cursor, so executing one is not yet possible. Fail closed with
+		// a message that names the reason rather than the generic
+		// unknown-state error a reader would otherwise take for a config bug.
+		if _, ok := in.Machine.Parallel(state); ok {
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+				fmt.Errorf("runner: workflow state %q is a parallel; executing parallel branches is not yet implemented", state))
+		}
+
 		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
 }

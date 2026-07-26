@@ -19,6 +19,7 @@ github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature h
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/internal/workflow.IsReservedTarget # Terminal-vs-branch target distinction retained for shipped-workflow routing assertions (#929); production callers use IsReservedAnyTarget.
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
