@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunEvent } from "../api/types";
+import styles from "../styles.css?inline";
+import tokens from "../tokens.css?inline";
 import { ReplayScrubber } from "./ReplayScrubber";
 
 function ev(
@@ -52,6 +54,17 @@ afterEach(() => {
 });
 
 describe("replay scrubber", () => {
+  const portalStyles = document.createElement("style");
+
+  beforeAll(() => {
+    portalStyles.textContent = `${tokens}\n${styles}`;
+    document.head.append(portalStyles);
+  });
+
+  afterAll(() => {
+    portalStyles.remove();
+  });
+
   it("plays every durable event forward on the compressed timeline", () => {
     vi.useFakeTimers();
     const onSeek = vi.fn();
@@ -177,19 +190,20 @@ describe("replay scrubber", () => {
     expect(disclosure).toHaveAttribute("open");
 
     const key = screen.getByRole("list", { name: "Chapter marker key" });
-    for (const [glyph, label] of [
-      ["●", "Workflow transition"],
-      ["◆", "Gate decision"],
-      ["!", "Failure"],
-      ["↑", "Escalation"],
-      ["↗", "External result"],
-      ["■", "Terminal outcome"],
+    for (const [glyph, label, color] of [
+      ["●", "Workflow transition", "--active"],
+      ["◆", "Gate decision", "--accent"],
+      ["!", "Failure", "--danger"],
+      ["↑", "Escalation", "--warning"],
+      ["↗", "External result", "--success"],
+      ["■", "Terminal outcome", "--ink"],
     ]) {
       const item = within(key).getByText(label).closest("li");
       if (!item) {
         throw new Error(`Missing legend item for ${label}`);
       }
       expect(within(item).getByText(glyph)).toHaveAttribute("aria-hidden", "true");
+      expect(window.getComputedStyle(item).color).toBe(`var(${color})`);
     }
   });
 

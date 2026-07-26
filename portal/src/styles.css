@@ -2942,6 +2942,10 @@ a.telemetry-error-row:hover {
   z-index: 5;
 }
 
+.replay-chapter-transition {
+  color: var(--active);
+}
+
 .replay-chapter-shape {
   align-items: center;
   background: color-mix(in srgb, currentColor 13%, var(--panel));
@@ -3114,7 +3118,6 @@ a.telemetry-error-row:hover {
 
 .chapter-legend-list li {
   align-items: center;
-  color: var(--active);
   display: grid;
   font-size: 9px;
   font-weight: 650;
