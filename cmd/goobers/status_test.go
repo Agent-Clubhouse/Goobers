@@ -318,7 +318,7 @@ func TestListStatusRunsPropagatesSharedServiceFailure(t *testing.T) {
 	}
 }
 
-func TestStatusSkipsMalformedHistoricalRun(t *testing.T) {
+func TestStatusFailsClosedWhenHistoricalRunIdentityIsMalformed(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
@@ -333,11 +333,11 @@ func TestStatusSkipsMalformedHistoricalRun(t *testing.T) {
 	}
 
 	code, stdout, stderr := runArgs(t, "status", root)
-	if code != 0 {
-		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	if code != 2 {
+		t.Fatalf("status: code = %d, want 2; stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "healthy-run") || strings.Contains(stdout, "malformed-run") {
-		t.Fatalf("stdout = %q, want only the healthy run", stdout)
+	if !strings.Contains(stderr, `read run "malformed-run" for time to first PR`) {
+		t.Fatalf("stderr = %q, want malformed TTFP journal error", stderr)
 	}
 }
 
