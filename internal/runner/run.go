@@ -867,6 +867,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	workspaceBranch := seed.workspaceBranch
 	branchRecorded := seed.branchRecorded
 	humanDecision := seed.humanDecision
+	// Live parallel state. nil whenever the run is single-cursor, which is
+	// every run that never forks — so the sequential path is untouched.
+	var par *parallelExec
 	steps := 0
 
 	for {
@@ -874,6 +877,81 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		if steps > r.maxSteps {
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
+		// A branch reached @join: settle it and move to the next declared
+		// branch, or close the parallel and continue at its join state.
+		if state == workflow.TargetJoin {
+			if par == nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: reached %q outside a parallel branch", workflow.TargetJoin))
+			}
+			settling := par.current()
+			status := branchStatusFor(lastResult, settling.artifacts)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventBranchFinished, Branch: settling.id,
+				Parallel: par.spec.Name, BranchName: settling.name,
+				BranchStatus: status,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			next, more := par.advance(status)
+			jr.SetBranchCursors(par.cursors())
+			if more {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: next.id,
+					Parallel: par.spec.Name, BranchName: next.name, Stage: next.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
+				jr.SetBranch(next.id)
+				state = next.start
+				continue
+			}
+			joined := par
+			par = nil
+			jr.SetBranch(0)
+			jr.SetBranchCursors(nil)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelFinished, Parallel: joined.spec.Name,
+				Completeness: joined.completeness(), Target: joined.spec.Join,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			state = joined.spec.Join
+			continue
+		}
+
+		// Entering a parallel: fan out into its declared branches.
+		if p, ok := in.Machine.Parallel(state); ok {
+			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
+			}
+			if p.MaxConcurrentBranches > 1 {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: maxConcurrentBranches %d is declared but concurrent branch execution is not yet implemented; branches run sequentially",
+						p.Name, p.MaxConcurrentBranches))
+			}
+			par = newParallelExec(p)
+			jr.SetMachineState(state)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelStarted, Parallel: p.Name,
+				Completeness: par.completeness(),
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			first := par.current()
+			jr.SetBranchCursors(par.cursors())
+			if err := jr.Append(journal.Event{
+				Type: journal.EventBranchStarted, Branch: first.id,
+				Parallel: p.Name, BranchName: first.name, Stage: first.start,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			jr.SetBranch(first.id)
+			state = first.start
+			continue
+		}
+
 		jr.SetMachineState(state)
 
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
