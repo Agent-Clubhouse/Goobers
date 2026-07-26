@@ -228,6 +228,14 @@ export function eventSummary(event: RunEvent): string {
     }
     case "artifact.recorded":
       return `${event.artifact?.name || event.name || "An artifact"} was recorded.`;
+    case "ref.touched": {
+      const reference = event.externalRef;
+      if (!reference) {
+        return "An external reference was recorded.";
+      }
+      const kind = reference.kind === "pr" ? "Pull request" : humanize(reference.kind);
+      return `${kind} ${reference.id} was recorded on ${humanize(reference.provider)}.`;
+    }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
     default:
