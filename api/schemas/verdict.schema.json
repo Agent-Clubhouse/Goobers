@@ -33,6 +33,14 @@
     "sourceRunId": {
       "type": "string",
       "description": "The run whose reviewer evaluation originally produced this verdict."
+    },
+    "overlapCluster": {
+      "type": "boolean",
+      "description": "PR-lifecycle only (#989/#990): whether this PR shared a deterministic file overlap with at least one other open PR at the moment this verdict was published."
+    },
+    "elected": {
+      "type": "boolean",
+      "description": "PR-lifecycle only (PRL-021): whether this PR was the single-lander election's deterministic winner for its overlap cluster at the moment this verdict was published."
     }
   },
   "$defs": {
