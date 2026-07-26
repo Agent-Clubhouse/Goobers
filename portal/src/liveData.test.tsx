@@ -178,6 +178,93 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("preserves queued invalidations across a visibility reconnect", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh, { runId: "run-a" });
+    refresh.mockClear();
+
+    controller.start();
+    await settle();
+    refresh.mockClear();
+    first.push(update("session:1", ["run"], { runIds: ["run-a"] }));
+    await settle();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.requests[1]).toEqual({ cursor: "session:1" });
+    expect(refresh).toHaveBeenCalledWith(new Set(["run"]));
+
+    controller.stop();
+  });
+
+  it("retries an unsuccessful in-flight invalidation after refocus", async () => {
+    window.sessionStorage.setItem("goobers-live-event-cursor", "session:0");
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, testConfig);
+    const firstRefresh = deferred<boolean>();
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh, { runId: "run-a" });
+    refresh.mockReset();
+    refresh.mockReturnValueOnce(firstRefresh.promise).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    first.push(update("session:1", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    firstRefresh.resolve(false);
+    await settle();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.requests[1]).toEqual({ cursor: "session:1" });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]));
+
+    controller.stop();
+  });
+
   it("clears an expired cursor, requests a full snapshot, and reconnects cleanly", async () => {
     window.sessionStorage.setItem("goobers-live-event-cursor", "expired:9");
     const recovered = new ControlledEventStream();

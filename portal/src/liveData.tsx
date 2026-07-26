@@ -134,6 +134,7 @@ export class LiveDataController {
   private failureCount = 0;
   private generation = 0;
   private invalidationFlush: Promise<void> | undefined;
+  private invalidationsPaused = false;
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
@@ -160,7 +161,9 @@ export class LiveDataController {
     this.pendingInvalidations.push(copyInvalidation(invalidation));
     if (delay === 0) {
       this.clearInvalidationTimer();
-      void this.flushInvalidations();
+      if (!this.invalidationsPaused) {
+        void this.flushInvalidations();
+      }
       return;
     }
     this.scheduleInvalidationFlush(delay);
@@ -190,6 +193,8 @@ export class LiveDataController {
       return;
     }
     this.started = true;
+    this.invalidationsPaused =
+      !navigator.onLine || document.visibilityState === "hidden";
     this.cursor = window.sessionStorage.getItem(CURSOR_STORAGE_KEY) ?? undefined;
     window.addEventListener("online", this.onOnline);
     window.addEventListener("offline", this.onOffline);
@@ -224,19 +229,21 @@ export class LiveDataController {
     if (!this.started || document.visibilityState === "hidden") {
       return;
     }
+    this.invalidationsPaused = false;
     this.failureCount = 0;
     this.connect();
+    this.resumeInvalidations();
   };
 
   private readonly onOffline = (): void => {
     if (!this.started) {
       return;
     }
+    this.invalidationsPaused = true;
     this.closeConnection();
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.pendingInvalidations.length = 0;
     this.setFreshness("offline");
   };
 
@@ -245,11 +252,11 @@ export class LiveDataController {
       return;
     }
     if (document.visibilityState === "hidden") {
+      this.invalidationsPaused = true;
       this.closeConnection();
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
-      this.pendingInvalidations.length = 0;
       this.setFreshness("stale");
       return;
     }
@@ -257,8 +264,10 @@ export class LiveDataController {
       this.setFreshness("offline");
       return;
     }
+    this.invalidationsPaused = false;
     this.failureCount = 0;
     this.connect();
+    this.resumeInvalidations();
   };
 
   private connect(): void {
@@ -461,7 +470,7 @@ export class LiveDataController {
   }
 
   private scheduleInvalidationFlush(delay: number): void {
-    if (this.invalidationTimer !== undefined) {
+    if (this.invalidationsPaused || this.invalidationTimer !== undefined) {
       return;
     }
     this.invalidationTimer = setTimeout(() => {
@@ -477,7 +486,11 @@ export class LiveDataController {
     const flush = this.drainInvalidations().finally(() => {
       if (this.invalidationFlush === flush) {
         this.invalidationFlush = undefined;
-        if (this.pendingInvalidations.length > 0 && this.invalidationTimer === undefined) {
+        if (
+          !this.invalidationsPaused &&
+          this.pendingInvalidations.length > 0 &&
+          this.invalidationTimer === undefined
+        ) {
           void this.flushInvalidations();
         }
       }
@@ -488,6 +501,9 @@ export class LiveDataController {
 
   private async drainInvalidations(): Promise<void> {
     while (this.pendingInvalidations.length > 0) {
+      if (this.invalidationsPaused) {
+        return;
+      }
       const revision = this.invalidationRevision;
       const invalidations = this.pendingInvalidations.splice(0);
       const stream = this.activeStream;
@@ -499,7 +515,7 @@ export class LiveDataController {
       if (!this.started) {
         return;
       }
-      if (!refreshed && stream === this.activeStream) {
+      if (!refreshed) {
         this.invalidationRevision += 1;
         this.pendingInvalidations.unshift(...invalidations);
         this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
@@ -517,6 +533,12 @@ export class LiveDataController {
       ) {
         this.setFreshness("connected");
       }
+    }
+  }
+
+  private resumeInvalidations(): void {
+    if (this.pendingInvalidations.length > 0) {
+      this.scheduleInvalidationFlush(0);
     }
   }
 
