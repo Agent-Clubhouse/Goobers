@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -424,6 +425,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
 	}
+	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+		return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
+	}
+	runControls, err := r.resolveRunControls(id.RunControls)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
+	}
 	if completedGate != nil {
 		next, res, advance, gerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, item, *completedGate, lastStage, lastResult, 0)
 		if gerr != nil {
@@ -477,6 +485,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		Trigger:      id.Trigger,
 		RepoRef:      in.RepoRef,
 		Item:         item,
+		RunControls:  runControls,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again

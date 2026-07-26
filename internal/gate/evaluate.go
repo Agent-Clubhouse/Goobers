@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -14,10 +15,9 @@ import (
 // evaluate to a non-"pass" outcome this many times before Evaluator overrides
 // its own configured branch and routes to workflow.TargetEscalate instead —
 // "bounded repass loops (loop budget journaled and enforced)" (issue #20).
-// There is no per-gate budget field in the workflow DSL yet (api/v1alpha1
-// Gate/AutomatedGate/AgenticGate); this is a run-wide default, overridable via
-// Evaluator.MaxRepasses.
-const DefaultMaxRepasses = 3
+// Inherited run policy may override this default, and Gate.MaxRepasses may
+// override the inherited value for one automated or agentic gate.
+const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 
 // Result is the outcome of one gate evaluation.
 type Result struct {
@@ -92,7 +92,7 @@ type Evaluator struct {
 	// Journal records gate verdicts. Optional — nil disables journaling
 	// (e.g. in unit tests that only care about branch resolution).
 	Journal Journal
-	// MaxRepasses overrides DefaultMaxRepasses when non-zero.
+	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
 	// Attempts holds each gate's current consecutive non-pass count, keyed by
@@ -357,7 +357,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, exceeded := e.trackRepass(g.Name, outcome)
+	attempt, exceeded := e.trackRepass(g, outcome)
 	escalated := exceeded || duplicateDiff
 	if escalated {
 		target = escalationTarget(g)
@@ -378,7 +378,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 // evaluator; Evaluate also checks it as a fail-safe for direct callers.
 func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result, bool, error) {
 	attempt := e.Attempts[g.Name]
-	if attempt <= e.maxRepasses() {
+	if attempt <= e.maxRepasses(g) {
 		return Result{}, false, nil
 	}
 	r := Result{
@@ -408,24 +408,21 @@ func escalationTarget(g apiv1.Gate) string {
 // resets it to 0; any other outcome increments it. It returns the post-update
 // count and whether that count exceeds the repass budget (in which case the
 // caller must escalate instead of following the gate's own branch).
-func (e *Evaluator) trackRepass(gateName, outcome string) (attempt int, exceeded bool) {
+func (e *Evaluator) trackRepass(g apiv1.Gate, outcome string) (attempt int, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
 	if outcome == OutcomePass {
-		e.Attempts[gateName] = 0
+		e.Attempts[g.Name] = 0
 		return 0, false
 	}
-	e.Attempts[gateName]++
-	attempt = e.Attempts[gateName]
-	return attempt, attempt > e.maxRepasses()
+	e.Attempts[g.Name]++
+	attempt = e.Attempts[g.Name]
+	return attempt, attempt > e.maxRepasses(g)
 }
 
-func (e *Evaluator) maxRepasses() int {
-	if e.MaxRepasses > 0 {
-		return e.MaxRepasses
-	}
-	return DefaultMaxRepasses
+func (e *Evaluator) maxRepasses(g apiv1.Gate) int {
+	return runcontrol.MaxRepassesForGate(g, e.MaxRepasses)
 }
 
 // gateRetryPolicy returns the gate's declared evaluator retry policy, read off

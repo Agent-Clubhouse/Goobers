@@ -224,6 +224,20 @@ Contract rules:
   capability is not declared by both the task and its goober.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
+- **Run-control inheritance is explicit:** `runConditions` supplies instance
+  defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
+  `Workflow.spec.runControls` overrides them for one definition. The resolved
+  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
+  starts, so config reloads cannot retune a run in flight. An automated or
+  agentic gate may override `maxRepasses` because separate review loops in one
+  definition can legitimately need different budgets. Stall detection does not
+  have a task-level override: task/gate `timeoutSeconds` and retry policies
+  already own per-attempt execution bounds, while the stall watchdog protects
+  the run journal as a whole.
+- Retry attempt counts and backoff remain declared on each task or executable
+  gate. They are intentionally not inherited run controls: they classify and
+  repeat one stage attempt, whereas repass and stall budgets bound orchestration
+  across stage attempts.
 
 ## 6. Instance anatomy (local runner)
 

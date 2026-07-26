@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
@@ -125,6 +126,9 @@ func WithPreviewFeatures(enabled bool) Option {
 
 // Compile dispatches a pinned definition to its versioned interpreter.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	if err := runcontrol.ValidateWorkflow(def.Spec); err != nil {
+		return nil, fmt.Errorf("compile workflow %q: %w", def.Name, err)
+	}
 	interpreter, err := interpreterForVersion(def.DSLVersion)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %q: %w", def.Name, err)

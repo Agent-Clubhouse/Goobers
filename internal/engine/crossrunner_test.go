@@ -409,6 +409,18 @@ func TestResolveGateOutcome(t *testing.T) {
 		}
 	})
 
+	t.Run("gate budget overrides the inherited run budget", func(t *testing.T) {
+		gateOverride := g
+		gateOverride.MaxRepasses = 1
+		gr, err := resolveGateOutcome(gateOverride, gate.OutcomeFail, map[string]int{"review": 1}, 5)
+		if err != nil {
+			t.Fatalf("resolveGateOutcome: %v", err)
+		}
+		if !gr.Escalated || gr.Target != wf.TargetEscalate {
+			t.Fatalf("result = %+v, want per-gate escalation", gr)
+		}
+	})
+
 	t.Run("exhaustion routes through the escalate control branch", func(t *testing.T) {
 		attempts := map[string]int{"review": 1}
 		gr, err := resolveGateOutcome(withEscalate, gate.OutcomeFail, attempts, 1)

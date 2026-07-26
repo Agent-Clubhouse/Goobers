@@ -193,6 +193,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	t.Cleanup(func() { _ = log.Close() })
 
 	manager, err := worktree.NewManager(layout.WorkcopiesDir())
@@ -303,6 +304,35 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 	if !found {
 		t.Fatalf("instance journal has no run_stalled terminal event: %+v", events)
 	}
+}
+
+func TestSweepStalledRunsUsesPinnedPerRunTimeout(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventTime := now.Add(-time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "short-timeout-run", "short", "", &eventTime, time.Time{}, &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "30m",
+	})
+	eventTime = now.Add(-time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "long-timeout-run", "long", "", &eventTime, time.Time{}, &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "2h",
+	})
+
+	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "short-timeout-run", journal.PhaseEscalated)
+	assertWatchdogPhase(t, layout.RunsDir(), "long-timeout-run", journal.PhaseRunning)
 }
 
 func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
@@ -478,10 +508,15 @@ func createWatchdogRun(t *testing.T, runsDir, runID, workflow string, eventTime 
 }
 
 func createWatchdogRunForGaggle(t *testing.T, runsDir, runID, workflow, gaggle string, eventTime *time.Time, heartbeat time.Time) {
+	createWatchdogRunWithControls(t, runsDir, runID, workflow, gaggle, eventTime, heartbeat, nil)
+}
+
+func createWatchdogRunWithControls(t *testing.T, runsDir, runID, workflow, gaggle string, eventTime *time.Time, heartbeat time.Time, controls *apiv1.RunControls) {
 	t.Helper()
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: workflow, WorkflowVersion: 1, Gaggle: gaggle,
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RunControls: controls,
+		Trigger:     journal.Trigger{Kind: journal.TriggerManual},
 	}, nil, journal.WithClock(func() time.Time { return *eventTime }))
 	if err != nil {
 		t.Fatal(err)

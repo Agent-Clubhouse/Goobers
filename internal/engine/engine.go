@@ -84,10 +84,12 @@ type RunInput struct {
 	// Config.GateGooberCapabilities (#294). Automated/human gates stay
 	// uncredentialed.
 	GateGooberCapabilities map[string][]string `json:"gateGooberCapabilities,omitempty"`
-	// MaxRepasses overrides the shared repass budget (gate.DefaultMaxRepasses)
-	// when > 0, mirroring the local runner's Config.MaxRepasses — pinned at
-	// start like the rest of the run's policy (#624).
+	// MaxRepasses is the legacy run-wide repass field retained for replay of
+	// inputs created before RunControls.
 	MaxRepasses int `json:"maxRepasses,omitempty"`
+	// RunControls pins inherited workflow policy. MaxRepasses above remains a
+	// compatibility field for persisted inputs created before this block.
+	RunControls apiv1.RunControls `json:"runControls,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {

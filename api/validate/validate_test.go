@@ -1372,6 +1372,55 @@ func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestRunControlSchemas(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"},
+			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle runControls rejected: %v", err)
+	}
+
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "build"},
+		"spec": {
+			"gaggle": "web",
+			"triggers": [{"type": "manual"}],
+			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m"},
+			"start": "review",
+			"gates": [{
+				"name": "review",
+				"evaluator": "automated",
+				"automated": {"check": "status-equals"},
+				"maxRepasses": 1,
+				"branches": {"pass": "", "fail": "review"}
+			}]
+		}
+	}`
+	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
+		t.Fatalf("workflow runControls rejected: %v", err)
+	}
+
+	human := strings.Replace(workflow, `"evaluator": "automated",`, `"evaluator": "human",`, 1)
+	human = strings.Replace(human, `"automated": {"check": "status-equals"},`, `"human": {},`, 1)
+	if err := v.ValidateJSON("workflow.schema.json", []byte(human)); err == nil {
+		t.Fatal("human gate maxRepasses was accepted")
+	}
+	if err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, `"maxRepasses": 3`, `"maxRepasses": 0`, 1))); err == nil {
+		t.Fatal("zero workflow maxRepasses was accepted")
+	}
+}
+
 // TestGaggleSchemaSandboxAndCheckout covers the two v2 cloud-ladder additions
 // to the Gaggle schema: the per-gaggle sandbox posture override (#1305) and
 // the accepted-but-inert repo checkout declaration (#649).

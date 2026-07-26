@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
@@ -230,7 +231,11 @@ type Config struct {
 	Automated invoke.Automated
 	// MaxRepasses bounds gate repass loops before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
+	// Deprecated: use StartInput.RunControls for per-run policy.
 	MaxRepasses int
+	// RunControls supplies fallback policy for callers that do not pass
+	// StartInput.RunControls. Production dispatch passes fully resolved controls.
+	RunControls apiv1.RunControls
 	// Escalation notifies the driving backlog item's provider when a gate or
 	// stage escalates the run (internal/gate.EscalationNotifier). Optional —
 	// nil is a no-op.
@@ -440,6 +445,9 @@ type StartInput struct {
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
+	// RunControls is the effective instance -> gaggle -> workflow policy pinned
+	// into run.yaml. Zero values inherit Runner.Config's compatibility defaults.
+	RunControls apiv1.RunControls
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// run declares (its gaggle's + its stages', RRQ-1/#1101). They are
 	// preflight-verified on the host before any stage executes (#735): a token
@@ -521,6 +529,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	effectiveControls, err := r.resolveRunControls(&in.RunControls)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: resolve run controls: %w", err)
+	}
+	in.RunControls = effectiveControls
 
 	inputs := map[string][]byte{}
 	graph, err := json.Marshal(in.Machine.Graph())
@@ -545,6 +558,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	// itself authors (e.g. an executor_error message), not only the
 	// artifacts an executor scrubs and commits itself.
 	registrar, scrubber := journal.DefaultScrubber()
+	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		RunID:           in.RunID,
 		Workflow:        in.Machine.Def.Name,
@@ -552,11 +566,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		WorkflowDigest:  in.Machine.Digest(),
 		GooberDigest:    in.GooberDigest,
 		Gaggle:          in.Gaggle,
+		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
 	}, inputs, journal.WithScrubber(scrubber))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
+
 	defer func() { _ = jr.Close() }()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
@@ -611,6 +627,18 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		completeRunSpan(span, result)
 		return result, nil
 	})
+}
+
+func (r *Runner) resolveRunControls(overrides *apiv1.RunControls) (apiv1.RunControls, error) {
+	base := r.cfg.RunControls
+	if base.MaxRepasses == 0 && r.cfg.MaxRepasses > 0 {
+		base.MaxRepasses = int32(r.cfg.MaxRepasses)
+	}
+	effective, err := runcontrol.Resolve(base, nil, overrides)
+	if err != nil {
+		return apiv1.RunControls{}, err
+	}
+	return effective.Overrides(), nil
 }
 
 func completeRunSpan(span telemetry.Span, result Result) {
@@ -905,7 +933,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	gateEval := &gate.Evaluator{
 		Automated:      r.cfg.Automated,
 		Journal:        jr,
-		MaxRepasses:    r.cfg.MaxRepasses,
+		MaxRepasses:    int(in.RunControls.MaxRepasses),
 		Attempts:       gateAttempts,
 		LastDiffDigest: gateDiffDigests,
 	}

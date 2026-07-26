@@ -636,6 +636,7 @@ func TestStalledRunTimeout(t *testing.T) {
 	if got, err := (RunConditions{}).StalledRunTimeoutDuration(); err != nil || got != DefaultStalledRunTimeout {
 		t.Fatalf("default StalledRunTimeoutDuration = %s, %v; want %s", got, err, DefaultStalledRunTimeout)
 	}
+
 	if got, err := (RunConditions{StalledRunTimeout: "1ns"}).StalledRunTimeoutDuration(); err != nil || got != time.Nanosecond {
 		t.Fatalf("shortest StalledRunTimeoutDuration = %s, %v; want 1ns", got, err)
 	}
@@ -646,6 +647,17 @@ func TestStalledRunTimeout(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want stalledRunTimeout error", err)
 			}
 		})
+	}
+}
+
+func TestRunConditionsExposeRunControlDefaults(t *testing.T) {
+	conditions := RunConditions{MaxRepasses: 6, StalledRunTimeout: "3h"}
+	if got := conditions.RunControls(); got.MaxRepasses != 6 || got.StalledRunTimeout != "3h" {
+		t.Fatalf("RunControls = %+v", got)
+	}
+	if err := (&Config{RunConditions: RunConditions{MaxRepasses: -1}}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "maxRepasses") {
+		t.Fatalf("negative maxRepasses error = %v", err)
 	}
 }
 

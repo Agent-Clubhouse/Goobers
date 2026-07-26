@@ -26,6 +26,16 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "gaggle": { "type": "string", "minLength": 1 },
+    "runControls": {
+      "description": "Effective inherited run-control policy pinned when the run started. Omitted only on legacy journals.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRepasses", "stalledRunTimeout"],
+      "properties": {
+        "maxRepasses": { "type": "integer", "minimum": 1 },
+        "stalledRunTimeout": { "type": "string", "minLength": 1 }
+      }
+    },
     "trigger": {
       "type": "object",
       "additionalProperties": false,

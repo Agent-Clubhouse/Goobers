@@ -132,6 +132,7 @@ func TestBuildRunInputPinsTriggerAndPolicy(t *testing.T) {
 	if _, err := s.Dispatch(context.Background(), backlogEvent()); err != nil {
 		t.Fatalf("Dispatch(item): %v", err)
 	}
+
 	in := st.lastInput
 	if in.TriggerKind != string(journal.TriggerItem) || in.TriggerRef != "github:42" {
 		t.Errorf("item trigger = %q %q, want %q %q", in.TriggerKind, in.TriggerRef, journal.TriggerItem, "github:42")
@@ -153,6 +154,28 @@ func TestBuildRunInputPinsTriggerAndPolicy(t *testing.T) {
 	in = st.lastInput
 	if in.TriggerKind != string(journal.TriggerSchedule) || in.TriggerRef != "fire-1" {
 		t.Errorf("schedule trigger = %q %q, want %q %q", in.TriggerKind, in.TriggerRef, journal.TriggerSchedule, "fire-1")
+	}
+}
+
+func TestBuildRunInputResolvesRunControlPrecedence(t *testing.T) {
+	spec := flowSpec()
+	spec.RunControls = &apiv1.RunControls{StalledRunTimeout: "4h"}
+	registry := engine.NewRegistryWithPreviewFeatures(true)
+	if _, err := registry.Register("flow", spec); err != nil {
+		t.Fatal(err)
+	}
+	st := &fakeStarter{}
+	s := newScheduler(t, Config{
+		Starter:             st,
+		Registry:            registry,
+		InstanceRunControls: apiv1.RunControls{MaxRepasses: 2, StalledRunTimeout: "30m"},
+		GaggleRunControls:   &apiv1.RunControls{MaxRepasses: 5},
+	})
+	if _, err := s.Dispatch(context.Background(), backlogEvent()); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.lastInput.RunControls; got.MaxRepasses != 5 || got.StalledRunTimeout != "4h0m0s" {
+		t.Fatalf("runControls = %+v, want gaggle maxRepasses and workflow stalledRunTimeout", got)
 	}
 }
 

@@ -50,6 +50,7 @@
           "type": "string",
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
+        "runControls": { "$ref": "#/$defs/runControls" },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",
@@ -104,6 +105,15 @@
       "description": "A free-form, version-parameterized runner capability token (e.g. dotnet@8, xcode, os=windows) — distinct from a credential capability. An alphanumeric start then letters, digits, and any of . _ - + @ =, no whitespace.",
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$"
+    },
+    "runControls": {
+      "description": "Runner-level safety budgets inherited by this gaggle's workflows. Omitted fields retain instance defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRepasses": { "type": "integer", "minimum": 1 },
+        "stalledRunTimeout": { "type": "string", "minLength": 1 }
+      }
     },
     "backlogRef": {
       "type": "object",

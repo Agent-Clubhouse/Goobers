@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -121,6 +122,7 @@ const (
 	errorStageTimeout             WarningCode = "WF013"
 	errorGateEvaluatorCardinality WarningCode = "WF014"
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
+	errorRunControls              WarningCode = "WF016"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -746,6 +748,7 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleCICommand(r)
 	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
 	ix.checkGaggleBranchNamespace(r)
+	ix.checkGaggleRunControls(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
 	ix.checkLabelPredicates(r)
@@ -1013,6 +1016,7 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 		if ns == "" {
 			continue
 		}
+
 		bad := ""
 		if strings.Contains(ns, "..") {
 			bad = `contains ".."`
@@ -1027,6 +1031,17 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 		if bad != "" {
 			r.add(errorBranchNamespace, Error, ix.gaggleFile[name], "Gaggle", name,
 				"spec.branchNamespace %q %s, which would produce an invalid git run-branch name at runtime", ns, bad)
+		}
+	}
+}
+
+func (ix *index) checkGaggleRunControls(r *Report) {
+	for name, g := range ix.gaggles {
+		if g.Spec.RunControls == nil {
+			continue
+		}
+		if err := runcontrol.Validate("spec.runControls", *g.Spec.RunControls); err != nil {
+			r.add(errorRunControls, Error, ix.gaggleFile[name], "Gaggle", name, "%v", err)
 		}
 	}
 }
@@ -1122,6 +1137,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		wf.CheckWorkflowFeatureSupport(wf.Definition{
 			Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
 		}, allowPreview))
+	if err := runcontrol.ValidateWorkflow(w.Spec); err != nil {
+		r.add(errorRunControls, Error, file, "Workflow", w.Name, "%v", err)
+	}
 
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {

@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -38,10 +39,12 @@ type gateResult struct {
 	Escalated bool
 }
 
-// maxRepassesFor resolves the run's repass budget: RunInput.MaxRepasses when
-// set, else the same gate.DefaultMaxRepasses the local runner defaults to —
-// one shared constant, so the budgets cannot drift (#624/#156).
+// maxRepassesFor resolves the inherited run budget, retaining the legacy
+// RunInput.MaxRepasses fallback for persisted inputs created before RunControls.
 func maxRepassesFor(in RunInput) int {
+	if in.RunControls.MaxRepasses > 0 {
+		return int(in.RunControls.MaxRepasses)
+	}
 	if in.MaxRepasses > 0 {
 		return in.MaxRepasses
 	}
@@ -66,7 +69,7 @@ func resolveGateOutcome(g apiv1.Gate, outcome string, attempts map[string]int, m
 	}
 	attempts[g.Name]++
 	attempt := attempts[g.Name]
-	escalated := attempt > maxRepasses
+	escalated := attempt > runcontrol.MaxRepassesForGate(g, maxRepasses)
 	if escalated {
 		target = escalationTarget(g)
 	}

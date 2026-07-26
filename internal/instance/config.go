@@ -15,9 +15,11 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/speechnotify"
 )
@@ -37,7 +39,7 @@ const (
 	WorkflowSourceKindGit            = "git"
 	DefaultDaemonLivenessTimeout     = 2 * time.Minute
 	MinimumDaemonLivenessTimeout     = 2 * time.Second
-	DefaultStalledRunTimeout         = 45 * time.Minute
+	DefaultStalledRunTimeout         = runcontrol.DefaultStalledRunTimeout
 	DefaultClaimsLockTimeout         = 30 * time.Second
 	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
 	DefaultTelemetryRetentionMaxRuns = 500
@@ -615,12 +617,23 @@ type RunConditions struct {
 	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
 	// (#340), mirroring WorkflowBudgets' per-hour override.
 	WorkflowDailyBudgets map[string]int `json:"workflowDailyBudgets,omitempty" yaml:"workflowDailyBudgets,omitempty"`
+	// MaxRepasses is the instance default for consecutive non-pass gate
+	// evaluations before escalation. Zero uses the built-in default.
+	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
 	// Empty defaults to 30 seconds.
 	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
+}
+
+// RunControls returns the instance layer of the run-control hierarchy.
+func (c RunConditions) RunControls() apiv1.RunControls {
+	return apiv1.RunControls{
+		MaxRepasses:       c.MaxRepasses,
+		StalledRunTimeout: c.StalledRunTimeout,
+	}
 }
 
 // RetentionConfig controls opt-in pruning of retained failure worktrees and
@@ -936,6 +949,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {
+		return err
+	}
+	if err := runcontrol.Validate("runConditions", c.RunConditions.RunControls()); err != nil {
 		return err
 	}
 	if _, err := c.RunConditions.ClaimsLockTimeoutDuration(); err != nil {

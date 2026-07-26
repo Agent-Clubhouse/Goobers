@@ -218,6 +218,13 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    maxRepasses:
+                      description: |-
+                        MaxRepasses overrides the inherited workflow repass budget for this gate.
+                        It is valid only for automated and agentic gates.
+                      format: int32
+                      minimum: 1
+                      type: integer
                     name:
                       description: Name uniquely identifies this state within the
                         workflow.
@@ -227,6 +234,9 @@ spec:
                   - evaluator
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: maxRepasses is only valid for automated or agentic gates
+                    rule: '!has(self.maxRepasses) || self.evaluator != ''human'''
                 type: array
               parallels:
                 description: |-
@@ -372,6 +382,25 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                type: object
+              runControls:
+                description: |-
+                  RunControls overrides this workflow's gaggle and instance run-control
+                  budgets. Individual automated or agentic gates may further override
+                  MaxRepasses.
+                properties:
+                  maxRepasses:
+                    description: MaxRepasses bounds consecutive non-pass evaluations
+                      before escalation.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  stalledRunTimeout:
+                    description: |-
+                      StalledRunTimeout is the maximum period a running journal may remain
+                      silent before the watchdog escalates it. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                 type: object
               start:
                 description: Start is the name of the first state (task or gate) of
