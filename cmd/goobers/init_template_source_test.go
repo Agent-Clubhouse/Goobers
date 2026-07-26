@@ -92,9 +92,7 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 				normalized.String(),
 			)
 
-			if test.name == "empty" {
-				assertQuickstartSourceValid(t, root)
-			}
+			assertQuickstartSourceValid(t, root)
 		})
 	}
 }
@@ -123,6 +121,41 @@ func TestInitQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
 	data, err := os.ReadFile(manifest)
 	if err != nil || string(data) != "user-owned\n" {
 		t.Fatalf("conflicting manifest changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestInitQuickstartConfigSourceRejectsSemanticallyInvalidPopulatedDestination(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "config-source")
+	if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+		t.Fatalf("seed populated fixture: %v", err)
+	}
+	workflowPath := filepath.Join(root, "gaggles", "example", "workflows", "quickstart.yaml")
+	workflow, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidWorkflow := strings.Replace(string(workflow), "name: quickstart", "name: invalid-command", 1)
+	invalidWorkflow = strings.Replace(invalidWorkflow, `"backlog-query"`, `"missing-command"`, 1)
+	if err := os.WriteFile(
+		filepath.Join(root, "gaggles", "example", "workflows", "invalid-command.yaml"),
+		[]byte(invalidWorkflow),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(
+		t,
+		"init",
+		"--template=quickstart",
+		"--source-tree",
+		root,
+		"--json",
+	)
+	if code != 1 || stdout != "" ||
+		!strings.Contains(stderr, `"code": "COMMAND001"`) ||
+		!strings.Contains(stderr, `unknown goobers verb \"missing-command\"`) {
+		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

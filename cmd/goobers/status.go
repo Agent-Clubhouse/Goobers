@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -39,6 +40,7 @@ const (
 	statusNextFireScheduled    = "scheduled"
 	statusNextFireManual       = "manual"
 	statusNextFireEvent        = "event"
+	statusFirstSuccessRefresh  = 10 * time.Second
 )
 
 func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -66,6 +68,47 @@ func prLabelStatusText(counts statusPRLabelCounts) string {
 
 func prLabelStatusUnavailableText(err error) string {
 	return fmt.Sprintf("Open PR label counts unavailable: %v\n", err)
+}
+
+func timeToFirstPRStatusText(metric telemetry.TimeToFirstPRMetric) string {
+	switch {
+	case metric.InitCompletedAt == nil:
+		return "First-run success: waiting for successful init\n"
+	case metric.Milliseconds == nil:
+		return "First-run success: waiting for first PR\n"
+	default:
+		elapsed := time.Duration(*metric.Milliseconds) * time.Millisecond
+		return fmt.Sprintf("First-run success: first PR in %s\n", elapsed.Truncate(time.Second))
+	}
+}
+
+func timeToFirstPRStatusUnavailableText(err error) string {
+	return fmt.Sprintf("First-run success unavailable: %v\n", err)
+}
+
+type statusTimeToFirstPRCache struct {
+	load     func(context.Context) (telemetry.TimeToFirstPRMetric, error)
+	now      func() time.Time
+	loadedAt time.Time
+	metric   telemetry.TimeToFirstPRMetric
+	err      error
+}
+
+func newStatusTimeToFirstPRCache(
+	load func(context.Context) (telemetry.TimeToFirstPRMetric, error),
+) *statusTimeToFirstPRCache {
+	return &statusTimeToFirstPRCache{load: load, now: time.Now}
+}
+
+func (c *statusTimeToFirstPRCache) Load(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
+	if c.metric.Milliseconds != nil {
+		return c.metric, c.err
+	}
+	if c.loadedAt.IsZero() || !c.now().Before(c.loadedAt.Add(statusFirstSuccessRefresh)) {
+		c.metric, c.err = c.load(ctx)
+		c.loadedAt = c.now()
+	}
+	return c.metric, c.err
 }
 
 var (
@@ -158,9 +201,10 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Warnings []validate.CodedWarning `json:"warnings"`
-	Summary  *statusFleetSummary     `json:"summary,omitempty"`
-	Runs     []statusJSONSummary     `json:"runs"`
+	Warnings      []validate.CodedWarning        `json:"warnings"`
+	TimeToFirstPR *telemetry.TimeToFirstPRMetric `json:"timeToFirstPR,omitempty"`
+	Summary       *statusFleetSummary            `json:"summary,omitempty"`
+	Runs          []statusJSONSummary            `json:"runs"`
 }
 
 type statusFleetSummary struct {
@@ -546,12 +590,23 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	reads, err := readservice.NewLocal(readservice.LocalSources{
+	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,
 		Definitions: set,
 		Validation:  report,
-	}, func() bool { return true })
+	}
+	var timeToFirstPROpenErr error
+	if supportsWatch {
+		telemetryDB, err := openRollup(l, false)
+		if err != nil {
+			timeToFirstPROpenErr = fmt.Errorf("open telemetry rollup: %w", err)
+		} else {
+			defer func() { _ = telemetryDB.Close() }()
+			sources.Telemetry = telemetryDB
+		}
+	}
+	reads, err := readservice.NewLocal(sources, func() bool { return true })
 	if err != nil {
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 2
@@ -582,6 +637,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
+	loadTimeToFirstPR := reads.TimeToFirstPR
+	if timeToFirstPROpenErr != nil {
+		loadTimeToFirstPR = func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
+			return telemetry.TimeToFirstPRMetric{}, timeToFirstPROpenErr
+		}
+	}
+	timeToFirstPRCache := newStatusTimeToFirstPRCache(loadTimeToFirstPR)
 	// Scheduler state is loaded per redraw so watch reflects quota transitions.
 	// Provider PR counts use the scheduler's coarser PR refresh cadence to keep
 	// watch API traffic bounded.
@@ -590,6 +652,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", nil
 		}
 		var text strings.Builder
+		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
+		if err != nil {
+			text.WriteString(timeToFirstPRStatusUnavailableText(err))
+		} else {
+			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
+		}
 		summary, err := loadFleetSummary(runs, now)
 		if err != nil {
 			return "", err
@@ -639,10 +707,18 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	runs = selectStatusRuns(allRuns, options)
 	if *jsonOutput {
+		var timeToFirstPR *telemetry.TimeToFirstPRMetric
+		if supportsWatch {
+			metric, err := timeToFirstPRCache.Load(context.Background())
+			if err == nil {
+				timeToFirstPR = &metric
+			}
+		}
 		output := statusJSONOutput{
-			Warnings: warnings,
-			Summary:  fleetSummary,
-			Runs:     statusJSONSummaries(runs),
+			Warnings:      warnings,
+			TimeToFirstPR: timeToFirstPR,
+			Summary:       fleetSummary,
+			Runs:          statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)

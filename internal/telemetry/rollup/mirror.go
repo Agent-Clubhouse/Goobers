@@ -68,6 +68,7 @@ const (
 	eventRunResumed         = "run.resumed"
 	eventRunFinished        = "run.finished"
 	eventSpanRecorded       = "span.recorded"
+	eventInitCompleted      = "init.completed"
 	eventTriggerFired       = "trigger.fired"
 	eventTickSkipped        = "tick.skipped"
 	eventProviderQuotaReset = "provider.quota.reset"
