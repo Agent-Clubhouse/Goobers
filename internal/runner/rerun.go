@@ -154,7 +154,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			pointers:     reconstructPointers(pointerEvents, in.Machine),
 			stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
 			parallel:     activeParallel,
-			fanIn:        pendingFanIn(seedEvents, in.Machine),
+			fanIn:        rerunFanIn(seedEvents, in.Machine, in.Stage),
 		}
 		if activeParallel != nil {
 			seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)

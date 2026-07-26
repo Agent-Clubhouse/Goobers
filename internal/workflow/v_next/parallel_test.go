@@ -142,6 +142,34 @@ func TestParallelBranchQualifiedInputsFromRejectsAmbiguousShorthand(t *testing.T
 	mustReject(t, def, "branch has 2 join-terminal stages, qualify the stage")
 }
 
+func TestParallelBranchQualifiedInputsFromRequiresProducerOnEveryJoinPath(t *testing.T) {
+	def := fanInDef()
+	def.Spec.Tasks[1].Next = "choose-security"
+	def.Spec.Tasks = append(def.Spec.Tasks,
+		apiv1.Task{
+			Name: "security-a", Type: apiv1.TaskDeterministic, Goal: "security a",
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			ExpectedOutputs: []string{"findings"},
+			Next:            TargetJoin,
+		},
+		apiv1.Task{
+			Name: "security-b", Type: apiv1.TaskDeterministic, Goal: "security b",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: TargetJoin,
+		},
+	)
+	def.Spec.Gates = append(def.Spec.Gates, apiv1.Gate{
+		Name:      "choose-security",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{"pass": "security-a", "fail": "security-b"},
+	})
+	def.Spec.Tasks[3].InputsFrom = map[string]string{
+		"security": "fan.security.security-a.findings",
+	}
+	mustReject(t, def, "does not run on every successful path to @join")
+}
+
 func TestParallelAndBranchNamesMayNotContainDots(t *testing.T) {
 	def := parallelDef()
 	def.Spec.Parallels[0].Name = "fan.out"

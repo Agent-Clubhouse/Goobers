@@ -177,6 +177,11 @@ func branchInputsFromProblems(m *Machine) []string {
 					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
 				continue
 			}
+			if !precedesBranchJoinOnEveryPath(m, branch.Start, ref.stage) {
+				problems = append(problems, fmt.Sprintf(
+					"task %q inputsFrom %q references stage %q in parallel %q branch %q, but that stage does not run on every successful path to @join",
+					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
+			}
 			if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, ref.key) {
 				problems = append(problems, fmt.Sprintf(
 					"task %q inputsFrom %q references output %q from parallel %q branch %q stage %q, but that stage declares outputs %v",
@@ -185,6 +190,30 @@ func branchInputsFromProblems(m *Machine) []string {
 		}
 	}
 	return problems
+}
+
+func precedesBranchJoinOnEveryPath(m *Machine, start, producer string) bool {
+	if start == producer {
+		return true
+	}
+	seen := map[string]bool{}
+	stack := []string{start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == producer || seen[state] {
+			continue
+		}
+		if state == TargetJoin {
+			return false
+		}
+		if state == TerminalComplete || model.IsReservedAnyTarget(state) || !m.Has(state) {
+			continue
+		}
+		seen[state] = true
+		stack = append(stack, m.Outgoing(state)...)
+	}
+	return true
 }
 
 func joinTerminalStates(m *Machine, start string) []string {

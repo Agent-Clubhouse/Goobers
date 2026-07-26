@@ -1076,19 +1076,39 @@ func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelEx
 				return nil
 			}
 		}
-		fanIn := newParallelExec(spec)
-		for _, outcome := range event.Completeness {
-			branch := fanIn.branch(outcome.Name)
-			if branch == nil {
-				continue
-			}
-			branch.status = outcome.Status
-			branch.artifacts = outcome.Artifacts
-			branch.settled = true
-		}
-		return fanIn
+		return fanInFromFinished(spec, event)
 	}
 	return nil
+}
+
+// rerunFanIn restores the fan-in associated with an explicitly rerun join;
+// earlier completed attempts of that join do not consume its branch state.
+func rerunFanIn(events []journal.Event, machine *workflow.Machine, stage string) *parallelExec {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelFinished || event.Target != stage {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if ok && spec.Join == stage {
+			return fanInFromFinished(spec, event)
+		}
+	}
+	return pendingFanIn(events, machine)
+}
+
+func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
+	fanIn := newParallelExec(spec)
+	for _, outcome := range event.Completeness {
+		branch := fanIn.branch(outcome.Name)
+		if branch == nil {
+			continue
+		}
+		branch.status = outcome.Status
+		branch.artifacts = outcome.Artifacts
+		branch.settled = true
+	}
+	return fanIn
 }
 
 // lastWorkspaceBranch rebuilds walk's run-scoped workspace-branch binding

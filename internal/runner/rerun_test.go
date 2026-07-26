@@ -37,6 +37,26 @@ func (*rerunTaskGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
+type repeatedRerunTaskGoober struct {
+	invocations []apiv1.InvocationEnvelope
+}
+
+func (g *repeatedRerunTaskGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.invocations = append(g.invocations, env)
+	if len(g.invocations) < 3 {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultBlocked,
+			Summary: "more operator guidance required",
+			Error:   &apiv1.ErrorInfo{Code: "guidance_required", Message: "more operator guidance required"},
+		}, nil
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (*repeatedRerunTaskGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
 type capturingSuccessGoober struct {
 	invocations []apiv1.InvocationEnvelope
 }
@@ -244,6 +264,66 @@ func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 	for i, branch := range completeness {
 		if branch.Branch != i+1 || branch.Status != journal.BranchSucceeded {
 			t.Errorf("rerun completeness %d = %+v, want succeeded branch %d", i, branch, i+1)
+		}
+	}
+}
+
+func TestRunnerRepeatedRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
+	const runID = "run-repeated-rerun-fan-in"
+	machine := rerunFanInMachine(t)
+	collator := &repeatedRerunTaskGoober{}
+	results := map[string]stubTaskResult{
+		runID + ":review-security": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "security"},
+		},
+		runID + ":review-performance": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "performance"},
+		},
+	}
+	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return collator, nil
+	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: results}, nil
+	})
+	r.cfg.ScratchDir = t.TempDir()
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", result.Phase)
+	}
+
+	for attempt, addendum := range []string{"Use all branch reports.", "Try the completed branch reports again."} {
+		result, err = r.RerunStage(context.Background(), RerunStageInput{
+			RunID: runID, Machine: machine, RepoRef: repo, Stage: "collate",
+			Actor: "release-manager", InstructionAddendum: addendum,
+		})
+		if err != nil {
+			t.Fatalf("RerunStage attempt %d: %v", attempt+1, err)
+		}
+		if attempt == 0 && result.Phase != journal.PhaseEscalated {
+			t.Fatalf("first rerun phase = %s, want escalated", result.Phase)
+		}
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("second rerun phase = %s, want completed", result.Phase)
+	}
+	if len(collator.invocations) != 3 {
+		t.Fatalf("collator invocations = %d, want 3", len(collator.invocations))
+	}
+	for i, invocation := range collator.invocations[1:] {
+		if invocation.Inputs["security"] != "security" || invocation.Inputs["performance"] != "performance" {
+			t.Errorf("rerun %d inputs = %#v, want both branch summaries", i+1, invocation.Inputs)
+		}
+		completeness, ok := invocation.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+		if !ok || len(completeness) != 2 {
+			t.Errorf("rerun %d branch completeness = %#v, want two outcomes", i+1, invocation.Inputs[BranchCompletenessInput])
 		}
 	}
 }
