@@ -231,7 +231,7 @@ jobs:
       - name: Find previous main timing run
         id: previous-timing
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const {data} = await github.rest.actions.listWorkflowRuns({
