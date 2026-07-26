@@ -59,6 +59,12 @@ type mergePRServerState struct {
 	// pagination rather than only checking the first page.
 	verdictOnSecondCommentPage bool
 	spoofedVerdict             bool
+	// overlapCluster/elected stamp the served pass verdict's #1071 election
+	// fields — overlapCluster false (the default) reproduces every existing
+	// fixture's behavior (the sibling-overlap conjunct never fires); a test
+	// exercising the conjunct sets overlapCluster true and elected as needed.
+	overlapCluster bool
+	elected        bool
 	// files is this PR's own changed files (issue #718's delta-aware
 	// baseSha conjunct: what base's movement is checked for intersecting).
 	// baseMovement maps a "oldBaseSHA...newBaseSHA" compare key to the
@@ -240,11 +246,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			return
 		}
 		comment := renderVerdictComment(apiv1.Verdict{
-			Decision:  apiv1.VerdictPass,
-			Summary:   "The implementation is ready to merge.",
-			Rationale: "It satisfies the issue while preserving the existing merge safety checks.",
-			HeadSHA:   st.headSHA,
-			BaseSHA:   st.baseSHA,
+			Decision:       apiv1.VerdictPass,
+			Summary:        "The implementation is ready to merge.",
+			Rationale:      "It satisfies the issue while preserving the existing merge safety checks.",
+			HeadSHA:        st.headSHA,
+			BaseSHA:        st.baseSHA,
+			OverlapCluster: st.overlapCluster,
+			Elected:        st.elected,
 		})
 		comments := []map[string]interface{}{{"id": 1, "body": comment, "user": map[string]string{"login": st.verdictAuthor}}}
 		if st.spoofedVerdict {
@@ -418,6 +426,51 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	facts := readMutationFacts(t, dir)
 	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
 		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
+	}
+}
+
+func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *testing.T) {
+	compareFiles := make([]fakePRFile, 300)
+	for i := range compareFiles {
+		compareFiles[i] = fakePRFile{
+			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
+			status: "modified",
+		}
+	}
+	pullFiles := append([]fakePRFile(nil), compareFiles...)
+	pullFiles = append(pullFiles, fakePRFile{
+		path: "selfhost/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
+	})
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		headBranch: "goobers/tutor/run-1",
+		files:      pullFiles,
+		baseMovement: map[string][]fakePRFile{
+			"base456...head123": compareFiles,
+		},
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+	t.Setenv(executor.RepoProviderEnvVar, "github")
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times, want 0", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
+	}
+	reason, _ := result["reason"].(string)
+	if !strings.Contains(reason, "explicit human sign-off") || !strings.Contains(reason, "never auto-merged") {
+		t.Fatalf("reason = %q, want the high-risk Tutor policy", reason)
 	}
 }
 
@@ -898,6 +951,15 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			},
 			wantSub: "verdict is stale",
 		},
+		{
+			// #1071: a sibling-overlap PR whose canonical pass verdict has NOT
+			// been crowned by single-lander election must never land through
+			// merge-pr — GitHub's native merge queue must never be a second,
+			// self-arbitrating merge authority for cluster membership.
+			name:    "sibling-overlap PR without completed election evidence",
+			mutate:  func(st *mergePRServerState, inputs map[string]string) { st.overlapCluster = true; st.elected = false },
+			wantSub: "no completed election evidence",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -926,6 +988,31 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 				t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
 			}
 		})
+	}
+}
+
+// TestMergePRElectedSiblingOverlapStillMerges is #1071's positive case: a
+// sibling-overlap PR whose canonical pass verdict WAS crowned by single-lander
+// election (elected:true) merges exactly like any other pass — the conjunct
+// only refuses a cluster member missing that evidence, never every
+// overlap-cluster member unconditionally.
+func TestMergePRElectedSiblingOverlapStillMerges(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", overlapCluster: true, elected: true}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1 (elected lander must still merge)", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true", result)
 	}
 }
 

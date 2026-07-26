@@ -1137,6 +1137,42 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "only valid for provider \"github\"",
 		},
 		{
+			name: "valid repo policy",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Policy: &RepoPolicyExpectation{
+					Branch: "main", RequiredMergeMethod: "squash", MergeQueueRequired: true,
+					RequiredStatusChecks: []string{"make ci"},
+				}},
+			}},
+		},
+		{
+			name: "policy rejected for ado repo (#916 V1 GitHub-only scope)",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Policy: &RepoPolicyExpectation{
+					RequiredMergeMethod: "squash",
+				}},
+			}},
+			wantErr: "policy is only supported for provider \"github\"",
+		},
+		{
+			name: "policy rejects invalid requiredMergeMethod",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Policy: &RepoPolicyExpectation{
+					RequiredMergeMethod: "fast-forward",
+				}},
+			}},
+			wantErr: "requiredMergeMethod must be",
+		},
+		{
+			name: "policy rejects empty requiredStatusChecks entry",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Policy: &RepoPolicyExpectation{
+					RequiredStatusChecks: []string{"make ci", "  "},
+				}},
+			}},
+			wantErr: "requiredStatusChecks entries must not be empty",
+		},
+		{
 			name: "github-app privateKey env exposed via passthrough",
 			cfg: Config{
 				Runner: RunnerConfig{EnvPassthrough: []string{"GOOBERS_APP_KEY"}},

@@ -623,8 +623,25 @@ func TestMergeQueuePollClampsPollTimeoutToStageBudget(t *testing.T) {
 		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms",
 		// A poll timeout far past the stage timeout — the exact shape of
 		// the live defect, where the 30m default ran inside a 10m stage.
+		//
+		// The stage timeout itself needs its own margin: MergeQueuePollBudget
+		// halves whatever's left after its minute-scale minimum margin
+		// swallows any stage under a minute, so this value passes straight
+		// through as (roughly) half its own duration as the poll loop's
+		// internal deadline. An 80ms stage (40ms internal deadline) left
+		// almost no room for scheduling jitter — on a loaded CI runner the
+		// process can lose 40ms+ to scheduling alone before its own clamped
+		// deadline check ever runs, so the shared per-command context
+		// (providerCommandContext, ~90% of the stage) expires first
+		// mid-HTTP-call instead of the poll loop's own deadline exiting
+		// cleanly — "context deadline exceeded" instead of a clamped
+		// queueOutcome=timeout. 3s keeps the test itself fast (well under the
+		// 30s failsafe below) while giving the internal ~1.5s clamped budget
+		// enough headroom to survive CI contention (see boundedwait_test.go's
+		// "merge queue degenerate stage" case for the same stage/2 shape at
+		// a larger scale).
 		"pollTimeoutSeconds": "30m",
-		"timeout":            "80ms",
+		"timeout":            "3s",
 	})
 
 	done := make(chan struct{})

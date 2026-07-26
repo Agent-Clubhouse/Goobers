@@ -5,20 +5,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
 // fakeBacklog is a minimal providers.BacklogProvider for tests.
 type fakeBacklog struct {
-	items   []providers.WorkItem
-	listReq providers.ListWorkItemsRequest
-	updated []providers.UpdateWorkItemStatusRequest
-	err     error
+	items        []providers.WorkItem
+	listReq      providers.ListWorkItemsRequest
+	listRequests []providers.ListWorkItemsRequest
+	list         func(providers.ListWorkItemsRequest) []providers.WorkItem
+	updated      []providers.UpdateWorkItemStatusRequest
+	err          error
 }
 
 func (f *fakeBacklog) ListWorkItems(_ context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error) {
 	f.listReq = req
-	return f.items, f.err
+	f.listRequests = append(f.listRequests, req)
+	items := f.items
+	if f.list != nil {
+		items = f.list(req)
+	}
+	if req.PageInfo != nil {
+		req.PageInfo.CandidateCount = len(items)
+		req.PageInfo.HasNext = req.Limit > 0 && len(items) == req.Limit
+		if req.PageInfo.HasNext {
+			req.PageInfo.NextCursor = "next"
+		}
+	}
+	return items, f.err
 }
 
 func (f *fakeBacklog) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
@@ -81,6 +96,7 @@ func TestBacklogPollTriggerEmitsPerItem(t *testing.T) {
 		Ticks:        ticks,
 		Limit:        10,
 	}
+
 	go func() { _ = tr.Watch(ctx, out) }()
 
 	ticks <- time.Unix(0, 0)
@@ -94,6 +110,97 @@ func TestBacklogPollTriggerEmitsPerItem(t *testing.T) {
 	}
 	if len(fb.listReq.Labels) != 1 || fb.listReq.Labels[0] != "goobers" {
 		t.Errorf("poll did not pass the label selector: %+v", fb.listReq.Labels)
+	}
+}
+
+func TestBacklogPollTriggerAppliesExactLabelPredicate(t *testing.T) {
+	predicate, err := labelpredicate.Compile(
+		`("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+		[]string{"area:runner"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	fb := &fakeBacklog{items: []providers.WorkItem{
+		{Provider: providers.ProviderGitHub, ID: "1", Labels: []string{"area:runner", "size:s"}},
+		{Provider: providers.ProviderGitHub, ID: "2", Labels: []string{"area:runner", "size:m", "platform:windows"}},
+		{Provider: providers.ProviderGitHub, ID: "3", Labels: []string{"area:runner", "size:l"}},
+		{Provider: providers.ProviderGitHub, ID: "4", Labels: []string{"area:docs", "size:s"}},
+	}}
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Unix(0, 0)
+	close(ticks)
+	out := make(chan Event, len(fb.items))
+	tr := BacklogPollTrigger{
+		WorkflowName:   "flow",
+		Provider:       fb,
+		Repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		Labels:         predicate.RequiredLabels(),
+		LabelPredicate: predicate,
+		Ticks:          ticks,
+		Limit:          10,
+	}
+	if err := tr.Watch(context.Background(), out); err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	close(out)
+
+	var got []string
+	for event := range out {
+		got = append(got, event.Item.ID)
+	}
+	if len(got) != 1 || got[0] != "1" {
+		t.Fatalf("emitted IDs = %v, want [1]", got)
+	}
+	if len(fb.listReq.Labels) != 1 || fb.listReq.Labels[0] != "area:runner" {
+		t.Fatalf("provider optimization labels = %v, want [area:runner]", fb.listReq.Labels)
+	}
+}
+
+func TestBacklogPollTriggerAdvancesPastNonmatchingPage(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	fb := &fakeBacklog{}
+	fb.list = func(req providers.ListWorkItemsRequest) []providers.WorkItem {
+		if req.Cursor == "" {
+			return []providers.WorkItem{
+				{Provider: providers.ProviderGitHub, ID: "1", Labels: []string{"other"}},
+				{Provider: providers.ProviderGitHub, ID: "2", Labels: []string{"other"}},
+			}
+		}
+		return []providers.WorkItem{{
+			Provider: providers.ProviderGitHub, ID: "3", Labels: []string{"wanted"},
+		}}
+	}
+	ticks := make(chan time.Time, 2)
+	ticks <- time.Unix(0, 0)
+	ticks <- time.Unix(1, 0)
+	close(ticks)
+	out := make(chan Event, 1)
+	tr := BacklogPollTrigger{
+		WorkflowName:   "flow",
+		Provider:       fb,
+		Repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		LabelPredicate: predicate,
+		Ticks:          ticks,
+		Limit:          2,
+	}
+	if err := tr.Watch(context.Background(), out); err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	close(out)
+
+	event := <-out
+	if event.Item == nil || event.Item.ID != "3" {
+		t.Fatalf("event item = %+v, want matching item 3", event.Item)
+	}
+	if len(fb.listRequests) != 2 ||
+		fb.listRequests[0].Cursor != "" || fb.listRequests[1].Cursor != "next" {
+		t.Fatalf("requested cursors = %+v, want [empty next]", fb.listRequests)
 	}
 }
 

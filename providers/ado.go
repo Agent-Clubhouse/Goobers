@@ -507,7 +507,14 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if req.State != "" {
 		query += fmt.Sprintf(" AND [System.State] = '%s'", strings.ReplaceAll(req.State, "'", "''"))
 	}
-	if req.OldestFirst {
+	if req.Cursor != "" {
+		afterID, err := strconv.Atoi(req.Cursor)
+		if err != nil || afterID < 0 {
+			return nil, fmt.Errorf("invalid ADO work-item cursor %q", req.Cursor)
+		}
+		query += fmt.Sprintf(" AND [System.Id] > %d", afterID)
+	}
+	if req.OldestFirst || req.PageInfo != nil || req.Cursor != "" {
 		// WIQL without ORDER BY leaves result order unspecified — the same
 		// Limit-truncation starvation hazard as GitHub's newest-first default
 		// (#532). System.Id ascends with creation order, so this is FIFO.
@@ -517,19 +524,42 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if err != nil {
 		return nil, err
 	}
+	boundedScan := req.Cursor != "" || req.PageInfo != nil
+	if boundedScan && req.Limit > 0 {
+		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(req.Limit)}})
+		if err != nil {
+			return nil, err
+		}
+	}
 	var wiql adoWIQLResponse
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &wiql); err != nil {
 		return nil, err
 	}
-	items := make([]WorkItem, 0, len(wiql.WorkItems))
-	for _, ref := range wiql.WorkItems {
+	refs := wiql.WorkItems
+	if boundedScan && req.Limit > 0 {
+		refs = refs[:min(req.Limit, len(refs))]
+	}
+	if req.PageInfo != nil {
+		req.PageInfo.CandidateCount = len(refs)
+		req.PageInfo.HasNext = req.Limit > 0 && len(refs) == req.Limit
+		req.PageInfo.NextCursor = ""
+		if req.PageInfo.HasNext && len(refs) > 0 {
+			req.PageInfo.NextCursor = strconv.Itoa(refs[len(refs)-1].ID)
+		}
+	}
+	items := make([]WorkItem, 0, len(refs))
+	for _, ref := range refs {
 		item, err := p.GetWorkItem(ctx, req.Repository, strconv.Itoa(ref.ID))
 		if err != nil {
 			return nil, err
 		}
-		if hasAllLabels(item.Labels, req.Labels) {
+		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if hasAllLabels(item.Labels, req.Labels) && matched {
 			items = append(items, item)
-			if req.Limit > 0 && len(items) >= req.Limit {
+			if !boundedScan && req.Limit > 0 && len(items) >= req.Limit {
 				break
 			}
 		}

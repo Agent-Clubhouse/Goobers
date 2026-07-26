@@ -91,7 +91,7 @@ func respondToFindingsFixture(t *testing.T, verdict apiv1.Verdict, responses str
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	resultFile := filepath.Join(t.TempDir(), remediationResponseArtifactName)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
-	if _, err := claimPullRequest(root, []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	seedRemediationResponseRun(t, root, runID, verdict, responses, published)

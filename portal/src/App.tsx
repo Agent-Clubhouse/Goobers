@@ -10,6 +10,7 @@ import {
 } from "./configurationWarnings";
 import { LiveDataProvider } from "./liveData";
 import { ErrorsPage } from "./pages/ErrorsPage";
+import { GagglePage } from "./pages/GagglePage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -175,6 +176,14 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "gaggle" && (
+          <GagglePage
+            client={client}
+            gaggleName={route.id}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
         {route.page === "runs" && (
           <RunsPage client={client} filters={route.filters} standalone={standalone} />
         )}

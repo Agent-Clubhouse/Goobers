@@ -8,6 +8,10 @@
 
 | Command | Description |
 | --- | --- |
+| [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
+| [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
+| [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
+| [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
@@ -34,6 +38,7 @@
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
+| [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
@@ -97,6 +102,100 @@
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+
+## `goobers agent-kit`
+
+install, inspect, or update the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit <subcommand> [flags] [path]
+
+Install, inspect, or explicitly update the release-matched Goobers agent
+toolkit in a checked-in configuration repository.
+
+Subcommands:
+  install  install product-owned assets and a minimal harness reference
+  check    report installed version, drift, missing files, and updates
+  update   show a reviewable diff, then write only with --write
+
+Default path is ".". Targets must be repository roots and may not traverse
+symbolic links or parent path segments.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness generic ./config-repo
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit check`
+
+report agent toolkit version and drift
+
+~~~text
+Usage: goobers agent-kit check [path]
+
+Compare the installed manifest and product-owned file digests with the toolkit
+bundled in this binary. Report the exact bundle and binary release identities,
+modified or missing owned files, and whether an explicit update is available.
+
+Exit codes: 0 = current, 1 = drift, missing manifest, available update, or
+inspection error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit install`
+
+install the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]
+
+Install the toolkit bundled with this Goobers binary beneath the product-owned
+`.goobers/agent-toolkit/` boundary and add a minimal adapter reference to the
+selected harness instruction file. Existing instructions are preserved; install
+only appends a clearly delimited managed reference when one is not already present.
+Skills and other repository content are never overwritten.
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or
+write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness copilot ./config-repo
+~~~
+
+## `goobers agent-kit update`
+
+review or explicitly apply an agent toolkit update
+
+~~~text
+Usage: goobers agent-kit update [--dry-run | --write [--replace-modified]] [path]
+
+Show a reviewable diff from the repository's current files to the toolkit
+bundled in this binary. The default and --dry-run never write. --write applies
+only manifest-owned changes and preserves user-created files. If the installed
+manifest has semantic drift or an owned file differs from its installed digest,
+--replace-modified is also required.
+
+Exit codes: 0 = diff shown or update written, 1 = unsafe target, ownership
+collision, unacknowledged modification, or write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit update ./config-repo
+$ goobers agent-kit update --write ./config-repo
+~~~
 
 ## `goobers apply-verdict`
 
@@ -176,9 +275,11 @@ query/claim one eligible backlog item (a workflow stage)
 ~~~text
 Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
 
-Query the provider for eligible backlog items — labeled with both
-trustLabel (SEC-047: required on public repos, since backlog content is
-untrusted input otherwise) and requireLabels. With --claim, claims
+Query the provider for eligible backlog items — labeled with trustLabel
+(SEC-047: required on public repos, since backlog content is untrusted
+input otherwise), requireLabels, excludeLabels, and the optional
+labelPredicate CEL expression. CEL supports string membership in `labels`
+combined with &&, ||, and !. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
@@ -548,13 +649,13 @@ preflight a Kubernetes cluster against the documented infra shape
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
+       goobers doctor --repo [--report text|json] [instance-root]
 
-Preflight a target Kubernetes cluster against the documented infrastructure
-shape (docs/design/k8s-infra-shape.md) before installing Goobers on it — the
-install-time enforcement of that document (#668). --k8s is the only doctor
-mode today.
+--k8s preflights a target Kubernetes cluster against the documented
+infrastructure shape (docs/design/k8s-infra-shape.md) before installing
+Goobers on it — the install-time enforcement of that document (#668).
 
-The check set, each row citing the shape-doc section it enforces:
+The --k8s check set, each row citing the shape-doc section it enforces:
 
   cluster-version    required  §1     cluster reachable, supported version
   networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
@@ -571,11 +672,19 @@ created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
 
---report json emits the stable machine-readable report; text (default) prints
-the conformance table with remediation hints.
+--repo diffs each configured repo's declared forge-policy manifest
+(<instance-root>/instance.yaml repos[].policy: required merge method,
+merge-queue requirement, required status checks — issue #916, Tier 4 of
+#903) against its live GitHub state. Repos with no policy declared are
+skipped. Token-scope introspection is reported as unavailable when GitHub
+does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
+from a failed call. instance-root defaults to ".".
 
-Exit codes: 0 = cluster conforms (warns allowed), 1 = a required check
-failed, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s) or per-repo findings (--repo).
+
+Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
+failed or drift was found, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -667,6 +776,33 @@ config, 2 = usage/IO error.
 $ goobers features
 $ goobers features --dsl-version 1.4
 $ goobers features --used
+~~~
+
+## `goobers fix`
+
+mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+
+~~~text
+Usage: goobers fix --to <version> [--write] [path]
+
+Mechanically migrate every workflow in a config directory (default path
+".") from its current dslVersion to <version>, one registered version
+step at a time (DVL-6). Prints a reviewable unified diff per changed
+workflow file by default; --write applies the diff to each file in
+place instead. Refuses a workflow that is already at <version>, and
+refuses any jump for which no direct one-step migration is registered —
+chain multiple `fix` invocations for a multi-step upgrade, never a
+silent multi-step rewrite. Never runs automatically; this is always an
+author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
+migrate), 1 = one or more workflows could not be migrated,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fix --to 2.0
+$ goobers fix --to 2.0 --write ./instance
 ~~~
 
 ## `goobers gather-ci-failures`
@@ -820,7 +956,7 @@ $ goobers gather-sibling-context
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo | --template=quickstart] [path]
+Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -833,7 +969,11 @@ GitHub, or optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding
 workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
-demo is supported on Linux and macOS, where network isolation is enforced.
+demo is supported on Linux and macOS, where network isolation is enforced; it is
+fail-closed on Windows (no enforced network:none equivalent exists there) unless
+--insecure is also given, which scaffolds the demo anyway and reports the
+isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
+the general Windows sandbox policy (#651). --insecure requires --demo.
 ~~~
 
 **Examples**
@@ -968,18 +1108,19 @@ conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 Usage: goobers merge-pr [path]
 
 Merge a pull request, but only when every independent conjunct holds:
-verdict=pass, CI green, not a draft, and the SHA-pin still matches the
-PR's live head/base (never a bare self-approval). Declared inputs:
-pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
-(required for the default commit message; supplied by apply-verdict), advisoryMode
-(default false — report only, no merge attempted), mergeMethod
-(merge/squash/rebase; default squash), commitMessage (default: PR
-title + review rationale + referenced issues), resultFile (default
-merge-result.json). Successful merges also report headBranch and
-branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated
-(merged or not — see the result file's "merged" field), 1 = business
-error (missing capability/config, malformed inputs, provider failure),
-2 = usage/IO error.
+verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
+live head/base, and — for a sibling-overlap PR — completed single-lander
+election evidence (elected:true, #1071) — never a bare self-approval.
+Declared inputs: pullNumber, verdict, headSha, baseSha (all required),
+verdictAuthor (required for the default commit message; supplied by
+apply-verdict), advisoryMode (default false — report only, no merge
+attempted), mergeMethod (merge/squash/rebase; default squash),
+commitMessage (default: PR title + review rationale + referenced
+issues), resultFile (default merge-result.json). Successful merges
+also report headBranch and branchCleanup (deleted, skipped-stacked, or
+failed). Exit codes: 0 = evaluated (merged or not — see the result
+file's "merged" field), 1 = business error (missing capability/config,
+malformed inputs, provider failure), 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1875,13 +2016,19 @@ $ goobers telemetry stats --json
 emit versioned candidate findings (a connector stage)
 
 ~~~text
-Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy] [--workflow <name>] [path]
 
 Query the instance telemetry rollup for threshold-crossing failure and gate
 patterns. The built-in connector stage writes a versioned candidate-findings
 artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.
 With no --aggregate, all supported aggregates are evaluated. Threshold rates
 are fractions from 0 through 1; count thresholds are positive integers.
+
+--format effective-version-efficacy (requires --workflow) instead assesses
+the workflow's most recent EffectiveVersion transition — the version-
+segmented cohort key (workflow digest + goober digest + model + harness
+version) from the Tutor v2 design — and emits a helped/regressed/no-change/
+insufficient-data verdict.
 
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
@@ -1982,8 +2129,9 @@ path "."). --source-tree validates a checked-in config source tree
 using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
-token and verifies authenticated git access. Exit codes: 0 = valid,
-1 = validation errors, 2 = usage/IO error.
+token, verifies authenticated git access, and (GitHub only) warns when
+a repository is larger than the checkout-size threshold. Exit codes:
+0 = valid, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
 **Examples**
