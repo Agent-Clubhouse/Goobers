@@ -170,3 +170,64 @@ func TestQualifiedResolutionIsGatedByDSLVersion(t *testing.T) {
 		t.Errorf("value = %#v (ok=%v), want the qualified value once the feature is enabled", got, ok)
 	}
 }
+
+// Fan-in: a join reads a specific branch's stage output through the
+// four-segment form (§7).
+func TestResolveBranchQualifiedFanIn(t *testing.T) {
+	upstream := apiv1.ResultEnvelope{Outputs: map[string]any{"unrelated": 1}}
+	completed := stageOutputs{
+		"review-security": {"findingsRef": "sha256:sec"},
+		"review-perf":     {"findingsRef": "sha256:perf"},
+	}
+
+	got, ok := resolveInputsFrom("focus-areas.security.review-security.findingsRef", upstream, completed, true)
+	if !ok || got != "sha256:sec" {
+		t.Errorf("security fan-in = %#v (ok=%v), want sha256:sec", got, ok)
+	}
+	got, ok = resolveInputsFrom("focus-areas.performance.review-perf.findingsRef", upstream, completed, true)
+	if !ok || got != "sha256:perf" {
+		t.Errorf("perf fan-in = %#v (ok=%v), want sha256:perf", got, ok)
+	}
+}
+
+// A branch that failed, was cancelled, or settled empty produced no stage
+// outputs, so its reference resolves to absent — which the join must handle via
+// the completeness record rather than receiving a wrong value.
+func TestBranchQualifiedReferenceToAFailedBranchIsAbsent(t *testing.T) {
+	completed := stageOutputs{"review-security": {"findingsRef": "sha256:sec"}}
+	if _, ok := resolveInputsFrom("focus-areas.performance.review-perf.findingsRef",
+		apiv1.ResultEnvelope{}, completed, true); ok {
+		t.Fatal("a reference into a branch that produced nothing must resolve to absent")
+	}
+	err := inputsFromError("collate", "perfFindings", "focus-areas.performance.review-perf.findingsRef", completed, true)
+	for _, want := range []string{"performance", "focus-areas", "review-perf", "completeness record"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+}
+
+func TestSplitBranchQualified(t *testing.T) {
+	for _, tc := range []struct {
+		value                        string
+		wantOK                       bool
+		parallel, branch, stage, key string
+	}{
+		{"fan.security.review.findingsRef", true, "fan", "security", "review", "findingsRef"},
+		// The output key may itself contain dots; it is the remainder.
+		{"fan.security.review.a.b", true, "fan", "security", "review", "a.b"},
+		{"only.three.segments", false, "", "", "", ""},
+		{"two.segments", false, "", "", "", ""},
+		{"nodots", false, "", "", "", ""},
+	} {
+		p, b, s, k, ok := splitBranchQualified(tc.value)
+		if ok != tc.wantOK {
+			t.Errorf("%q: ok = %v, want %v", tc.value, ok, tc.wantOK)
+			continue
+		}
+		if ok && (p != tc.parallel || b != tc.branch || s != tc.stage || k != tc.key) {
+			t.Errorf("%q split to (%q,%q,%q,%q), want (%q,%q,%q,%q)",
+				tc.value, p, b, s, k, tc.parallel, tc.branch, tc.stage, tc.key)
+		}
+	}
+}

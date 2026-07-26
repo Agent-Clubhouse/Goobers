@@ -45,6 +45,27 @@ func (s stageOutputs) record(stage string, outputs map[string]any) {
 // immediately preceding stage only. That is what makes this fully
 // backward-compatible.
 func resolveInputsFrom(value string, upstream apiv1.ResultEnvelope, completed stageOutputs, qualified bool) (any, bool) {
+	// A four-segment FAN-IN reference is tried first, because its prefix is
+	// also a valid two-segment prefix and the longer form is the more specific
+	// intent (§7).
+	//
+	// Resolution only needs the STAGE segment: §5.5 rule 1 proves branch
+	// subgraphs disjoint, so a stage name identifies exactly one branch of
+	// exactly one parallel. The parallel and branch segments are what make the
+	// reference readable and compile-checkable, not what makes it resolvable —
+	// which is why disjointness is load-bearing rather than merely tidy.
+	if qualified {
+		if _, _, stage, key, ok := splitBranchQualified(value); ok {
+			if outputs, seen := completed[stage]; seen {
+				v, found := outputs[key]
+				return v, found
+			}
+			// The stage never produced outputs — its branch failed, was
+			// cancelled, or settled empty. Fall through: a three-segment
+			// reading may still apply, and failing that the whole string is a
+			// bare key.
+		}
+	}
 	if stage, key, ok := splitQualified(value); ok && qualified {
 		if outputs, seen := completed[stage]; seen {
 			v, found := outputs[key]
@@ -67,10 +88,46 @@ func splitQualified(value string) (stage, key string, ok bool) {
 	return stage, key, true
 }
 
+// splitBranchQualified splits a FAN-IN reference,
+// "<parallel>.<branch>.<stage>.<outputKey>", used by a join to read a specific
+// branch's stage output (docs/design/static-fan-out-fan-in.md §7).
+//
+// Four segments rather than three: a branch is a SUBGRAPH with many stages, so
+// the branch name alone cannot identify whose Outputs supplied a key. The
+// stage segment is what makes the reference unambiguous, exactly as #562's
+// three-segment form does for the sequential case.
+//
+// The output key may contain dots (it is the remainder); the parallel, branch
+// and stage names may not — state names are dot-free by compile rule, and
+// branch names are validated alongside them.
+func splitBranchQualified(value string) (parallel, branch, stage, key string, ok bool) {
+	parallel, rest, found := strings.Cut(value, ".")
+	if !found || parallel == "" {
+		return "", "", "", "", false
+	}
+	branch, rest, found = strings.Cut(rest, ".")
+	if !found || branch == "" {
+		return "", "", "", "", false
+	}
+	stage, key, found = strings.Cut(rest, ".")
+	if !found || stage == "" || key == "" {
+		return "", "", "", "", false
+	}
+	return parallel, branch, stage, key, true
+}
+
 // inputsFromError builds the stage-closed failure for an unresolvable
 // reference. InputsFrom is a contract, not a hint, so a miss fails the stage
 // rather than silently omitting the input.
 func inputsFromError(taskName, inputKey, value string, completed stageOutputs, qualified bool) error {
+	if qualified {
+		if parallel, branch, stage, _, ok := splitBranchQualified(value); ok {
+			if _, seen := completed[stage]; !seen {
+				return fmt.Errorf("task %q: inputsFrom %q: branch %q of parallel %q produced no output for stage %q (the branch failed, was cancelled, or settled empty — check the completeness record)",
+					taskName, inputKey, branch, parallel, stage)
+			}
+		}
+	}
 	if stage, key, ok := splitQualified(value); ok && qualified {
 		if outputs, seen := completed[stage]; seen {
 			return fmt.Errorf("task %q: inputsFrom %q: stage %q produced no output %q (it emitted: %s)",
