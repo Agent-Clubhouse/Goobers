@@ -138,7 +138,7 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := strings.Replace(string(raw), "kind: Workflow\n", "kind: Workflow\ndslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", 1)
+	next := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", 1)
 	next = strings.Replace(next, "name: default-implement", "name: next-implement", 1)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "next-implement.yaml"), []byte(next), 0o644); err != nil {
 		t.Fatal(err)

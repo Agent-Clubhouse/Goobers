@@ -38,7 +38,14 @@ then `open-pr`, separate deterministic stages, do that).
      any goober defs it needs, or delete a workflow file no longer needed
      (and anything that only existed for it).
    - **Remove or loosen a noisy gate** — edit the gate's definition in its
-     workflow file.
+     workflow file. **Metric-gaming guard (TUT-A3, #1215):** only do this
+     when the finding's front matter names this gate as `subject` AND
+     carries a non-empty `independentProof` — the `gate-removal-guard` stage
+     that runs right after you commit will diff this run's branch against
+     base, and abort the run closed if you removed or loosened the flagged
+     gate without that proof present. If the finding doesn't offer proof,
+     tighten/tune the gate instead (its check, threshold, or instructions) —
+     never remove/loosen it "since it's noisy anyway."
 3. Make the smallest change that fully addresses the finding. Do not
    refactor unrelated config, rename things in passing, or "clean up while
    you're in there" — same scope discipline the `implementer` goober

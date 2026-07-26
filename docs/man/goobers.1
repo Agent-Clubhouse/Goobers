@@ -27,6 +27,18 @@ first-pass review and hot-file evidence.
 .fi
 .SH COMMANDS
 .TP
+\fBgoobers agent-kit\fR
+install, inspect, or update the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit check\fR
+report agent toolkit version and drift
+.TP
+\fBgoobers agent-kit install\fR
+install the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit update\fR
+review or explicitly apply an agent toolkit update
+.TP
 \fBgoobers apply-verdict\fR
 publish a merge-review verdict as a native review (a workflow stage)
 .TP
@@ -47,6 +59,9 @@ safely remove one blocked-item record, under claims.lock
 .TP
 \fBgoobers blocked list\fR
 print the learned blocked-item ledger (scheduler/blocked.json)
+.TP
+\fBgoobers check-fail-first\fR
+enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
@@ -102,11 +117,23 @@ list escalated runs newest first
 \fBgoobers escalations show\fR
 show escalation cause + per-stage artifact timeline
 .TP
+\fBgoobers examples\fR
+browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers examples list\fR
+list canonical embedded workflow examples
+.TP
+\fBgoobers examples show\fR
+print a canonical embedded workflow example
+.TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
 .TP
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+.TP
+\fBgoobers gate-removal-guard\fR
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 .TP
 \fBgoobers gather-ci-failures\fR
 add failing CI diagnostics to a remediation brief (a workflow stage)
@@ -192,8 +219,17 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
+\fBgoobers run approve\fR
+approve an escalated gate (not yet implemented, HITL-7/#469)
+.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
+.TP
+\fBgoobers run override\fR
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+.TP
+\fBgoobers run rerun\fR
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -230,6 +266,15 @@ assign an existing milestone to an issue (a workflow stage)
 .TP
 \fBgoobers signal\fR
 fire an external signal to subscribed workflows
+.TP
+\fBgoobers speech\fR
+preflight and test local speech notifications
+.TP
+\fBgoobers speech preflight\fR
+check the configured local speech engine without emitting sound
+.TP
+\fBgoobers speech test\fR
+speak the fixed local readiness phrase
 .TP
 \fBgoobers stats\fR
 show the instance lifetime summary card
@@ -288,6 +333,10 @@ inspect workflows
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .SH SEE ALSO
+\fBgoobers-agent-kit\fR(1),
+\fBgoobers-agent-kit-check\fR(1),
+\fBgoobers-agent-kit-install\fR(1),
+\fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply-verdict\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
@@ -295,6 +344,7 @@ show a workflow as a text DAG
 \fBgoobers-blocked\fR(1),
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
+\fBgoobers-check-fail-first\fR(1),
 \fBgoobers-claims\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),
@@ -313,8 +363,12 @@ show a workflow as a text DAG
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
+\fBgoobers-examples\fR(1),
+\fBgoobers-examples-list\fR(1),
+\fBgoobers-examples-show\fR(1),
 \fBgoobers-features\fR(1),
 \fBgoobers-fix\fR(1),
+\fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
 \fBgoobers-gather-issue-context\fR(1),
@@ -343,7 +397,10 @@ show a workflow as a text DAG
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
+\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
+\fBgoobers-run-override\fR(1),
+\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),
@@ -356,6 +413,9 @@ show a workflow as a text DAG
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),
+\fBgoobers-speech\fR(1),
+\fBgoobers-speech-preflight\fR(1),
+\fBgoobers-speech-test\fR(1),
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),

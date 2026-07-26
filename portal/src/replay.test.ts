@@ -2,14 +2,29 @@ import { describe, expect, it } from "vitest";
 import type { RunEvent } from "./api/types";
 import {
   compressedIdleDelayMs,
+  formatReplayClock,
   formatReplayDuration,
   idleCompressionThresholdMs,
   orderedReplayEvents,
+  replayChapterKind,
+  replayTimeline,
   replayTransition,
 } from "./replay";
 
-function ev(seq: number, time: string): RunEvent {
-  return { schema: "v1", seq, type: "stage.started", branch: 0, time, knownSchema: true } as RunEvent;
+function ev(
+  seq: number,
+  time: string,
+  fields: Partial<RunEvent> = {},
+): RunEvent {
+  return {
+    schema: "v1",
+    seq,
+    type: "stage.started",
+    branch: 0,
+    time,
+    knownSchema: true,
+    ...fields,
+  };
 }
 
 describe("replay engine (live event stream)", () => {
@@ -38,6 +53,103 @@ describe("replay engine (live event stream)", () => {
     expect(transition?.playbackDelayMs).toBe(compressedIdleDelayMs);
   });
 
+  it("positions events and chapters by deterministic compressed elapsed time", () => {
+    const events = [
+      ev(1, "2026-01-01T00:00:00Z", {
+        type: "run.started",
+        category: "transition",
+        replayChapter: true,
+      }),
+      ev(2, "2026-01-01T00:00:02Z", {
+        type: "artifact.recorded",
+        category: "evidence",
+        replayChapter: false,
+      }),
+      ev(3, "2026-01-01T00:01:02Z", {
+        type: "gate.evaluated",
+        category: "decision",
+        replayChapter: true,
+      }),
+    ];
+    const timeline = replayTimeline(events);
+
+    expect(timeline.compressedDurationMs).toBe(2_000 + compressedIdleDelayMs);
+    expect(timeline.points.map((point) => point.percent)).toEqual([
+      0,
+      (2_000 / 3_500) * 100,
+      100,
+    ]);
+    expect(timeline.chapters.map((chapter) => chapter.event.seq)).toEqual([1, 3]);
+    expect(timeline.idleGaps).toEqual([
+      expect.objectContaining({
+        fromSeq: 2,
+        toSeq: 3,
+        startPercent: (2_000 / 3_500) * 100,
+        endPercent: 100,
+      }),
+    ]);
+  });
+
+  it("assigns distinct landmark kinds to meaningful chapters", () => {
+    expect(
+      replayChapterKind(
+        ev(1, "2026-01-01T00:00:00Z", {
+          type: "ref.touched",
+          externalRef: { provider: "github", kind: "pr", id: "42" },
+        }),
+      ),
+    ).toBe("external");
+    expect(
+      replayChapterKind(
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          target: "@escalate",
+          escalated: true,
+        }),
+      ),
+    ).toBe("escalation");
+    expect(
+      replayChapterKind(
+        ev(3, "2026-01-01T00:00:02Z", {
+          type: "stage.finished",
+          status: "failure",
+        }),
+      ),
+    ).toBe("failure");
+    expect(
+      replayChapterKind(
+        ev(4, "2026-01-01T00:00:03Z", {
+          type: "run.finished",
+          status: "failed",
+        }),
+      ),
+    ).toBe("terminal");
+  });
+
+  it("uses the authoritative escalation flag instead of target naming", () => {
+    expect(
+      replayChapterKind(
+        ev(1, "2026-01-01T00:00:00Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          target: "@human-review",
+          escalated: true,
+        }),
+      ),
+    ).toBe("escalation");
+    expect(
+      replayChapterKind(
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          target: "@escalate-if-needed",
+          escalated: false,
+        }),
+      ),
+    ).toBe("decision");
+  });
+
   it("returns undefined past the last event", () => {
     const events = [ev(1, "2026-01-01T00:00:00Z")];
     expect(replayTransition(events, 0, 1)).toBeUndefined();
@@ -47,5 +159,8 @@ describe("replay engine (live event stream)", () => {
     expect(formatReplayDuration(450)).toBe("450ms");
     expect(formatReplayDuration(2_000)).toBe("2s");
     expect(formatReplayDuration(90_000)).toBe("1m 30s");
+    expect(formatReplayClock(0)).toBe("0:00");
+    expect(formatReplayClock(65_000)).toBe("1:05");
+    expect(formatReplayClock(3_665_000)).toBe("1:01:05");
   });
 });

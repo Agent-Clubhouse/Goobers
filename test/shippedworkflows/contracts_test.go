@@ -1333,6 +1333,7 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		}
 	}
 	run.Command = []string{d.executable, "-test.run=^TestShippedWorkflowCommandHelper$"}
+	run.Script = ""
 	run.Env = map[string]string{
 		contractHelperMode:       "1",
 		contractHelperPayload:    string(payload),

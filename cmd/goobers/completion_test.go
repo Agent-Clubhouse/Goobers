@@ -108,6 +108,37 @@ func TestCompletionScriptsGolden(t *testing.T) {
 	}
 }
 
+func TestFishCompletionDeclaresDynamicHelpers(t *testing.T) {
+	script := renderFishCompletion(buildCompletionModel())
+	declared := make(map[string]bool)
+	for _, line := range strings.Split(script, "\n") {
+		const declaration = "function __goobers_completion_"
+		if strings.HasPrefix(line, declaration) {
+			declared[strings.TrimPrefix(line, declaration)] = true
+		}
+	}
+
+	const reference = "(__goobers_completion_"
+	for _, line := range strings.Split(script, "\n") {
+		for {
+			start := strings.Index(line, reference)
+			if start < 0 {
+				break
+			}
+			rest := line[start+len(reference):]
+			end := strings.IndexByte(rest, ')')
+			if end < 0 {
+				t.Fatalf("unterminated dynamic helper reference in %q", line)
+			}
+			kind := rest[:end]
+			if !declared[kind] {
+				t.Errorf("dynamic helper %q is referenced but not declared", kind)
+			}
+			line = rest[end+1:]
+		}
+	}
+}
+
 func TestCompletionPowerShellContainsArgumentCompleter(t *testing.T) {
 	code, stdout, stderr := runArgs(t, "completion", "powershell")
 	if code != 0 {

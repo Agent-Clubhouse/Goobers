@@ -159,6 +159,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		opt(o)
 	}
 
+	scriptProblems := runScriptProblems(def)
 	m, err := newMachine(def)
 	if err != nil {
 		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
@@ -170,6 +171,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		allowPreview = *o.allowPreviewFeatures
 	}
 	problems = append(problems, blockingFeatureProblems(CheckWorkflowFeatureSupport(def, allowPreview))...)
+	problems = append(problems, scriptProblems...)
 	if o.goobers != nil {
 		names := make([]string, 0, len(o.goobers))
 		for name := range o.goobers {
@@ -196,12 +198,27 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
+	problems = append(problems, dottedStateNameProblems(def)...)
+	problems = append(problems, parallelProblems(m)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func runScriptProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run != nil && task.Run.Command != nil && task.Run.Script != "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.command and run.script are mutually exclusive",
+				task.Name,
+			))
+		}
+	}
+	return problems
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.
@@ -215,7 +232,11 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	parallels := make(map[string]apiv1.Parallel, len(def.Spec.Parallels))
+	for _, parallel := range def.Spec.Parallels {
+		parallels[parallel.Name] = parallel
+	}
+	return model.NewMachine(def, tasks, gates, parallels, buildGraph(def))
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {
@@ -232,7 +253,7 @@ func structuralProblems(m *Machine) []string {
 	def := m.Def
 	var problems []string
 
-	seen := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	seen := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	dup := func(name string) {
 		if seen[name] {
 			problems = append(problems, fmt.Sprintf("duplicate state %q", name))
@@ -245,6 +266,9 @@ func structuralProblems(m *Machine) []string {
 	for _, g := range def.Spec.Gates {
 		dup(g.Name)
 	}
+	for _, p := range def.Spec.Parallels {
+		dup(p.Name)
+	}
 
 	if def.Spec.Start == TerminalComplete {
 		problems = append(problems, "start state is empty")
@@ -253,7 +277,7 @@ func structuralProblems(m *Machine) []string {
 	}
 
 	for _, t := range def.Spec.Tasks {
-		if !isTerminal(t.Next) && !m.Has(t.Next) {
+		if isStateName(t.Next) && !m.Has(t.Next) {
 			problems = append(problems, fmt.Sprintf("task %q next state %q is not defined", t.Name, t.Next))
 		}
 		switch t.OnTimeout {
@@ -274,7 +298,7 @@ func structuralProblems(m *Machine) []string {
 		}
 		for _, outcome := range sortedKeys(g.Branches) {
 			target := g.Branches[outcome]
-			if !isTerminal(target) && !m.Has(target) {
+			if isStateName(target) && !m.Has(target) {
 				problems = append(problems, fmt.Sprintf("gate %q branch %q -> %q is not a defined state", g.Name, outcome, target))
 			}
 		}
@@ -319,7 +343,12 @@ func reachabilityProblems(m *Machine) []string {
 				continue
 			}
 			for _, t := range m.Outgoing(name) {
-				if isTerminal(t) || canExit[t] {
+				// Reaching @join settles a BRANCH; the run's own exit is then
+				// guaranteed by the join state, whose canExit is computed
+				// independently (and by the parallel, whose Outgoing includes
+				// it). A non-branch state abusing @join is caught by rule 4 in
+				// parallelProblems, not here.
+				if isTerminal(t) || model.IsReservedBranchTarget(t) || canExit[t] {
 					canExit[name] = true
 					changed = true
 					break

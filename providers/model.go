@@ -3,6 +3,8 @@ package providers
 import (
 	"fmt"
 	"time"
+
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
 // ProviderKind identifies a concrete provider backend.
@@ -395,12 +397,13 @@ type PullRequestPollRequest struct {
 // against a previously-computed verdict's SHA-pin before acting on it — never
 // trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number    int    `json:"number"`
-	Title     string `json:"title,omitempty"`
-	State     string `json:"state"`
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable,omitempty"`
-	Draft     bool   `json:"draft"`
+	Number    int        `json:"number"`
+	Title     string     `json:"title,omitempty"`
+	State     string     `json:"state"`
+	Merged    bool       `json:"merged"`
+	MergedAt  *time.Time `json:"mergedAt,omitempty"`
+	Mergeable *bool      `json:"mergeable,omitempty"`
+	Draft     bool       `json:"draft"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete
@@ -553,6 +556,44 @@ type RepoMergePolicyRequest struct {
 // RepoMergePolicyResult reports req.Branch's detected merge policy.
 type RepoMergePolicyResult struct {
 	Policy MergePolicy `json:"policy"`
+}
+
+// TokenScopeStatus reports whether a provider could introspect its own
+// token's granted scopes (issue #916). GitHub only exposes this for classic
+// PATs (the X-OAuth-Scopes response header) — fine-grained PATs and GitHub
+// App installation tokens never send it. Per the accepted V1 contract, an
+// unavailable scope is reported as such and never inferred from a failed
+// call.
+type TokenScopeStatus string
+
+// Supported token-scope introspection outcomes.
+const (
+	TokenScopeAvailable   TokenScopeStatus = "available"
+	TokenScopeUnavailable TokenScopeStatus = "unavailable"
+)
+
+// RepoPolicyRequest asks a provider to report req.Branch's live
+// conformance-relevant settings (issue #916, Tier 4 of #903) — the facts
+// `goobers doctor --repo` diffs against a declared instance-config manifest.
+type RepoPolicyRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Branch     string        `json:"branch"`
+}
+
+// RepoPolicyResult reports req.Branch's live conformance-relevant settings.
+// AllowedMergeMethods lists every merge method the repo currently permits
+// (a repo-level setting, not branch-scoped); a single-entry list is the
+// repo's de facto required method, matching the "squash-only ruleset
+// conflicting with the requested merge method" scenario (#877) the issue
+// cites. MergeQueuePolicy reuses DetectMergePolicy's enum. RequiredStatusChecks
+// lists Branch's required-status-checks rule contexts, empty when none is
+// configured.
+type RepoPolicyResult struct {
+	AllowedMergeMethods  []MergeMethod    `json:"allowedMergeMethods"`
+	MergeQueuePolicy     MergePolicy      `json:"mergeQueuePolicy"`
+	RequiredStatusChecks []string         `json:"requiredStatusChecks"`
+	TokenScope           TokenScopeStatus `json:"tokenScope"`
+	TokenScopes          []string         `json:"tokenScopes,omitempty"`
 }
 
 // EnqueuePullRequestRequest adds a pull request to its repo's merge queue
@@ -742,15 +783,22 @@ type CompareResult struct {
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.
 type ListWorkItemsRequest struct {
-	Repository RepositoryRef `json:"repository"`
-	Labels     []string      `json:"labels,omitempty"`
-	State      string        `json:"state,omitempty"`
-	Assignee   string        `json:"assignee,omitempty"`
+	Repository     RepositoryRef             `json:"repository"`
+	Labels         []string                  `json:"labels,omitempty"`
+	LabelPredicate *labelpredicate.Predicate `json:"-"`
+	State          string                    `json:"state,omitempty"`
+	Assignee       string                    `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
 	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
 	Limit        int        `json:"limit,omitempty"`
 	// Page selects a 1-based page for stable pagination; 0 means the first page.
 	Page int `json:"page,omitempty"`
+	// Cursor resumes a caller-driven bounded scan. Its provider-specific value
+	// comes from PageInfo.NextCursor.
+	Cursor string `json:"cursor,omitempty"`
+	// PageInfo receives raw-candidate pagination metadata. Providers populate it
+	// before applying exact predicates or dropping non-work-item API records.
+	PageInfo *ListWorkItemsPageInfo `json:"-"`
 	// OldestFirst, when set, asks the provider to return items in creation
 	// order (oldest filed first) rather than its own default. This matters
 	// whenever Limit truncates the result set: a FIFO consumer (#532) must
@@ -758,6 +806,18 @@ type ListWorkItemsRequest struct {
 	// once older ones drain — not the oldest, which GitHub's undocumented
 	// newest-first default would otherwise starve forever.
 	OldestFirst bool `json:"oldestFirst,omitempty"`
+}
+
+// ListWorkItemsPageInfo describes one bounded raw-candidate provider window.
+type ListWorkItemsPageInfo struct {
+	CandidateCount int
+	HasNext        bool
+	NextCursor     string
+}
+
+// MatchesLabelPredicate applies the request's exact client-side label filter.
+func (r ListWorkItemsRequest) MatchesLabelPredicate(labels []string) (bool, error) {
+	return r.LabelPredicate.Matches(labels)
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label

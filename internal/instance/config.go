@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/speechnotify"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -65,6 +66,8 @@ type Config struct {
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
+	// Speech configures an opt-in local speech sink for the same terminal alerts.
+	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
 	// Credentials sources individual stage capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one
@@ -120,6 +123,15 @@ type WorkcopiesConfig struct {
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// EffectiveSpeechConfig returns the configured speech settings or disabled
+// defaults when the speech section is absent.
+func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
+	if c.Speech == nil {
+		return speechnotify.Config{}
+	}
+	return *c.Speech
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -307,6 +319,41 @@ type RepoRef struct {
 	// DevOps identity kind, or GitHub App installation-token minting (#686).
 	// Nil preserves PAT behavior with Token configured.
 	Auth *RepoAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// Policy declares this repo's forge-conformance manifest (issue #916,
+	// Tier 4 of #903): the live GitHub settings `goobers doctor --repo`
+	// checks against. Nil declares no expectation, so an instance that
+	// configures none behaves exactly as before.
+	// +optional
+	Policy *RepoPolicyExpectation `json:"policy,omitempty" yaml:"policy,omitempty"`
+}
+
+// RepoPolicyExpectation is one repo's declared forge-conformance manifest
+// (issue #916): the settings `goobers doctor --repo` diffs against the
+// repo's live GitHub state. GitHub-only in V1 — no ADO equivalent is
+// modeled, per the curated V1 contract. Declared at the instance-config
+// level (this file) rather than the product repo, since these are
+// deployment/ops-owned rulesets, not workflow logic.
+type RepoPolicyExpectation struct {
+	// Branch is the ruleset/branch-protection target branch these
+	// expectations apply to. Empty defaults to "main".
+	// +optional
+	Branch string `json:"branch,omitempty" yaml:"branch,omitempty"`
+	// RequiredMergeMethod is the one merge method the repo's live settings
+	// must allow exclusively — "merge", "squash", or "rebase" (the
+	// squash-only-ruleset-vs-merge-commit scenario, #877). Empty imposes no
+	// requirement.
+	// +optional
+	// +kubebuilder:validation:Enum=merge;squash;rebase
+	RequiredMergeMethod string `json:"requiredMergeMethod,omitempty" yaml:"requiredMergeMethod,omitempty"`
+	// MergeQueueRequired declares that Branch must require GitHub's native
+	// merge queue (a "merge_queue"-typed branch ruleset rule) rather than
+	// accepting a direct-merge path (#882).
+	// +optional
+	MergeQueueRequired bool `json:"mergeQueueRequired,omitempty" yaml:"mergeQueueRequired,omitempty"`
+	// RequiredStatusChecks lists the check contexts Branch's live rules must
+	// require. Empty imposes no requirement.
+	// +optional
+	RequiredStatusChecks []string `json:"requiredStatusChecks,omitempty" yaml:"requiredStatusChecks,omitempty"`
 }
 
 // GitHubAppAuth reports whether this repo authenticates through GitHub App
@@ -845,9 +892,15 @@ func (c *Config) Validate() error {
 	if err := c.Portal.Validate(); err != nil {
 		return fmt.Errorf("portal: %w", err)
 	}
+	if c.Speech != nil {
+		if err := c.Speech.Validate(); err != nil {
+			return fmt.Errorf("speech: %w", err)
+		}
+	}
 	if c.Webhook.Secret.sourceCount() > 1 {
 		return fmt.Errorf("webhook.secret must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 	}
+
 	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
 		return err
 	}
@@ -991,6 +1044,21 @@ func (c *Config) Validate() error {
 			}
 			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
 				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+			}
+		}
+		if r.Policy != nil {
+			if r.Provider != "github" {
+				return fmt.Errorf("repos[%d] (%s/%s): policy is only supported for provider \"github\" (issue #916 V1 scope)", i, r.Owner, r.Name)
+			}
+			switch r.Policy.RequiredMergeMethod {
+			case "", "merge", "squash", "rebase":
+			default:
+				return fmt.Errorf("repos[%d] (%s/%s): policy.requiredMergeMethod must be \"\", \"merge\", \"squash\", or \"rebase\"", i, r.Owner, r.Name)
+			}
+			for _, check := range r.Policy.RequiredStatusChecks {
+				if strings.TrimSpace(check) == "" {
+					return fmt.Errorf("repos[%d] (%s/%s): policy.requiredStatusChecks entries must not be empty", i, r.Owner, r.Name)
+				}
 			}
 		}
 	}

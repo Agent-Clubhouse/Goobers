@@ -90,6 +90,12 @@ type BacklogRef struct {
 	// item to a specific workflow is handled by workflow selectors (SCH-010).
 	// +optional
 	Labels []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	// LabelPredicate is a CEL expression over the item's label set. The only
+	// supported operations are string membership in `labels` and boolean
+	// composition with &&, ||, and !. It is ANDed with Labels.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
 	// +optional
 	Query string `json:"query,omitempty" yaml:"query,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.

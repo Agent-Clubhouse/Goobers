@@ -180,7 +180,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// keyed by digest, so many runs feeding it is fine.
 	sharedReg := journal.NewRegistryScrubber()
 	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
-	terminalNotifier := buildTerminalNotifier(l, cfg, sharedScrubber, options)
+	terminalNotifier, err := buildTerminalNotifier(ctx, l, cfg, sharedScrubber, options)
+	if err != nil {
+		return nil, err
+	}
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
@@ -356,7 +359,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachinesWithGooberDigests(set, goobers, instructions)
+	machines, gooberDigests, err := compiledMachinesWithGooberDigests(l.ConfigDir(), set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -475,6 +478,10 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		backlogCounter, err := buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:          wf.Name,
 			WorkflowVersion:   machine.Def.Version,
@@ -484,7 +491,7 @@ func buildSchedulerDefinitions(
 			Schedules:         scheds,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota),
+			BacklogCounter:    backlogCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
 				branchNamespaces[wf.Spec.Gaggle], providerQuota,

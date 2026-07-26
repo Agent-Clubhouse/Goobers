@@ -170,6 +170,38 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 }
 
+func TestValidatePrintsDSLVersionSummary(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 1.4 (supported)") {
+		t.Fatalf("validate output missing the DSL version summary line:\n%s", stdout)
+	}
+}
+
+func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
+	root := initDeterministicDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "dslVersion: \"1.4\"\n", "")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"DVL001",
+		`spec has no dslVersion pin; defaulting to "1.4"`,
+		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (supported)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
@@ -184,13 +216,13 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		return nil
 	}
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "ado",
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
 		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
 	}
@@ -210,12 +242,12 @@ func TestCheckTargetRepositoriesWarnsOnOversizedGitHubRepo(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "github",
 		Owner:    "acme",
 		Name:     "monorepo",
 		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok {
 		t.Fatalf("checkTargetRepositories() = %v, want true (a size warning is advisory, not a failure)", ok)
 	}
@@ -243,12 +275,12 @@ func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "github",
 		Owner:    "acme",
 		Name:     "monorepo",
 		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok {
 		t.Fatalf("checkTargetRepositories() = %v, want true (size-check failure must not fail --check-repos)", ok)
 	}

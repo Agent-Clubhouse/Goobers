@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -16,7 +17,7 @@ func TestSortEligibleFIFOOrdersAscendingByID(t *testing.T) {
 	items := []providers.WorkItem{
 		{ID: "335"}, {ID: "334"}, {ID: "333"}, {ID: "332"}, {ID: "331"}, {ID: "330"}, {ID: "329"},
 	}
-	sortEligibleFIFO(items)
+	sortEligibleFIFO(items, nil)
 
 	want := []string{"329", "330", "331", "332", "333", "334", "335"}
 	for i, id := range want {
@@ -35,7 +36,7 @@ func TestSortEligibleFIFOFallsBackToLexicalForNonNumericIDs(t *testing.T) {
 	items := []providers.WorkItem{
 		{ID: "10"}, {ID: "abc"}, {ID: "2"}, {ID: "abd"},
 	}
-	sortEligibleFIFO(items)
+	sortEligibleFIFO(items, nil)
 
 	// Numeric IDs sort numerically among themselves; non-numeric IDs sort
 	// lexically among themselves — SliceStable's total order interleaves
@@ -57,6 +58,60 @@ func TestSortEligibleFIFOFallsBackToLexicalForNonNumericIDs(t *testing.T) {
 	}
 	if twoIdx < 0 || tenIdx < 0 || twoIdx >= tenIdx {
 		t.Fatalf("want numeric ID \"2\" before \"10\", got order %v", idsOf(items))
+	}
+}
+
+// TestSortEligiblePrioritizesConfiguredLabelsBeforeFIFO is #1335's core
+// contract: an item carrying an earlier-listed selectionPriority label
+// claims ahead of one carrying only a later-listed label or none, and FIFO
+// still breaks ties within a tier.
+func TestSortEligiblePrioritizesConfiguredLabelsBeforeFIFO(t *testing.T) {
+	items := []providers.WorkItem{
+		{ID: "10", Labels: []string{"bug"}},
+		{ID: "5", Labels: nil},
+		{ID: "20", Labels: []string{"security"}},
+		{ID: "1", Labels: []string{"bug"}},
+		{ID: "15", Labels: []string{"security"}},
+	}
+	sortEligibleFIFO(items, []string{"security", "bug"})
+
+	want := []string{"15", "20", "1", "10", "5"}
+	got := idsOf(items)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// TestSortEligiblePrioritizedItemRanksByEarliestMatchingLabel proves a
+// deterministic precedence for an item carrying more than one
+// selectionPriority label: it ranks by whichever appears earliest in the
+// configured list, not ambiguously.
+func TestSortEligiblePrioritizedItemRanksByEarliestMatchingLabel(t *testing.T) {
+	items := []providers.WorkItem{
+		{ID: "2", Labels: []string{"bug"}},
+		{ID: "1", Labels: []string{"bug", "security"}},
+	}
+	sortEligibleFIFO(items, []string{"security", "bug"})
+
+	if idsOf(items)[0] != "1" {
+		t.Fatalf("order = %v, want item 1 (matches earliest-listed \"security\") first", idsOf(items))
+	}
+}
+
+// TestSortEligibleUnconfiguredPriorityIsPlainFIFO proves #1335 is strictly
+// additive: an empty/nil selectionPriority produces byte-identical ordering
+// to the pre-#1335 plain-FIFO sort, regardless of item labels.
+func TestSortEligibleUnconfiguredPriorityIsPlainFIFO(t *testing.T) {
+	items := []providers.WorkItem{
+		{ID: "3", Labels: []string{"security"}},
+		{ID: "1", Labels: nil},
+		{ID: "2", Labels: []string{"bug"}},
+	}
+	sortEligibleFIFO(items, nil)
+
+	want := []string{"1", "2", "3"}
+	if strings.Join(idsOf(items), ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v (labels must not matter when unconfigured)", idsOf(items), want)
 	}
 }
 

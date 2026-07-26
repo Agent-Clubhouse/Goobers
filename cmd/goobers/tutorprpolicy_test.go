@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -195,6 +198,178 @@ func TestParseTutorNameStatusPreservesRenameIdentity(t *testing.T) {
 	if !reflect.DeepEqual(changes, want) {
 		t.Fatalf("changes = %#v, want %#v", changes, want)
 	}
+}
+
+func TestLocalTutorChangesHydratesWorkflowRenameLifecycle(t *testing.T) {
+	root := initDemo(t)
+	const (
+		gaggle       = "example"
+		oldWorkflow  = "default-implement"
+		newWorkflow  = "renamed-implement"
+		authoringRun = "rename-authoring"
+	)
+	repoDir, proposedConfig := gitTutorConfigWorktree(
+		t,
+		instance.NewLayout(root).ConfigDir(),
+		func(configDir string) {
+			oldPath := filepath.Join(configDir, "gaggles", gaggle, "workflows", oldWorkflow+".yaml")
+			raw, err := os.ReadFile(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated := strings.Replace(string(raw), "name: "+oldWorkflow, "name: "+newWorkflow, 1)
+			if updated == string(raw) {
+				t.Fatalf("workflow fixture did not contain metadata name %q", oldWorkflow)
+			}
+			newPath := filepath.Join(configDir, "gaggles", gaggle, "workflows", newWorkflow+".yaml")
+			if err := os.WriteFile(newPath, []byte(updated), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(oldPath); err != nil {
+				t.Fatal(err)
+			}
+			gooberPath := filepath.Join(configDir, "gaggles", gaggle, "goobers", "coder", "goober.yaml")
+			gooberRaw, err := os.ReadFile(gooberPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updatedGoober := strings.Replace(string(gooberRaw), "- "+oldWorkflow, "- "+newWorkflow, 1)
+			if updatedGoober == string(gooberRaw) {
+				t.Fatalf("goober fixture did not reference workflow %q", oldWorkflow)
+			}
+			if err := os.WriteFile(gooberPath, []byte(updatedGoober), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	)
+	t.Chdir(repoDir)
+
+	changes, err := localTutorChanges("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rename *tutorFileChange
+	for i := range changes {
+		if changes[i].PreviousPath != "" {
+			rename = &changes[i]
+			break
+		}
+	}
+	if rename == nil || len(rename.Before) == 0 || len(rename.After) == 0 {
+		t.Fatalf("changes = %+v, want one hydrated workflow rename", changes)
+	}
+
+	writeTutorFindingFixture(t, root, gaggle, authoringRun)
+	record, err := prepareTutorHoldout(
+		root,
+		gaggle,
+		authoringRun,
+		proposedConfig,
+		tutorChangeClassification{Types: []tutorChangeType{tutorChangeStructure}},
+		changes,
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]tutorHoldoutLifecycle{}
+	for _, target := range record.Targets {
+		got[target.Workflow] = target.Lifecycle
+	}
+	want := map[string]tutorHoldoutLifecycle{
+		oldWorkflow: tutorHoldoutRemoval,
+		newWorkflow: tutorHoldoutAddition,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("rename targets = %v, want %v", got, want)
+	}
+}
+
+func TestLocalTutorChangesHydratesWorkflowCopy(t *testing.T) {
+	root := initDemo(t)
+	const (
+		gaggle      = "example"
+		oldWorkflow = "default-implement"
+		newWorkflow = "copied-implement"
+	)
+	repoDir, _ := gitTutorConfigWorktree(
+		t,
+		instance.NewLayout(root).ConfigDir(),
+		func(configDir string) {
+			sourcePath := filepath.Join(configDir, "gaggles", gaggle, "workflows", oldWorkflow+".yaml")
+			raw, err := os.ReadFile(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated := strings.Replace(string(raw), "name: "+oldWorkflow, "name: "+newWorkflow, 1)
+			if updated == string(raw) {
+				t.Fatalf("workflow fixture did not contain metadata name %q", oldWorkflow)
+			}
+			copiedPath := filepath.Join(configDir, "gaggles", gaggle, "workflows", newWorkflow+".yaml")
+			if err := os.WriteFile(copiedPath, []byte(updated), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gooberPath := filepath.Join(configDir, "gaggles", gaggle, "goobers", "coder", "goober.yaml")
+			gooberRaw, err := os.ReadFile(gooberPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updatedGoober := strings.Replace(
+				string(gooberRaw),
+				"    - "+oldWorkflow,
+				"    - "+oldWorkflow+"\n    - "+newWorkflow,
+				1,
+			)
+			if updatedGoober == string(gooberRaw) {
+				t.Fatalf("goober fixture did not reference workflow %q", oldWorkflow)
+			}
+			if err := os.WriteFile(gooberPath, []byte(updatedGoober), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	)
+	t.Chdir(repoDir)
+
+	changes, err := localTutorChanges("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if strings.HasSuffix(change.Path, "/"+newWorkflow+".yaml") {
+			if change.PreviousPath == "" || len(change.Before) == 0 || len(change.After) == 0 {
+				t.Fatalf("workflow copy = %+v, want previous path and both hydrated documents", change)
+			}
+			return
+		}
+	}
+	t.Fatalf("changes = %+v, want detected workflow copy", changes)
+}
+
+func gitTutorConfigWorktree(t *testing.T, sourceConfig string, mutate func(string)) (string, string) {
+	t.Helper()
+	repoDir := t.TempDir()
+	configDir := filepath.Join(repoDir, "config")
+	if err := os.CopyFS(configDir, os.DirFS(sourceConfig)); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "tutor@example.test")
+	git("config", "user.name", "tutor")
+	git("add", ".")
+	git("commit", "-q", "-m", "base")
+	git("checkout", "-q", "-b", "goobers/tutor/run-1")
+	mutate(configDir)
+	git("add", "-A")
+	git("commit", "-q", "-m", "tutor change")
+	return repoDir, configDir
 }
 
 func TestOpenPRStampsTutorReviewPath(t *testing.T) {

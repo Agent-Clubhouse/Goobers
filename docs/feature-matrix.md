@@ -163,6 +163,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.run.command` | 2.0 | ga | supported | dev |
 | `stage.run.env` | 2.0 | ga | supported | dev |
 | `stage.run.network.none` | 2.0 | ga | supported | dev |
+| `stage.run.script` | 2.0 | ga | supported | dev |
 | `stage.run.syncBase` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.scratch` | 2.0 | ga | supported | dev |
@@ -178,6 +179,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `task.goober` | 2.0 | ga | supported | dev |
 | `task.inputs` | 2.0 | ga | supported | dev |
 | `task.inputsFrom` | 2.0 | ga | supported | dev |
+| `task.inputsFrom.stageQualified` | 2.0 | preview | supported | dev |
 | `task.limits` | 2.0 | ga | supported | dev |
 | `task.limits.maxCostUSD` | 2.0 | ga | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | dev |
@@ -199,6 +201,13 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `workflow.spec.displayName` | 2.0 | ga | supported | dev |
 | `workflow.spec.gaggle` | 2.0 | ga | supported | dev |
 | `workflow.spec.gates` | 2.0 | ga | supported | dev |
+| `workflow.spec.parallels` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branchTimeoutSeconds` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.failurePolicy` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.join` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.maxConcurrentBranches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.onFailure` | 2.0 | preview | supported | dev |
 | `workflow.spec.readiness` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxChainDepth` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 2.0 | ga | supported | dev |
@@ -216,6 +225,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: `gate.evaluator.agentic.workspace`, `stage.workspace`, `stage.workspace.repo-readonly`
+- Added: `gate.evaluator.agentic.workspace`, `stage.run.script`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.inputsFrom.stageQualified`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
 - Removed: none
 - Level changes: none

@@ -17,6 +17,7 @@ func TestFeatureRegistryLookup(t *testing.T) {
 		"gate.evaluator.human",
 		"task.retry.backoff",
 		"goober.spec.model",
+		"stage.run.script",
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -123,9 +124,17 @@ func TestCurrentFeatureClassification(t *testing.T) {
 		wantLevel := SupportGA
 		switch feature.ID {
 		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+			featureTaskInputsFromQualified,
 			featureStageWorkspaceRepoReadOnly,
 			featureStageWorkspace,
-			featureGateAgenticWorkspace:
+			featureGateAgenticWorkspace,
+			featureWorkflowParallels,
+			featureParallelFailurePolicy,
+			featureParallelBranches,
+			featureParallelJoin,
+			featureParallelOnFailure,
+			featureParallelBranchTimeout,
+			featureParallelMaxConcurrentBranches:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -156,7 +165,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 func TestStandardFeaturesAreGA(t *testing.T) {
 	for _, id := range []FeatureID{
 		featureTaskAgentic, featureGooberRole, featureGooberCapabilities,
-		featureWorkflowTriggers, featureStageShell, featureTaskRetry,
+		featureWorkflowTriggers, featureStageShell, featureTaskRetry, featureStageScript,
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -500,11 +509,16 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
-				InputsFrom: map[string]string{"input": "output"}, Next: "shell-scratch",
+				InputsFrom: map[string]string{"input": "output", "qualified": "agent-fail.result"}, Next: "shell-scratch",
 			},
 			{
 				Name: "shell-scratch", Type: apiv1.TaskDeterministic, Goal: "scratch",
 				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "shell-script",
+			},
+			{
+				Name: "shell-script", Type: apiv1.TaskDeterministic, Goal: "inline",
+				Run:  &apiv1.DeterministicRun{Script: "true"},
 				Next: "ci-poll",
 			},
 			{
@@ -537,6 +551,18 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			humanFeatureGate("human-escalate", "escalate", "human-reject"),
 			humanFeatureGate("human-reject", "reject", TerminalComplete),
 		},
+		Parallels: []apiv1.Parallel{{
+			Name:                  "fan",
+			FailurePolicy:         apiv1.BranchAllOrNothing,
+			Join:                  "collate",
+			OnFailure:             TargetEscalate,
+			BranchTimeoutSeconds:  900,
+			MaxConcurrentBranches: 2,
+			Branches: []apiv1.Branch{
+				{Name: "a", Start: "agent-fail"},
+				{Name: "b", Start: "agent-fail"},
+			},
+		}},
 	}}
 	goober := apiv1.GooberSpec{
 		Gaggle: "example", Role: "coder", DisplayName: "Coder", Instructions: "instructions.md",
@@ -733,6 +759,13 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.start",
 		"workflow.spec.tasks",
 		"workflow.spec.gates",
+		"workflow.spec.parallels",
+		"workflow.spec.parallels.failurePolicy",
+		"workflow.spec.parallels.branches",
+		"workflow.spec.parallels.join",
+		"workflow.spec.parallels.onFailure",
+		"workflow.spec.parallels.branchTimeoutSeconds",
+		"workflow.spec.parallels.maxConcurrentBranches",
 		"workflow.terminal.complete",
 		"workflow.terminal.abort",
 		"workflow.terminal.escalate",
@@ -764,6 +797,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.goober",
 		"task.inputs",
 		"task.inputsFrom",
+		"task.inputsFrom.stageQualified",
 		"task.capabilities",
 		"task.retry",
 		"task.retry.maxAttempts",
@@ -781,6 +815,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.shell",
 		"stage.ci-poll",
 		"stage.run.command",
+		"stage.run.script",
 		"stage.run.env",
 		"stage.run.network.none",
 		"stage.run.syncBase",

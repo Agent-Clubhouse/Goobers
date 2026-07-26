@@ -120,6 +120,71 @@ func ConfineToAny(roots []string, changed []string) error {
 	return nil
 }
 
+// ErrCrossRootAction marks a change set whose paths resolve into more than one
+// of ConfineExclusive's declared roots — a single action must stay within
+// exactly one target root.
+var ErrCrossRootAction = errors.New("configboundary: change set spans more than one action root")
+
+// ConfineExclusive returns the single root every path in changed resolves
+// into, or an error. Unlike ConfineToAny (a docs-updater diff may legitimately
+// span several declared roots together in one action), this is the
+// per-target-action-class boundary the Tutor's expanded action space needs
+// (TUT-A5/§4.2 of docs/design/tutor-redesign.md): each of the tutor's actions
+// is confined to its own sub-root, so a skill-authoring action must not also
+// rewrite a workflow, and vice versa — a change set touching paths under two
+// different declared roots is refused (ErrCrossRootAction), even though each
+// individual path is legitimately within SOME declared root.
+//
+// roots must be non-empty; each root that normalizes to "" (empty, absolute,
+// or escaping) is dropped, matching ConfineToAny's fail-closed handling of a
+// bogus root. If every root is bogus, the effective set is empty and every
+// change is refused (ErrNoDocsRoots). An empty changed set returns "" and no
+// error — a run that proposes no change has nothing to confine and no root to
+// report.
+func ConfineExclusive(roots []string, changed []string) (string, error) {
+	normalized := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if n := normalizeConfigRoot(r); n != "" {
+			normalized = append(normalized, n)
+		}
+	}
+	if len(normalized) == 0 {
+		return "", ErrNoDocsRoots
+	}
+	var matched string
+	for _, p := range changed {
+		root, err := matchingRoot(normalized, p)
+		if err != nil {
+			return "", err
+		}
+		if matched == "" {
+			matched = root
+		} else if matched != root {
+			return "", fmt.Errorf("%w: %q is under root %q, but this change set already touched root %q",
+				ErrCrossRootAction, p, root, matched)
+		}
+	}
+	return matched, nil
+}
+
+// matchingRoot returns the single root (from roots, all normalized, none
+// empty) that contains p, or ErrOutsideConfigRoot naming the last-tried root
+// when p is outside every one of them.
+func matchingRoot(roots []string, p string) (string, error) {
+	var last error
+	for _, root := range roots {
+		if err := pathWithinRoot(root, p); err == nil {
+			return root, nil
+		} else {
+			last = err
+		}
+	}
+	if last == nil {
+		return "", fmt.Errorf("%w: %q", ErrOutsideConfigRoot, p)
+	}
+	return "", last
+}
+
 // pathWithinAnyRoot returns nil when p is inside any of roots (all normalized,
 // none empty). It reports the last containment error when p is outside every
 // root — enough to name the offending path in the failure.

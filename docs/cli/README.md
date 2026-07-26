@@ -8,6 +8,10 @@
 
 | Command | Description |
 | --- | --- |
+| [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
+| [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
+| [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
+| [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
@@ -15,6 +19,7 @@
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
+| [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
@@ -33,8 +38,12 @@
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
+| [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
@@ -63,7 +72,10 @@
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
+| [`goobers run approve`](#goobers-run-approve) | approve an escalated gate (not yet implemented, HITL-7/#469) |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
+| [`goobers run override`](#goobers-run-override) | force-pass a nondeterministic gate (not yet implemented, HITL-7/#469) |
+| [`goobers run rerun`](#goobers-run-rerun) | rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469) |
 | [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
 | [`goobers runs du`](#goobers-runs-du) | report per-run journal and artifact bytes |
 | [`goobers runs list`](#goobers-runs-list) | alias for the status run table (same flags, no --watch) |
@@ -76,6 +88,9 @@
 | [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
+| [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
+| [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
+| [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
 | [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
@@ -95,6 +110,100 @@
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+
+## `goobers agent-kit`
+
+install, inspect, or update the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit <subcommand> [flags] [path]
+
+Install, inspect, or explicitly update the release-matched Goobers agent
+toolkit in a checked-in configuration repository.
+
+Subcommands:
+  install  install product-owned assets and a minimal harness reference
+  check    report installed version, drift, missing files, and updates
+  update   show a reviewable diff, then write only with --write
+
+Default path is ".". Targets must be repository roots and may not traverse
+symbolic links or parent path segments.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness generic ./config-repo
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit check`
+
+report agent toolkit version and drift
+
+~~~text
+Usage: goobers agent-kit check [path]
+
+Compare the installed manifest and product-owned file digests with the toolkit
+bundled in this binary. Report the exact bundle and binary release identities,
+modified or missing owned files, and whether an explicit update is available.
+
+Exit codes: 0 = current, 1 = drift, missing manifest, available update, or
+inspection error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit check ./config-repo
+~~~
+
+## `goobers agent-kit install`
+
+install the release-matched agent toolkit
+
+~~~text
+Usage: goobers agent-kit install [--harness copilot|claude|generic] [path]
+
+Install the toolkit bundled with this Goobers binary beneath the product-owned
+`.goobers/agent-toolkit/` boundary and add a minimal adapter reference to the
+selected harness instruction file. Existing instructions are preserved; install
+only appends a clearly delimited managed reference when one is not already present.
+Skills and other repository content are never overwritten.
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision, or
+write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit install --harness copilot ./config-repo
+~~~
+
+## `goobers agent-kit update`
+
+review or explicitly apply an agent toolkit update
+
+~~~text
+Usage: goobers agent-kit update [--dry-run | --write [--replace-modified]] [path]
+
+Show a reviewable diff from the repository's current files to the toolkit
+bundled in this binary. The default and --dry-run never write. --write applies
+only manifest-owned changes and preserves user-created files. If the installed
+manifest has semantic drift or an owned file differs from its installed digest,
+--replace-modified is also required.
+
+Exit codes: 0 = diff shown or update written, 1 = unsafe target, ownership
+collision, unacknowledged modification, or write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers agent-kit update ./config-repo
+$ goobers agent-kit update --write ./config-repo
+~~~
 
 ## `goobers apply-verdict`
 
@@ -174,9 +283,11 @@ query/claim one eligible backlog item (a workflow stage)
 ~~~text
 Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
 
-Query the provider for eligible backlog items — labeled with both
-trustLabel (SEC-047: required on public repos, since backlog content is
-untrusted input otherwise) and requireLabels. With --claim, claims
+Query the provider for eligible backlog items — labeled with trustLabel
+(SEC-047: required on public repos, since backlog content is untrusted
+input otherwise), requireLabels, excludeLabels, and the optional
+labelPredicate CEL expression. CEL supports string membership in `labels`
+combined with &&, ||, and !. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
@@ -202,6 +313,14 @@ overlap cluster faster than merge-review can drain it. It only reorders
 candidates (never drops one — an all-contested cycle still claims FIFO)
 and falls back to FIFO on any provider error. Disable with input
 deprioritizeContestedFiles=false.
+
+selectionPriority (#1335) is an opt-in, ordered comma-separated label
+list (highest priority first, e.g. "security,bug") applied before FIFO:
+eligible items carrying an earlier-listed label claim ahead of items
+carrying only a later one or none at all; FIFO still breaks ties within
+a priority tier. An item carrying more than one listed label ranks by
+whichever appears earliest in selectionPriority. Unset (the default)
+preserves plain FIFO exactly.
 
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
@@ -270,6 +389,30 @@ Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~console
 $ goobers blocked list
 $ goobers blocked list --json
+~~~
+
+## `goobers check-fail-first`
+
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+
+~~~text
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-fail-first
 ~~~
 
 ## `goobers claims`
@@ -546,13 +689,13 @@ preflight a Kubernetes cluster against the documented infra shape
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
+       goobers doctor --repo [--report text|json] [instance-root]
 
-Preflight a target Kubernetes cluster against the documented infrastructure
-shape (docs/design/k8s-infra-shape.md) before installing Goobers on it — the
-install-time enforcement of that document (#668). --k8s is the only doctor
-mode today.
+--k8s preflights a target Kubernetes cluster against the documented
+infrastructure shape (docs/design/k8s-infra-shape.md) before installing
+Goobers on it — the install-time enforcement of that document (#668).
 
-The check set, each row citing the shape-doc section it enforces:
+The --k8s check set, each row citing the shape-doc section it enforces:
 
   cluster-version    required  §1     cluster reachable, supported version
   networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
@@ -569,11 +712,19 @@ created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
 
---report json emits the stable machine-readable report; text (default) prints
-the conformance table with remediation hints.
+--repo diffs each configured repo's declared forge-policy manifest
+(<instance-root>/instance.yaml repos[].policy: required merge method,
+merge-queue requirement, required status checks — issue #916, Tier 4 of
+#903) against its live GitHub state. Repos with no policy declared are
+skipped. Token-scope introspection is reported as unavailable when GitHub
+does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
+from a failed call. instance-root defaults to ".".
 
-Exit codes: 0 = cluster conforms (warns allowed), 1 = a required check
-failed, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s) or per-repo findings (--repo).
+
+Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
+failed or drift was found, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -640,12 +791,76 @@ Show an escalation's structured cause and per-stage artifact timeline.
 $ goobers escalations show <run-id>
 ~~~
 
+## `goobers examples`
+
+browse canonical workflow examples embedded in the binary
+
+~~~text
+Usage: goobers examples <list|show> [name]
+
+Browse the canonical workflow examples embedded in this binary. No source
+checkout or instance root is required.
+
+Commands:
+  list         print the available example names
+  show <name>  print an example's exact Workflow YAML
+
+Run `goobers examples list -h` or `goobers examples show -h` for details.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+$ goobers examples show implementation
+~~~
+
+## `goobers examples list`
+
+list canonical embedded workflow examples
+
+~~~text
+Usage: goobers examples list
+
+Print the names of the canonical embedded workflow examples, one per line.
+Pass one of these names to `goobers examples show` to print its YAML.
+
+Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples list
+~~~
+
+## `goobers examples show`
+
+print a canonical embedded workflow example
+
+~~~text
+Usage: goobers examples show <name>
+
+Print the exact canonical Workflow YAML embedded in this binary. Use
+`goobers examples list` to discover names. No source checkout or instance
+root is required.
+
+Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
+2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers examples show implementation
+~~~
+
 ## `goobers features`
 
 list the workflow-DSL features this build supports
 
 ~~~text
-Usage: goobers features [--dsl-version <version>] [--used] [path]
+Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
 
 List the workflow-DSL features this build understands by DSL version,
 including each feature's support level (preview/ga/deprecated/removed).
@@ -653,7 +868,8 @@ Use --dsl-version to scope the matrix to one declared version. This reads
 the same registry and SupportMatrix the committed
 docs/feature-matrix.md is generated from, so the two never disagree.
 
-With --used, list only the features the instance at path (default ".")
+With --json, emit a versioned feature-discovery envelope instead of the
+human-readable table. With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
@@ -663,7 +879,7 @@ config, 2 = usage/IO error.
 
 ~~~console
 $ goobers features
-$ goobers features --dsl-version 1.4
+$ goobers features --json --dsl-version 1.4
 $ goobers features --used
 ~~~
 
@@ -692,6 +908,29 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+~~~
+
+## `goobers gate-removal-guard`
+
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+
+~~~text
+Usage: goobers gate-removal-guard [path]
+
+Block a tutor run whose drafted change removes or loosens the specific
+gate its own finding flagged as noisy, unless the finding cites
+independent proof the gate is dead. Runs after draft-change, before
+validate-config, reading the analyze stage's finding.md from the run
+journal and diffing every changed workflow YAML file against base.
+A finding unrelated to gate noise, or a diff that doesn't touch the
+named gate, is a no-op pass-through.
+Exit codes: 0 = clear (or nothing to check), 1 = blocked, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gate-removal-guard
 ~~~
 
 ## `goobers gather-ci-failures`
@@ -968,7 +1207,7 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 lint config via the single authoritative validation engine (alias for validate)
 
 ~~~text
-Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+Usage: goobers lint [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
@@ -976,7 +1215,8 @@ alias for `goobers validate`: identical flags, identical checks, and
 identical exit codes, so CI and local development share one validation
 path instead of drifting between ad-hoc checks. --source-tree lints a
 checked-in config source tree using instance.yaml.example and the path
-itself as config/. --check-harness additionally preflights every agent
+itself as config/. --json emits the same versioned findings envelope as
+`goobers validate --json`. --strict treats warnings as validation errors. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -986,6 +1226,7 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 
 ~~~console
 $ goobers lint
+$ goobers lint --json
 $ goobers lint --check-harness --check-repos
 ~~~
 
@@ -1165,14 +1406,22 @@ Usage: goobers rebase-pr [path]
 
 Check out the selected PR's branch, attempt a rebase onto its base
 (force-with-lease is mandatory for the eventual push — never a bare
-push), and route on the result: a clean rebase with no substantive
-finding or failing CI force-pushes and clears goobers:needs-remediation;
-anything else (an unsafe conflict, substantive finding, or failing CI) needs the
-agentic remediation chain, reported via the needsAgent output for the
-workflow to route on. Requires selectedNumber/head/base
-(Task.InputsFrom gather-pr-context's own outputs) and
-hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =
-business error, 2 = usage/IO error.
+push), and route on the result: a clean rebase with no detected,
+policy-allowed cause force-pushes and clears goobers:needs-remediation;
+a detected cause the declared policy allows needs the agentic remediation
+chain, reported via the needsAgent output for the workflow to route on; a
+detected cause the policy excludes is left untouched for a human
+(policyExcluded/policyExcludedReason outputs — #941/PRR-6). Requires
+selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
+outputs) and hasSubstantiveFindings/hasFailingCI.
+
+remediate (input, default "conflict,substantive,failing-ci,behind-base,
+sibling-overlap") is a comma-separated policy naming which detected
+causes are allowed to trigger remediation; the shipped default is fully
+liberal. behind-base and sibling-overlap are accepted vocabulary but
+cannot fire yet (no detection reaches this stage's decision today).
+
+Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1380,6 +1629,27 @@ run.finished(status=aborted) event to its own journal (default path
 $ goobers run abort <run-id>
 ~~~
 
+## `goobers run approve`
+
+approve an escalated gate (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run approve <run-id> <stage> [path]
+
+Approve an escalated human/reviewer gate, unblocking the run past it.
+Not yet implemented (HITL-4/#466) — this command is registered now so the
+CLI surface, the daemon API route, and the access-control seam (HITL-7/
+#469) are all in place before the real behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run approve <run-id> <stage>
+~~~
+
 ## `goobers run cancel`
 
 cancel a live in-flight run via the daemon
@@ -1401,6 +1671,51 @@ no daemon to cancel it), 2 = usage/IO error (unknown run).
 
 ~~~console
 $ goobers run cancel <run-id>
+~~~
+
+## `goobers run override`
+
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run override <run-id> <stage> [path]
+
+Force-pass a nondeterministic gate with an operator-supplied rationale,
+overriding its own verdict. Not yet implemented (HITL-6/#468) — this
+command is registered now so the CLI surface, the daemon API route, and
+the access-control seam (HITL-7/#469) are all in place before the real
+behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run override <run-id> <stage>
+~~~
+
+## `goobers run rerun`
+
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run rerun <run-id> <stage> [path]
+
+Re-enter an escalated run at one agentic task or reviewer gate with a
+one-off recorded instruction addendum. The underlying primitive already
+exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing
+outside the runner package calls it yet — this command is registered now
+so the CLI surface, the daemon API route, and the access-control seam
+(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run rerun <run-id> <stage>
 ~~~
 
 ## `goobers runs`
@@ -1642,6 +1957,68 @@ not observe a terminal phase.
 $ goobers signal deploy-approved
 ~~~
 
+## `goobers speech`
+
+preflight and test local speech notifications
+
+~~~text
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech test
+~~~
+
+## `goobers speech preflight`
+
+check the configured local speech engine without emitting sound
+
+~~~text
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech preflight
+$ goobers speech preflight --json ./instance
+~~~
+
+## `goobers speech test`
+
+speak the fixed local readiness phrase
+
+~~~text
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers speech test
+$ goobers speech test --json ./instance
+~~~
+
 ## `goobers stats`
 
 show the instance lifetime summary card
@@ -1839,7 +2216,7 @@ $ goobers telemetry stats --json
 emit versioned candidate findings (a connector stage)
 
 ~~~text
-Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy] [--workflow <name>] [path]
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--workflow <name>] [path]
 
 Query the instance telemetry rollup for threshold-crossing failure and gate
 patterns. The built-in connector stage writes a versioned candidate-findings
@@ -1851,7 +2228,11 @@ are fractions from 0 through 1; count thresholds are positive integers.
 the workflow's most recent EffectiveVersion transition — the version-
 segmented cohort key (workflow digest + goober digest + model + harness
 version) from the Tutor v2 design — and emits a helped/regressed/no-change/
-insufficient-data verdict.
+insufficient-data verdict. --format tutor-live-verification evaluates all
+durable mandatory Tutor holdouts for the current gaggle from each PR's
+merge time and first observed post-merge configuration transition. Exact
+EffectiveVersion cohorts verify transitions and additions; a removal is
+verified when the workflow is absent from the live reconciled config.
 
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
@@ -1945,11 +2326,11 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
+using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
@@ -1961,6 +2342,7 @@ a repository is larger than the checkout-size threshold. Exit codes:
 
 ~~~console
 $ goobers validate
+$ goobers validate --json
 $ goobers validate --check-harness --check-repos
 ~~~
 

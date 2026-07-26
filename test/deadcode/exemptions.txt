@@ -19,6 +19,7 @@ github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature h
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/internal/workflow.IsReservedTarget # Terminal-vs-branch target distinction retained for shipped-workflow routing assertions (#929); production callers use IsReservedAnyTarget.
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
@@ -40,6 +41,10 @@ github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conforma
 github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Utterances # Sound-free speech adapter accessor retained for deterministic cross-package notification assertions.
 github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
@@ -63,8 +68,6 @@ github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery se
 github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
 github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
 github.com/goobers/goobers/cmd/goobers.runtimeCommand # Runtime-capability registry seam retained for parity tests.
-github.com/goobers/goobers/cmd/goobers.runtimeSubcommand # Runtime-capability registry seam retained for parity tests.
-github.com/goobers/goobers/cmd/goobers.withRuntimeCapability # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.

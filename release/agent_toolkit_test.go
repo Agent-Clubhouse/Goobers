@@ -14,8 +14,10 @@ import (
 	"strings"
 	"testing"
 
+	goobersassets "github.com/goobers/goobers"
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
@@ -69,6 +71,19 @@ func TestAgentToolkitArchiveContract(t *testing.T) {
 	var manifest agentToolkitManifest
 	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
 		t.Fatal(err)
+	}
+	embedded, err := agentkit.Build(goobersassets.AgentToolkitAssets, "v9.8.7", "deadbeef1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(manifestJSON, embedded.ManifestJSON) {
+		t.Fatal("release artifact manifest differs from the binary-embedded toolkit manifest")
+	}
+	for installedPath, file := range embedded.Files {
+		transportPath := "payload/" + installedPath
+		if !bytes.Equal(entries[transportPath], file.Data) {
+			t.Errorf("release artifact %q differs from the binary-embedded toolkit asset", transportPath)
+		}
 	}
 	if manifest.Producer != (agentToolkitProducer{Version: "v9.8.7", Commit: "deadbeef1234"}) {
 		t.Errorf("producer = %+v", manifest.Producer)

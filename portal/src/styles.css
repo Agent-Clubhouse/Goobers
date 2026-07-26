@@ -520,6 +520,29 @@ summary:focus-visible {
   margin: 0;
 }
 
+.gaggle-detail-link {
+  align-items: center;
+  color: inherit;
+  display: inline-flex;
+  gap: 8px;
+  text-decoration: none;
+}
+
+.gaggle-detail-link .icon {
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.gaggle-detail-link:hover,
+.gaggle-detail-link:focus-visible {
+  color: var(--accent-ink);
+}
+
+.gaggle-detail-link:hover .icon,
+.gaggle-detail-link:focus-visible .icon {
+  transform: translateX(2px);
+}
+
 .gaggle-heading > div > p:last-child {
   color: var(--muted);
   font-size: 11px;
@@ -1855,6 +1878,112 @@ a.telemetry-error-row:hover {
   margin-top: 34px;
 }
 
+.gaggle-topology-panel {
+  margin-top: 34px;
+}
+
+.gaggle-workflow-topology {
+  background-color: var(--surface);
+  background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
+  background-size: 16px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 24px;
+}
+
+.gaggle-workflow-node {
+  min-width: 0;
+}
+
+.gaggle-workflow-node > a {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  height: 100%;
+  padding: 16px;
+  text-decoration: none;
+}
+
+.gaggle-workflow-node > a:hover {
+  border-color: var(--accent);
+}
+
+.gaggle-workflow-node > a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.gaggle-workflow-kind {
+  align-items: center;
+  color: var(--accent-ink);
+  display: flex;
+  font-size: 9px;
+  font-weight: 750;
+  gap: 5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.gaggle-workflow-node strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-node > a > p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 0;
+  min-height: 30px;
+}
+
+.gaggle-workflow-node dl {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 2px 0 0;
+  padding-top: 12px;
+}
+
+.gaggle-workflow-node dl > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gaggle-workflow-node dt {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.gaggle-workflow-node dd {
+  font-size: 10px;
+  font-weight: 650;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-node .status-badge {
+  width: fit-content;
+}
+
+.gaggle-workflow-no-runs {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .graph-panel,
 .definition-panel,
 .run-inspector,
@@ -1943,8 +2072,8 @@ a.telemetry-error-row:hover {
   gap: 9px;
 }
 
-.workflow-graph-shell:fullscreen,
-.workflow-graph-shell-expanded {
+.workflow-graph-fullscreen-target:fullscreen,
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -1953,14 +2082,15 @@ a.telemetry-error-row:hover {
   width: 100%;
 }
 
-.workflow-graph-shell-expanded {
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
   inset: 0;
   position: fixed;
   z-index: 1000;
 }
 
-.workflow-graph-shell:fullscreen .workflow-graph-viewport,
-.workflow-graph-shell-expanded .workflow-graph-viewport {
+.workflow-graph-fullscreen-target:fullscreen .workflow-graph-viewport,
+.workflow-graph-fullscreen-target.workflow-graph-shell-expanded
+  .workflow-graph-viewport {
   flex: 1;
   height: auto;
   min-height: 0;
@@ -2627,54 +2757,256 @@ a.telemetry-error-row:hover {
   background: var(--panel-raised);
   border: 1px solid var(--line);
   border-radius: 11px;
+  box-sizing: border-box;
   display: grid;
-  gap: 10px;
-  padding: 11px 13px;
-}
-
-.playback-panel:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  gap: 14px;
+  padding: 15px 17px;
+  width: 100%;
 }
 
 .playback-summary {
   align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.event-mark {
+  align-items: center;
+  background: var(--active-soft);
+  border-radius: 50%;
+  color: var(--active);
   display: flex;
-  gap: 16px;
-  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 800;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.event-mark-decision,
+.event-mark-escalation {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.event-mark-failure {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.event-mark-external {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.event-mark-terminal {
+  background: color-mix(in srgb, var(--ink) 12%, var(--panel));
+  color: var(--ink);
+}
+
+.event-mark-raw {
+  background: var(--surface);
+  color: var(--muted);
 }
 
 .playback-now {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  min-width: 0;
-}
-
-.playback-now > div {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
-.playback-now span:not(.event-mark) {
+.playback-now span,
+.playback-position {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .playback-now strong {
-  font-size: 10px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.playback-position {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.replay-timeline {
+  height: 58px;
+  margin: 0 11px;
+  position: relative;
+}
+
+.replay-track {
+  background: var(--line-strong);
+  border-radius: 999px;
+  height: 6px;
+  left: 0;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: 21px;
+}
+
+.replay-track-progress {
+  background: var(--accent);
+  display: block;
+  height: 100%;
+}
+
+.replay-timeline:focus-within .replay-track {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.replay-timeline input[type="range"] {
+  cursor: pointer;
+  height: 18px;
+  left: 0;
+  margin: 0;
+  opacity: 0;
+  position: absolute;
+  top: 15px;
+  width: 100%;
+  z-index: 2;
+}
+
+.replay-playhead {
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--ink) 25%, transparent);
+  height: 12px;
+  pointer-events: none;
+  position: absolute;
+  top: 16px;
+  transform: translateX(-50%);
+  width: 12px;
+  z-index: 3;
+}
+
+.replay-chapter {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--active);
+  cursor: pointer;
+  display: flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  top: 9px;
+  transform: translateX(-50%);
+  width: 30px;
+  z-index: 5;
+}
+
+.replay-chapter-shape {
+  align-items: center;
+  background: color-mix(in srgb, currentColor 13%, var(--panel));
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: flex;
+  font-size: 8px;
+  font-weight: 900;
+  height: 17px;
+  justify-content: center;
+  line-height: 1;
+  width: 17px;
+}
+
+.replay-chapter-decision {
+  color: var(--accent);
+}
+
+.replay-chapter-decision .replay-chapter-shape {
+  border-radius: 2px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.replay-chapter-failure {
+  color: var(--danger);
+}
+
+.replay-chapter-failure .replay-chapter-shape {
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  padding-top: 4px;
+}
+
+.replay-chapter-escalation {
+  color: var(--warning);
+}
+
+.replay-chapter-escalation .replay-chapter-shape {
+  border-radius: 0;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+.replay-chapter-external {
+  color: var(--success);
+}
+
+.replay-chapter-external .replay-chapter-shape {
+  border-radius: 50% 50% 2px 50%;
+}
+
+.replay-chapter-terminal {
+  color: var(--ink);
+}
+
+.replay-chapter-terminal .replay-chapter-shape {
+  border-radius: 2px;
+}
+
+.replay-chapter-selected .replay-chapter-shape {
+  box-shadow:
+    0 0 0 3px var(--panel),
+    0 0 0 5px currentColor;
+}
+
+.replay-chapter:focus-visible,
+.replay-idle-gap:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.replay-idle-gap {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warning) 40%, transparent) 0 3px,
+    var(--warning-soft) 3px 6px
+  );
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--line));
+  border-radius: 3px;
+  box-sizing: border-box;
+  cursor: help;
+  height: 12px;
+  min-width: 5px;
+  position: absolute;
+  top: 40px;
+  z-index: 4;
 }
 
 .playback-controls {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.playback-transport {
+  align-items: center;
+  display: flex;
+  gap: 6px;
 }
 
 .play-button,
@@ -2683,9 +3015,9 @@ a.telemetry-error-row:hover {
   border-radius: 7px;
   cursor: pointer;
   display: flex;
-  height: 30px;
+  height: 32px;
   justify-content: center;
-  width: 30px;
+  width: 32px;
 }
 
 .play-button {
@@ -2700,51 +3032,23 @@ a.telemetry-error-row:hover {
   color: var(--ink);
 }
 
+.chapter-step-button {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-ink);
+}
+
+.play-button:focus-visible,
+.step-button:focus-visible,
+.speed-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .play-button:disabled,
 .step-button:disabled {
   cursor: not-allowed;
   opacity: 0.4;
-}
-
-.playback-controls input[type="range"] {
-  accent-color: var(--accent);
-  flex: 1;
-  min-width: 130px;
-  width: clamp(130px, 18vw, 250px);
-}
-
-.replay-mode-control {
-  align-items: center;
-  display: flex;
-  flex-shrink: 0;
-  gap: 8px;
-}
-
-.replay-mode {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.06em;
-  padding: 5px 8px;
-  text-transform: uppercase;
-}
-
-.replay-mode-live-follow {
-  background: var(--success-soft);
-  border-color: color-mix(in srgb, var(--success) 45%, var(--line));
-  color: var(--success);
-}
-
-.mode-button {
-  background: transparent;
-  border: 0;
-  color: var(--accent-ink);
-  cursor: pointer;
-  font-size: 9px;
-  font-weight: 700;
-  padding: 5px;
 }
 
 .speed-control {
@@ -2770,28 +3074,24 @@ a.telemetry-error-row:hover {
   color: var(--accent-ink);
 }
 
-.playback-context {
+.idle-compression-status {
   align-items: center;
   border-top: 1px solid var(--line);
   color: var(--muted);
   display: flex;
   flex-wrap: wrap;
-  font-size: 8px;
-  gap: 6px 14px;
-  padding-top: 8px;
+  font-size: 9px;
+  gap: 6px;
+  padding-top: 10px;
 }
 
-.replay-state {
-  color: var(--ink);
-  font-weight: 650;
-}
-
-.compressed-wait {
+.idle-compression-status .icon,
+.idle-compression-status strong {
   color: var(--warning);
 }
 
-.keyboard-hint {
-  margin-left: auto;
+.idle-compression-status span {
+  overflow-wrap: anywhere;
 }
 
 .event-ledger {
@@ -2902,6 +3202,53 @@ a.telemetry-error-row:hover {
   display: grid;
   gap: 16px;
   min-width: 0;
+}
+
+.run-graph-fullscreen-root {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.run-graph-fullscreen-root:fullscreen .run-graph-panel,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .run-graph-panel {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen .workflow-graph-shell,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded
+  .workflow-graph-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.run-graph-fullscreen-root:fullscreen .playback-panel,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .playback-panel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.run-graph-fullscreen-root:fullscreen .run-inspector,
+.run-graph-fullscreen-root.workflow-graph-shell-expanded .run-inspector {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-height: 0;
+  overflow: auto;
 }
 
 .run-topology {
@@ -3692,9 +4039,28 @@ a.telemetry-error-row:hover {
     height: 420px;
   }
 
-  .workflow-graph-shell:fullscreen,
-  .workflow-graph-shell-expanded {
+  .gaggle-workflow-topology {
+    background-image: none;
+    padding: 14px;
+  }
+
+  .workflow-graph-fullscreen-target:fullscreen,
+  .workflow-graph-fullscreen-target.workflow-graph-shell-expanded {
     padding: 10px;
+  }
+
+  .run-graph-fullscreen-root:fullscreen,
+  .run-graph-fullscreen-root.workflow-graph-shell-expanded {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) auto auto;
+    overflow: auto;
+  }
+
+  .run-graph-fullscreen-root:fullscreen .run-inspector,
+  .run-graph-fullscreen-root.workflow-graph-shell-expanded .run-inspector {
+    grid-column: 1;
+    grid-row: 3;
+    overflow: visible;
   }
 
   .configuration-warning-heading {
@@ -3847,19 +4213,11 @@ a.telemetry-error-row:hover {
 
   .playback-summary {
     align-items: stretch;
-    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .replay-mode-control {
-    justify-content: space-between;
-  }
-
-  .playback-controls input[type="range"] {
-    flex: 1;
-  }
-
-  .keyboard-hint {
-    margin-left: 0;
+  .playback-position {
+    grid-column: 2;
   }
 
   .ledger-item button {
@@ -3928,6 +4286,11 @@ a.telemetry-error-row:hover {
   .page-content {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  .gaggle-workflow-topology,
+  .gaggle-workflow-node dl {
+    grid-template-columns: 1fr;
   }
 
   .filter-bar {
@@ -4032,15 +4395,18 @@ a.telemetry-error-row:hover {
     gap: 8px;
   }
 
-  .playback-controls input[type="range"] {
-    flex-basis: 100%;
-    min-width: 0;
-    order: 2;
+  .playback-controls {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .playback-transport {
+    justify-content: center;
     width: 100%;
   }
 
   .speed-control {
-    margin-left: auto;
+    justify-self: end;
   }
 
   .ledger-item button {

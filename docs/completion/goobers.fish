@@ -1,4 +1,8 @@
 # fish completion for goobers
+function __goobers_completion_examples
+    command goobers __complete examples 2>/dev/null
+end
+
 function __goobers_completion_workflows
     command goobers __complete workflows 2>/dev/null
 end
@@ -12,14 +16,18 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init scaffold validate lint fix doctor config up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
+complete -c goobers -n '__fish_seen_subcommand_from examples; and test (count (commandline -opc)) -eq 2' -f -a 'list show'
+complete -c goobers -n '__fish_seen_subcommand_from examples; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_examples)'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow'
+complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and test (count (commandline -opc)) -eq 2' -f -a 'install check update'
 complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and test (count (commandline -opc)) -eq 2' -f -a 'preflight test'
 complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall status'
-complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
+complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel approve override rerun (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
@@ -38,11 +46,24 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt f
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from goober' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from workflow' -l force -d 'Replace generated files that already exist'
+complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from install' -l harness -r -a 'copilot claude generic' -d 'Harness adapter'
+complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from update' -l dry-run -d 'Show the update diff without writing'
+complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from update' -l write -d 'Apply product-owned changes'
+complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from update' -l replace-modified -d 'Acknowledge replacement of modified owned files'
+complete -c goobers -n '__fish_seen_subcommand_from validate' -l json -d 'Emit a versioned findings envelope'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Verify referenced agent harnesses are installed and signed in'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-repos -d 'Verify target repositories are reachable'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
+complete -c goobers -n '__fish_seen_subcommand_from validate' -l strict -d 'Treat config warnings as validation errors'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l json -d 'Emit a versioned findings envelope'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-harness -d 'Verify referenced agent harnesses are installed and signed in'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-repos -d 'Verify target repositories are reachable'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l source-tree -d 'Lint a checked-in config source tree'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'Treat config warnings as validation errors'
 complete -c goobers -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from diff' -l against -r -d 'Canonical config source root'
 complete -c goobers -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from show' -l json -d 'Render the config as JSON instead of YAML'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and __fish_seen_subcommand_from preflight' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from speech; and __fish_seen_subcommand_from test' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l notify -d 'Desktop-notify on escalated/failed runs (=all for every outcome)'
@@ -67,6 +88,9 @@ complete -c goobers -n '__fish_seen_subcommand_from status' -l watch -d 'Refresh
 complete -c goobers -n '__fish_seen_subcommand_from status' -l interval -r -d 'Watch refresh interval'
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l since -r -d 'Only include activity from the preceding duration'
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from features' -l json -d 'Emit a versioned feature-discovery envelope'
+complete -c goobers -n '__fish_seen_subcommand_from features' -l dsl-version -r -d 'Scope features to one DSL version'
+complete -c goobers -n '__fish_seen_subcommand_from features' -l used -d 'List only features referenced by the instance'
 complete -c goobers -n '__fish_seen_subcommand_from blocked; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'

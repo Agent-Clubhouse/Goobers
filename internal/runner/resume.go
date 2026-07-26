@@ -337,7 +337,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// (#108), the subject a resumed gate needs. Both are exactly what a live
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
-	seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+	seed := walkSeed{
+		pointers:     reconstructPointers(seedEvents),
+		stageOutputs: reconstructStageOutputs(seedEvents),
+	}
 	if humanProgress.waiting {
 		seed.humanDecision = in.HumanDecision
 	}

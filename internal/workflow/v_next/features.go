@@ -377,6 +377,13 @@ const (
 	featureWorkflowStart                  FeatureID = "workflow.spec.start"
 	featureWorkflowTasks                  FeatureID = "workflow.spec.tasks"
 	featureWorkflowGates                  FeatureID = "workflow.spec.gates"
+	featureWorkflowParallels              FeatureID = "workflow.spec.parallels"
+	featureParallelFailurePolicy          FeatureID = "workflow.spec.parallels.failurePolicy"
+	featureParallelBranches               FeatureID = "workflow.spec.parallels.branches"
+	featureParallelJoin                   FeatureID = "workflow.spec.parallels.join"
+	featureParallelOnFailure              FeatureID = "workflow.spec.parallels.onFailure"
+	featureParallelBranchTimeout          FeatureID = "workflow.spec.parallels.branchTimeoutSeconds"
+	featureParallelMaxConcurrentBranches  FeatureID = "workflow.spec.parallels.maxConcurrentBranches"
 	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
 	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
 	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
@@ -410,6 +417,7 @@ const (
 	featureTaskGoober                     FeatureID = "task.goober"
 	featureTaskInputs                     FeatureID = "task.inputs"
 	featureTaskInputsFrom                 FeatureID = "task.inputsFrom"
+	featureTaskInputsFromQualified        FeatureID = "task.inputsFrom.stageQualified"
 	featureTaskCapabilities               FeatureID = "task.capabilities"
 	featureTaskRetry                      FeatureID = "task.retry"
 	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
@@ -427,6 +435,7 @@ const (
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageCommand                   FeatureID = "stage.run.command"
+	featureStageScript                    FeatureID = "stage.run.script"
 	featureStageEnv                       FeatureID = "stage.run.env"
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
@@ -500,6 +509,13 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowStart,
 		featureWorkflowTasks,
 		featureWorkflowGates,
+		featureWorkflowParallels,
+		featureParallelFailurePolicy,
+		featureParallelBranches,
+		featureParallelJoin,
+		featureParallelOnFailure,
+		featureParallelBranchTimeout,
+		featureParallelMaxConcurrentBranches,
 		featureWorkflowTerminalComplete,
 		featureWorkflowTerminalAbort,
 		featureWorkflowTerminalEscalate,
@@ -533,6 +549,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskGoober,
 		featureTaskInputs,
 		featureTaskInputsFrom,
+		featureTaskInputsFromQualified,
 		featureTaskCapabilities,
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
@@ -550,6 +567,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageShell,
 		featureStageCIPoll,
 		featureStageCommand,
+		featureStageScript,
 		featureStageEnv,
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
@@ -630,6 +648,11 @@ func currentFeatures(sinceVersion string) []Feature {
 var previewFeatures = map[FeatureID]struct{}{
 	featureGaggleSandbox:        {},
 	featureGaggleCheckoutSparse: {},
+	// Stage-qualified inputsFrom (#562) enters preview like every other new DSL
+	// surface. It is only resolvable at DSL versions that postdate it —
+	// workflow.SupportsStageQualifiedInputs gates the runner — so a 1.4
+	// workflow cannot reach it by accident.
+	featureTaskInputsFromQualified: {},
 	// The read-only repo workspace and the task/gate-level workspace seam are
 	// preview alongside the fan-out work they exist for (#1562): they change
 	// where a stage runs, and only the fan-out conformance corpus exercises
@@ -637,6 +660,16 @@ var previewFeatures = map[FeatureID]struct{}{
 	featureStageWorkspaceRepoReadOnly: {},
 	featureStageWorkspace:             {},
 	featureGateAgenticWorkspace:       {},
+	// Static fan-out/fan-in enters preview: the DSL surface and its compile-time
+	// validation land first, and the runner still refuses to EXECUTE a parallel.
+	// These graduate to GA once the conformance corpus is green (FO-8, #1566).
+	featureWorkflowParallels:             {},
+	featureParallelFailurePolicy:         {},
+	featureParallelBranches:              {},
+	featureParallelJoin:                  {},
+	featureParallelOnFailure:             {},
+	featureParallelBranchTimeout:         {},
+	featureParallelMaxConcurrentBranches: {},
 }
 
 type featureSet map[FeatureID]struct{}
@@ -707,13 +740,46 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	for _, task := range def.Spec.Tasks {
 		addTaskFeatures(used, task)
 	}
+	if usesStageQualifiedInputs(def) {
+		used.add(featureTaskInputsFromQualified)
+	}
 	if def.Spec.Gates != nil {
 		used.add(featureWorkflowGates)
 	}
 	for _, gate := range def.Spec.Gates {
 		addGateFeatures(used, gate)
 	}
+	if def.Spec.Parallels != nil {
+		used.add(featureWorkflowParallels)
+	}
+	for _, parallel := range def.Spec.Parallels {
+		addParallelFeatures(used, parallel)
+	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+// addParallelFeatures records the DSL surface a parallel state uses. Every
+// field is preview until the conformance corpus is green, so any workflow that
+// declares a parallel needs the goobers.dev/allow-preview-features opt-in.
+func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
+	if parallel.FailurePolicy != "" {
+		used.add(featureParallelFailurePolicy)
+	}
+	if parallel.Branches != nil {
+		used.add(featureParallelBranches)
+	}
+	if parallel.Join != "" {
+		used.add(featureParallelJoin)
+	}
+	if parallel.OnFailure != "" {
+		used.add(featureParallelOnFailure)
+	}
+	if parallel.BranchTimeoutSeconds != 0 {
+		used.add(featureParallelBranchTimeout)
+	}
+	if parallel.MaxConcurrentBranches != 0 {
+		used.add(featureParallelMaxConcurrentBranches)
+	}
 }
 
 // FeaturesForGoober returns registry metadata for the DSL features used by
@@ -850,7 +916,11 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 		return
 	}
-	used.add(featureStageCommand)
+	if task.Run.Script != "" {
+		used.add(featureStageScript)
+	} else {
+		used.add(featureStageCommand)
+	}
 	if task.Run.Env != nil {
 		used.add(featureStageEnv)
 	}
@@ -974,4 +1044,26 @@ func addTargetFeature(used featureSet, target string) {
 	case TargetEscalate:
 		used.add(featureWorkflowTerminalEscalate)
 	}
+}
+
+// usesStageQualifiedInputs reports whether any inputsFrom value is a
+// stage-qualified reference (#562).
+//
+// The prefix must name a DECLARED task. A value like "legacy.dotted" whose
+// prefix is not a stage is an ordinary bare output key and must not be counted
+// — otherwise every workflow with a dotted output key would suddenly require
+// the preview opt-in without using the feature at all.
+func usesStageQualifiedInputs(def Definition) bool {
+	declared := make(map[string]bool, len(def.Spec.Tasks))
+	for _, task := range def.Spec.Tasks {
+		declared[task.Name] = true
+	}
+	for _, task := range def.Spec.Tasks {
+		for _, value := range task.InputsFrom {
+			if stage, _, ok := splitQualifiedRef(value); ok && declared[stage] {
+				return true
+			}
+		}
+	}
+	return false
 }

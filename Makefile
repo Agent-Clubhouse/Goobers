@@ -24,7 +24,7 @@
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/goobers/goobers/internal/version
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 

@@ -196,12 +196,26 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
+	problems = append(problems, runScriptProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func runScriptProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run != nil && task.Run.Script != "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.script is not supported in DSL %s; use run.command or DSL %s",
+				task.Name, DSLVersion, "2.0",
+			))
+		}
+	}
+	return problems
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.
@@ -215,7 +229,10 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	// DSL 1.4 has no fan-out construct: parallels are nil, so Has/Outgoing
+	// report nothing for them and a `parallels:` block is rejected as an
+	// unknown field by this version's schema.
+	return model.NewMachine(def, tasks, gates, nil, buildGraph(def))
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {

@@ -810,6 +810,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Title:            pr.Title,
 		State:            pr.State,
 		Merged:           pr.Merged,
+		MergedAt:         pr.MergedAt,
 		Mergeable:        pr.Mergeable,
 		MergeableState:   pr.MergeableState,
 		Draft:            pr.Draft,
@@ -1039,6 +1040,91 @@ func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePol
 		}
 	}
 	return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+}
+
+// GetRepoPolicy reports req.Branch's live forge-conformance settings (issue
+// #916, Tier 4 of #903): which merge methods the repo allows, whether the
+// branch requires GitHub's merge queue, which status checks its rules
+// require, and whether this provider's token exposes its own granted
+// scopes. It issues two reads: GET .../repos/{owner}/{repo} (repo-level
+// merge-method settings, and the X-OAuth-Scopes response header GitHub sends
+// only for classic PAT auth) and the same "rules for a branch" endpoint
+// DetectMergePolicy uses (merge-queue requirement and required-status-checks
+// contexts), so both facts come from one extra round trip rather than a
+// second rules fetch.
+func (p *GitHubProvider) GetRepoPolicy(ctx context.Context, req RepoPolicyRequest) (RepoPolicyResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return RepoPolicyResult{}, err
+	}
+	if req.Branch == "" {
+		return RepoPolicyResult{}, fmt.Errorf("branch is required")
+	}
+
+	repoEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name)
+	if err != nil {
+		return RepoPolicyResult{}, err
+	}
+	resp, err := p.send(ctx, http.MethodGet, repoEndpoint, nil)
+	if err != nil {
+		return RepoPolicyResult{}, err
+	}
+	// GitHub sends X-OAuth-Scopes on any authenticated response for classic
+	// PAT auth; fine-grained PATs and GitHub App installation tokens never
+	// send it. Read before readJSONResponse closes the body.
+	scopeHeader := resp.Header.Get("X-OAuth-Scopes")
+	var detail githubRepoDetail
+	if err := readJSONResponse(resp, http.MethodGet, repoEndpoint, &detail); err != nil {
+		return RepoPolicyResult{}, err
+	}
+
+	rulesEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "rules", "branches", req.Branch)
+	if err != nil {
+		return RepoPolicyResult{}, err
+	}
+	var rules []githubBranchRule
+	if err := p.do(ctx, http.MethodGet, rulesEndpoint, nil, &rules); err != nil {
+		return RepoPolicyResult{}, err
+	}
+
+	result := RepoPolicyResult{
+		AllowedMergeMethods: detail.allowedMergeMethods(),
+		MergeQueuePolicy:    MergePolicyDirect,
+		TokenScope:          TokenScopeUnavailable,
+	}
+	if scopeHeader != "" {
+		result.TokenScope = TokenScopeAvailable
+		result.TokenScopes = splitAndTrim(scopeHeader, ",")
+	}
+	for _, rule := range rules {
+		switch rule.Type {
+		case "merge_queue":
+			result.MergeQueuePolicy = MergePolicyMergeQueue
+		case "required_status_checks":
+			var parameters githubRequiredStatusChecksParameters
+			if len(rule.Parameters) > 0 {
+				if err := json.Unmarshal(rule.Parameters, &parameters); err != nil {
+					return RepoPolicyResult{}, fmt.Errorf("decode required_status_checks rule: %w", err)
+				}
+			}
+			for _, check := range parameters.RequiredStatusChecks {
+				if check.Context != "" {
+					result.RequiredStatusChecks = append(result.RequiredStatusChecks, check.Context)
+				}
+			}
+		}
+	}
+	sort.Strings(result.RequiredStatusChecks)
+	return result, nil
+}
+
+func splitAndTrim(value, sep string) []string {
+	var out []string
+	for _, part := range strings.Split(value, sep) {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // enqueuePullRequestLookupQuery resolves the GraphQL node ID the enqueue
@@ -1947,13 +2033,34 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		values.Set("sort", "created")
 		values.Set("direction", "asc")
 	}
-	if req.Page > 0 {
-		// An explicit Page means the caller drives pagination itself: honor it
-		// as a single-page read (its own per_page, no Link following).
-		if req.Limit > 0 {
-			values.Set("per_page", strconv.Itoa(req.Limit))
+	pageSize := 30
+	if req.Limit > 0 {
+		pageSize = min(req.Limit, 100)
+		values.Set("per_page", strconv.Itoa(pageSize))
+	}
+	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
+	if callerPaged {
+		// Page/Cursor means the caller drives pagination itself: honor it as a
+		// single-page read (its own per_page, no Link following).
+		page := req.Page
+		offset := 0
+		if page < 1 {
+			page = 1
+		} else {
+			offset = (page - 1) * pageSize
 		}
-		values.Set("page", strconv.Itoa(req.Page))
+		if req.Cursor != "" {
+			offset, err = strconv.Atoi(req.Cursor)
+			if err != nil || offset < 0 {
+				return nil, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
+			}
+			for pageSize > 1 && offset%pageSize != 0 {
+				pageSize--
+			}
+			values.Set("per_page", strconv.Itoa(pageSize))
+			page = offset/pageSize + 1
+		}
+		values.Set("page", strconv.Itoa(page))
 		endpoint, err = addQuery(endpoint, values)
 		if err != nil {
 			return nil, err
@@ -1962,17 +2069,25 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
 		}
-		return issuesToWorkItems(issues, req.Limit), nil
+		if req.PageInfo != nil {
+			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.HasNext = len(issues) == pageSize
+			req.PageInfo.NextCursor = ""
+			if req.PageInfo.HasNext {
+				req.PageInfo.NextCursor = strconv.Itoa(offset + len(issues))
+			}
+		}
+		return issuesToWorkItems(issues, req)
 	}
 
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
 	}
-	// Follow pagination and accumulate up to Limit NON-PR items. The issues
-	// endpoint also returns pull requests (excluded — PRs are the repo
-	// provider's surface, #13); filtering them out of a single Limit-sized page
-	// silently returned fewer than Limit real issues (#139).
+	// Preserve the legacy contract for ordinary calls: Limit counts returned
+	// issues, not raw records from GitHub's mixed issues-and-pull-requests API.
+	// Callers that need a bounded raw scan opt into the PageInfo/Cursor path
+	// above.
 	var items []WorkItem
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var issues []githubIssue
@@ -1983,7 +2098,15 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			if issue.PullRequest != nil {
 				continue
 			}
-			items = append(items, mapGitHubIssue(issue))
+			item := mapGitHubIssue(issue)
+			matched, err := req.MatchesLabelPredicate(item.Labels)
+			if err != nil {
+				return err
+			}
+			if !matched {
+				continue
+			}
+			items = append(items, item)
 			if req.Limit > 0 && len(items) >= req.Limit {
 				return errStopPaging
 			}
@@ -1997,18 +2120,26 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 
 // issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
 // requests, and truncates to limit (0 = no cap).
-func issuesToWorkItems(issues []githubIssue, limit int) []WorkItem {
+func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
 	items := make([]WorkItem, 0, len(issues))
 	for _, issue := range issues {
 		if issue.PullRequest != nil {
 			continue
 		}
-		items = append(items, mapGitHubIssue(issue))
-		if limit > 0 && len(items) >= limit {
+		item := mapGitHubIssue(issue)
+		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		items = append(items, item)
+		if req.Limit > 0 && len(items) >= req.Limit {
 			break
 		}
 	}
-	return items
+	return items, nil
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.
@@ -2647,10 +2778,48 @@ type githubMergeResult struct {
 
 // githubBranchRule is one entry in GET .../rules/branches/{branch}'s
 // response array — every ruleset rule that actually applies to the branch.
-// Only Type is read (DetectMergePolicy checks for "merge_queue"); the
-// per-type Parameters shape varies by rule and is not modeled here.
+// DetectMergePolicy only reads Type ("merge_queue"); GetRepoPolicy also
+// decodes Parameters for the "required_status_checks" rule type into
+// githubRequiredStatusChecksParameters. Other rule types' Parameters shapes
+// are not modeled here.
 type githubBranchRule struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+}
+
+// githubRequiredStatusChecksParameters is the Parameters shape of a
+// "required_status_checks" branch rule.
+type githubRequiredStatusChecksParameters struct {
+	RequiredStatusChecks []struct {
+		Context string `json:"context"`
+	} `json:"required_status_checks"`
+}
+
+// githubRepoDetail is the subset of GET .../repos/{owner}/{repo} GetRepoPolicy
+// reads: the repo-level flags controlling which merge methods a pull request
+// may use. GitHub does not model "the required method" directly — a repo
+// that allows exactly one of these is, in effect, requiring it (the
+// squash-only scenario #877/#916 cite).
+type githubRepoDetail struct {
+	AllowMergeCommit bool `json:"allow_merge_commit"`
+	AllowSquashMerge bool `json:"allow_squash_merge"`
+	AllowRebaseMerge bool `json:"allow_rebase_merge"`
+}
+
+// allowedMergeMethods lists every merge method d's repo currently permits, in
+// a stable merge/squash/rebase order.
+func (d githubRepoDetail) allowedMergeMethods() []MergeMethod {
+	var methods []MergeMethod
+	if d.AllowMergeCommit {
+		methods = append(methods, MergeMethodMerge)
+	}
+	if d.AllowSquashMerge {
+		methods = append(methods, MergeMethodSquash)
+	}
+	if d.AllowRebaseMerge {
+		methods = append(methods, MergeMethodRebase)
+	}
+	return methods
 }
 
 type githubPullRequestFile struct {

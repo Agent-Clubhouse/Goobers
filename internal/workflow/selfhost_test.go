@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -340,9 +341,41 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 	for _, task := range tutor.Spec.Tasks {
 		tasks[task.Name] = task
 	}
-	if got := tasks["draft-change"].Next; got != "validate-config" {
-		t.Fatalf("draft-change next = %q, want validate-config", got)
+	if got := tasks["draft-change"].Next; got != "gate-removal-guard" {
+		t.Fatalf("draft-change next = %q, want gate-removal-guard", got)
 	}
+	guardTask, ok := tasks["gate-removal-guard"]
+	if !ok {
+		t.Fatal("tutor workflow has no gate-removal-guard task")
+	}
+	if guardTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("gate-removal-guard type = %q, want deterministic", guardTask.Type)
+	}
+	if guardTask.Run == nil || len(guardTask.Run.Command) != 2 ||
+		guardTask.Run.Command[0] != "goobers" || guardTask.Run.Command[1] != "gate-removal-guard" {
+		t.Fatalf("gate-removal-guard run = %+v, want the gate-removal-guard command", guardTask.Run)
+	}
+	if guardTask.Next != "gate-removal-clear" {
+		t.Fatalf("gate-removal-guard next = %q, want gate-removal-clear", guardTask.Next)
+	}
+
+	var sawGateRemovalClear bool
+	for _, gate := range tutor.Spec.Gates {
+		if gate.Name != "gate-removal-clear" {
+			continue
+		}
+		sawGateRemovalClear = true
+		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
+			t.Fatalf("gate-removal-clear evaluator = %+v, want automated status-equals", gate)
+		}
+		if gate.Branches["pass"] != "validate-config" || gate.Branches["fail"] != "@abort" {
+			t.Fatalf("gate-removal-clear branches = %v, want pass->validate-config and fail->@abort", gate.Branches)
+		}
+	}
+	if !sawGateRemovalClear {
+		t.Fatal("tutor workflow has no gate-removal-clear gate")
+	}
+
 	validateTask, ok := tasks["validate-config"]
 	if !ok {
 		t.Fatal("tutor workflow has no validate-config task")
@@ -362,17 +395,158 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 		t.Fatalf("validate-config next = %q, want config-valid", validateTask.Next)
 	}
 
+	gates := make(map[string]apiv1.Gate, len(tutor.Spec.Gates))
 	for _, gate := range tutor.Spec.Gates {
-		if gate.Name != "config-valid" {
+		gates[gate.Name] = gate
+	}
+	configValid, ok := gates["config-valid"]
+	if !ok {
+		t.Fatal("tutor workflow has no config-valid gate")
+	}
+	if configValid.Evaluator != apiv1.EvaluatorAutomated || configValid.Automated == nil || configValid.Automated.Check != "status-equals" {
+		t.Fatalf("config-valid evaluator = %+v, want automated status-equals", configValid)
+	}
+	if configValid.Branches["pass"] != "check-fail-first" || configValid.Branches["fail"] != "@abort" {
+		t.Fatalf("config-valid branches = %v, want pass->check-fail-first and fail->@abort", configValid.Branches)
+	}
+}
+
+// TestSelfhostTutorEnforcesFailFirst is TUT-A2's (#1214) config-side
+// counterpart to TestSelfhostTutorValidatesBeforePush: the tutor workflow must
+// mechanically gate on `goobers check-fail-first` between config-valid and
+// push-branch, not merely document the fail-first contract in prose.
+func TestSelfhostTutorEnforcesFailFirst(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(tutor.Spec.Tasks))
+	for _, task := range tutor.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	checkTask, ok := tasks["check-fail-first"]
+	if !ok {
+		t.Fatal("tutor workflow has no check-fail-first task")
+	}
+	if checkTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("check-fail-first type = %q, want deterministic", checkTask.Type)
+	}
+	if checkTask.Run == nil || len(checkTask.Run.Command) != 2 ||
+		checkTask.Run.Command[0] != "goobers" || checkTask.Run.Command[1] != "check-fail-first" {
+		t.Fatalf("check-fail-first run = %+v, want [\"goobers\", \"check-fail-first\"]", checkTask.Run)
+	}
+	if checkTask.Next != "fail-first-valid" {
+		t.Fatalf("check-fail-first next = %q, want fail-first-valid", checkTask.Next)
+	}
+
+	gates := make(map[string]apiv1.Gate, len(tutor.Spec.Gates))
+	for _, gate := range tutor.Spec.Gates {
+		gates[gate.Name] = gate
+	}
+	failFirstValid, ok := gates["fail-first-valid"]
+	if !ok {
+		t.Fatal("tutor workflow has no fail-first-valid gate")
+	}
+	if failFirstValid.Evaluator != apiv1.EvaluatorAutomated || failFirstValid.Automated == nil || failFirstValid.Automated.Check != "status-equals" {
+		t.Fatalf("fail-first-valid evaluator = %+v, want automated status-equals", failFirstValid)
+	}
+	if failFirstValid.Branches["pass"] != "push-branch" || failFirstValid.Branches["fail"] != "@abort" {
+		t.Fatalf("fail-first-valid branches = %v, want pass->push-branch and fail->@abort", failFirstValid.Branches)
+	}
+}
+
+// TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites is TUT-A4's
+// contract guard: the tutor's topology tier must be explicit in the
+// workflow definition, and its write boundary must be scoped to this
+// gaggle's own config subtree, not the whole (potentially multi-gaggle)
+// selfhost instance config — the hard silo, applied to the one shipped
+// tutor definition. TUT-A5/#1217 widened the single configRoot boundary to
+// the per-target-action-root boundary (confineToActionRoots/actionRoots,
+// exclusive across roots) so the tutor can also author skill bodies; this
+// still must include the gaggle-scoped config root, not the whole selfhost
+// instance config.
+func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+
+	if tutor.Spec.TutorScope == nil {
+		t.Fatal("tutor workflow has no spec.tutorScope; per-workflow vs per-gaggle scope must be explicit (TUT-A4)")
+	}
+	if tutor.Spec.TutorScope.Tier != apiv1.TutorScopePerGaggle {
+		t.Fatalf("tutorScope.tier = %q, want %q", tutor.Spec.TutorScope.Tier, apiv1.TutorScopePerGaggle)
+	}
+	if tutor.Spec.TutorScope.Target != "" {
+		t.Fatalf("tutorScope.target = %q, want empty for tier %q", tutor.Spec.TutorScope.Target, apiv1.TutorScopePerGaggle)
+	}
+
+	for _, task := range tutor.Spec.Tasks {
+		if task.Name != "open-pr" {
 			continue
 		}
-		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
-			t.Fatalf("config-valid evaluator = %+v, want automated status-equals", gate)
+		if task.Inputs["confineToActionRoots"] != "true" {
+			t.Fatalf("open-pr confineToActionRoots = %q, want %q", task.Inputs["confineToActionRoots"], "true")
 		}
-		if gate.Branches["pass"] != "push-branch" || gate.Branches["fail"] != "@abort" {
-			t.Fatalf("config-valid branches = %v, want pass->push-branch and fail->@abort", gate.Branches)
+		wantRoot := "selfhost/gaggles/" + tutor.Spec.Gaggle
+		found := false
+		for _, root := range strings.Split(task.Inputs["actionRoots"], ",") {
+			if strings.TrimSpace(root) == wantRoot {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("open-pr actionRoots = %q, want it to include %q (gaggle-scoped, not the whole selfhost instance config)", task.Inputs["actionRoots"], wantRoot)
 		}
 		return
 	}
-	t.Fatal("tutor workflow has no config-valid gate")
+	t.Fatal("tutor workflow has no open-pr task")
+}
+
+func TestSelfhostTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+	if tutor.Spec.Start != "verify-live-holdouts" {
+		t.Fatalf("start = %q, want verify-live-holdouts", tutor.Spec.Start)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(tutor.Spec.Tasks))
+	for _, task := range tutor.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	verify := tasks["verify-live-holdouts"]
+	if verify.Run == nil || strings.Join(verify.Run.Command, " ") !=
+		"goobers telemetry-query --format tutor-live-verification --window 168h" {
+		t.Fatalf("verify-live-holdouts run = %+v", verify.Run)
+	}
+	if verify.Inputs["resultFile"] != "tutor-live-verification.json" || verify.Next != "gather-signals" {
+		t.Fatalf("verify-live-holdouts = %+v", verify)
+	}
+	if !slices.Contains(verify.Capabilities, "github:pr:write") {
+		t.Fatalf("verify-live-holdouts capabilities = %v, want GitHub PR polling grant", verify.Capabilities)
+	}
+	openPR := tasks["open-pr"]
+	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "selfhost" {
+		t.Fatalf("open-pr live-verification inputs = %v", openPR.Inputs)
+	}
 }

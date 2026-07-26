@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -180,6 +180,169 @@ describe("run detail", () => {
     );
   });
 
+  it("synchronizes graph, journal, and inspector when a replay chapter is selected", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.["01JZ455ESCALATE"];
+    const stageStart = eventList?.events.find((event) => event.seq === 2);
+    if (!stageStart) {
+      throw new Error("Expected completed run stage chapter.");
+    }
+    stageStart.category = "transition";
+    stageStart.replayChapter = true;
+    renderRun("01JZ455ESCALATE", new FixtureDaemonClient(fixtures));
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Go to Workflow transition chapter at event 2: Stage started/,
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: /^Select sequence 2:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("complementary", { name: "query attempt inspector" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+
+    await user.click(within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }));
+
+    expect(fullscreenRoot).toHaveClass("workflow-graph-shell-expanded");
+    expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
+    expect(fullscreenRoot).toHaveAttribute("role", "dialog");
+    const replayControls = within(fullscreenRoot).getByRole("region", {
+      name: "Replay controls",
+    });
+    const scrubber = within(replayControls).getByRole("slider", {
+      name: "Scrub replay timeline",
+    });
+    const lastReplayControl = within(replayControls).getByRole("button", {
+      name: "Set playback speed to 10×",
+    });
+    const inspector = within(fullscreenRoot).getByRole("complementary", {
+      name: /attempt inspector/,
+    });
+    expect(replayControls).toBeInTheDocument();
+    expect(scrubber).toBeInTheDocument();
+    expect(inspector).toBeInTheDocument();
+    expect(
+      within(fullscreenRoot).queryByRole("heading", { name: "Event ledger" }),
+    ).not.toBeInTheDocument();
+
+    inspector.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(
+      within(fullscreenRoot).getByRole("button", { name: "Zoom out" }),
+    ).toHaveFocus();
+
+    inspector.focus();
+    expect(inspector).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(lastReplayControl).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(fullscreenRoot).not.toHaveClass("workflow-graph-shell-expanded");
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toHaveFocus();
+  });
+
+  it("requests native fullscreen for the complete run graph workspace", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+    const fullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const exitFullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    let fullscreenElement: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    const requestFullscreen = vi.fn(async () => {
+      fullscreenElement = fullscreenRoot;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(fullscreenRoot, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+
+    try {
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "native"),
+      );
+      expect(requestFullscreen).toHaveBeenCalledOnce();
+      expect(
+        within(fullscreenRoot).getByRole("region", { name: "Replay controls" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Exit fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "none"),
+      );
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    } finally {
+      if (fullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "fullscreenElement",
+          fullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "fullscreenElement");
+      }
+      if (exitFullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "exitFullscreen",
+          exitFullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "exitFullscreen");
+      }
+    }
+  });
+
   it("follows appended live events without overwriting a historical selection", async () => {
     vi.useFakeTimers();
     const runId = "01JZ441DAEMONAPI";
@@ -330,6 +493,7 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+    expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 });
