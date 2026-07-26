@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunEvent } from "../api/types";
@@ -158,6 +158,39 @@ describe("replay scrubber", () => {
     chapter.focus();
     expect(chapter).toHaveFocus();
     expect(chapter).toHaveAttribute("aria-current", "step");
+  });
+
+  it("provides a collapsed, accessible key for every chapter marker", () => {
+    render(
+      <Harness
+        events={[ev(1, "2026-01-01T00:00:00Z")]}
+        initial={1}
+        terminal
+      />,
+    );
+
+    const summary = screen.getByText("Chapter key");
+    const disclosure = summary.closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+
+    const key = screen.getByRole("list", { name: "Chapter marker key" });
+    for (const [glyph, label] of [
+      ["●", "Workflow transition"],
+      ["◆", "Gate decision"],
+      ["!", "Failure"],
+      ["↑", "Escalation"],
+      ["↗", "External result"],
+      ["■", "Terminal outcome"],
+    ]) {
+      const item = within(key).getByText(label).closest("li");
+      if (!item) {
+        throw new Error(`Missing legend item for ${label}`);
+      }
+      expect(within(item).getByText(glyph)).toHaveAttribute("aria-hidden", "true");
+    }
   });
 
   it("discloses and exposes each compressed idle period for inspection", () => {

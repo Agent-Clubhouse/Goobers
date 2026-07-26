@@ -3044,6 +3044,85 @@ a.telemetry-error-row:hover {
   gap: 6px;
 }
 
+.playback-options {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.chapter-legend {
+  position: relative;
+}
+
+.chapter-legend > summary {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: flex;
+  font-size: 9px;
+  font-weight: 700;
+  height: 26px;
+  list-style: none;
+  padding: 0 8px;
+}
+
+.chapter-legend > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chapter-legend > summary::after {
+  content: "▾";
+  font-size: 8px;
+  margin-left: 6px;
+}
+
+.chapter-legend[open] > summary {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-ink);
+}
+
+.chapter-legend[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.chapter-legend-list {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  bottom: calc(100% + 7px);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 16%, transparent);
+  display: none;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  min-width: 170px;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  z-index: 10;
+}
+
+.chapter-legend[open] .chapter-legend-list {
+  display: grid;
+}
+
+.chapter-legend-list li {
+  align-items: center;
+  color: var(--active);
+  display: grid;
+  font-size: 9px;
+  font-weight: 650;
+  gap: 8px;
+  grid-template-columns: 17px 1fr;
+  white-space: nowrap;
+}
+
 .play-button,
 .step-button {
   align-items: center;
