@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
