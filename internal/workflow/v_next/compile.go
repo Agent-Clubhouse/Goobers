@@ -198,6 +198,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
+	problems = append(problems, dottedStateNameProblems(def)...)
 	problems = append(problems, parallelProblems(m)...)
 
 	if len(problems) > 0 {

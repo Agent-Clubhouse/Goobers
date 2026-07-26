@@ -20,6 +20,8 @@ Usage:
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|materialize|diff [flags] [path]
                                 inspect, materialize, or compare instance configuration
+  goobers speech preflight|test [--json] [path]
+                                preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -144,6 +146,8 @@ Usage:
                                 preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md
   goobers config show|materialize|diff [flags] [path]
                                 inspect, materialize, or compare instance configuration
+  goobers speech preflight|test [--json] [path]
+                                preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers service install|uninstall|status [path]
@@ -1226,6 +1230,32 @@ none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for
 mixed outcomes; successful submission-only modes exit 0 because they do
 not observe a terminal phase.
+
+### speech
+Usage: goobers speech <command> [flags] [path]
+
+Check and test the configured local speech notification sink without cloud
+credentials. Both commands work while speech.enabled is false so audio can
+be verified before monitoring is enabled.
+
+Commands:
+  preflight  report the selected engine and local prerequisites without sound
+  test       speak the fixed Goobers readiness phrase
+
+### speech preflight
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+
+### speech test
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
 
 ### stats
 Usage: goobers stats [--since <duration>] [--json] [path]

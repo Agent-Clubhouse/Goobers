@@ -180,7 +180,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// keyed by digest, so many runs feeding it is fine.
 	sharedReg := journal.NewRegistryScrubber()
 	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
-	terminalNotifier := buildTerminalNotifier(l, cfg, sharedScrubber, options)
+	terminalNotifier, err := buildTerminalNotifier(ctx, l, cfg, sharedScrubber, options)
+	if err != nil {
+		return nil, err
+	}
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB

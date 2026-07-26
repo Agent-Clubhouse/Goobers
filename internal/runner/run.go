@@ -755,9 +755,13 @@ type baseSyncConflictArtifact struct {
 // (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
 // provenance across a resume without duplicating ref.touched.
 type walkSeed struct {
-	pointers        []apiv1.ContextPointer
-	lastStage       string
-	lastResult      apiv1.ResultEnvelope
+	pointers   []apiv1.ContextPointer
+	lastStage  string
+	lastResult apiv1.ResultEnvelope
+	// stageOutputs is every completed stage's journaled Outputs, so a
+	// stage-qualified inputsFrom reference can reach past the immediately
+	// preceding stage (#562).
+	stageOutputs    stageOutputs
 	workspaceBranch string
 	branchRecorded  bool
 	humanDecision   *HumanGateDecision
@@ -910,6 +914,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
 	lastStage := seed.lastStage
 	lastResult := seed.lastResult
+	completed := seed.stageOutputs
+	if completed == nil {
+		completed = stageOutputs{}
+	}
 	// The branch every stage's worktree is provisioned against, rebindable
 	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
 	// "the run's own branch", resolved per stage in createStageWorkspace.
@@ -1127,7 +1135,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if resumedResult != nil {
 				result = *resumedResult
 			} else {
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, pointers, lastResult, completed, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -1140,6 +1148,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
+			completed.record(t.Name, result.Outputs)
 			// Sticky for the rest of the run, and only ever set by a stage
 			// that actually emitted the key — see WorkspaceBranchOutput. This
 			// runs AFTER the stage that emits it, so that stage itself still
@@ -2126,7 +2135,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -2210,7 +2219,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, int(attempt), class, attemptAddendum, span, workspaceBranch)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2457,7 +2466,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -2539,9 +2548,10 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	}
 
 	for inputKey, outputKey := range t.InputsFrom {
-		v, ok := upstreamResult.Outputs[outputKey]
+		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
+		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
 		if !ok {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey), nil
+			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
 		}
 		env.Inputs[inputKey] = v
 	}
