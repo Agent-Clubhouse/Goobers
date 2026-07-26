@@ -13,6 +13,11 @@ milestone. Live Copilot CLI/agentic parity remains the independent
 [#647 Tier 2](https://github.com/Agent-Clubhouse/Goobers/issues/647) scope and is
 not a blocker to using deterministic workflows on Windows.
 
+Workflows that require the full Linux isolation posture can run through WSL 2
+instead of weakening `network: none` or agentic-stage confinement. Goobers
+provides an explicit readiness check and handoff for that route; see
+[Full isolation through WSL 2](#full-isolation-through-wsl-2).
+
 ## Validated environment and evidence
 
 The `windows gate (build · vet · runtime smoke)` job in
@@ -192,6 +197,69 @@ goobers trace <run-id> C:\goobers\my-instance
 The credential-free fake-harness path is the source-level validation command in
 [Validated environment and evidence](#validated-environment-and-evidence);
 `goobers init --demo` remains limited to hosts with native network isolation.
+
+## Full isolation through WSL 2
+
+Use this route for agentic workflows or any workload that must retain enforced
+network isolation. It is an alternative execution substrate, not a relaxation
+of the native-Windows policy.
+
+Goobers considers a WSL environment ready only when all of these checks pass:
+
+1. `wsl.exe` can start the selected (or default) installed distro.
+2. The distro is running under **WSL 2**. WSL 1 is rejected because it does not
+   provide the Linux namespace behavior this route requires.
+3. A Linux build of `goobers` and `bwrap` (Bubblewrap) are on the distro's
+   `PATH`.
+4. The Linux Goobers binary can execute the same unprivileged user + network
+   namespace path used by `network: none`, and Bubblewrap can start the
+   agentic-stage filesystem/PID sandbox. These are real execution probes rather
+   than inferences from configuration files.
+
+Install WSL and a distro from an elevated PowerShell if needed:
+
+```powershell
+wsl.exe --install -d Ubuntu-24.04
+```
+
+Inside that distro, install Bubblewrap plus the Linux Goobers build and the
+workflow's Linux-side dependencies (Git, Copilot CLI, language toolchains).
+For Ubuntu/Debian:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes bubblewrap git
+# Install the goobers Linux release binary on PATH, then:
+goobers --version
+```
+
+Back in PowerShell, check the default distro or select one explicitly:
+
+```powershell
+goobers preflight
+goobers preflight --distro Ubuntu-24.04
+```
+
+The check fails closed and prints remediation for a missing distro, WSL 1,
+missing Linux binary/Bubblewrap, or blocked namespaces. When it reports ready,
+hand off a command by placing its normal Goobers arguments after `--`:
+
+```powershell
+Set-Location C:\goobers
+goobers preflight --distro Ubuntu-24.04 --launch-wsl -- init my-instance
+goobers preflight --distro Ubuntu-24.04 --launch-wsl -- run implementation my-instance
+goobers preflight --distro Ubuntu-24.04 --launch-wsl -- up my-instance
+```
+
+The handoff maps the current Windows directory as the WSL working directory,
+loads the distro user's login environment, and then replaces that shell with
+the discovered Linux `goobers` binary. Forwarded arguments are positional (not
+evaluated as shell text), the terminal remains attached, and the child
+command's exit code is preserved. Use paths relative to that working directory,
+as above, or Linux paths. Build and configure the instance through the WSL
+route; Windows absolute paths stored inside configuration are not Linux paths.
+Credentials and tool installations must also be available to the distro user
+rather than relying on the native Windows process environment.
 
 ## 7. Run the daemon in the foreground
 
