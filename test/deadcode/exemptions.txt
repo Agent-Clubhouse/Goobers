@@ -41,6 +41,10 @@ github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conforma
 github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
+github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Utterances # Sound-free speech adapter accessor retained for deterministic cross-package notification assertions.
 github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.

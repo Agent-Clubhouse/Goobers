@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SPEECH PREFLIGHT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers speech preflight \- check the configured local speech engine without emitting sound
+.SH SYNOPSIS
+\fBgoobers speech preflight\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers speech preflight [--json] [path]
+
+Report the selected engine and executable, effective voice, language, and
+rate, plus the required local audio session. This command emits no sound.
+Exit codes: 0 = available, 1 = unavailable or invalid config, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers speech preflight
+goobers speech preflight --json ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

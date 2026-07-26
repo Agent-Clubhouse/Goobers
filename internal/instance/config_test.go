@@ -48,6 +48,13 @@ retention:
   maxRetainedWorktreeBytes: 1048576
   retainedWorktreeMaxAge: 72h
 notifications: true
+speech:
+  enabled: true
+  engine: say
+  voice: Samantha
+  language: en-US
+  rate: 210
+  timeout: 8s
 `)
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -85,14 +92,39 @@ notifications: true
 	if !cfg.Notifications {
 		t.Fatal("expected notifications to be enabled")
 	}
+	if cfg.Speech == nil || !cfg.Speech.Enabled || cfg.Speech.Engine != "say" || cfg.Speech.Voice != "Samantha" ||
+		cfg.Speech.Language != "en-US" || cfg.Speech.Rate != 210 || cfg.Speech.Timeout != "8s" {
+		t.Fatalf("unexpected speech config: %+v", cfg.Speech)
+	}
 	if !cfg.Retention.Enabled || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
 		t.Fatalf("unexpected retention config: %+v", cfg.Retention)
 	}
+
 	if got, err := cfg.Retention.RetainedWorktreeMaxAgeDuration(); err != nil || got != 72*time.Hour {
 		t.Fatalf("RetainedWorktreeMaxAgeDuration = %s, %v; want 72h", got, err)
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestLoadConfigRejectsInvalidSpeechConfig(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+speech:
+  enabled: true
+  engine: shell
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `speech: engine "shell" is not supported`) {
+		t.Fatalf("LoadConfig error = %v", err)
 	}
 }
 
