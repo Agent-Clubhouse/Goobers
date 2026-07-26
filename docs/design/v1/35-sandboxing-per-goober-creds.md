@@ -8,11 +8,12 @@
 > each link back to the correspondingly-named section here. This is the most
 > security-sensitive epic in the pass; fail-closed is the rule throughout.
 >
-> Progress (2026-07-23): S1 per-goober credential scoping **shipped** (#823); S0
+> Progress (2026-07-26): S1 per-goober credential scoping **shipped** (#823); S0
 > sandbox mechanism **decided**
 > ([ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md)) with the native
-> implementation landed (`internal/sandbox`, darwin + linux); S2–S4
-> (executor/harness wiring and enforcement rollout) in progress/open.
+> implementation landed (`internal/sandbox`, darwin + linux); the initial Windows
+> posture is decided as the explicitly logged W0 rung (§3.1, #651), with implementation
+> deferred; S2–S4 (executor/harness wiring and enforcement rollout) are in progress/open.
 
 ## 1. Verdict
 
@@ -26,20 +27,22 @@ is materialized for an undeclared capability. What's missing is **isolation rung
 - **Sandboxed agentic execution (SEC-044) is unbuilt.** [`internal/harness/copilot.go`](../../../internal/harness/copilot.go)
   runs `copilot` as a bare subprocess and explicitly notes isolation is "deferred to V1."
 - **The sandbox mechanism is resolved (SEC-Q6):** OS-native Seatbelt on macOS and
-  bubblewrap on Linux, with containers deferred. See
+  bubblewrap on Linux, with containers deferred. Windows initially uses a named,
+  unsandboxed-with-warning W0 posture, not an implicit omission (§3.1). See
   [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md). The S0 spike established the
   seam and residual risks before the implementation missions became dispatchable.
 
 ## 2. Scope boundary
 
 **In scope (V1, tiers 1–2):** per-goober credential injection; a sandbox for agentic
-stages confining the subprocess filesystem to its stage worktree; egress posture
-documented (and enforced where the chosen mechanism makes it cheap); fail-closed when the
-sandbox is unavailable.
+stages on macOS/Linux confining the subprocess filesystem to its stage worktree; a stated,
+observable Windows posture; egress posture documented (and enforced where the chosen
+mechanism makes it cheap); fail-closed when a configured sandbox is unavailable.
 
 **Out of scope — V2 (do NOT build):** tier-3 namespace/pod isolation, network-policy
 egress enforcement (SEC-Q5 is resolved as tier-3/V2), Key Vault/managed identity (that's
-the #38 secret-resolver seam).
+the #38 secret-resolver seam). A Windows sandbox implementation is also out of scope for
+the #651 design decision.
 
 ## 3. The SEC-Q6 sandbox mechanism decision (spike S0)
 
@@ -59,6 +62,102 @@ container deferred. S0 validated this against a real `copilot -p` run on macOS
 (auth still works with a fresh in-worktree `COPILOT_HOME` and no
 out-of-worktree writable roots) and recorded the decision and residual risks in
 [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md).
+
+### 3.1 Windows isolation ladder (#651)
+
+Windows needs an explicit ladder even before it has a sandbox implementation. Otherwise
+the absence of a Seatbelt/bubblewrap equivalent silently grants a stage all of the daemon
+user's authority. The Windows rungs, from weakest to strongest, are:
+
+| Rung | Mechanism | Filesystem guarantee | Network guarantee | Process spawning | Cost and harness-compatibility risk |
+|---|---|---|---|---|---|
+| **W0** | **Explicitly unsandboxed with warning** | None beyond the daemon user's normal ACLs. The worktree is an organizational workspace, not an authority boundary; a stage can read and write anything the daemon user can. | None. The stage has the host user's network reachability. A separate `run.network: none` request keeps its existing fail-closed or explicit trusted-local override contract; W0 itself does not satisfy it. | Children run with the daemon user's token. A Job Object still owns the tree's lifetime, but does not reduce its authority. | Lowest cost and no additional CLI compatibility risk. Highest security risk, so it is trusted-local-only, visibly warned, and recorded for every attempt. |
+| **W1** | **Restricted token (`CreateRestrictedToken`) plus low-integrity level** | Removes selected SIDs/privileges and prevents writes to medium/high-integrity objects. The worktree and required runtime roots need narrowly-scoped DACL and mandatory-label grants. It is a write-restriction rung, not broad read confinement: normal DACL-readable host files can remain readable. | None; a restricted token is not a network broker. Network credentials available to the token may still be used. | Descendants inherit the restricted/low-integrity token unless a separate privileged broker creates them. They also remain in the stage Job Object. | Moderate implementation and ACL-cleanup cost. Copilot/Node profile, temp, credential-store, and updater behavior under low integrity is unverified; an in-worktree `COPILOT_HOME` may help state writes but does not prove authentication works. |
+| **W2** | **AppContainer** | Capability-SID boundary: no ambient access to arbitrary filesystem objects; only the profile and paths explicitly granted to the AppContainer SID (worktree, selected runtime roots, and narrow git roots) are available. Grants must be removed when the disposable workspace is reaped. | Network is denied unless explicit AppContainer network capabilities are granted, so this rung can broker egress rather than merely document it. The Copilot service endpoints still require an intentionally granted network capability. | Child processes must remain in the same AppContainer/lowbox token and the stage Job Object. Launches that require an unsandboxed broker are outside the rung and must fail rather than escape. | High setup and cleanup cost: profile/SID lifecycle, per-worktree ACLs, runtime dependency access, and credential brokering. Arbitrary Win32/Node CLIs are known compatibility risks; Copilot CLI install, auth, subprocesses, and updates all require native-Windows proof. |
+| **W3** | **Container-only (process-isolated Windows container)** | Container image plus explicit workspace/runtime mounts isolates the host filesystem; only mounted paths are shared. This is the strongest listed filesystem boundary when the host/image contract is correctly configured. | Container networking can apply an explicit egress policy; no claim is made until that policy is configured and tested. | Descendants remain in the container. A Job Object (inside the worker or at the container-host boundary) still supplies stage cancellation and cleanup; container teardown is additional defense, not a substitute for runner lifecycle semantics. | Highest operational cost: compatible Windows host/base-image versions, image lifecycle, workspace mounts, and explicit Copilot authentication forwarding. It fits tier-3 workers; under this option local Windows daemons remain explicitly at W0. |
+
+**Initial Windows decision: W0.** The exact operator-facing posture is:
+**"none yet — trusted local only, logged."** Deterministic and, if #647 permits them,
+agentic stages execute with the daemon user's filesystem and network authority. Existing
+capability admission and credential non-injection still limit which credentials Goobers
+materializes, but they do not constrain what the subprocess can do with the user's ambient
+authority.
+
+W0 is a named Windows policy, not an automatic downgrade. A node must advertise/select
+that posture explicitly and warn before dispatch. If W1, W2, or W3 is configured but
+cannot be established, execution fails closed; the runner never falls back to W0. This
+preserves S0's unavailable-mechanism rule while allowing the curated Windows honest floor
+to be represented deliberately. W1 is the next practical hardening spike, W2 is the
+preferred local authority boundary if harness compatibility and ACL lifecycle prove
+tractable, and W3 is reserved for containerized tier-3 workers.
+
+### 3.2 Job Objects: lifetime is not authority
+
+P2 (#623) supplies process-tree **lifetime control** on Windows: descendants are assigned
+to a Job Object so cancellation, timeout, daemon failure, and explicit termination reap
+the whole tree. It does not sandbox filesystem or network access and does not make W0 a
+restricted posture.
+
+Every Windows rung composes both mechanisms:
+
+1. Create the child with the rung's authority token/boundary (daemon token for W0,
+   restricted token for W1, AppContainer token for W2, or the container boundary for W3).
+2. Assign it to the stage Job Object before it can run and spawn unowned descendants.
+3. Resume it only after both setup steps succeed. Authority setup failure and Job Object
+   assignment failure both fail closed.
+
+The `internal/sandbox.Sandbox` seam continues to own authority confinement while
+`internal/platform/proc` owns start, wait, cancel, and tree termination. Neither layer may
+swallow or replace the other's guarantees.
+
+### 3.3 P10 harness verdict and degradation rule
+
+As of 2026-07-26, P10 (#647) has **no final compatibility verdict**. Its earlier
+`NATIVE_WINDOWS_UNAVAILABLE` escalation was superseded by the decision to use a
+GitHub-hosted `windows-latest` runner, but the unauthenticated mechanics and authenticated
+Copilot probes have not yet produced the required findings document. Windows is therefore
+supported for deterministic workloads; agentic support remains provisional.
+
+The P10 result is consumed as follows:
+
+- If Copilot CLI is supported (with or without documented caveats) when run bare under
+  the Job Object model, trusted-local nodes may run agentic stages at W0 with the same
+  warning and journal record as deterministic stages.
+- If Copilot CLI cannot run on Windows at all, Windows remains deterministic-only.
+  Admission rejects or routes agentic stages before launch; it must not invoke a broken
+  harness or report W0 as successful isolation.
+- If the harness runs at W0 but fails a future W1/W2 probe, that stronger rung is
+  unavailable for agentic stages. The runner may use W0 only when the node explicitly
+  selected the trusted-local policy; otherwise it blocks or routes the stage. It never
+  silently drops from a configured stronger rung.
+
+### 3.4 Observable posture
+
+Each Windows stage attempt, deterministic or agentic, records one
+`runner.isolation.posture` event before its subprocess starts. This existing
+runner-namespaced event is excluded from cross-runner conformance but remains part of the
+append-only run journal. Its `runner` payload records at least:
+
+```json
+{
+  "platform": "windows",
+  "posture": "unsandboxed-warning",
+  "mechanism": "none",
+  "authority": "daemon-user",
+  "filesystem": "ambient",
+  "network": "ambient",
+  "lifetime": "job-object",
+  "trustedLocalOnly": true
+}
+```
+
+The `stage` and `attempt` event fields identify the execution. W1–W3 replace `posture`,
+`mechanism`, and the effective filesystem/network values with the boundary actually
+established. The event describes effective state, not requested configuration. Failure to
+write it blocks launch, and operator logs emit the same prominent warning for W0:
+`Windows isolation: none yet — trusted local only, logged; stage executes with the daemon
+user's authority.` No credential value, profile path, or other secret belongs in either
+record.
 
 ## 4. Missions (dispatchable, single-PR-sized)
 
@@ -130,3 +229,45 @@ sandbox-unavailable. Journal-only assertions.
   **and** per-gaggle now? *(Recommend: per-goober in V1; per-gaggle rides on #34.)*
 - **OQ-4 — egress:** document-only for V1, or ship opt-in enforcement if cheap under the
   chosen mechanism? *(Recommend: document-only unless S0 finds egress control is low-cost.)*
+
+## 8. Appendix: draft Windows follow-up issues
+
+These are planning drafts only: they are **not filed or approved work**. All are gated on
+S0's accepted outcome — native authority mechanisms behind `internal/sandbox.Sandbox`,
+process lifecycle left with the harness runner, and no silent downgrade when a configured
+mechanism is unavailable. If ADR 0001 or that seam changes, these drafts must be
+re-evaluated before dispatch.
+
+### P11-I1 — Implement the named W0 posture and observability
+
+- Add an explicit Windows `unsandboxed-warning` node policy rather than treating
+  `sandbox.ErrUnsupported` as permission to continue.
+- Emit the §3.4 posture event and operator warning for every Windows stage attempt,
+  including deterministic stages; refuse launch if the event cannot be journaled.
+- Preserve fail-closed behavior for a configured W1–W3 posture and preserve the existing
+  `run.network: none` policy; W0 is not evidence of network enforcement.
+- Gate agentic acceptance tests on #647's verdict. Deterministic fake-harness coverage is
+  independently dispatchable once the S0 seam is confirmed.
+
+### P11-S1 — Spike W1, then W2, with the real Windows harness
+
+- Prototype restricted-token/low-integrity confinement first; measure host read exposure,
+  out-of-worktree write denial, ACL cleanup, child-token inheritance, and Job Object
+  composition.
+- Attempt AppContainer only if W1's residual read/network authority is insufficient for
+  the intended risk tier. Exercise profile/SID lifecycle, narrow worktree/git grants,
+  network capability grants, and cleanup after cancellation.
+- Run #647's authenticated Copilot parity probe inside each candidate. A bare-Windows P10
+  success is necessary but not sufficient; failure under a candidate marks that rung
+  unavailable rather than authorizing fallback.
+- Produce a decision update before any production backend. This spike is gated on both
+  S0's seam and the final #647 findings.
+
+### P11-I2 — Containerized Windows worker isolation
+
+- Define W3 only with the tier-3 worker/runtime work: compatible Windows base images,
+  workspace mounts, authentication forwarding, egress policy, and container teardown
+  composed with Job Object lifecycle.
+- Gate implementation on the S0 contract still applying at the worker seam, the final
+  #647 harness verdict, and an approved tier-3 Windows worker issue. It is not a
+  prerequisite for trusted-local Windows deterministic support.
