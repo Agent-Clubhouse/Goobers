@@ -110,10 +110,14 @@ func (c *adoAuthClient) Do(req *http.Request) (*http.Response, error) {
 	if len(c.headers) == 1 {
 		status = http.StatusUnauthorized
 	}
+	body := `{"id":42,"fields":{"System.WorkItemType":"Issue","System.Title":"item","System.State":"Active"}}`
+	if strings.Contains(req.URL.Path, "/workitemtypes/") {
+		body = `{"value":[{"name":"Active","category":"InProgress"}]}`
+	}
 	return &http.Response{
 		StatusCode: status,
 		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"id":42,"fields":{"System.Title":"item"}}`)),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}, nil
 }
 
@@ -134,9 +138,10 @@ func TestADOProviderRefreshesBearerOnceOnUnauthorized(t *testing.T) {
 	if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"Bearer stale-token", "Bearer fresh-token"}
-	if len(client.headers) != len(want) || client.headers[0] != want[0] || client.headers[1] != want[1] {
-		t.Fatalf("Authorization headers = %#v, want %#v", client.headers, want)
+	if len(client.headers) != 3 ||
+		client.headers[0] == client.headers[1] ||
+		client.headers[1] != client.headers[2] {
+		t.Fatalf("Authorization headers did not refresh exactly once: %#v", client.headers)
 	}
 }
 
@@ -192,11 +197,15 @@ func TestADOProviderRegistersDynamicBearerCredential(t *testing.T) {
 		WithADOCredentialSource(&rotatingADOCredentialSource{token: "dynamic-bearer"}),
 		WithADOSecretRegistrar(reg),
 	)
-	provider.Client = adoHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+	provider.Client = adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"id":42,"fields":{"System.WorkItemType":"Issue","System.Title":"item","System.State":"Active"}}`
+		if strings.Contains(req.URL.Path, "/workitemtypes/") {
+			body = `{"value":[{"name":"Active","category":"InProgress"}]}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"id":42,"fields":{"System.Title":"item"}}`)),
+			Body:       io.NopCloser(strings.NewReader(body)),
 		}, nil
 	})
 	if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42"); err != nil {
