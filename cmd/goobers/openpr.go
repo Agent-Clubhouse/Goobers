@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -118,13 +119,36 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	var tutorHoldout *tutorHoldoutRecord
+	recordTutorLiveVerification := false
 	if isTutorWorkflow(workflow) {
-		classification, err := classifyLocalTutorChanges(base)
+		changes, err := localTutorChanges(base)
+		if err != nil {
+			pf(stderr, "error: classify Tutor change: %v\n", err)
+			return 1
+		}
+		classification, err := classifyTutorChanges(changes)
 		if err != nil {
 			pf(stderr, "error: classify Tutor change: %v\n", err)
 			return 1
 		}
 		body = strings.TrimRight(body, "\n") + "\n\n" + tutorClassificationPRSection(classification)
+		recordTutorLiveVerification = providerInput("recordLiveVerification", "") == "true"
+		if recordTutorLiveVerification {
+			tutorHoldout, err = prepareTutorHoldout(
+				root,
+				os.Getenv("GOOBERS_GAGGLE"),
+				runID,
+				providerInput("tutorConfigSource", ""),
+				classification,
+				changes,
+				time.Now().UTC(),
+			)
+			if err != nil {
+				pf(stderr, "error: prepare Tutor live verification: %v\n", err)
+				return 1
+			}
+		}
 	}
 
 	resultFile := providerInput("resultFile", "pr-result.json")
@@ -158,6 +182,22 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Persist the mandatory finding before the external mutation. If the
+	// process crashes after GitHub accepts the PR, the prepared record still
+	// survives for a later exact-cohort verification pass. Repasses atomically
+	// replace this run-keyed file; optional final classifications remove it.
+	if recordTutorLiveVerification {
+		if tutorHoldout == nil {
+			if err := clearTutorHoldoutsForRun(root, os.Getenv("GOOBERS_GAGGLE"), runID); err != nil {
+				pf(stderr, "error: replace Tutor live verification: %v\n", err)
+				return 1
+			}
+		} else if err := writeTutorHoldout(root, *tutorHoldout); err != nil {
+			pf(stderr, "error: prepare Tutor live verification: %v\n", err)
+			return 1
+		}
+	}
+
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
@@ -168,6 +208,17 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+
+	if recordTutorLiveVerification {
+		if tutorHoldout != nil {
+			tutorHoldout.PRNumber = result.Number
+			tutorHoldout.PRURL = result.URL
+			if err := writeTutorHoldout(root, *tutorHoldout); err != nil {
+				pf(stderr, "error: record Tutor live verification: %v\n", err)
+				return 1
+			}
+		}
 	}
 
 	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL); err != nil {

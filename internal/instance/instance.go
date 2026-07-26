@@ -23,6 +23,10 @@ const (
 	// under a per-run directory, precisely because the watermark must outlive
 	// any single run so successive runs advance from where the last left off.
 	DocsUpdaterDirName = "docs-updater"
+	// TutorHoldoutsDirName holds cross-run Tutor finding state. A Tutor run
+	// opens a config PR before promotion, so its mandatory live-verification
+	// finding must outlive that authoring run.
+	TutorHoldoutsDirName = "tutor-holdouts"
 )
 
 // Layout resolves the paths that make up an instance root.
@@ -91,6 +95,24 @@ func (l Layout) TelemetryDB() string { return filepath.Join(l.Root, TelemetryDBN
 func (l Layout) DocsWatermarkPath(gaggle, workflow string) string {
 	name := docsWatermarkSegment(gaggle) + "__" + docsWatermarkSegment(workflow) + ".json"
 	return filepath.Join(l.SchedulerDir(), DocsUpdaterDirName, name)
+}
+
+// TutorHoldoutsDir is the durable scheduler-side store for post-promotion
+// Tutor live-verification findings.
+func (l Layout) TutorHoldoutsDir() string {
+	return filepath.Join(l.SchedulerDir(), TutorHoldoutsDirName)
+}
+
+// TutorHoldoutPath returns the durable file for one Tutor authoring run.
+// Repasses overwrite this same path atomically, so replacing a finding never
+// creates a delete-before-write gap.
+func (l Layout) TutorHoldoutPath(gaggle, runID string) string {
+	name := tutorHoldoutSegment(gaggle) + "__" + tutorHoldoutSegment(runID) + ".json"
+	return filepath.Join(l.TutorHoldoutsDir(), name)
+}
+
+func tutorHoldoutSegment(s string) string {
+	return strings.NewReplacer(":", "_").Replace(docsWatermarkSegment(s))
 }
 
 // docsWatermarkSegment reduces a gaggle/workflow name to a safe single file-name

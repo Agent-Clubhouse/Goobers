@@ -55,6 +55,14 @@ func (c tutorChangeClassification) String() string {
 }
 
 func (c tutorChangeClassification) RequiresHumanSignoff() bool {
+	return c.RequiresLiveVerification()
+}
+
+// RequiresLiveVerification is the TUT-A7 policy boundary: changes to
+// structure, skills, or validation remain open after promotion until their
+// new EffectiveVersion cohort demonstrates an improvement. Persona and gate
+// tuning changes may use the normal path without a mandatory holdout.
+func (c tutorChangeClassification) RequiresLiveVerification() bool {
 	for _, changeType := range c.Types {
 		switch changeType {
 		case tutorChangeStructure, tutorChangeSkill, tutorChangeValidation:
@@ -309,32 +317,40 @@ func isWorkflowPath(filePath string) bool {
 }
 
 func classifyLocalTutorChanges(base string) (tutorChangeClassification, error) {
-	diffRaw, err := tutorGitOutput("diff", "--find-renames", "--name-status", "-z", base+"...HEAD")
+	changes, err := localTutorChanges(base)
 	if err != nil {
 		return tutorChangeClassification{}, err
+	}
+	return classifyTutorChanges(changes)
+}
+
+func localTutorChanges(base string) ([]tutorFileChange, error) {
+	diffRaw, err := tutorGitOutput("diff", "--find-renames", "--name-status", "-z", base+"...HEAD")
+	if err != nil {
+		return nil, err
 	}
 	changes, err := parseTutorNameStatus(diffRaw)
 	if err != nil {
-		return tutorChangeClassification{}, err
+		return nil, err
 	}
 	mergeBaseRaw, err := tutorGitOutput("merge-base", base, "HEAD")
 	if err != nil {
-		return tutorChangeClassification{}, err
+		return nil, err
 	}
 	mergeBase := strings.TrimSpace(string(mergeBaseRaw))
 	for i := range changes {
 		if isWorkflowPath(changes[i].Path) && changes[i].PreviousPath == "" {
 			changes[i].Before, _, err = tutorGitBlob(mergeBase, changes[i].Path)
 			if err != nil {
-				return tutorChangeClassification{}, err
+				return nil, err
 			}
 			changes[i].After, _, err = tutorGitBlob("HEAD", changes[i].Path)
 			if err != nil {
-				return tutorChangeClassification{}, err
+				return nil, err
 			}
 		}
 	}
-	return classifyTutorChanges(changes)
+	return changes, nil
 }
 
 func parseTutorNameStatus(raw []byte) ([]tutorFileChange, error) {
@@ -443,12 +459,15 @@ func classifyRemoteTutorChanges(
 
 func tutorClassificationPRSection(classification tutorChangeClassification) string {
 	reviewPath := "Normal review path; this persona/gate-tune change may be auto-merged when all ordinary gates pass."
+	liveVerification := "Optional for this persona/gate-tune change."
 	if classification.RequiresHumanSignoff() {
 		reviewPath = "Explicit human sign-off required; this structure/skill/validation change is never eligible for Goobers auto-merge."
+		liveVerification = "Required after promotion; the finding remains open until telemetry from the exact new EffectiveVersion cohort reports `helped`."
 	}
 	return "## Tutor change classification\n\n" +
 		"**Types:** `" + strings.ReplaceAll(classification.String(), ", ", "`, `") + "`\n\n" +
-		"**Review path:** " + reviewPath
+		"**Review path:** " + reviewPath + "\n\n" +
+		"**Live verification:** " + liveVerification
 }
 
 func tutorManualReviewReason(classification tutorChangeClassification) string {
