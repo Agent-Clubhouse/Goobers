@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload test timing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: test-timings-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.json
@@ -282,7 +282,7 @@ jobs:
 
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ runner.os }}
           path: coverage.out
@@ -459,7 +459,7 @@ jobs:
 
       - name: Upload Windows validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: windows-validation-evidence
           path: bin/windows-validation-evidence/
@@ -575,7 +575,7 @@ jobs:
 
       - name: Upload Linux validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
