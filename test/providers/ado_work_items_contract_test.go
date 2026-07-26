@@ -156,6 +156,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
 			{"name": "New", "category": "Proposed"},
 			{"name": "Active", "category": "InProgress"},
+			{"name": "Awaiting Verification", "category": "Resolved"},
 			{"name": completedState, "category": "Completed"},
 		}})
 	})
@@ -350,6 +351,90 @@ func TestContract_ADOCustomStateCategoryMapping(t *testing.T) {
 	}
 }
 
+func TestContract_ADOResolvedStatesRemainOpen(t *testing.T) {
+	for _, state := range []string{"Resolved", "Awaiting Verification"} {
+		t.Run(state, func(t *testing.T) {
+			backend := newADOWorkItemBackend()
+			backend.state = state
+			server := backend.server(t)
+			provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+				p.BaseURL = server.URL
+			})
+			repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"}
+
+			item, err := provider.GetWorkItem(context.Background(), repo, "42")
+			if err != nil || item.State != "open" {
+				t.Fatalf("GetWorkItem = %#v, %v", item, err)
+			}
+			open, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+				Repository: repo,
+				State:      "open",
+			})
+			if err != nil || len(open) != 1 {
+				t.Fatalf("open ListWorkItems = %#v, %v", open, err)
+			}
+			closed, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+				Repository: repo,
+				State:      "closed",
+			})
+			if err != nil || len(closed) != 0 {
+				t.Fatalf("closed ListWorkItems = %#v, %v", closed, err)
+			}
+		})
+	}
+}
+
+func TestContract_ADOCreateWorkItemIdempotentOnRetry(t *testing.T) {
+	var createRequests int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "20" {
+			t.Errorf("$top = %q, want 20", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode WIQL request: %v", err)
+		}
+		if !strings.Contains(body["query"], "[System.Description] CONTAINS WORDS 'goobers run-id: run-dup'") {
+			t.Errorf("WIQL query = %q", body["query"])
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 55}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/55", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"id": 55, "rev": 2, "url": "item-url",
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Existing work",
+				"System.Description":  "details\n\n---\ngoobers run-id: run-dup",
+				"System.State":        "Active",
+			},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, _ *http.Request) {
+		createRequests++
+		http.Error(w, "duplicate create", http.StatusConflict)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+
+	item, err := provider.CreateWorkItem(context.Background(), providers.CreateWorkItemRequest{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"},
+		Title:      "Existing work",
+		Body:       "details",
+		RunID:      "run-dup",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkItem: %v", err)
+	}
+	if item.ID != "55" || createRequests != 0 {
+		t.Fatalf("CreateWorkItem = %#v, create requests = %d", item, createRequests)
+	}
+}
+
 func TestContract_ADOUpdateReportsCommittedFieldsWhenCommentFails(t *testing.T) {
 	backend := newADOWorkItemBackend()
 	backend.commentStatus = http.StatusInternalServerError
@@ -376,11 +461,16 @@ func TestContract_ADOListCommentsPaginates(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
+		if order := r.URL.Query().Get("order"); order != "asc" {
+			t.Errorf("order = %q, want asc", order)
+		}
 		if token := r.URL.Query().Get("continuationToken"); token == "" {
-			w.Header().Set("x-ms-continuationtoken", "page-2")
-			writeJSON(t, w, map[string]interface{}{"comments": []map[string]interface{}{{
-				"id": 1, "text": "first", "createdDate": "2026-07-26T12:00:00Z",
-			}}})
+			writeJSON(t, w, map[string]interface{}{
+				"comments": []map[string]interface{}{{
+					"commentId": 1, "text": "first", "createdDate": "2026-07-26T12:00:00Z",
+				}},
+				"continuationToken": "page-2",
+			})
 			return
 		} else if token != "page-2" {
 			t.Errorf("continuationToken = %q", token)
@@ -388,7 +478,7 @@ func TestContract_ADOListCommentsPaginates(t *testing.T) {
 			return
 		}
 		writeJSON(t, w, map[string]interface{}{"comments": []map[string]interface{}{{
-			"id": 2, "text": "second", "createdDate": "2026-07-26T12:01:00Z",
+			"commentId": 2, "text": "second", "createdDate": "2026-07-26T12:01:00Z",
 		}}})
 	}))
 	defer server.Close()
@@ -401,7 +491,9 @@ func TestContract_ADOListCommentsPaginates(t *testing.T) {
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"},
 		"42",
 	)
-	if err != nil || len(comments) != 2 || comments[0].Body != "first" || comments[1].Body != "second" {
+	if err != nil || len(comments) != 2 ||
+		comments[0].ID != "1" || comments[0].Body != "first" ||
+		comments[1].ID != "2" || comments[1].Body != "second" {
 		t.Fatalf("ListComments = %#v, %v", comments, err)
 	}
 	if requests != 2 {

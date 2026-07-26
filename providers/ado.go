@@ -638,6 +638,16 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	if itemType == "" {
 		itemType = "Issue"
 	}
+	itemBody := withRunIDFooter(req.Body, req.RunID)
+	if req.RunID != "" {
+		existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if found {
+			return existing, nil
+		}
+	}
 	endpoint, err := p.workURL(project, "workitems", "$"+itemType)
 	if err != nil {
 		return WorkItem{}, err
@@ -645,7 +655,7 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	labels := replaceStatusLabel(req.Labels, req.Status)
 	patch := []adoPatchOperation{
 		{Op: "add", Path: "/fields/System.Title", Value: req.Title},
-		{Op: "add", Path: "/fields/System.Description", Value: withRunIDFooter(req.Body, req.RunID)},
+		{Op: "add", Path: "/fields/System.Description", Value: itemBody},
 	}
 	if len(labels) > 0 {
 		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")})
@@ -658,6 +668,36 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 		return WorkItem{}, err
 	}
 	return p.mapADOWorkItem(ctx, req.Repository, out)
+}
+
+func (p *ADOProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID string) (WorkItem, bool, error) {
+	endpoint, err := p.workURL(p.project(repo), "wiql")
+	if err != nil {
+		return WorkItem{}, false, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{"20"}})
+	if err != nil {
+		return WorkItem{}, false, err
+	}
+	footer := runFooter(runID)
+	query := fmt.Sprintf(
+		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
+		escapeWIQLString(footer),
+	)
+	var result adoWIQLResponse
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
+		return WorkItem{}, false, err
+	}
+	for _, ref := range result.WorkItems {
+		item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
+		if err != nil {
+			return WorkItem{}, false, err
+		}
+		if strings.Contains(item.Body, footer) {
+			return item, true, nil
+		}
+	}
+	return WorkItem{}, false, nil
 }
 
 // UpdateWorkItemStatus mirrors Goobers processing status to Azure Boards tags.
@@ -727,7 +767,10 @@ func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id s
 	var comments []Comment
 	continuation := ""
 	for {
-		values := url.Values{"$top": []string{strconv.Itoa(adoCommentPageSize)}}
+		values := url.Values{
+			"$top":  []string{strconv.Itoa(adoCommentPageSize)},
+			"order": []string{"asc"},
+		}
 		if continuation != "" {
 			values.Set("continuationToken", continuation)
 		}
@@ -739,10 +782,13 @@ func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id s
 		if err != nil {
 			return nil, err
 		}
-		next := strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
 		var page adoCommentsResponse
 		if err := readJSONResponse(resp, http.MethodGet, endpoint, &page); err != nil {
 			return nil, err
+		}
+		next := strings.TrimSpace(page.ContinuationToken)
+		if next == "" {
+			next = strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
 		}
 		for _, comment := range page.Comments {
 			comments = append(comments, mapADOComment(comment))
@@ -1220,11 +1266,13 @@ type adoWorkItem struct {
 }
 
 type adoCommentsResponse struct {
-	Comments []adoComment `json:"comments"`
+	Comments          []adoComment `json:"comments"`
+	ContinuationToken string       `json:"continuationToken"`
 }
 
 type adoComment struct {
 	ID          int         `json:"id"`
+	CommentID   int         `json:"commentId"`
 	Text        string      `json:"text"`
 	CreatedBy   adoIdentity `json:"createdBy"`
 	CreatedDate string      `json:"createdDate"`
@@ -1413,12 +1461,16 @@ func mapADOComment(comment adoComment) Comment {
 	if author == "" {
 		author = comment.CreatedBy.UniqueName
 	}
+	id := comment.CommentID
+	if id == 0 {
+		id = comment.ID
+	}
 	var createdAt *time.Time
 	if parsed, err := time.Parse(time.RFC3339Nano, comment.CreatedDate); err == nil {
 		createdAt = &parsed
 	}
 	return Comment{
-		ID:         strconv.Itoa(comment.ID),
+		ID:         strconv.Itoa(id),
 		Author:     author,
 		AuthorType: "user",
 		Body:       comment.Text,
@@ -1535,9 +1587,9 @@ func escapeWIQLString(value string) string {
 
 func knownADOCommonWorkItemState(state string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "closed", "done", "removed", "resolved":
+	case "closed", "done", "removed":
 		return "closed", true
-	case "", "new", "active", "approved", "committed", "to do", "doing", "proposed", "in progress":
+	case "", "new", "active", "approved", "committed", "to do", "doing", "proposed", "in progress", "resolved":
 		return "open", true
 	default:
 		return "", false
@@ -1558,9 +1610,9 @@ func (p *ADOProvider) resolveCommonWorkItemState(ctx context.Context, repo Repos
 	if err != nil {
 		return "", err
 	}
-	categories := []string{"Proposed", "InProgress"}
+	categories := []string{"Proposed", "InProgress", "Resolved"}
 	if state == "closed" {
-		categories = []string{"Completed", "Resolved"}
+		categories = []string{"Completed"}
 	}
 	for _, category := range categories {
 		for _, candidate := range categoriesByState {
@@ -1616,9 +1668,9 @@ func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemSt
 
 func commonADOStateCategory(category string) (string, error) {
 	switch strings.ToLower(category) {
-	case "completed", "resolved", "removed":
+	case "completed", "removed":
 		return "closed", nil
-	case "proposed", "inprogress":
+	case "proposed", "inprogress", "resolved":
 		return "open", nil
 	default:
 		return "", fmt.Errorf("unsupported state category %q", category)
