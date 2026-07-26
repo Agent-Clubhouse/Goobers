@@ -65,6 +65,13 @@ var egressAPIs = map[string]map[string]egressAPI{
 	},
 }
 
+var httpClientEgressAPIs = map[string]egressAPI{
+	"Get":      {destination: 0},
+	"Head":     {destination: 0},
+	"Post":     {destination: 0},
+	"PostForm": {destination: 0},
+}
+
 type implicitEgressApproval struct {
 	location       string
 	options        string
@@ -135,10 +142,15 @@ func scan(root string) ([]finding, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+		var fileFindings []finding
+		switch {
+		case strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go"):
+			fileFindings, err = scanGoFile(root, path)
+		case isProductionScript(path):
+			fileFindings, err = scanScriptFile(root, path)
+		default:
 			return nil
 		}
-		fileFindings, err := scanFile(root, path)
 		if err != nil {
 			return err
 		}
@@ -169,7 +181,27 @@ func skippedDirectory(name string) bool {
 	}
 }
 
-func scanFile(root, path string) ([]finding, error) {
+func isProductionScript(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	extension := filepath.Ext(normalized)
+	switch extension {
+	case ".js", ".jsx", ".ts", ".tsx":
+	default:
+		return false
+	}
+	base := strings.TrimSuffix(filepath.Base(normalized), extension)
+	if strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".spec") {
+		return false
+	}
+	for _, marker := range []string{"/test/", "/tests/", "/__tests__/"} {
+		if strings.Contains(normalized, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func scanGoFile(root, path string) ([]finding, error) {
 	files := token.NewFileSet()
 	parsed, err := parser.ParseFile(files, path, nil, 0)
 	if err != nil {
@@ -199,17 +231,19 @@ func scanFile(root, path string) ([]finding, error) {
 			if !ok {
 				return true
 			}
-			pkg, ok := selector.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			importPath := imports[pkg.Name]
-			api, monitored := egressAPIs[importPath][selector.Sel.Name]
+			bindings := bindingsAt(function, call, fileBindings)
+			api, callName, monitored := monitoredEgressCall(
+				parsed,
+				function,
+				call,
+				selector,
+				imports,
+				bindings,
+			)
 			if !monitored {
 				return true
 			}
 			position := files.Position(call.Pos())
-			callName := importPath + "." + selector.Sel.Name
 			if api.implicit {
 				implicitCalls[callName] = append(implicitCalls[callName], call)
 				return true
@@ -217,7 +251,6 @@ func scanFile(root, path string) ([]finding, error) {
 			if api.destination >= len(call.Args) {
 				return true
 			}
-			bindings := bindingsAt(function, call, fileBindings)
 			if destination, ok := staticString(call.Args[api.destination], bindings, nil); ok && strings.TrimSpace(destination) != "" {
 				findings = append(findings, finding{
 					path: rel, line: position.Line, column: position.Column,
@@ -247,6 +280,143 @@ func scanFile(root, path string) ([]finding, error) {
 	}
 	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, fileBindings)...)
 	return findings, nil
+}
+
+func monitoredEgressCall(
+	parsed *ast.File,
+	function *ast.FuncDecl,
+	call *ast.CallExpr,
+	selector *ast.SelectorExpr,
+	imports map[string]string,
+	bindings map[string]ast.Expr,
+) (egressAPI, string, bool) {
+	if pkg, ok := selector.X.(*ast.Ident); ok {
+		importPath := imports[pkg.Name]
+		if api, monitored := egressAPIs[importPath][selector.Sel.Name]; monitored {
+			return api, importPath + "." + selector.Sel.Name, true
+		}
+	}
+	api, monitored := httpClientEgressAPIs[selector.Sel.Name]
+	if !monitored {
+		return egressAPI{}, "", false
+	}
+	typedClients := httpClientIdentifiersAt(parsed, function, call, imports)
+	if !isHTTPClientReceiver(selector.X, imports, bindings, typedClients, nil) {
+		return egressAPI{}, "", false
+	}
+	return api, "net/http.Client." + selector.Sel.Name, true
+}
+
+func httpClientIdentifiersAt(
+	parsed *ast.File,
+	function *ast.FuncDecl,
+	target ast.Node,
+	imports map[string]string,
+) map[string]bool {
+	identifiers := make(map[string]bool)
+	addFields := func(fields *ast.FieldList) {
+		if fields == nil {
+			return
+		}
+		for _, field := range fields.List {
+			if !isHTTPClientType(field.Type, imports) {
+				continue
+			}
+			for _, name := range field.Names {
+				identifiers[name.Name] = true
+			}
+		}
+	}
+	for _, declaration := range parsed.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range general.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok || !isHTTPClientType(values.Type, imports) {
+				continue
+			}
+			for _, name := range values.Names {
+				identifiers[name.Name] = true
+			}
+		}
+	}
+	addFields(function.Recv)
+	addFields(function.Type.Params)
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= target.Pos() {
+			return false
+		}
+		values, ok := node.(*ast.ValueSpec)
+		if !ok || !isHTTPClientType(values.Type, imports) {
+			return true
+		}
+		for _, name := range values.Names {
+			identifiers[name.Name] = true
+		}
+		return false
+	})
+	return identifiers
+}
+
+func isHTTPClientType(expression ast.Expr, imports map[string]string) bool {
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return isHTTPClientType(value.X, imports)
+	case *ast.ParenExpr:
+		return isHTTPClientType(value.X, imports)
+	case *ast.SelectorExpr:
+		pkg, ok := value.X.(*ast.Ident)
+		return ok && imports[pkg.Name] == "net/http" && value.Sel.Name == "Client"
+	default:
+		return false
+	}
+}
+
+func isHTTPClientReceiver(
+	expression ast.Expr,
+	imports map[string]string,
+	bindings map[string]ast.Expr,
+	typedClients map[string]bool,
+	seen map[string]bool,
+) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if typedClients[value.Name] {
+			return true
+		}
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return false
+		}
+		seen[value.Name] = true
+		resolved := isHTTPClientReceiver(binding, imports, bindings, typedClients, seen)
+		delete(seen, value.Name)
+		return resolved
+	case *ast.SelectorExpr:
+		pkg, ok := value.X.(*ast.Ident)
+		return ok && imports[pkg.Name] == "net/http" && value.Sel.Name == "DefaultClient"
+	case *ast.CompositeLit:
+		return isHTTPClientType(value.Type, imports)
+	case *ast.UnaryExpr:
+		return value.Op == token.AND &&
+			isHTTPClientReceiver(value.X, imports, bindings, typedClients, seen)
+	case *ast.ParenExpr:
+		return isHTTPClientReceiver(value.X, imports, bindings, typedClients, seen)
+	case *ast.CallExpr:
+		identifier, ok := value.Fun.(*ast.Ident)
+		return ok && identifier.Name == "new" && len(value.Args) == 1 &&
+			isHTTPClientType(value.Args[0], imports)
+	default:
+		return false
+	}
 }
 
 func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[string]string, []finding) {
@@ -530,11 +700,15 @@ func staticString(expression ast.Expr, bindings map[string]ast.Expr, seen map[st
 	}
 }
 
-func telemetryEndpointDefaults(files *token.FileSet, parsed *ast.File, rel string, bindings map[string]ast.Expr) []finding {
+func telemetryEndpointDefaults(files *token.FileSet, parsed *ast.File, rel string, fileBindings map[string]ast.Expr) []finding {
 	var findings []finding
 	report := func(name string, expression ast.Expr) {
 		if !sensitiveEndpointName(name) {
 			return
+		}
+		bindings := fileBindings
+		if function := containingFunction(parsed, expression); function != nil {
+			bindings = bindingsAt(function, expression, fileBindings)
 		}
 		value, ok := staticString(expression, bindings, nil)
 		if !ok || strings.TrimSpace(value) == "" || strings.HasSuffix(strings.ToLower(name), "env") {
@@ -578,6 +752,17 @@ func telemetryEndpointDefaults(files *token.FileSet, parsed *ast.File, rel strin
 	return findings
 }
 
+func containingFunction(parsed *ast.File, node ast.Node) *ast.FuncDecl {
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Body != nil &&
+			function.Body.Pos() <= node.Pos() && node.End() <= function.Body.End() {
+			return function
+		}
+	}
+	return nil
+}
+
 func expressionName(expression ast.Expr) string {
 	switch value := expression.(type) {
 	case *ast.Ident:
@@ -604,4 +789,350 @@ func sensitiveEndpointName(name string) bool {
 		}
 	}
 	return false
+}
+
+type scriptTokenKind int
+
+const (
+	scriptPunctuation scriptTokenKind = iota
+	scriptIdentifier
+	scriptString
+)
+
+type scriptToken struct {
+	kind         scriptTokenKind
+	text         string
+	line         int
+	column       int
+	staticString bool
+}
+
+func scanScriptFile(root, path string) ([]finding, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, fmt.Errorf("make %s relative to %s: %w", path, root, err)
+	}
+	rel = filepath.ToSlash(rel)
+	tokens := tokenizeScript(source)
+	bindings := make(map[string]string)
+	var findings []finding
+	for index := 0; index < len(tokens); index++ {
+		current := tokens[index]
+		if current.kind == scriptIdentifier &&
+			(current.text == "const" || current.text == "let" || current.text == "var") {
+			nameIndex, valueIndex, ok := scriptDeclaration(tokens, index)
+			if ok {
+				value, next, static := scriptStaticString(tokens, valueIndex, bindings, nil)
+				if static && scriptExpressionBoundary(tokens, next) {
+					name := tokens[nameIndex].text
+					bindings[name] = value
+					if sensitiveEndpointName(name) && strings.TrimSpace(value) != "" {
+						findings = append(findings, finding{
+							path: rel, line: tokens[valueIndex].line, column: tokens[valueIndex].column,
+							message: fmt.Sprintf("default telemetry/reporting endpoint %q assigned to %s", value, name),
+						})
+					}
+				}
+			}
+		}
+		destinationArgument, monitored := scriptEgressCall(tokens, index)
+		if !monitored {
+			continue
+		}
+		argument := scriptCallArgument(tokens, index+1, destinationArgument)
+		if argument < 0 {
+			continue
+		}
+		destination, next, static := scriptStaticString(tokens, argument, bindings, nil)
+		if !static || !scriptCallArgumentBoundary(tokens, next) || strings.TrimSpace(destination) == "" {
+			continue
+		}
+		findings = append(findings, finding{
+			path: rel, line: current.line, column: current.column,
+			message: fmt.Sprintf("hardcoded network destination %q passed to JavaScript %s", destination, current.text),
+		})
+	}
+	return findings, nil
+}
+
+func tokenizeScript(source []byte) []scriptToken {
+	var tokens []scriptToken
+	index, line, column := 0, 1, 1
+	advance := func() byte {
+		value := source[index]
+		index++
+		if value == '\n' {
+			line++
+			column = 1
+		} else {
+			column++
+		}
+		return value
+	}
+	for index < len(source) {
+		current := source[index]
+		if current == ' ' || current == '\t' || current == '\r' || current == '\n' {
+			advance()
+			continue
+		}
+		if current == '/' && index+1 < len(source) && source[index+1] == '/' {
+			advance()
+			advance()
+			for index < len(source) && source[index] != '\n' {
+				advance()
+			}
+			continue
+		}
+		if current == '/' && index+1 < len(source) && source[index+1] == '*' {
+			advance()
+			advance()
+			for index < len(source) {
+				if source[index] == '*' && index+1 < len(source) && source[index+1] == '/' {
+					advance()
+					advance()
+					break
+				}
+				advance()
+			}
+			continue
+		}
+		if current == '/' && scriptRegexCanStart(tokens) {
+			advance()
+			inCharacterClass := false
+		regex:
+			for index < len(source) {
+				character := advance()
+				if character == '\\' && index < len(source) {
+					advance()
+					continue
+				}
+				if character == '\n' {
+					break
+				}
+				switch character {
+				case '[':
+					inCharacterClass = true
+				case ']':
+					inCharacterClass = false
+				case '/':
+					if !inCharacterClass {
+						for index < len(source) && scriptIdentifierPart(source[index]) {
+							advance()
+						}
+						break regex
+					}
+				}
+			}
+			continue
+		}
+		startLine, startColumn := line, column
+		if current == '"' || current == '\'' || current == '`' {
+			quote := advance()
+			var value strings.Builder
+			static := true
+			for index < len(source) {
+				character := advance()
+				if character == '\\' && index < len(source) {
+					value.WriteByte(advance())
+					continue
+				}
+				if character == quote {
+					break
+				}
+				if quote == '`' && character == '$' && index < len(source) && source[index] == '{' {
+					static = false
+				}
+				value.WriteByte(character)
+			}
+			tokens = append(tokens, scriptToken{
+				kind: scriptString, text: value.String(), line: startLine, column: startColumn,
+				staticString: static,
+			})
+			continue
+		}
+		if scriptIdentifierStart(current) {
+			start := index
+			for index < len(source) && scriptIdentifierPart(source[index]) {
+				advance()
+			}
+			tokens = append(tokens, scriptToken{
+				kind: scriptIdentifier, text: string(source[start:index]), line: startLine, column: startColumn,
+			})
+			continue
+		}
+		tokens = append(tokens, scriptToken{
+			kind: scriptPunctuation, text: string(advance()), line: startLine, column: startColumn,
+		})
+	}
+	return tokens
+}
+
+func scriptRegexCanStart(tokens []scriptToken) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	previous := tokens[len(tokens)-1]
+	if previous.kind == scriptIdentifier {
+		switch previous.text {
+		case "await", "case", "delete", "do", "else", "in", "instanceof", "new",
+			"of", "return", "throw", "typeof", "void", "yield":
+			return true
+		default:
+			return false
+		}
+	}
+	switch previous.text {
+	case "(", "[", "{", "=", ",", ";", ":", "!", "?", "+", "-", "*", "%",
+		"&", "|", "^", "~", "<", ">":
+		return true
+	default:
+		return false
+	}
+}
+
+func scriptIdentifierStart(value byte) bool {
+	return value == '_' || value == '$' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func scriptIdentifierPart(value byte) bool {
+	return scriptIdentifierStart(value) || value >= '0' && value <= '9'
+}
+
+func scriptDeclaration(tokens []scriptToken, declaration int) (int, int, bool) {
+	name := declaration + 1
+	if name >= len(tokens) || tokens[name].kind != scriptIdentifier {
+		return 0, 0, false
+	}
+	for index := name + 1; index < len(tokens) && index <= name+8; index++ {
+		switch tokens[index].text {
+		case "=":
+			return name, index + 1, index+1 < len(tokens)
+		case ";", ",":
+			return 0, 0, false
+		}
+	}
+	return 0, 0, false
+}
+
+func scriptEgressCall(tokens []scriptToken, index int) (int, bool) {
+	if index+1 >= len(tokens) || tokens[index].kind != scriptIdentifier || tokens[index+1].text != "(" {
+		return 0, false
+	}
+	switch tokens[index].text {
+	case "fetch", "WebSocket", "EventSource":
+		return 0, true
+	case "sendBeacon":
+		return 0, index >= 2 && tokens[index-1].text == "." && tokens[index-2].text == "navigator"
+	case "get", "head", "post", "put", "patch", "delete", "request":
+		return 0, index >= 2 && tokens[index-1].text == "." && tokens[index-2].text == "axios"
+	default:
+		return 0, false
+	}
+}
+
+func scriptCallArgument(tokens []scriptToken, openParenthesis, destination int) int {
+	if openParenthesis >= len(tokens) || tokens[openParenthesis].text != "(" {
+		return -1
+	}
+	currentArgument := 0
+	depth := 0
+	for index := openParenthesis + 1; index < len(tokens); index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return -1
+			}
+			depth--
+		case ",":
+			if depth == 0 {
+				currentArgument++
+				continue
+			}
+		}
+		if currentArgument == destination {
+			return index
+		}
+	}
+	return -1
+}
+
+func scriptStaticString(
+	tokens []scriptToken,
+	index int,
+	bindings map[string]string,
+	seen map[string]bool,
+) (string, int, bool) {
+	value, next, ok := scriptStaticStringAtom(tokens, index, bindings, seen)
+	if !ok {
+		return "", index, false
+	}
+	for next < len(tokens) && tokens[next].text == "+" {
+		right, after, rightOK := scriptStaticStringAtom(tokens, next+1, bindings, seen)
+		if !rightOK {
+			return "", index, false
+		}
+		value += right
+		next = after
+	}
+	return value, next, true
+}
+
+func scriptStaticStringAtom(
+	tokens []scriptToken,
+	index int,
+	bindings map[string]string,
+	seen map[string]bool,
+) (string, int, bool) {
+	if index >= len(tokens) {
+		return "", index, false
+	}
+	current := tokens[index]
+	switch {
+	case current.kind == scriptString:
+		return current.text, index + 1, current.staticString
+	case current.kind == scriptIdentifier:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[current.text] {
+			return "", index, false
+		}
+		value, ok := bindings[current.text]
+		if !ok {
+			return "", index, false
+		}
+		seen[current.text] = true
+		delete(seen, current.text)
+		return value, index + 1, true
+	case current.text == "(":
+		value, next, ok := scriptStaticString(tokens, index+1, bindings, seen)
+		if !ok || next >= len(tokens) || tokens[next].text != ")" {
+			return "", index, false
+		}
+		return value, next + 1, true
+	default:
+		return "", index, false
+	}
+}
+
+func scriptExpressionBoundary(tokens []scriptToken, index int) bool {
+	if index >= len(tokens) {
+		return true
+	}
+	switch tokens[index].text {
+	case ";", ",", ")", "]", "}":
+		return true
+	default:
+		return false
+	}
+}
+
+func scriptCallArgumentBoundary(tokens []scriptToken, index int) bool {
+	return index < len(tokens) && (tokens[index].text == "," || tokens[index].text == ")")
 }

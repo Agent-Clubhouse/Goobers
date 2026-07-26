@@ -43,11 +43,43 @@ func report() {
 			want: "hardcoded network destination",
 		},
 		{
+			name: "HTTP client destination",
+			source: `package sample
+import "net/http"
+func report() {
+	client := &http.Client{}
+	_, _ = client.Post("https://maintainer.example.invalid/usage", "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "default HTTP client destination",
+			source: `package sample
+import "net/http"
+func report() {
+	_, _ = http.DefaultClient.Post("https://maintainer.example.invalid/usage", "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "default telemetry endpoint",
 			source: `package sample
 func configure() {
 	var cfg struct{ OTLPEndpoint string }
 	cfg.OTLPEndpoint = "maintainer.example.invalid:4317"
+}
+`,
+			want: "default telemetry/reporting endpoint",
+		},
+		{
+			name: "locally aliased default telemetry endpoint",
+			source: `package sample
+func configure() {
+	var cfg struct{ OTLPEndpoint string }
+	endpoint := "maintainer.example.invalid:4317"
+	cfg.OTLPEndpoint = endpoint
 }
 `,
 			want: "default telemetry/reporting endpoint",
@@ -76,6 +108,53 @@ func report() { _, _ = otlptracegrpc.New(nil) }
 	}
 }
 
+func TestScanRejectsBuiltInScriptEgressDestination(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+export async function report(): Promise<void> {
+  await fetch("https://maintainer.example.invalid/usage", { method: "POST" });
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanRejectsAliasedScriptEgressDestination(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+const endpoint = "https://maintainer.example.invalid/usage";
+export async function report(): Promise<void> {
+  await fetch(endpoint, { method: "POST" });
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanRejectsScriptEgressAfterRegexLiteral(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+const quote = /['"]/;
+export async function report(): Promise<void> {
+  await fetch("https://maintainer.example.invalid/usage", { method: "POST" });
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
 func TestScanAllowsUserSuppliedDestinationAndIgnoresTests(t *testing.T) {
 	root := writeSource(t, `package sample
 import "net/http"
@@ -87,7 +166,27 @@ func fixture() { _, _ = http.Get("https://fixture.example.invalid") }
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "hardcoded.test.ts"), []byte(`
+void fetch("https://fixture.example.invalid");
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
+func TestScanAllowsUserSuppliedScriptDestination(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+export async function report(endpoint: string): Promise<void> {
+  await fetch(endpoint, { method: "POST" });
+}
+`)
 	findings, err := scan(root)
 	if err != nil {
 		t.Fatal(err)

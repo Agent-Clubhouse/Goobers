@@ -160,13 +160,15 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
 ## No-phone-home guard and compliance audit
 
 `go run ./test/nophonehome` is part of the portable merge gate and its fast
-subset. It parses production Go syntax and inspects network-constructor call
-sites rather than searching arbitrary text. The guard rejects statically
-resolved destinations passed to HTTP, gRPC, SMTP, raw network, and OTLP
-egress APIs; rejects default-valued telemetry/reporting endpoint assignments;
-and rejects new OTLP exporter constructors with implicit destinations. The
-single OTLP constructor is pinned to `internal/telemetry.spanExporters`, where
-`telemetry.New` also fails unless the caller supplies a non-empty endpoint.
+subset. It parses production Go syntax and tokenizes production JavaScript and
+TypeScript call sites instead of searching arbitrary text. The guard rejects
+statically resolved destinations passed to package-level and `http.Client`
+HTTP methods, browser HTTP/beacon/socket APIs, gRPC, SMTP, raw network, and
+OTLP egress APIs; rejects default-valued telemetry/reporting endpoint
+assignments; and rejects new OTLP exporter constructors with implicit
+destinations. The single OTLP constructor is pinned to
+`internal/telemetry.spanExporters`, where `telemetry.New` also fails unless the
+caller supplies a non-empty endpoint.
 
 This check exists to enforce `SEC-048`, not to maintain a list of approved
 collection services. Do not make a failure pass by adding a maintainer,
