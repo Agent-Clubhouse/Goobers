@@ -11,8 +11,9 @@ import (
 )
 
 // DB is an open handle to the local telemetry rollup (telemetry.db, TEL-032).
-// It is derived state, always rebuildable from the run journals via Rebuild —
-// never treat it as a source of truth.
+// Per-run data is derived and rebuildable from journals. Lifetime onboarding
+// milestones are retained independently once observed because their source
+// journals may be removed by policy.
 type DB struct {
 	sql *sql.DB
 }

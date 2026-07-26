@@ -32,14 +32,27 @@ func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
 }
 
-// TimeToFirstPR computes the lifetime onboarding metric directly from the
-// immutable run identities and ref.touched events in the run journals.
+// TimeToFirstPR merges the retained lifetime milestone with every live run
+// identity and ref.touched event. Scanning all retained journals keeps status
+// fail-closed on incomplete history while the milestone survives retention.
 func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
+	var firstRunAt, firstPROpenAt time.Time
+	if s.sources.Telemetry != nil {
+		persisted, err := s.sources.Telemetry.TimeToFirstPR()
+		if err != nil {
+			return telemetry.TimeToFirstPRMetric{}, err
+		}
+		if persisted.FirstRunAt != nil {
+			firstRunAt = *persisted.FirstRunAt
+		}
+		if persisted.FirstPROpenAt != nil {
+			firstPROpenAt = *persisted.FirstPROpenAt
+		}
+	}
 	runIDs, err := s.RunIDs(ctx)
 	if err != nil {
 		return telemetry.TimeToFirstPRMetric{}, err
 	}
-	var firstRunAt, firstPROpenAt time.Time
 	for _, runID := range runIDs {
 		if err := ctx.Err(); err != nil {
 			return telemetry.TimeToFirstPRMetric{}, err

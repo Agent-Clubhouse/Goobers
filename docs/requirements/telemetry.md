@@ -122,8 +122,11 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
 `timeToFirstPR.firstRunAt` and `timeToFirstPR.firstPROpenAt` carry the two
 source timestamps for manual journal comparison. The structured object appears
 in `goobers status --json` and `goobers stats --json`; the SQLite rollup derives
-the same values from `runs` and `provider_mutations`. Status reads the live
-journals, while stats reflects the rollup after its next incremental ingest.
+the same values from `runs` and `provider_mutations`, then preserves the earliest
+observed endpoints in a non-prunable singleton milestone. Status merges that
+milestone with every retained journal, while stats reflects the milestone after
+its next incremental ingest. Run retention and explicit rollup rebuilds do not
+reset or move a captured lifetime value.
 
 ## Relationships
 

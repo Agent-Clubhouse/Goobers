@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 func TestParseProviderQuotaResumeTime(t *testing.T) {
@@ -206,6 +207,67 @@ func TestTimeToFirstPRFailsClosedOnUnreadableJournal(t *testing.T) {
 
 	if metric, err := service.TimeToFirstPR(context.Background()); err == nil {
 		t.Fatalf("TimeToFirstPR = %#v, nil; want unreadable journal error", metric)
+	}
+}
+
+func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	firstRunAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	first, _ := createFixtureRun(
+		t, layout, machine, "first-run", "implementation", "goobers",
+		firstRunAt, journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	firstDir := first.Dir()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, clock := createFixtureRun(
+		t, layout, machine, "first-pr-run", "implementation", "goobers",
+		firstRunAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	clock.now = firstRunAt.Add(12 * time.Minute)
+	if err := second.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondDir := second.Dir()
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, dir := range []string{firstDir, secondDir} {
+		if err := db.IngestRun(dir); err != nil {
+			t.Fatalf("IngestRun(%s): %v", dir, err)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		Telemetry:   db,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err := service.TimeToFirstPR(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(clock.now) ||
+		metric.Milliseconds == nil || *metric.Milliseconds != (12*time.Minute).Milliseconds() {
+		t.Fatalf("TimeToFirstPR after retention = %#v", metric)
 	}
 }
 

@@ -61,6 +61,10 @@ func (db *DB) ingestRun(runDir string) error {
 	if err := insertSpans(tx, runID, spans); err != nil {
 		return err
 	}
+	firstRunAt, firstPROpenAt := runTimeToFirstPR(identity, events)
+	if err := upsertTimeToFirstPR(tx, firstRunAt, firstPROpenAt); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

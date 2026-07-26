@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -140,5 +141,109 @@ func TestInstanceSummaryStatsEmpty(t *testing.T) {
 		timeToFirstPR.FirstPROpenAt != nil ||
 		timeToFirstPR.Milliseconds != nil {
 		t.Fatalf("empty time to first PR = %#v", timeToFirstPR)
+	}
+}
+
+func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	seedSummaryRun(t, runsDir, fixtureRunID, "implement", "completed", firstRunAt, 0)
+	seedSummaryRun(
+		t,
+		runsDir,
+		fixtureRunID2,
+		"implement",
+		"completed",
+		firstRunAt.Add(time.Hour),
+		0,
+		summaryMutation{kind: "pr", operation: "open"},
+	)
+
+	dbPath := filepath.Join(tmp, "telemetry.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAndIngest(t, db, runsDir)
+	for _, runID := range []string{fixtureRunID, fixtureRunID2} {
+		if err := db.DeleteRun(runID); err != nil {
+			t.Fatalf("DeleteRun(%s): %v", runID, err)
+		}
+	}
+	wantPROpenAt := firstRunAt.Add(time.Hour + time.Second)
+	assertTimeToFirstPR(t, db, firstRunAt, wantPROpenAt)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(runsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rebuild(dbPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	rebuilt, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rebuilt.Close() }()
+	assertTimeToFirstPR(t, rebuilt, firstRunAt, wantPROpenAt)
+}
+
+func TestOnboardingMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	firstPROpenAt := firstRunAt.Add(7 * time.Minute)
+	if _, err := db.sql.Exec(`
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
+		VALUES ('legacy-run', 'implement', 1, 'web', ?)`,
+		formatTime(firstRunAt),
+	); err != nil {
+		t.Fatalf("insert legacy run: %v", err)
+	}
+	if _, err := db.sql.Exec(`
+		INSERT INTO provider_mutations (
+			run_id, seq, provider, kind, external_id, operation, occurred_at
+		) VALUES ('legacy-run', 1, 'github', 'pr', '42', 'open', ?)`,
+		formatTime(firstPROpenAt),
+	); err != nil {
+		t.Fatalf("insert legacy provider mutation: %v", err)
+	}
+	if _, err := db.sql.Exec(`DROP TABLE onboarding_milestones`); err != nil {
+		t.Fatalf("drop onboarding milestone table: %v", err)
+	}
+	if _, err := db.sql.Exec(`UPDATE schema_meta SET version = ?`, len(migrations)-1); err != nil {
+		t.Fatalf("restore v13 schema version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade Open: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	assertTimeToFirstPR(t, upgraded, firstRunAt, firstPROpenAt)
+}
+
+func assertTimeToFirstPR(t *testing.T, db *DB, firstRunAt, firstPROpenAt time.Time) {
+	t.Helper()
+	metric, err := db.TimeToFirstPR()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) {
+		t.Fatalf("TimeToFirstPR = %#v, want %s to %s", metric, firstRunAt, firstPROpenAt)
+	}
+	wantMilliseconds := firstPROpenAt.Sub(firstRunAt).Milliseconds()
+	if metric.Milliseconds == nil || *metric.Milliseconds != wantMilliseconds {
+		t.Fatalf("TimeToFirstPR milliseconds = %v, want %d", metric.Milliseconds, wantMilliseconds)
 	}
 }

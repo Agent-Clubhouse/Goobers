@@ -100,6 +100,57 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	)
 }
 
+func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	firstRunAt := now.Add(-48 * time.Hour)
+	firstDir := createRetentionRun(t, layout, "first-run", firstRunAt, "terminal")
+	firstPROpenAt := firstRunAt.Add(time.Hour + 10*time.Minute)
+	prDir := createRetentionRun(
+		t,
+		layout,
+		"first-pr-run",
+		firstRunAt.Add(time.Hour),
+		"terminal",
+		10*time.Minute,
+	)
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, dir := range []string{firstDir, prDir} {
+		if err := db.IngestRun(dir); err != nil {
+			t.Fatalf("ingest %s: %v", dir, err)
+		}
+	}
+
+	results, err := Prune(
+		layout,
+		db,
+		Policy{Window: 24 * time.Hour, MaxRuns: 500},
+		Options{Now: now},
+	)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Prune removed %d runs, want 2", len(results))
+	}
+	metric, err := db.TimeToFirstPR()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) {
+		t.Fatalf("TimeToFirstPR after prune = %#v", metric)
+	}
+}
+
 func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
@@ -298,12 +349,23 @@ func waitForRunLock(t *testing.T, runDir string) {
 	}
 }
 
-func createRetentionRun(t *testing.T, layout instance.Layout, runID string, startedAt time.Time, state string) string {
+func createRetentionRun(
+	t *testing.T,
+	layout instance.Layout,
+	runID string,
+	startedAt time.Time,
+	state string,
+	prOpenAfter ...time.Duration,
+) string {
 	t.Helper()
+	if len(prOpenAfter) > 1 {
+		t.Fatal("createRetentionRun accepts at most one PR-open offset")
+	}
+	now := startedAt
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	}, nil, journal.WithClock(func() time.Time { return startedAt }))
+	}, nil, journal.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +374,16 @@ func createRetentionRun(t *testing.T, layout instance.Layout, runID string, star
 	}
 	if _, err := run.RecordSpan("implement", "harness.transcript", []byte("transcript")); err != nil {
 		t.Fatal(err)
+	}
+	if len(prOpenAfter) == 1 {
+		now = startedAt.Add(prOpenAfter[0])
+		if err := run.Append(journal.Event{
+			Type:        journal.EventRefTouched,
+			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"},
+			Runner:      map[string]any{"operation": "open"},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	switch state {
 	case "terminal":

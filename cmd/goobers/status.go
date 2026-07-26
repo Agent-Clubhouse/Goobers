@@ -586,12 +586,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	reads, err := readservice.NewLocal(readservice.LocalSources{
+	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,
 		Definitions: set,
 		Validation:  report,
-	}, func() bool { return true })
+	}
+	if supportsWatch {
+		telemetryDB, err := openRollup(l, false)
+		if err != nil {
+			pf(stderr, "error: open telemetry rollup: %v\n", err)
+			return 2
+		}
+		defer func() { _ = telemetryDB.Close() }()
+		sources.Telemetry = telemetryDB
+	}
+	reads, err := readservice.NewLocal(sources, func() bool { return true })
 	if err != nil {
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 2
