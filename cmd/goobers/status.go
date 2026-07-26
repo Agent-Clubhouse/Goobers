@@ -82,6 +82,10 @@ func timeToFirstPRStatusText(metric telemetry.TimeToFirstPRMetric) string {
 	}
 }
 
+func timeToFirstPRStatusUnavailableText(err error) string {
+	return fmt.Sprintf("Time to first PR unavailable: %v\n", err)
+}
+
 type statusTimeToFirstPRCache struct {
 	load     func(context.Context) (telemetry.TimeToFirstPRMetric, error)
 	now      func() time.Time
@@ -592,14 +596,15 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		Definitions: set,
 		Validation:  report,
 	}
+	var timeToFirstPROpenErr error
 	if supportsWatch {
 		telemetryDB, err := openRollup(l, false)
 		if err != nil {
-			pf(stderr, "error: open telemetry rollup: %v\n", err)
-			return 2
+			timeToFirstPROpenErr = fmt.Errorf("open telemetry rollup: %w", err)
+		} else {
+			defer func() { _ = telemetryDB.Close() }()
+			sources.Telemetry = telemetryDB
 		}
-		defer func() { _ = telemetryDB.Close() }()
-		sources.Telemetry = telemetryDB
 	}
 	reads, err := readservice.NewLocal(sources, func() bool { return true })
 	if err != nil {
@@ -632,7 +637,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
-	timeToFirstPRCache := newStatusTimeToFirstPRCache(reads.TimeToFirstPR)
+	loadTimeToFirstPR := reads.TimeToFirstPR
+	if timeToFirstPROpenErr != nil {
+		loadTimeToFirstPR = func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
+			return telemetry.TimeToFirstPRMetric{}, timeToFirstPROpenErr
+		}
+	}
+	timeToFirstPRCache := newStatusTimeToFirstPRCache(loadTimeToFirstPR)
 	// Scheduler state is loaded per redraw so watch reflects quota transitions.
 	// Provider PR counts use the scheduler's coarser PR refresh cadence to keep
 	// watch API traffic bounded.
@@ -643,9 +654,10 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var text strings.Builder
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
 		if err != nil {
-			return "", err
+			text.WriteString(timeToFirstPRStatusUnavailableText(err))
+		} else {
+			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		}
-		text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		summary, err := loadFleetSummary(runs, now)
 		if err != nil {
 			return "", err
@@ -698,11 +710,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
-			if err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 2
+			if err == nil {
+				timeToFirstPR = &metric
 			}
-			timeToFirstPR = &metric
 		}
 		output := statusJSONOutput{
 			Warnings:      warnings,

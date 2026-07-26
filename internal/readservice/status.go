@@ -33,8 +33,9 @@ func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 }
 
 // TimeToFirstPR merges the retained lifetime milestone with every live run
-// identity and ref.touched event. Scanning all retained journals keeps status
-// fail-closed on incomplete history while the milestone survives retention.
+// identity and ref.touched event. Scanning all retained journals keeps the
+// metric fail-closed on incomplete history while the milestone survives
+// retention.
 func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
 	var firstRunAt, firstPROpenAt time.Time
 	if s.sources.Telemetry != nil {

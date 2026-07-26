@@ -191,6 +191,36 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 	assertTimeToFirstPR(t, rebuilt, firstRunAt, wantPROpenAt)
 }
 
+func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	seedSummaryRun(
+		t,
+		runsDir,
+		fixtureRunID,
+		"implement",
+		"completed",
+		firstRunAt,
+		0,
+		summaryMutation{kind: "pr", operation: "open"},
+	)
+
+	dbPath := filepath.Join(tmp, "telemetry.db")
+	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rebuild(dbPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	rebuilt, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rebuilt.Close() }()
+	assertTimeToFirstPR(t, rebuilt, firstRunAt, firstRunAt.Add(time.Second))
+}
+
 func TestOnboardingMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
 	db, err := Open(path)

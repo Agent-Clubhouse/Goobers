@@ -145,7 +145,7 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	}
 }
 
-func TestStatusFailsClosedWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
+func TestStatusKeepsRunsWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
 	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
 	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
@@ -165,14 +165,46 @@ func TestStatusFailsClosedWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, args := range [][]string{
-		{"status", root},
-		{"status", "--json", root},
-	} {
-		code, stdout, stderr := runArgs(t, args...)
-		if code != 2 || !strings.Contains(stderr, `read run "unreadable-run" for time to first PR`) {
-			t.Fatalf("%v: code = %d, stdout = %q, stderr = %q", args, code, stdout, stderr)
-		}
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, `Time to first PR unavailable: read run "unreadable-run"`) {
+		t.Fatalf("stdout = %q, want unavailable TTFP enrichment", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if got.TimeToFirstPR != nil {
+		t.Fatalf("timeToFirstPR = %#v, want unavailable field omitted", got.TimeToFirstPR)
+	}
+}
+
+func TestStatusKeepsRunsWhenTimeToFirstPRRollupIsUnreadable(t *testing.T) {
+	root := initScheduledDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	writeStatusRun(t, root, "healthy-run", "default-implement", "example", startedAt)
+	if err := os.WriteFile(
+		instance.NewLayout(root).TelemetryDB(),
+		[]byte("not a sqlite database"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "healthy-run") ||
+		!strings.Contains(stdout, "Time to first PR unavailable: open telemetry rollup") {
+		t.Fatalf("stdout = %q, want healthy run and unavailable TTFP enrichment", stdout)
 	}
 }
 
@@ -318,7 +350,7 @@ func TestListStatusRunsPropagatesSharedServiceFailure(t *testing.T) {
 	}
 }
 
-func TestStatusFailsClosedWhenHistoricalRunIdentityIsMalformed(t *testing.T) {
+func TestStatusSkipsMalformedHistoricalRun(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
@@ -333,11 +365,15 @@ func TestStatusFailsClosedWhenHistoricalRunIdentityIsMalformed(t *testing.T) {
 	}
 
 	code, stdout, stderr := runArgs(t, "status", root)
-	if code != 2 {
-		t.Fatalf("status: code = %d, want 2; stdout = %q, stderr = %q", code, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, `read run "malformed-run" for time to first PR`) {
-		t.Fatalf("stderr = %q, want malformed TTFP journal error", stderr)
+	if !strings.Contains(stdout, "healthy-run") ||
+		strings.Contains(stdout, "malformed-run                         implementation") {
+		t.Fatalf("stdout = %q, want only the healthy run", stdout)
+	}
+	if !strings.Contains(stdout, `Time to first PR unavailable: read run "malformed-run"`) {
+		t.Fatalf("stdout = %q, want unavailable TTFP enrichment", stdout)
 	}
 }
 
