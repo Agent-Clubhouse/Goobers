@@ -11,7 +11,8 @@ Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 complete matrix, verifies its shared checksum manifest, Linux binary, and
 release-pinned documentation, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
-`install.sh`, `goobers-agent-toolkit_<version>.zip`, `feature-registry.json`,
+`install.sh`, `goobers-agent-toolkit_<version>.zip`,
+`goobers-onboarding_<version>.zip`, `feature-registry.json`,
 `dsl-support-matrix.json`, and `RELEASE_NOTES.md`. The release body and attached
 notes are the same document:
 curated highlights and the commit changelog followed by the DSL feature-support
@@ -53,11 +54,13 @@ VERSION=v1.2.3
 The command downloads only assets attached to that tag. The helper detects the
 host OS and architecture, downloads the matching archive plus `SHA256SUMS`,
 verifies the archive before extraction, and installs `goobers` to
-`$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It installs the
-archive's `README.md` and `docs/` tree to the versioned
+`$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It retains the exact
+binary as `goobers-<version>` and refreshes `goobers` as the current-version
+convenience command. It installs the
+archive's `README.md`, `docs/` tree, and `onboarding/` payload to the versioned
 `${XDG_DATA_HOME:-$HOME/.local/share}/goobers/<version>` directory (override the
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
-earlier documentation. It then runs the release binary's
+earlier documentation, templates, or sample. It then runs the release binary's
 `goobers init --guided` flow, which separately selects a checked-in config
 source and target application repository, prompts for credential references and
 canonical workflows, and validates both source and instance. Use a fresh
@@ -65,9 +68,12 @@ instance path; a new source path must also be empty, while an adopted source is
 validated and left unchanged.
 
 The helper intentionally delegates all config generation and validation to the
-installed binary. The canonical workflow templates are embedded in that tagged
-binary, so the same tag selects the same checksummed archive and the same
-starter config without reading the development repository's moving `main`.
+installed binary. The release-pinned README and platform-neutral quickstart
+invoke `goobers-<version>`, not the replaceable current-version command. The
+canonical workflow templates are embedded in that tagged binary and mirrored
+byte-for-byte under the installed `onboarding/` path, so the same tag selects the
+same checksummed archive, starter config, and tutorial target without reading
+the development repository's moving `main`.
 `curl`, `tar`, and either `sha256sum` (Linux) or `shasum` (macOS) are required.
 Windows adopters should use the checksum-verified
 [Windows release path](quickstart-windows.md).
@@ -79,10 +85,10 @@ regenerates the CLI reference, man pages, and completion scripts from that
 release's command registry, packages each target with the tagged checkout's
 documentation into a platform-conventional archive, and writes a shared
 `SHA256SUMS` manifest, the tagged install helper, portable agent toolkit,
-generated release notes, and shipped DSL feature and version-support snapshots
-into `dist/` (override with `-output`). It is a standalone Go tool — matching
-`test/ci` and `test/coveragegate` — so it runs identically on any release
-runner without a shell dependency.
+standalone onboarding payload, generated release notes, and shipped DSL feature
+and version-support snapshots into `dist/` (override with `-output`). It is a
+standalone Go tool — matching `test/ci` and `test/coveragegate` — so it runs
+identically on any release runner without a shell dependency.
 
 ```sh
 go run ./release -first-feature-snapshot      # first recorded snapshot only
@@ -117,13 +123,51 @@ from another version. It also runs the packaged quickstart's initial `init` and
 `validate` commands with the extracted binary.
 
 The starter configuration and scaffold templates remain compiled into that same
-binary and are emitted by `goobers init`/`goobers scaffold`; release packaging
-does not introduce a second template source. Keeping the extracted archive
-together therefore gives an installation one release identity across the
-binary, onboarding docs, shell completions, man pages, and generated templates.
-Start with the bundled `README.md`, use `docs/VISION.md` and
-`docs/ARCHITECTURE.md` for the product concepts, then follow
-`docs/guides/quickstart.md`.
+binary and are emitted by `goobers init`/`goobers scaffold`. The onboarding
+payload is a byte-identical, inspectable mirror, not a second mutable template
+source. Keeping the extracted archive together therefore gives an installation
+one release identity across the binary, onboarding docs, shell completions, man
+pages, generated templates, and tutorial target. Start with the bundled
+`README.md`, use `docs/VISION.md` and `docs/ARCHITECTURE.md` for the product
+concepts, then follow `docs/guides/quickstart.md`.
+
+### Release-pinned workflow templates and sample
+
+Every platform archive contains `onboarding/`, and every GitHub Release also
+publishes the same directory as
+`goobers-onboarding_<version>.zip`. `SHA256SUMS` covers both forms. The
+standalone asset is useful for consumers that need only tutorial inputs; the
+installer uses the copy already inside the verified platform archive.
+
+```text
+onboarding/
+  manifest.json
+  templates/
+    canonical/                         # tagged config-examples, excluding Go embed code
+    quickstart@v1/                     # ONB-A2 happy-path template
+  samples/
+    getting-started-task-api@1.0.0/    # ONB-A3 app, sample.json, and seed-issues.json
+```
+
+`manifest.json` records the producing release version and commit, the canonical
+template's release version, the quickstart template version, the sample version
+and compatible templates, and every payload file's size, mode, and SHA-256.
+Packaging copies these files directly from the tagged checkout; release tests
+compare every copy with its source, and release verification compares the
+standalone zip with the copy in the platform archive.
+
+The immutable hosted path is
+`https://github.com/Agent-Clubhouse/Goobers/releases/download/<version>/goobers-onboarding_<version>.zip`.
+After installation, the same bytes resolve under
+`${GOOBERS_DOCS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/goobers}/<version>/onboarding`.
+The release-pinned quickstart substitutes the concrete installed version into
+that path when it materializes the sample.
+`goobers-<version> init --template=quickstart` resolves its template from the
+retained versioned binary; its emitted config must match
+`onboarding/templates/quickstart@v1` byte-for-byte. Guided setup uses the
+canonical templates compiled into that same binary, mirrored under
+`onboarding/templates/canonical`. Installing a later release creates a sibling
+version directory and binary and cannot change either earlier resolution path.
 
 ### Portable agent toolkit
 
@@ -182,9 +226,10 @@ and semantic changes require the deprecation window or an `apiVersion` bump.
 
 | Target | Archive | Contents |
 |---|---|---|
-| `windows/amd64` | `goobers_<version>_windows_amd64.zip` | `goobers.exe`, `README.md`, `docs/` |
-| `darwin/amd64`, `darwin/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/` |
-| `linux/amd64`, `linux/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/` |
+| `windows/amd64` | `goobers_<version>_windows_amd64.zip` | `goobers.exe`, `README.md`, `docs/`, `onboarding/` |
+| `darwin/amd64`, `darwin/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/`, `onboarding/` |
+| `linux/amd64`, `linux/arm64` | `goobers_<version>_<os>_<arch>.tar.gz` | `goobers`, `README.md`, `docs/`, `onboarding/` |
+| platform-independent | `goobers-onboarding_<version>.zip` | `manifest.json`, `templates/`, `samples/` |
 
 Windows uses `.zip` (the platform convention Windows users and scoop/winget
 expect); unix targets use `.tar.gz`.
@@ -193,7 +238,7 @@ expect); unix targets use `.tar.gz`.
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
 `<hex>  <filename>` line per binary archive, `install.sh`, portable agent
-toolkit, and authoritative `feature-registry.json` and
+toolkit, onboarding payload, and authoritative `feature-registry.json` and
 `dsl-support-matrix.json`, sorted by filename. The generated release note
 remains editable for curation and is not checksummed. The same file verifies on
 every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
