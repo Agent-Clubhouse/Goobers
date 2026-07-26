@@ -19,6 +19,7 @@
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
+| [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
@@ -381,6 +382,30 @@ Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~console
 $ goobers blocked list
 $ goobers blocked list --json
+~~~
+
+## `goobers check-fail-first`
+
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+
+~~~text
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-fail-first
 ~~~
 
 ## `goobers claims`
@@ -764,7 +789,7 @@ $ goobers escalations show <run-id>
 list the workflow-DSL features this build supports
 
 ~~~text
-Usage: goobers features [--dsl-version <version>] [--used] [path]
+Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
 
 List the workflow-DSL features this build understands by DSL version,
 including each feature's support level (preview/ga/deprecated/removed).
@@ -772,7 +797,8 @@ Use --dsl-version to scope the matrix to one declared version. This reads
 the same registry and SupportMatrix the committed
 docs/feature-matrix.md is generated from, so the two never disagree.
 
-With --used, list only the features the instance at path (default ".")
+With --json, emit a versioned feature-discovery envelope instead of the
+human-readable table. With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
@@ -782,7 +808,7 @@ config, 2 = usage/IO error.
 
 ~~~console
 $ goobers features
-$ goobers features --dsl-version 1.4
+$ goobers features --json --dsl-version 1.4
 $ goobers features --used
 ~~~
 
@@ -1087,7 +1113,7 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 lint config via the single authoritative validation engine (alias for validate)
 
 ~~~text
-Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+Usage: goobers lint [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
@@ -1095,7 +1121,8 @@ alias for `goobers validate`: identical flags, identical checks, and
 identical exit codes, so CI and local development share one validation
 path instead of drifting between ad-hoc checks. --source-tree lints a
 checked-in config source tree using instance.yaml.example and the path
-itself as config/. --check-harness additionally preflights every agent
+itself as config/. --json emits the same versioned findings envelope as
+`goobers validate --json`. --strict treats warnings as validation errors. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -1105,6 +1132,7 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 
 ~~~console
 $ goobers lint
+$ goobers lint --json
 $ goobers lint --check-harness --check-repos
 ~~~
 
@@ -1284,14 +1312,22 @@ Usage: goobers rebase-pr [path]
 
 Check out the selected PR's branch, attempt a rebase onto its base
 (force-with-lease is mandatory for the eventual push — never a bare
-push), and route on the result: a clean rebase with no substantive
-finding or failing CI force-pushes and clears goobers:needs-remediation;
-anything else (an unsafe conflict, substantive finding, or failing CI) needs the
-agentic remediation chain, reported via the needsAgent output for the
-workflow to route on. Requires selectedNumber/head/base
-(Task.InputsFrom gather-pr-context's own outputs) and
-hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =
-business error, 2 = usage/IO error.
+push), and route on the result: a clean rebase with no detected,
+policy-allowed cause force-pushes and clears goobers:needs-remediation;
+a detected cause the declared policy allows needs the agentic remediation
+chain, reported via the needsAgent output for the workflow to route on; a
+detected cause the policy excludes is left untouched for a human
+(policyExcluded/policyExcludedReason outputs — #941/PRR-6). Requires
+selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
+outputs) and hasSubstantiveFindings/hasFailingCI.
+
+remediate (input, default "conflict,substantive,failing-ci,behind-base,
+sibling-overlap") is a comma-separated policy naming which detected
+causes are allowed to trigger remediation; the shipped default is fully
+liberal. behind-base and sibling-overlap are accepted vocabulary but
+cannot fire yet (no detection reaches this stage's decision today).
+
+Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -2126,11 +2162,11 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
+using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
@@ -2142,6 +2178,7 @@ a repository is larger than the checkout-size threshold. Exit codes:
 
 ~~~console
 $ goobers validate
+$ goobers validate --json
 $ goobers validate --check-harness --check-repos
 ~~~
 

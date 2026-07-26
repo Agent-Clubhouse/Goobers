@@ -216,13 +216,13 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		return nil
 	}
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "ado",
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
 		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
 	}
@@ -242,12 +242,12 @@ func TestCheckTargetRepositoriesWarnsOnOversizedGitHubRepo(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "github",
 		Owner:    "acme",
 		Name:     "monorepo",
 		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok {
 		t.Fatalf("checkTargetRepositories() = %v, want true (a size warning is advisory, not a failure)", ok)
 	}
@@ -275,12 +275,12 @@ func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
 	}
 
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "github",
 		Owner:    "acme",
 		Name:     "monorepo",
 		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
-	}}, nil, &stdout)
+	}}, nil, &stdout, "instance.yaml")
 	if !ok {
 		t.Fatalf("checkTargetRepositories() = %v, want true (size-check failure must not fail --check-repos)", ok)
 	}
