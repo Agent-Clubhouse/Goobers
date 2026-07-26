@@ -12,9 +12,11 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // fakeTrigger drives superviseTrigger through a scripted sequence of Watch
@@ -130,6 +132,45 @@ func TestSchedulerADOCredentialSource(t *testing.T) {
 	}
 	if _, err := schedulerADOCredentialSource(apiv1.ProviderADO, config{}); err == nil {
 		t.Fatal("missing ADO auth did not fail")
+	}
+}
+
+func TestBacklogFieldPredicateForWorkflowCombinesGaggleAndTrigger(t *testing.T) {
+	gaggle := apiv1.Gaggle{
+		ObjectMeta: metav1.ObjectMeta{Name: "engineering"},
+		Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{
+			FieldPredicate: `fields["state"] == "open"`,
+		}},
+	}
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "engineering",
+			Triggers: []apiv1.Trigger{{
+				Type:           apiv1.TriggerBacklogItem,
+				FieldPredicate: `fields["number"] >= 10`,
+			}},
+		},
+	}}
+	predicate, err := backlogFieldPredicateForWorkflow(gaggle, workflows, "implementation")
+	if err != nil {
+		t.Fatalf("backlogFieldPredicateForWorkflow: %v", err)
+	}
+	for _, tt := range []struct {
+		fields fieldpredicate.Fields
+		want   bool
+	}{
+		{fields: fieldpredicate.Fields{"state": "open", "number": int64(10)}, want: true},
+		{fields: fieldpredicate.Fields{"state": "closed", "number": int64(10)}},
+		{fields: fieldpredicate.Fields{"state": "open", "number": int64(9)}},
+	} {
+		got, err := predicate.Matches(tt.fields)
+		if err != nil {
+			t.Fatalf("Matches(%v): %v", tt.fields, err)
+		}
+		if got != tt.want {
+			t.Fatalf("Matches(%v) = %v, want %v", tt.fields, got, tt.want)
+		}
 	}
 }
 

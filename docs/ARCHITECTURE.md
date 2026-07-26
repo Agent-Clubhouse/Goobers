@@ -297,12 +297,14 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   `created_at`, `updated_at`, milestone number/title, and native dependency
   count (`issue_dependencies_summary.total_blocked_by`); Azure DevOps projects
   every scalar work-item field by its reference name plus `System.Id` and
-  `System.Rev`. Optional or unsupported fields are errors rather than false
-  matches. `backlog-query` also accepts `fieldOrder` as comma-separated
-  `field[:asc|desc]` terms, applied after label priority and before FIFO. With
-  none of these additive inputs configured, label selection and FIFO remain
-  unchanged. On public repos, eligibility requires a maintainer-applied trust
-  label: backlog content is untrusted input (`SEC-047`).
+  `System.Rev`. Gaggle and workflow-trigger field predicates are ANDed.
+  Optional or unsupported fields are errors rather than false matches.
+  `backlog-query` also accepts `fieldOrder` as comma-separated
+  `field[:asc|desc]` terms, applied across the complete candidate set after
+  label priority and before FIFO. With none of these additive inputs configured,
+  label selection and FIFO remain unchanged. On public repos, eligibility
+  requires a maintainer-applied trust label: backlog content is untrusted input
+  (`SEC-047`).
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and

@@ -284,13 +284,17 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		l.SchedulerDir(), repo, trustLabel, labelExpression, fieldExpression,
 		requireLabels, excludeLabels,
 	)
-	scanCursor, err := readBacklogScanCursor(lockPath, cursorPath)
-	if err != nil {
-		pf(stderr, "error: read backlog scan cursor: %v\n", err)
-		return 1
+	exhaustiveScan := fieldOrder.Configured()
+	scanCursor := backlogScanCursor{}
+	if !exhaustiveScan {
+		scanCursor, err = readBacklogScanCursor(lockPath, cursorPath)
+		if err != nil {
+			pf(stderr, "error: read backlog scan cursor: %v\n", err)
+			return 1
+		}
 	}
 	items, nextScanCursor, err := listBacklogScanWindow(
-		ctx, issueProvider, repo, labels, fieldFilter, scanLimit, scanCursor,
+		ctx, issueProvider, repo, labels, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
@@ -1015,14 +1019,18 @@ func listBacklogScanWindow(
 	fieldFilter *fieldpredicate.Predicate,
 	limit int,
 	cursor backlogScanCursor,
+	exhaustive bool,
 ) ([]providers.WorkItem, backlogScanCursor, error) {
-	if limit <= 0 {
+	if limit <= 0 && !exhaustive {
 		return nil, cursor, nil
 	}
 	items := make([]providers.WorkItem, 0, limit)
 	maxPages := (limit + backlogScanPageSize - 1) / backlogScanPageSize
-	for range maxPages {
-		pageLimit := min(backlogScanPageSize, limit)
+	for page := 0; exhaustive || page < maxPages; page++ {
+		pageLimit := backlogScanPageSize
+		if !exhaustive {
+			pageLimit = min(pageLimit, limit)
+		}
 		pageInfo := &providers.ListWorkItemsPageInfo{}
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:     repo,
@@ -1051,9 +1059,11 @@ func listBacklogScanWindow(
 			return nil, cursor, fmt.Errorf("provider returned a non-advancing work-item cursor")
 		}
 		cursor.Cursor = pageInfo.NextCursor
-		limit -= pageInfo.CandidateCount
-		if limit <= 0 {
-			break
+		if !exhaustive {
+			limit -= pageInfo.CandidateCount
+			if limit <= 0 {
+				break
+			}
 		}
 	}
 	return items, cursor, nil

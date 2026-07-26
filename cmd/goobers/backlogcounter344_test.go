@@ -38,7 +38,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers": "true"}}},
 		}}
-		c, err := buildBacklogCounter(&instance.Config{}, wf, repoRef, nil, nil, "", nil)
+		c, err := buildBacklogCounter(&instance.Config{}, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -55,7 +55,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		}}
-		c, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil)
+		c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -65,6 +65,9 @@ func TestBuildBacklogCounter(t *testing.T) {
 	})
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
+		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{
+			FieldPredicate: `fields["state"] == "open"`,
+		}}}
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{
 				Type: apiv1.TriggerBacklogItem,
@@ -81,7 +84,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 			t.Fatalf("NewResolver: %v", err)
 		}
 		quota := localscheduler.NewProviderQuotaState()
-		c, err := buildBacklogCounter(cfg, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
+		c, err := buildBacklogCounter(cfg, gaggle, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota)
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -108,9 +111,18 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if err != nil || !matched {
 			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
 		}
-		matched, err = bc.fieldPredicate.Matches(fieldpredicate.Fields{"number": int64(10)})
+		matched, err = bc.fieldPredicate.Matches(fieldpredicate.Fields{"state": "open", "number": int64(10)})
 		if err != nil || !matched {
 			t.Fatalf("compiled field predicate match = %v, err = %v, want true", matched, err)
+		}
+		for _, fields := range []fieldpredicate.Fields{
+			{"state": "closed", "number": int64(10)},
+			{"state": "open", "number": int64(9)},
+		} {
+			matched, err = bc.fieldPredicate.Matches(fields)
+			if err != nil || matched {
+				t.Fatalf("compiled field predicate match for %v = %v, err = %v, want false", fields, matched, err)
+			}
 		}
 	})
 
@@ -153,7 +165,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 				LabelPredicate: `labels.size() > 0`,
 			}},
 		}}
-		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
+		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil); err == nil {
 			t.Fatal("buildBacklogCounter succeeded with an unsupported predicate")
 		}
 	})
@@ -165,7 +177,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 				FieldPredicate: `fields.number == 1`,
 			}},
 		}}
-		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
+		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil); err == nil {
 			t.Fatal("buildBacklogCounter succeeded with an unsupported field predicate")
 		}
 	})

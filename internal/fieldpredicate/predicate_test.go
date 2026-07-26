@@ -34,6 +34,39 @@ func TestPredicateUnavailableFieldFailsExplicitly(t *testing.T) {
 	}
 }
 
+func TestCompileConjunctionRequiresEveryPredicate(t *testing.T) {
+	predicate, err := CompileConjunction(
+		`fields["state"] == "open"`,
+		`fields["number"] >= 10`,
+	)
+	if err != nil {
+		t.Fatalf("CompileConjunction: %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		fields Fields
+		want   bool
+	}{
+		{name: "both match", fields: Fields{"state": "open", "number": int64(10)}, want: true},
+		{name: "first rejects", fields: Fields{"state": "closed", "number": int64(10)}},
+		{name: "second rejects", fields: Fields{"state": "open", "number": int64(9)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := predicate.Matches(tt.fields)
+			if err != nil {
+				t.Fatalf("Matches: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Matches = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if _, err := predicate.Matches(Fields{"state": "closed"}); err == nil ||
+		!strings.Contains(err.Error(), `field "number" is unavailable`) {
+		t.Fatalf("short-circuited unavailable field error = %v", err)
+	}
+}
+
 func TestPredicateRejectsUnsupportedCEL(t *testing.T) {
 	for _, expression := range []string{
 		`fields["priority"]`,

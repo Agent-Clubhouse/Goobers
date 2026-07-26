@@ -1291,7 +1291,7 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
+func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -1320,7 +1320,7 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
 	}
-	fieldPredicate, err := fieldpredicate.Compile(fieldExpression)
+	fieldPredicate, err := fieldpredicate.CompileConjunction(gaggle.Spec.Backlog.FieldPredicate, fieldExpression)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog field predicate: %w", wf.Name, err)
 	}

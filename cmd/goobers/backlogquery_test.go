@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -255,6 +256,38 @@ func TestBacklogQueryOrdersByNativeField(t *testing.T) {
 		!strings.HasPrefix(lines[0], "9\t") || !strings.HasPrefix(lines[1], "8\t") ||
 		!strings.HasPrefix(lines[2], "7\t") {
 		t.Fatalf("stdout = %q, want descending issue-number order", stdout)
+	}
+}
+
+func TestBacklogQueryFieldOrderScansBeyondFIFOWindow(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for i := 1; i <= backlogScanCeiling+1; i++ {
+		server.addIssue(i, "Candidate", "trusted")
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-ordered")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_FIELDORDER", "number:desc")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	wantID := strconv.Itoa(backlogScanCeiling + 1)
+	if !strings.Contains(stdout, "claimed "+wantID+": Candidate") {
+		t.Fatalf("stdout = %q, want highest issue beyond the FIFO scan ceiling", stdout)
+	}
+	gotPages := server.issueListPageSizeHistory()
+	wantPages := (backlogScanCeiling + 1 + backlogScanPageSize - 1) / backlogScanPageSize
+	if len(gotPages) != wantPages {
+		t.Fatalf("issue page sizes = %v, want %d exhaustive pages", gotPages, wantPages)
+	}
+	for _, pageSize := range gotPages {
+		if pageSize != backlogScanPageSize {
+			t.Fatalf("issue page sizes = %v, want full-size pages for an exhaustive scan", gotPages)
+		}
 	}
 }
 

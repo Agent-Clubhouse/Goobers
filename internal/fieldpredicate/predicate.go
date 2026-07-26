@@ -21,7 +21,7 @@ type Fields map[string]any
 // Predicate is a compiled boolean expression over provider-native fields.
 type Predicate struct {
 	referenced map[string]struct{}
-	program    cel.Program
+	programs   []cel.Program
 }
 
 // Compile validates and compiles expression. Field access is limited to
@@ -58,14 +58,31 @@ func Compile(expression string) (*Predicate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build CEL program: %w", err)
 	}
-	predicate.program = program
+	predicate.programs = append(predicate.programs, program)
 	return predicate, nil
+}
+
+// CompileConjunction compiles independently declared predicate levels into one
+// predicate that requires every configured expression to match.
+func CompileConjunction(expressions ...string) (*Predicate, error) {
+	combined := &Predicate{referenced: map[string]struct{}{}}
+	for _, expression := range expressions {
+		predicate, err := Compile(expression)
+		if err != nil {
+			return nil, err
+		}
+		for name := range predicate.referenced {
+			combined.referenced[name] = struct{}{}
+		}
+		combined.programs = append(combined.programs, predicate.programs...)
+	}
+	return combined, nil
 }
 
 // Matches evaluates the predicate. Every referenced field must be available
 // and contain a supported scalar, even when CEL short-circuiting would skip it.
 func (p *Predicate) Matches(fields Fields) (bool, error) {
-	if p == nil || p.program == nil {
+	if p == nil || len(p.programs) == 0 {
 		return true, nil
 	}
 	names := make([]string, 0, len(p.referenced))
@@ -82,15 +99,20 @@ func (p *Predicate) Matches(fields Fields) (bool, error) {
 			return false, fmt.Errorf("field %q: %w", name, err)
 		}
 	}
-	value, _, err := p.program.Eval(map[string]any{"fields": map[string]any(fields)})
-	if err != nil {
-		return false, fmt.Errorf("evaluate CEL expression: %w", err)
+	for _, program := range p.programs {
+		value, _, err := program.Eval(map[string]any{"fields": map[string]any(fields)})
+		if err != nil {
+			return false, fmt.Errorf("evaluate CEL expression: %w", err)
+		}
+		matched, ok := value.Value().(bool)
+		if !ok {
+			return false, fmt.Errorf("evaluate CEL expression: got %T, want bool", value.Value())
+		}
+		if !matched {
+			return false, nil
+		}
 	}
-	matched, ok := value.Value().(bool)
-	if !ok {
-		return false, fmt.Errorf("evaluate CEL expression: got %T, want bool", value.Value())
-	}
-	return matched, nil
+	return true, nil
 }
 
 func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error {
@@ -188,6 +210,11 @@ const descending direction = true
 // Order is a deterministic, ordered list of provider-native field keys.
 type Order struct {
 	terms []orderTerm
+}
+
+// Configured reports whether the order contains at least one field term.
+func (o Order) Configured() bool {
+	return len(o.terms) > 0
 }
 
 type orderTerm struct {
