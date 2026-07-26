@@ -47,8 +47,18 @@ const (
 		"versioned `quickstart@v1` template and copy its paired sample into a separate\n" +
 		"throwaway directory:\n\n" +
 		"```sh\n" +
-		"cp -R samples/getting-started-task-api ./getting-started-task-api\n" +
-		"```\n\n"
+		"bin/goobers onboarding stub-sample \\\n" +
+		"  --destination ./getting-started-task-api \\\n" +
+		"  --json\n" +
+		"```\n\n" +
+		"The action is non-interactive, embeds the release-matched sample, and is safe to\n" +
+		"re-run. It reports every created or skipped file plus the destination and next\n" +
+		"command. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
+		"To also seed the catalog's labels and issues into an existing disposable GitHub\n" +
+		"repository, add `--work-tracking owner/repo`; the command reads\n" +
+		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
+		"the JSON envelope reports the issues pending and still materializes the local\n" +
+		"sample without network access. It never creates or pushes a remote.\n\n"
 	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
@@ -130,7 +140,7 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		cleanup()
 		return "", nil, err
 	}
-	onboarding, err := stageOnboardingPayload(
+	_, err = stageOnboardingPayload(
 		repoRoot,
 		version,
 		commit,
@@ -140,7 +150,7 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		cleanup()
 		return "", nil, err
 	}
-	if err := adaptInstalledOnboarding(payloadDir, version, onboarding.Samples[0].Version); err != nil {
+	if err := adaptInstalledOnboarding(payloadDir, version); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -184,7 +194,7 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	return payloadDir, cleanup, nil
 }
 
-func adaptInstalledOnboarding(payloadDir, version, sampleVersion string) error {
+func adaptInstalledOnboarding(payloadDir, version string) error {
 	releaseCommand := "goobers-" + version
 	rewrites := []struct {
 		path                 string
@@ -221,28 +231,11 @@ func adaptInstalledOnboarding(payloadDir, version, sampleVersion string) error {
 			sections: []onboardingSectionRewrite{
 				{
 					source: quickstartSourceOnboardingAssets,
-					installed: fmt.Sprintf(
-						"For a first autonomous run against a disposable tutorial target, use the\n"+
-							"template and sample installed with this exact release. The installer prints the\n"+
-							"versioned data directory. If you used a custom data root, set `GOOBERS_RELEASE_ROOT`\n"+
-							"to that exact printed path. If you opened a platform archive directly, set it to\n"+
-							"the extracted directory and replace `%s` below with `./goobers`. The default installed\n"+
-							"location resolves with:\n\n"+
-							"```sh\n"+
-							"GOOBERS_DATA_ROOT=\"${GOOBERS_DOCS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/goobers}\"\n"+
-							"GOOBERS_RELEASE_ROOT=\"${GOOBERS_RELEASE_ROOT:-${GOOBERS_DATA_ROOT}/%s}\"\n"+
-							"cp -R \"${GOOBERS_RELEASE_ROOT}/onboarding/samples/getting-started-task-api@%s\" \\\n"+
-							"  ./getting-started-task-api\n"+
-							"```\n\n"+
-							"`%s init --template=quickstart` resolves `quickstart@v1` from the installed\n"+
-							"`%s` binary. Its emitted config matches\n"+
-							"`${GOOBERS_RELEASE_ROOT}/onboarding/templates/quickstart@v1` byte-for-byte; neither\n"+
-							"path reads the development repository's moving `main`.\n\n",
+					installed: strings.Replace(
+						quickstartSourceOnboardingAssets,
+						"bin/goobers",
 						releaseCommand,
-						version,
-						sampleVersion,
-						releaseCommand,
-						version,
+						1,
 					),
 				},
 				{
