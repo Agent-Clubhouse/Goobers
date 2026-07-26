@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,28 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+type failNthBacklogClaimLedger struct {
+	backlogClaimLedger
+	calls  int
+	failAt int
+}
+
+func (l *failNthBacklogClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
+	l.calls++
+	if l.calls == l.failAt {
+		return false, "", errors.New("injected claim failure")
+	}
+	return l.backlogClaimLedger.Claim(itemID, runID, workflow, leaseDuration)
+}
+
+func (l *failNthBacklogClaimLedger) ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
+	l.calls++
+	if l.calls == l.failAt {
+		return false, "", errors.New("injected claim failure")
+	}
+	return l.backlogClaimLedger.ClaimScoped(key, runID, workflow, leaseDuration)
+}
 
 // providerCmdEnv sets the GOOBERS_* env vars the runner would inject for a
 // provider-chain stage process (#131/#132) and points newGitHubProvider at a
@@ -87,6 +110,154 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	entry, ok := ledger.Lookup("7")
 	if !ok || entry.RunID != "run-1" {
 		t.Fatalf("ledger entry for item 7 = %+v, ok=%v, want held by run-1", entry, ok)
+	}
+}
+
+func TestBacklogQuerySkipsMalformedReadyItemAndClaimsNext(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Malformed oldest item", "goobers:approved", "goobers:ready")
+	server.addIssue(8, "Healthy later item", "goobers:approved", "goobers:ready")
+	server.mu.Lock()
+	for i, event := range server.issueEvents {
+		if event.number == 7 && event.label == providers.LabelReady {
+			server.issueEvents = append(server.issueEvents[:i], server.issueEvents[i+1:]...)
+			break
+		}
+	}
+	server.mu.Unlock()
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 8") {
+		t.Fatalf("claim after malformed item: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "skipping malformed eligible item 7") {
+		t.Fatalf("stderr = %q, want malformed-item warning", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("malformed item retained claim: %+v", entry)
+	}
+	if entry, held := ledger.Lookup("8"); !held || entry.RunID != "run-1" {
+		t.Fatalf("healthy item claim = %+v, held = %v; want run-1", entry, held)
+	}
+}
+
+func TestBacklogQueryPartialBatchFailureReleasesEarlierClaims(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "First item", "goobers:approved")
+	server.addIssue(8, "Second item", "goobers:approved")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "batch-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "2")
+	t.Chdir(t.TempDir())
+
+	originalOpen := openBacklogClaimLedger
+	openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
+		ledger, err := localscheduler.OpenClaimLedger(path, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return &failNthBacklogClaimLedger{backlogClaimLedger: ledger, failAt: 2}, nil
+	}
+	t.Cleanup(func() { openBacklogClaimLedger = originalOpen })
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 || !strings.Contains(stderr, "injected claim failure") {
+		t.Fatalf("partial batch failure: code = %d, stderr = %q", code, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := ledger.ForRunAll("batch-run"); len(entries) != 0 {
+		t.Fatalf("partial batch retained claims: %+v", entries)
+	}
+}
+
+func TestBacklogQueryBatchFailurePreservesPreexistingClaim(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Previously claimed item", "goobers:approved")
+	server.addIssue(8, "New item", "goobers:approved")
+	server.addIssue(9, "Failing item", "goobers:approved")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "batch-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "3")
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Chdir(t.TempDir())
+
+	ledgerPath := filepath.Join(root, "scheduler", "claims.json")
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "7"}
+	if ok, _, err := ledger.ClaimScoped(key, "batch-run", "implementation", DefaultClaimLease); err != nil || !ok {
+		t.Fatalf("seed preexisting claim: ok = %v, err = %v", ok, err)
+	}
+
+	originalOpen := openBacklogClaimLedger
+	openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
+		ledger, err := localscheduler.OpenClaimLedger(path, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return &failNthBacklogClaimLedger{backlogClaimLedger: ledger, failAt: 3}, nil
+	}
+	t.Cleanup(func() { openBacklogClaimLedger = originalOpen })
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 || !strings.Contains(stderr, "injected claim failure") {
+		t.Fatalf("batch failure: code = %d, stderr = %q", code, stderr)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := reopened.ForRunAll("batch-run")
+	if len(entries) != 1 || entries[0].ItemID != "7" {
+		t.Fatalf("claims after rollback = %+v, want only preexisting item 7", entries)
+	}
+}
+
+func TestBacklogQueryResultFailureDoesNotPublishProviderMarker(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Claim candidate", "goobers:approved")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "missing", "claimed-item.json"))
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 || !strings.Contains(stderr, "write") {
+		t.Fatalf("result failure: code = %d, stderr = %q", code, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("result failure retained ledger claim: %+v", entry)
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{"goobers:claimed"}) {
+		t.Fatalf("result failure published provider marker: labels = %v", labels)
 	}
 }
 
