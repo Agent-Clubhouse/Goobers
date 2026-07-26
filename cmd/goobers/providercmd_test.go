@@ -119,6 +119,8 @@ type fakeGitHubServer struct {
 	// memoized file lists from check states that must remain fresh.
 	filesRequests      int
 	checkStateRequests int
+	issueListRequests  int
+	issueListPageSizes []int
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
@@ -142,6 +144,18 @@ func (s *fakeGitHubServer) pullListRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pullListRequests
+}
+
+func (s *fakeGitHubServer) issueListRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.issueListRequests
+}
+
+func (s *fakeGitHubServer) issueListPageSizeHistory() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.issueListPageSizes...)
 }
 
 func (s *fakeGitHubServer) dependencyRequestCount() int {
@@ -335,6 +349,7 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.issueListRequests++
 	q := r.URL.Query()
 	var wantLabels []string
 	if lq := q.Get("labels"); lq != "" {
@@ -371,6 +386,7 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 		}
 		perPage = pp
 	}
+	s.issueListPageSizes = append(s.issueListPageSizes, perPage)
 	page := 1
 	if pg, err := strconv.Atoi(q.Get("page")); err == nil && pg > 0 {
 		page = pg

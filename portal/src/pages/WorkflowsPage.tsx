@@ -7,6 +7,7 @@ import {
   useOperationalSnapshot,
 } from "../operationalData";
 import { routeHash } from "../routing";
+import { Icon } from "../ui/Icon";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -104,7 +105,15 @@ function GaggleSection({
       <div className="gaggle-heading">
         <div>
           <p className="section-kicker">Gaggle</p>
-          <h2 id={headingId}>{gaggle.displayName}</h2>
+          <h2 id={headingId}>
+            <a
+              className="gaggle-detail-link"
+              href={routeHash({ page: "gaggle", id: gaggle.name })}
+            >
+              {gaggle.displayName}
+              <Icon name="arrow" size={16} />
+            </a>
+          </h2>
           <p>
             {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
           </p>

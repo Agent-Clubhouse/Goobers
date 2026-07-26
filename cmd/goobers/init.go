@@ -20,7 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/version"
 )
 
-const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
 	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
@@ -32,7 +32,11 @@ const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart
 	"--template=quickstart seeds the versioned onboarding\n" +
 	"workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
-	"demo is supported on Linux and macOS, where network isolation is enforced.\n"
+	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
+	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
+	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
+	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
+	"the general Windows sandbox policy (#651). --insecure requires --demo.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -56,6 +60,7 @@ func runInitWithInputForOSAndGitHub(
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
+	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
 	guided := fs.Bool("guided", false, "prompt for config source, target repository, credentials, and workflows")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
 	fs.Usage = helpUsage(stderr, "init")
@@ -72,6 +77,10 @@ func runInitWithInputForOSAndGitHub(
 		pf(stderr, "error: --demo, --guided, and --template cannot be combined\n")
 		return 2
 	}
+	if *insecure && !*demo {
+		pf(stderr, "error: --insecure requires --demo\n")
+		return 2
+	}
 	if *template != "" && *template != instance.QuickstartTemplate {
 		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
 		return 2
@@ -80,8 +89,9 @@ func runInitWithInputForOSAndGitHub(
 		fs.Usage()
 		return 2
 	}
-	if *demo && goos != "linux" && goos != "darwin" {
-		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s\n", goos)
+	demoUnisolated := *demo && goos != "linux" && goos != "darwin"
+	if demoUnisolated && !*insecure {
+		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s (pass --insecure to proceed without it)\n", goos)
 		return 2
 	}
 	root := "."
@@ -119,6 +129,9 @@ func runInitWithInputForOSAndGitHub(
 	}
 	if len(res.Created) == 0 {
 		pf(stdout, "instance already initialized at %s (nothing to do)\n", abs)
+		if demoUnisolated {
+			pln(stdout, demoInsecureWarning)
+		}
 		if *guided {
 			return finishGuidedInit(root, abs, guidedResult, stdout, stderr)
 		}
@@ -140,6 +153,9 @@ func runInitWithInputForOSAndGitHub(
 		}
 	}
 	if *demo && demoSeeded {
+		if demoUnisolated {
+			pln(stdout, demoInsecureWarning)
+		}
 		pf(stdout, demoTourBanner, abs)
 	}
 	if *guided {
@@ -504,3 +520,14 @@ Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact
 `
+
+// demoInsecureWarning is printed whenever --demo --insecure scaffolds a demo
+// on a platform with no enforced network:none equivalent (issue #1545).
+// Scaffolding is unconditional once --insecure opts in, but actually running
+// the demo still requires the same trusted-local-execution env var every
+// other network:none stage needs on Windows (internal/executor/
+// network_windows.go) — this issue narrowly lifts the CLI-level refusal to
+// even scaffold, it does not alter that general Windows sandbox policy.
+const demoInsecureWarning = "\nwarning: demo scaffolded WITHOUT enforced network isolation — this platform\n" +
+	"has no network:none equivalent. Before `goobers run demo`, set\n" +
+	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n"

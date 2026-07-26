@@ -38,9 +38,24 @@
         },
         "skills": { "type": "array", "items": { "type": "string" } },
         "tools": { "type": "array", "items": { "type": "string" } },
+        "mcpServers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/mcpServer" }
+        },
         "scaleFactor": { "type": "integer", "minimum": 1 },
         "workflows": { "type": "array", "items": { "type": "string" } }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["harness"],
+            "properties": { "harness": { "const": "claude-code" } }
+          },
+          "then": {
+            "properties": { "mcpServers": { "maxItems": 0 } }
+          }
+        }
+      ]
     }
   },
   "$defs": {
@@ -56,6 +71,59 @@
         "labels": { "type": "object", "additionalProperties": { "type": "string" } },
         "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
       }
+    },
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "url": { "type": "string", "format": "uri" },
+        "credentialRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/mcpCredentialRef" }
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["command"],
+          "not": { "anyOf": [{ "required": ["url"] }] }
+        },
+        {
+          "required": ["url"],
+          "not": { "anyOf": [{ "required": ["command"] }, { "required": ["args"] }] }
+        }
+      ]
+    },
+    "mcpCredentialRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability"],
+      "properties": {
+        "capability": { "type": "string", "minLength": 1 },
+        "env": { "type": "string", "minLength": 1 },
+        "header": { "type": "string", "minLength": 1 },
+        "scheme": { "type": "string", "enum": ["bearer", "basic"] }
+      },
+      "oneOf": [
+        {
+          "required": ["env"],
+          "not": { "anyOf": [{ "required": ["header"] }, { "required": ["scheme"] }] }
+        },
+        {
+          "required": ["header"],
+          "not": { "anyOf": [{ "required": ["env"] }] }
+        }
+      ]
     }
   }
 }

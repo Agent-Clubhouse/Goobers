@@ -156,6 +156,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	var selectedHeadSHA, selectedBaseSHA string
 	selectedFound := false
 	var selectedFiles []string
+	var selectedLines int
 	var selectedLabels []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
@@ -177,6 +178,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			hit = hit && prior.HeadSHA == pr.HeadSHA
 			if hit {
 				selectedFiles = prior.Files
+				selectedLines = prior.Lines
 			} else {
 				files, ferr := provider.PullRequestFiles(ctx, repo, key)
 				if ferr != nil {
@@ -185,6 +187,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 				selectedFiles = make([]string, 0, len(files))
 				for _, f := range files {
 					selectedFiles = append(selectedFiles, f.Path)
+					selectedLines += f.Additions + f.Deletions
 				}
 			}
 			// Keep its still-valid memo through the save's prune-to-open-set:
@@ -195,7 +198,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			if hit {
 				next[key] = prior
 			} else {
-				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: prior.CheckState, Files: selectedFiles}
+				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: prior.CheckState, Files: selectedFiles, Lines: selectedLines}
 			}
 			continue
 		}
@@ -203,14 +206,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		prior, hit := cached[key]
 		hit = hit && prior.HeadSHA == pr.HeadSHA
 		paths := prior.Files
+		lines := prior.Lines
 		if !hit {
 			files, ferr := provider.PullRequestFiles(ctx, repo, key)
 			if ferr != nil {
 				return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
 			}
 			paths = make([]string, 0, len(files))
+			lines = 0
 			for _, f := range files {
 				paths = append(paths, f.Path)
+				lines += f.Additions + f.Deletions
 			}
 		} else {
 			reused++
@@ -219,7 +225,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
 		}
-		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths}
+		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths, Lines: lines}
 		siblings = append(siblings, siblingPR{
 			Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
 			Labels: pr.Labels, CheckState: string(checkState), Files: paths,
@@ -257,6 +263,34 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
 			selectedNumber, changedFiles, scopeDriftThreshold,
 			map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+	}
+
+	// Scope gate (#1313): escalates the advisory flag above into an actual
+	// merge-review gate — a PR meeting or exceeding the threshold on EITHER
+	// dimension (files or lines, whichever trips first) is parked before
+	// review, not merely flagged. Reuses the same already-fetched files (no
+	// extra provider call); best-effort, same contract as the advisory flag.
+	scopeGateFilesThreshold := defaultScopeGateFilesThreshold
+	if v := providerInput("scopeGateFilesThreshold", ""); v != "" {
+		if n, cerr := strconv.Atoi(v); cerr == nil {
+			scopeGateFilesThreshold = n
+		}
+	}
+	scopeGateLinesThreshold := defaultScopeGateLinesThreshold
+	if v := providerInput("scopeGateLinesThreshold", ""); v != "" {
+		if n, cerr := strconv.Atoi(v); cerr == nil {
+			scopeGateLinesThreshold = n
+		}
+	}
+	scopeGateParked, flipped, gerr := reconcileScopeGate(
+		ctx, provider, repo, selectedNumber, selectedLabels,
+		changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold)
+	if gerr != nil {
+		pf(stderr, "warning: scope gate: %v\n", gerr)
+	} else if flipped {
+		pf(stdout, "scope-gate: PR #%d changes %d files / %d lines (thresholds %d/%d) — %s goobers:scope-gate\n",
+			selectedNumber, changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold,
+			map[bool]string{true: "applied", false: "cleared"}[scopeGateParked])
 	}
 
 	// Deterministic file-overlap (#989): the ground-truth set of files each
@@ -333,6 +367,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// magnitude the scope-drift flag above acts on, surfaced for observability
 		// and for any future gate that wants to branch on it.
 		"selectedChangedFiles": strconv.Itoa(changedFiles),
+		// selectedChangedLines: the selected PR's total changed-line count
+		// (sum of every file's additions+deletions, #1313) — the scope
+		// gate's second magnitude, computed from the same PullRequestFiles
+		// data selectedChangedFiles already comes from.
+		"selectedChangedLines": strconv.Itoa(selectedLines),
+		// scopeGateParked: whether reconcileScopeGate currently parks this
+		// PR before review (#1313) — merge-review's scope-gate branches on
+		// this via the generic "output-equals" check rather than a new
+		// custom one, since the label/comment reconciliation already lives
+		// here.
+		"scopeGateParked": strconv.FormatBool(scopeGateParked),
 	}
 	if cachedVerdictJSON != "" {
 		// A scalar string (not a nested object) so executor.

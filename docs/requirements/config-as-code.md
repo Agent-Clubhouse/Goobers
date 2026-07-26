@@ -96,10 +96,12 @@ is delivered to a running instance at each deployment tier.
 - **CFG-022 (MUST):** Definition schemas MUST be identical at every tier: a config
   directory valid at tier 1 MUST be valid, unchanged, as tier-3 config content. Tier
   only selects the delivery mechanism, never the schema. DSL features implemented
-  only by the Temporal runner (parallel branches, child workflows —
-  `ARCHITECTURE.md §3.2`) are **tier-3 (V2) schema extensions**: a definition using
-  them is valid only at tier 3 and sits outside the cross-runner conformance surface
-  until the local runner gains them. *(All tiers)*
+  only by the Temporal runner (**child workflows** — `ARCHITECTURE.md §3.2`) are
+  **tier-3 (V2) schema extensions**: a definition using them is valid only at tier 3
+  and sits outside the cross-runner conformance surface until the local runner gains
+  them. *(All tiers)* **Static parallel branches are no longer such an extension** —
+  they are core DSL implemented by the local runner and inside the conformance surface
+  (`design/static-fan-out-fan-in.md` §4).
 - **CFG-023 (MUST):** Validation MUST fail closed: definitions that do not validate
   MUST NOT be loaded or trigger runs. **Shipped:** invalid config aborts `goobers
   up` at startup, with the error surfaced on the CLI. **Not implemented — V1

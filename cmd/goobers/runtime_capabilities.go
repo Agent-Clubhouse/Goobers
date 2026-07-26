@@ -109,6 +109,22 @@ func init() {
 			withSynopsis(synopsisByID["scaffold"]).
 			withHelp("scaffold a goober or workflow in a gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow"),
+		groupCommand(
+			"agent-kit",
+			runAgentKit,
+			subcommand("agent-kit install", "install", apicontract.ActionConfigTime, runAgentKitInstall).
+				withHelp("install the release-matched agent toolkit", agentKitInstallHelp).
+				withExamples("goobers agent-kit install --harness copilot ./config-repo"),
+			subcommand("agent-kit check", "check", apicontract.ActionReadOnlyNavigation, runAgentKitCheck).
+				withHelp("report agent toolkit version and drift", agentKitCheckHelp).
+				withExamples("goobers agent-kit check ./config-repo"),
+			subcommand("agent-kit update", "update", apicontract.ActionConfigTime, runAgentKitUpdate).
+				withHelp("review or explicitly apply an agent toolkit update", agentKitUpdateHelp).
+				withExamples("goobers agent-kit update ./config-repo", "goobers agent-kit update --write ./config-repo"),
+		).
+			withSynopsis(synopsisByID["agent-kit"]).
+			withHelp("install, inspect, or update the release-matched agent toolkit", agentKitHelp).
+			withExamples("goobers agent-kit install --harness generic ./config-repo", "goobers agent-kit check ./config-repo"),
 		command("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
@@ -117,6 +133,10 @@ func init() {
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
 			withExamples("goobers lint", "goobers lint --check-harness --check-repos"),
+		command("fix", apicontract.ActionConfigTime, runFix).
+			withSynopsis(synopsisByID["fix"]).
+			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
+			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance"),
 		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).

@@ -8,7 +8,7 @@ import (
 )
 
 func buildGraph(def Definition) model.Graph {
-	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	edges := make([]model.GraphEdge, 0, graphEdgeCount(def.Spec))
 
 	for _, task := range def.Spec.Tasks {
@@ -46,6 +46,37 @@ func buildGraph(def Definition) model.Graph {
 		}
 	}
 
+	for _, parallel := range def.Spec.Parallels {
+		nodes = append(nodes, model.GraphNode{
+			ID:   parallel.Name,
+			Kind: model.GraphNodeParallel,
+		})
+		// Fan-out edges in declaration order — the same order that assigns
+		// branch ids — then the join, then the failure route. Deterministic and
+		// independent of how the runner schedules the branches.
+		for _, branch := range parallel.Branches {
+			edges = append(edges, model.GraphEdge{
+				Source: parallel.Name,
+				Target: branch.Start,
+				Branch: branch.Name,
+			})
+		}
+		edges = append(edges, model.GraphEdge{
+			Source:   parallel.Name,
+			Target:   parallel.Join,
+			Outcome:  "join",
+			Terminal: graphTerminal(parallel.Join),
+		})
+		if parallel.OnFailure != "" {
+			edges = append(edges, model.GraphEdge{
+				Source:   parallel.Name,
+				Target:   parallel.OnFailure,
+				Outcome:  "branch-failed",
+				Terminal: graphTerminal(parallel.OnFailure),
+			})
+		}
+	}
+
 	return model.Graph{
 		Start: def.Spec.Start,
 		Nodes: nodes,
@@ -57,6 +88,13 @@ func graphEdgeCount(spec apiv1.WorkflowSpec) int {
 	count := len(spec.Tasks)
 	for _, gate := range spec.Gates {
 		count += len(gate.Branches)
+	}
+	for _, parallel := range spec.Parallels {
+		// one fan-out edge per branch, plus the join, plus onFailure when set
+		count += len(parallel.Branches) + 1
+		if parallel.OnFailure != "" {
+			count++
+		}
 	}
 	return count
 }
