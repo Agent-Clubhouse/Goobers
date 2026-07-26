@@ -189,6 +189,85 @@ func TestConfineToAnyEmptyChangeSetIsAllowed(t *testing.T) {
 	}
 }
 
+// TestConfineExclusiveAcceptsSingleRootChangeSet: a change set entirely within
+// one declared root passes and reports that root, regardless of which root it
+// is — the Tutor's TUT-A5 per-target-action boundary (#1217).
+func TestConfineExclusiveAcceptsSingleRootChangeSet(t *testing.T) {
+	roots := []string{"selfhost", "skills"}
+	cases := []struct {
+		changed  []string
+		wantRoot string
+	}{
+		{[]string{"selfhost/gaggles/goobers/workflows/tutor.yaml"}, "selfhost"},
+		{[]string{"skills/new-skill/SKILL.md", "skills/new-skill/references/notes.md"}, "skills"},
+	}
+	for _, c := range cases {
+		got, err := ConfineExclusive(roots, c.changed)
+		if err != nil {
+			t.Fatalf("ConfineExclusive(%v, %v) = %v; want nil", roots, c.changed, err)
+		}
+		if got != c.wantRoot {
+			t.Errorf("ConfineExclusive(%v, %v) matched root = %q, want %q", roots, c.changed, got, c.wantRoot)
+		}
+	}
+}
+
+// TestConfineExclusiveRejectsCrossRootChangeSet is TUT-A5's core acceptance
+// case: "a skill-authoring action cannot also edit workflows" — a change set
+// spanning two declared roots is refused even though every individual path is
+// within SOME declared root, distinguishing ConfineExclusive from ConfineToAny.
+func TestConfineExclusiveRejectsCrossRootChangeSet(t *testing.T) {
+	roots := []string{"selfhost", "skills"}
+	changed := []string{"skills/new-skill/SKILL.md", "selfhost/gaggles/goobers/workflows/tutor.yaml"}
+	if _, err := ConfineExclusive(roots, changed); !errors.Is(err, ErrCrossRootAction) {
+		t.Fatalf("ConfineExclusive(%v, %v) = %v; want ErrCrossRootAction", roots, changed, err)
+	}
+	// The same two roots individually still pass ConfineToAny — proving the
+	// exclusivity is ConfineExclusive's own added constraint, not a side effect
+	// of an already-stricter containment check.
+	if err := ConfineToAny(roots, changed); err != nil {
+		t.Fatalf("ConfineToAny(%v, %v) = %v; want nil (sanity: both paths are legitimately in some root)", roots, changed, err)
+	}
+}
+
+// TestConfineExclusiveRejectsPathOutsideEveryRoot mirrors ConfineToAny's own
+// out-of-root rejection.
+func TestConfineExclusiveRejectsPathOutsideEveryRoot(t *testing.T) {
+	roots := []string{"selfhost", "skills"}
+	for _, p := range []string{
+		"internal/runner/run.go",
+		"skills-evil/secrets.md", // prefix-only collision must not pass
+		"../outside.md",
+	} {
+		if _, err := ConfineExclusive(roots, []string{p}); !errors.Is(err, ErrOutsideConfigRoot) {
+			t.Errorf("ConfineExclusive(%v, %q) = %v; want ErrOutsideConfigRoot", roots, p, err)
+		}
+	}
+}
+
+// TestConfineExclusiveEmptyRootsFailsClosed mirrors ConfineToAny's empty/bogus
+// roots handling.
+func TestConfineExclusiveEmptyRootsFailsClosed(t *testing.T) {
+	if _, err := ConfineExclusive(nil, []string{"skills/x.md"}); !errors.Is(err, ErrNoDocsRoots) {
+		t.Errorf("ConfineExclusive(nil, ...) = %v; want ErrNoDocsRoots", err)
+	}
+	if _, err := ConfineExclusive([]string{"", "  ", "/", ".."}, []string{"skills/x.md"}); !errors.Is(err, ErrNoDocsRoots) {
+		t.Errorf("ConfineExclusive(all-bogus, ...) = %v; want ErrNoDocsRoots", err)
+	}
+}
+
+// TestConfineExclusiveEmptyChangeSetIsAllowed: no changes, nothing to confine
+// and no root to report.
+func TestConfineExclusiveEmptyChangeSetIsAllowed(t *testing.T) {
+	got, err := ConfineExclusive([]string{"selfhost", "skills"}, nil)
+	if err != nil {
+		t.Fatalf("ConfineExclusive(roots, nil) = %v; want nil", err)
+	}
+	if got != "" {
+		t.Fatalf("ConfineExclusive(roots, nil) matched root = %q, want empty", got)
+	}
+}
+
 // TestValidateDocsRoot: the config-load lexical check accepts a real
 // repo-relative subtree/file and rejects empty, absolute, whole-repo, and
 // escaping roots — each with an ErrInvalidDocsRoot the caller surfaces verbatim.
