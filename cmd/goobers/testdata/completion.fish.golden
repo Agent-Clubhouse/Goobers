@@ -20,7 +20,7 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (c
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and test (count (commandline -opc)) -eq 2' -f -a 'install check update'
 complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
 complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall status'
-complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
+complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel approve override rerun (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
