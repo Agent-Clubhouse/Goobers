@@ -19,6 +19,7 @@ import type {
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
 
 const PAGE_LIMIT = 100;
@@ -36,6 +37,13 @@ const RECENT_OUTCOME_LIMIT = 20;
 const WORKFLOW_RUN_LIMIT = 5;
 // Keep browser connection capacity available for unrelated daemon requests.
 const WORKFLOW_OUTCOME_CONCURRENCY = 4;
+const OPERATIONAL_SNAPSHOT_CACHE_KEY = dataCacheKey("operational-snapshot");
+const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
+const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
+  { model: "instance" },
+  { model: "workflow" },
+  { model: "run" },
+];
 
 export interface GaggleInventory {
   gaggle: Gaggle;
@@ -149,11 +157,18 @@ export function useOperationalSnapshot(
   client: DaemonClient,
   scope: { gaggle?: string; workflow?: string } = {},
 ): OperationalSnapshotQuery {
-  const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
-  const { freshness, isFresh, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const [state, setState] = useState<QueryState<OperationalSnapshot>>(() => {
+    const cached = cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
 
   const performRefresh = useCallback(
     async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(
+        OPERATIONAL_SNAPSHOT_CACHE_KEY,
+        OPERATIONAL_DEPENDENCIES,
+      );
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -165,6 +180,12 @@ export function useOperationalSnapshot(
         if (signal.aborted) {
           return false;
         }
+        cache.set(
+          OPERATIONAL_SNAPSHOT_CACHE_KEY,
+          data,
+          OPERATIONAL_DEPENDENCIES,
+          cacheRevision,
+        );
         setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       } catch (error: unknown) {
@@ -181,13 +202,30 @@ export function useOperationalSnapshot(
         return false;
       }
     },
-    [client, isFresh],
+    [cache, client, isFresh],
   );
   const refresh = useCoalescedOperationalRefresh(performRefresh);
 
   useEffect(
-    () => subscribe(["instance", "workflow", "run"], refresh, scope),
-    [refresh, scope.gaggle, scope.workflow, subscribe],
+    () =>
+      subscribe(
+        ["instance", "workflow", "run"],
+        (models, reason) => {
+          const cached =
+            reason === "initial"
+              ? cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY)
+              : undefined;
+          if (cached) {
+            setState(
+              isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+            );
+            return true;
+          }
+          return refresh(models);
+        },
+        scope,
+      ),
+    [cache, isFresh, refresh, scope.gaggle, scope.workflow, subscribe],
   );
 
   useEffect(() => {
@@ -204,7 +242,13 @@ export function useOperationalSnapshot(
 
   usePeriodicHealth(client, freshness, setState);
 
-  return { retry: () => void refresh(), state };
+  return {
+    retry: () => {
+      cache.remove(OPERATIONAL_SNAPSHOT_CACHE_KEY);
+      void refresh();
+    },
+    state,
+  };
 }
 
 export async function loadOperationalSnapshot(
@@ -359,12 +403,19 @@ export function workflowDisplayName(
 }
 
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
-  const [state, setState] = useState<QueryState<OperationalOverview>>({ status: "loading" });
-  const data = useRef<OperationalOverview | undefined>(undefined);
-  const { freshness, isFresh, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cached = cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY);
+  const [state, setState] = useState<QueryState<OperationalOverview>>(() =>
+    cached ? { status: "ready", data: cached } : { status: "loading" },
+  );
+  const data = useRef<OperationalOverview | undefined>(cached);
 
   const performLoad = useCallback(
     async (models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(
+        OPERATIONAL_OVERVIEW_CACHE_KEY,
+        OPERATIONAL_DEPENDENCIES,
+      );
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -380,6 +431,12 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
           return false;
         }
         data.current = loaded;
+        cache.set(
+          OPERATIONAL_OVERVIEW_CACHE_KEY,
+          loaded,
+          OPERATIONAL_DEPENDENCIES,
+          cacheRevision,
+        );
         setState(
           isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded },
         );
@@ -398,13 +455,27 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
         return false;
       }
     },
-    [client, isFresh],
+    [cache, client, isFresh],
   );
   const load = useCoalescedOperationalRefresh(performLoad);
 
   useEffect(
-    () => subscribe(["instance", "workflow", "run"], (models) => load(models)),
-    [load, subscribe],
+    () =>
+      subscribe(["instance", "workflow", "run"], (models, reason) => {
+        const cached =
+          reason === "initial"
+            ? cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY)
+            : undefined;
+        if (cached) {
+          data.current = cached;
+          setState(
+            isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+          );
+          return true;
+        }
+        return load(models);
+      }),
+    [cache, isFresh, load, subscribe],
   );
 
   useEffect(() => {
@@ -424,7 +495,13 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
   }, []);
   usePeriodicHealth(client, freshness, setState, rememberOverview);
 
-  return { retry: () => void load(), state };
+  return {
+    retry: () => {
+      cache.remove(OPERATIONAL_OVERVIEW_CACHE_KEY);
+      void load();
+    },
+    state,
+  };
 }
 
 function usePeriodicHealth<T extends { health: Health }>(
