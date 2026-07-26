@@ -134,6 +134,9 @@ func TestInitQuickstartFresh(t *testing.T) {
 	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
 	}
+	if len(workflow.Spec.Triggers) != 1 || workflow.Spec.Triggers[0].Type != apiv1.TriggerManual {
+		t.Fatalf("quickstart trigger = %+v, want manual-only", workflow.Spec.Triggers)
+	}
 	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
