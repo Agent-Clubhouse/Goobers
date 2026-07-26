@@ -239,7 +239,7 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 		return 2
 	}
 	abs := absolutePath(result.Root)
-	nextCommand := "goobers validate --source-tree --json " + strconv.Quote(abs)
+	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs)
 	envelope := configSourceActionEnvelope{
 		Action:      "seed-config-source",
 		Version:     configSourceActionVersion,
@@ -265,6 +265,10 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 	}
 	pf(stdout, "\nNext: %s\n", nextCommand)
 	return 0
+}
+
+func quoteShellArg(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
 
 func finishGuidedInit(root, abs string, result guidedInitResult, stdout, stderr io.Writer) int {
