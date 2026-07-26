@@ -228,32 +228,18 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 			}
 		}
 
-		intervention := map[string]any(nil)
-		if in.Action != "" {
-			intervention = map[string]any{
-				"interventionAction": in.Action,
-			}
-			if in.Complete {
-				intervention["interventionComplete"] = true
-			}
-			if in.Gate != "" {
-				intervention["interventionGate"] = in.Gate
-			}
-			if in.Decision != "" {
-				intervention["interventionDecision"] = in.Decision
-			}
-			if in.Rationale != "" {
-				intervention["interventionRationale"] = in.Rationale
-			}
-		}
 		if err := jr.Append(journal.Event{
 			Type:            journal.EventRunResumed,
 			Status:          string(phase),
 			Target:          in.Target,
 			Actor:           in.Actor,
+			Action:          in.Action,
+			Gate:            in.Gate,
+			Decision:        in.Decision,
+			Rationale:       in.Rationale,
+			Complete:        in.Complete,
 			WorkflowVersion: id.WorkflowVersion,
 			WorkflowDigest:  id.WorkflowDigest,
-			Runner:          intervention,
 		}); err != nil {
 			return Result{}, fmt.Errorf("runner: journal terminal resume for run %q: %w", in.RunID, err)
 		}
@@ -348,7 +334,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
 				fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
 		}
-		if complete, _ := resumed.Runner["interventionComplete"].(bool); complete {
+		// Runner metadata is accepted only for journals emitted by the
+		// pre-normative intervention implementation. New events always use the
+		// top-level Complete field above.
+		legacyComplete, _ := resumed.Runner["interventionComplete"].(bool)
+		if resumed.Complete || legacyComplete {
 			return r.finish(in.RunID, jr, journal.PhaseCompleted, "", 0)
 		}
 	}

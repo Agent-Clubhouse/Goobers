@@ -140,10 +140,10 @@ func TestResumeFromTerminalIsDurableAndReexecutesTarget(t *testing.T) {
 		resumed.Status != string(journal.PhaseEscalated) ||
 		resumed.WorkflowVersion != machine.Def.Version ||
 		resumed.WorkflowDigest != machine.Digest() ||
-		resumed.Runner["interventionAction"] != "override" ||
-		resumed.Runner["interventionGate"] != "review" ||
-		resumed.Runner["interventionDecision"] != "pass" ||
-		resumed.Runner["interventionRationale"] != "accepted risk" {
+		resumed.Action != "override" ||
+		resumed.Gate != "review" ||
+		resumed.Decision != "pass" ||
+		resumed.Rationale != "accepted risk" {
 		t.Fatalf("run.resumed = %+v, want actor, target, prior phase, and immutable workflow pin", resumed)
 	}
 	if firstTerminal != 1 || secondTerminal != 1 {
@@ -270,9 +270,9 @@ func TestResumeFromTerminalCanSelectCompletionBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := events[len(events)-2]; got.Type != journal.EventRunResumed ||
-		got.Runner["interventionAction"] != "override" ||
-		got.Runner["interventionDecision"] != "pass" ||
-		got.Runner["interventionComplete"] != true {
+		got.Action != "override" ||
+		got.Decision != "pass" ||
+		!got.Complete {
 		t.Fatalf("run.resumed = %+v", got)
 	}
 	if got := events[len(events)-1]; got.Type != journal.EventRunFinished || got.Status != string(journal.PhaseCompleted) {
@@ -292,11 +292,8 @@ func TestResumeFinishesInterruptedCompletionIntervention(t *testing.T) {
 	}
 	if err := recovered.Append(journal.Event{
 		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated),
-		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
-		Runner: map[string]any{
-			"interventionAction":   "override",
-			"interventionComplete": true,
-		},
+		Actor: "operator@example.test", Action: "override", Complete: true,
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +333,41 @@ func TestResumeFinishesInterruptedCompletionIntervention(t *testing.T) {
 	}
 	if completed != 1 {
 		t.Fatalf("completed run.finished events = %d, want 1", completed)
+	}
+}
+
+func TestResumeFinishesLegacyInterruptedCompletionIntervention(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-human-complete-legacy"
+	createTerminalResumeRun(t, runsDir, runID, machine, journal.PhaseEscalated)
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated),
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+		Runner: map[string]any{"interventionAction": "override", "interventionComplete": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deterministic := &countingDeterministic{}
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, deterministic)
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted || deterministic.calls != 0 {
+		t.Fatalf("legacy completion resume = %+v with %d executor calls", result, deterministic.calls)
 	}
 }
 

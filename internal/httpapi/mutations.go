@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -74,6 +77,10 @@ func stageMutationHandler(action string, interventions InterventionService, erro
 			writeError(w, http.StatusServiceUnavailable, "interventions_unavailable", "run interventions are not available from this server")
 			return
 		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
 		input, err := decodeInterventionRequest(request)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -125,6 +132,42 @@ func stageMutationHandler(action string, interventions InterventionService, erro
 		}
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func validateMutationTransport(request *http.Request) (int, string, string) {
+	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json"
+	}
+	if origin := strings.TrimSpace(request.Header.Get("Origin")); origin != "" {
+		parsed, parseErr := url.Parse(origin)
+		if parseErr != nil ||
+			parsed.User != nil ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Host == "" ||
+			parsed.Path != "" ||
+			parsed.RawQuery != "" ||
+			parsed.Fragment != "" ||
+			!isLoopbackAuthority(parsed.Host) ||
+			!isLoopbackAuthority(request.Host) ||
+			!strings.EqualFold(parsed.Host, request.Host) {
+			return http.StatusForbidden, "origin_forbidden", "cross-origin mutation requests are forbidden"
+		}
+	}
+	return 0, "", ""
+}
+
+func isLoopbackAuthority(authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func decodeInterventionRequest(request *http.Request) (InterventionRequest, error) {

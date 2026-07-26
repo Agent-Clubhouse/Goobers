@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -46,7 +47,10 @@ func (f *fakeInterventions) RerunStage(_ context.Context, input InterventionRequ
 }
 
 func newMutationRequest(method, action, body string) *http.Request {
-	return httptest.NewRequest(method, stagePath(action), bytes.NewBufferString(body))
+	request := httptest.NewRequest(method, stagePath(action), bytes.NewBufferString(body))
+	request.Host = "127.0.0.1:8080"
+	request.Header.Set("Content-Type", "application/json")
+	return request
 }
 
 func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
@@ -220,6 +224,103 @@ func TestMutationRoutesRejectWrongMethod(t *testing.T) {
 	handler.ServeHTTP(response, newMutationRequest(http.MethodGet, "approve", `{"actor":"local"}`))
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+}
+
+func TestMutationRoutesRejectNonJSONAndCrossOriginRequests(t *testing.T) {
+	service := &fakeInterventions{}
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		contentType string
+		origin      string
+		host        string
+		wantStatus  int
+		wantCode    string
+	}{
+		{
+			name:        "browser simple body",
+			contentType: "text/plain",
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantCode:    "unsupported_media_type",
+		},
+		{
+			name:        "cross origin JSON",
+			contentType: "application/json",
+			origin:      "https://attacker.example",
+			wantStatus:  http.StatusForbidden,
+			wantCode:    "origin_forbidden",
+		},
+		{
+			name:        "DNS rebinding origin",
+			contentType: "application/json",
+			origin:      "http://attacker.example:8080",
+			host:        "attacker.example:8080",
+			wantStatus:  http.StatusForbidden,
+			wantCode:    "origin_forbidden",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := newMutationRequest(http.MethodPost, "approve", `{"actor":"local","decision":"pass"}`)
+			request.Header.Set("Content-Type", test.contentType)
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.host != "" {
+				request.Host = test.host
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			var envelope ErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Error.Code != test.wantCode {
+				t.Fatalf("error = %+v", envelope.Error)
+			}
+			if len(service.calls) != 0 {
+				t.Fatalf("service calls = %+v, want none", service.calls)
+			}
+		})
+	}
+}
+
+func TestMutationRoutesAllowSameLoopbackOrigin(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		backendTLS bool
+	}{
+		{name: "direct HTTP daemon"},
+		{name: "HTTP dashboard proxy to TLS daemon", backendTLS: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeInterventions{}
+			handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(service))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := newMutationRequest(http.MethodPost, "approve", `{"actor":"local","decision":"pass"}`)
+			request.Header.Set("Origin", "http://127.0.0.1:8080")
+			if test.backendTLS {
+				request.TLS = &tls.ConnectionState{}
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			if len(service.calls) != 1 {
+				t.Fatalf("service calls = %+v, want one", service.calls)
+			}
+		})
 	}
 }
 

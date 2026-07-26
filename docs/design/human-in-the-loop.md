@@ -77,6 +77,9 @@ available. The dashboard calls these same versioned API actions (API-first, #14)
 
 **Recording is a first-class requirement**, not a nicety: every tier-2 action is an auditable journal
 event so the play-by-play (and the Tutor, and telemetry) can see that a human intervened and how.
+Terminal actions use normative `run.resumed` action, actor, gate, decision, rationale, and target
+fields; its `complete` field is also the durable crash-recovery marker when the selected branch is
+`@complete`.
 
 ## 5. Tier 3 — Extreme measures (forward sketch only, v3/future)
 

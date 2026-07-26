@@ -96,6 +96,32 @@ func (d *liveStalledDeterministic) Run(ctx context.Context, _ apiv1.InvocationEn
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+func TestDaemonRunnerRegistryRetainsOverlappingLeases(t *testing.T) {
+	first := &runner.Runner{}
+	second := &runner.Runner{}
+	registry := newDaemonRunnerRegistry()
+
+	original := registry.Track("run-overlap", first)
+	overlapping := registry.Track("run-overlap", first)
+	original()
+	original()
+	if owner, live := registry.Resolve("run-overlap", "", nil); !live || owner != first {
+		t.Fatalf("owner after first release = (%p, %t), want first owner live", owner, live)
+	}
+	overlapping()
+	if owner, live := registry.Resolve("run-overlap", "", nil); live || owner != nil {
+		t.Fatalf("owner after final release = (%p, %t), want no live owner", owner, live)
+	}
+
+	oldGeneration := registry.Track("run-replaced", first)
+	newGeneration := registry.Track("run-replaced", second)
+	oldGeneration()
+	if owner, live := registry.Resolve("run-replaced", "", nil); !live || owner != second {
+		t.Fatalf("owner after stale release = (%p, %t), want replacement owner live", owner, live)
+	}
+	newGeneration()
+}
+
 func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())

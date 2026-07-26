@@ -92,6 +92,9 @@ type schedulerSetup struct {
 	SharedRegistry   *journal.RegistryScrubber
 	TerminalNotifier runner.TerminalNotifier
 	RunnerRegistry   *daemonRunnerRegistry
+	// Interventions is the atomically replaced definition snapshot used by the
+	// daemon's mutation service during config reload.
+	Interventions *interventionDefinitionRegistry
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that
@@ -389,6 +392,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
+	interventionRegistry := newInterventionDefinitionRegistry(interventionDefinitions(definitions, legacyRunner))
 	stableDigest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil || stableDigest != configDigest {
 		if err != nil {
@@ -426,6 +430,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		SharedRegistry:    sharedReg,
 		TerminalNotifier:  terminalNotifier,
 		RunnerRegistry:    runnerRegistry,
+		Interventions:     interventionRegistry,
 		SecretStores:      secretStores,
 	}, nil
 }

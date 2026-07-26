@@ -21,13 +21,20 @@ type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, err
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu      sync.RWMutex
-	current map[string]*runner.Runner
-	owners  map[string]*runner.Runner
+	mu             sync.RWMutex
+	current        map[string]*runner.Runner
+	owners         map[string]daemonRunnerOwner
+	nextGeneration uint64
+}
+
+type daemonRunnerOwner struct {
+	runner     *runner.Runner
+	generation uint64
+	leases     int
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
-	return &daemonRunnerRegistry{owners: make(map[string]*runner.Runner)}
+	return &daemonRunnerRegistry{owners: make(map[string]daemonRunnerOwner)}
 }
 
 func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
@@ -49,20 +56,32 @@ func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() 
 	}
 	r.mu.Lock()
 	if r.owners == nil {
-		r.owners = make(map[string]*runner.Runner)
+		r.owners = make(map[string]daemonRunnerOwner)
 	}
-	if _, exists := r.owners[runID]; exists {
-		r.mu.Unlock()
-		return func() {}
+	lease := r.owners[runID]
+	if lease.runner == owner {
+		lease.leases++
+	} else {
+		r.nextGeneration++
+		lease = daemonRunnerOwner{runner: owner, generation: r.nextGeneration, leases: 1}
 	}
-	r.owners[runID] = owner
+	r.owners[runID] = lease
 	r.mu.Unlock()
+	var once sync.Once
 	return func() {
-		r.mu.Lock()
-		if r.owners[runID] == owner {
-			delete(r.owners, runID)
-		}
-		r.mu.Unlock()
+		once.Do(func() {
+			r.mu.Lock()
+			current := r.owners[runID]
+			if current.generation == lease.generation {
+				current.leases--
+				if current.leases == 0 {
+					delete(r.owners, runID)
+				} else {
+					r.owners[runID] = current
+				}
+			}
+			r.mu.Unlock()
+		})
 	}
 }
 
@@ -91,7 +110,7 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if owner := r.owners[runID]; owner != nil {
+	if owner := r.owners[runID].runner; owner != nil {
 		return owner, true
 	}
 	if gaggle != "" {

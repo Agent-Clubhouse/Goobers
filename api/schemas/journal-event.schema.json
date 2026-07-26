@@ -116,6 +116,24 @@
       "minLength": 1,
       "x-conformance": "normative"
     },
+    "action": {
+      "description": "Human intervention recorded by run.resumed.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
+    },
+    "decision": {
+      "description": "Configured gate branch selected by a run.resumed intervention.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
+    },
+    "rationale": {
+      "description": "Operator rationale for a run.resumed gate override.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
+    },
     "instructionAddendum": {
       "description": "One-off instruction text supplied for stage.rerun.requested.",
       "type": "string",
@@ -142,6 +160,11 @@
       "description": "Branch/state selected by a gate or chosen by run.resumed.",
       "type": "string",
       "minLength": 1,
+      "x-conformance": "normative"
+    },
+    "complete": {
+      "description": "Whether a run.resumed intervention selected the workflow's terminal completion branch.",
+      "type": "boolean",
       "x-conformance": "normative"
     },
     "escalated": {

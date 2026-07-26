@@ -299,42 +299,47 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema          string                  `json:"schema"`
-	Seq             uint64                  `json:"seq"`
-	Type            journal.EventType       `json:"type"`
-	Branch          int                     `json:"branch"`
-	Time            time.Time               `json:"time"`
-	KnownSchema     bool                    `json:"knownSchema"`
-	Category        RunEventCategory        `json:"category"`
-	ReplayChapter   bool                    `json:"replayChapter"`
-	Stage           string                  `json:"stage,omitempty"`
-	Attempt         int                     `json:"attempt,omitempty"`
-	AttemptClass    string                  `json:"attemptClass,omitempty"`
-	Gate            string                  `json:"gate,omitempty"`
-	Verdict         string                  `json:"verdict,omitempty"`
-	Target          string                  `json:"target,omitempty"`
-	Escalated       bool                    `json:"escalated,omitempty"`
-	Status          string                  `json:"status,omitempty"`
-	Actor           string                  `json:"actor,omitempty"`
-	WorkflowVersion int                     `json:"workflowVersion,omitempty"`
-	WorkflowDigest  string                  `json:"workflowDigest,omitempty"`
-	Outputs         map[string]any          `json:"outputs,omitempty"`
-	Artifacts       []ArtifactMetadata      `json:"artifacts,omitempty"`
-	Artifact        *ArtifactMetadata       `json:"artifact,omitempty"`
-	Name            string                  `json:"name,omitempty"`
-	ExternalRef     *journal.ExternalRef    `json:"externalRef,omitempty"`
-	Error           *journal.ErrorDetail    `json:"error,omitempty"`
-	Redaction       *journal.RedactionInfo  `json:"redaction,omitempty"`
-	Runner          map[string]any          `json:"runner,omitempty"`
-	Workflow        string                  `json:"workflow,omitempty"`
-	RunID           string                  `json:"runId,omitempty"`
-	Reason          string                  `json:"reason,omitempty"`
-	Parallel        string                  `json:"parallel,omitempty"`
-	BranchName      string                  `json:"branchName,omitempty"`
-	BranchStatus    journal.BranchStatus    `json:"branchStatus,omitempty"`
-	Completeness    []journal.BranchOutcome `json:"completeness,omitempty"`
-	Raw             json.RawMessage         `json:"raw,omitempty"`
-	JournalEvent    *journal.Event          `json:"-"`
+	Schema              string                  `json:"schema"`
+	Seq                 uint64                  `json:"seq"`
+	Type                journal.EventType       `json:"type"`
+	Branch              int                     `json:"branch"`
+	Time                time.Time               `json:"time"`
+	KnownSchema         bool                    `json:"knownSchema"`
+	Category            RunEventCategory        `json:"category"`
+	ReplayChapter       bool                    `json:"replayChapter"`
+	Stage               string                  `json:"stage,omitempty"`
+	Attempt             int                     `json:"attempt,omitempty"`
+	AttemptClass        string                  `json:"attemptClass,omitempty"`
+	Gate                string                  `json:"gate,omitempty"`
+	Verdict             string                  `json:"verdict,omitempty"`
+	Target              string                  `json:"target,omitempty"`
+	Escalated           bool                    `json:"escalated,omitempty"`
+	Status              string                  `json:"status,omitempty"`
+	Actor               string                  `json:"actor,omitempty"`
+	Action              string                  `json:"action,omitempty"`
+	Decision            string                  `json:"decision,omitempty"`
+	Rationale           string                  `json:"rationale,omitempty"`
+	Complete            bool                    `json:"complete,omitempty"`
+	InstructionAddendum string                  `json:"instructionAddendum,omitempty"`
+	WorkflowVersion     int                     `json:"workflowVersion,omitempty"`
+	WorkflowDigest      string                  `json:"workflowDigest,omitempty"`
+	Outputs             map[string]any          `json:"outputs,omitempty"`
+	Artifacts           []ArtifactMetadata      `json:"artifacts,omitempty"`
+	Artifact            *ArtifactMetadata       `json:"artifact,omitempty"`
+	Name                string                  `json:"name,omitempty"`
+	ExternalRef         *journal.ExternalRef    `json:"externalRef,omitempty"`
+	Error               *journal.ErrorDetail    `json:"error,omitempty"`
+	Redaction           *journal.RedactionInfo  `json:"redaction,omitempty"`
+	Runner              map[string]any          `json:"runner,omitempty"`
+	Workflow            string                  `json:"workflow,omitempty"`
+	RunID               string                  `json:"runId,omitempty"`
+	Reason              string                  `json:"reason,omitempty"`
+	Parallel            string                  `json:"parallel,omitempty"`
+	BranchName          string                  `json:"branchName,omitempty"`
+	BranchStatus        journal.BranchStatus    `json:"branchStatus,omitempty"`
+	Completeness        []journal.BranchOutcome `json:"completeness,omitempty"`
+	Raw                 json.RawMessage         `json:"raw,omitempty"`
+	JournalEvent        *journal.Event          `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -2187,6 +2192,11 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Escalated = event.Escalated
 	projected.Status = event.Status
 	projected.Actor = event.Actor
+	projected.Action = event.Action
+	projected.Decision = event.Decision
+	projected.Rationale = event.Rationale
+	projected.Complete = event.Complete
+	projected.InstructionAddendum = event.InstructionAddendum
 	projected.WorkflowVersion = event.WorkflowVersion
 	projected.WorkflowDigest = event.WorkflowDigest
 	projected.Outputs = scalarOutputs(event.Outputs)

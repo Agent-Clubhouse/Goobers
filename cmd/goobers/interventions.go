@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	gateevaluator "github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -19,12 +21,55 @@ import (
 )
 
 type runInterventionService struct {
-	layout        instance.Layout
+	layout         instance.Layout
+	definitions    *interventionDefinitionRegistry
+	runnerRegistry *daemonRunnerRegistry
+}
+
+type interventionDefinitionSet struct {
 	runners       map[string]*runner.Runner
 	legacyRunner  *runner.Runner
 	machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
 	gooberDigests map[localscheduler.WorkflowIdentity]string
 	repoRefs      map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+}
+
+type interventionDefinitionRegistry struct {
+	current atomic.Pointer[interventionDefinitionSet]
+}
+
+func newInterventionDefinitionRegistry(definitions interventionDefinitionSet) *interventionDefinitionRegistry {
+	registry := &interventionDefinitionRegistry{}
+	registry.Replace(definitions)
+	return registry
+}
+
+func (r *interventionDefinitionRegistry) Replace(definitions interventionDefinitionSet) {
+	if r == nil {
+		return
+	}
+	r.current.Store(&definitions)
+}
+
+func (r *interventionDefinitionRegistry) Snapshot() interventionDefinitionSet {
+	if r == nil {
+		return interventionDefinitionSet{}
+	}
+	definitions := r.current.Load()
+	if definitions == nil {
+		return interventionDefinitionSet{}
+	}
+	return *definitions
+}
+
+func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *runner.Runner) interventionDefinitionSet {
+	return interventionDefinitionSet{
+		runners:       definitions.Runners,
+		legacyRunner:  legacyRunner,
+		machines:      definitions.Machines,
+		gooberDigests: definitions.GooberDigests,
+		repoRefs:      definitions.RepoRefs,
+	}
 }
 
 type resolvedInterventionRun struct {
@@ -38,12 +83,9 @@ type resolvedInterventionRun struct {
 
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup) *runInterventionService {
 	return &runInterventionService{
-		layout:        layout,
-		runners:       setup.Runners,
-		legacyRunner:  setup.LegacyRunner,
-		machines:      setup.Machines,
-		gooberDigests: setup.GooberDigests,
-		repoRefs:      setup.RepoRefs,
+		layout:         layout,
+		definitions:    setup.Interventions,
+		runnerRegistry: setup.RunnerRegistry,
 	}
 }
 
@@ -59,6 +101,11 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 	gate, target, err := interventionBranch(resolved.machine, input.Stage, decision)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
+	}
+	if gate.Evaluator == apiv1.EvaluatorHuman {
+		if err := gateevaluator.ValidateHumanDecision(gate, decision, input.Actor); err != nil {
+			return httpapi.InterventionResult{}, interventionForbidden("approval_forbidden", err.Error())
+		}
 	}
 
 	var result runner.Result
@@ -77,6 +124,8 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("run %q is not paused at gate %q", input.RunID, input.Stage),
 			)
 		}
+		untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
+		defer untrack()
 		result, err = resolved.runner.Resume(ctx, runner.ResumeInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			HumanDecision: &runner.HumanGateDecision{
@@ -96,6 +145,8 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 			)
 		}
+		untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
+		defer untrack()
 		result, err = resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Target: target, Complete: target == workflow.TerminalComplete,
@@ -148,6 +199,8 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 			fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 		)
 	}
+	untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
+	defer untrack()
 	result, err := resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 		Target: target, Complete: target == workflow.TerminalComplete,
@@ -174,6 +227,8 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
 	}
+	untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
+	defer untrack()
 	result, err := resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
@@ -193,8 +248,9 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		dir    string
 		runner *runner.Runner
 	}
-	gaggles := make([]string, 0, len(s.runners))
-	for gaggle := range s.runners {
+	definitions := s.definitions.Snapshot()
+	gaggles := make([]string, 0, len(definitions.runners))
+	for gaggle := range definitions.runners {
 		gaggles = append(gaggles, gaggle)
 	}
 	sort.Strings(gaggles)
@@ -203,11 +259,11 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		candidates = append(candidates, candidate{
 			gaggle: gaggle,
 			dir:    filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID),
-			runner: s.runners[gaggle],
+			runner: definitions.runners[gaggle],
 		})
 	}
-	if s.legacyRunner != nil {
-		candidates = append(candidates, candidate{dir: filepath.Join(s.layout.RunsDir(), runID), runner: s.legacyRunner})
+	if definitions.legacyRunner != nil {
+		candidates = append(candidates, candidate{dir: filepath.Join(s.layout.RunsDir(), runID), runner: definitions.legacyRunner})
 	}
 
 	var found *candidate
@@ -244,7 +300,7 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		)
 	}
 	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
-	machine := s.machines[key]
+	machine := definitions.machines[key]
 	if machine == nil {
 		return resolvedInterventionRun{}, interventionConflict(
 			"workflow_unavailable",
@@ -271,8 +327,8 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 	return resolvedInterventionRun{
 		runner:       found.runner,
 		machine:      machine,
-		gooberDigest: s.gooberDigests[key],
-		repoRef:      s.repoRefs[key],
+		gooberDigest: definitions.gooberDigests[key],
+		repoRef:      definitions.repoRefs[key],
 		phase:        phase,
 		events:       events,
 	}, nil
@@ -348,6 +404,10 @@ func interventionBadRequest(code, message string) error {
 
 func interventionConflict(code, message string) error {
 	return httpapi.NewInterventionError(http.StatusConflict, code, message, nil)
+}
+
+func interventionForbidden(code, message string) error {
+	return httpapi.NewInterventionError(http.StatusForbidden, code, message, nil)
 }
 
 func interventionExecutionError(action string, err error) error {
