@@ -233,6 +233,103 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
 }
 
+// ReclaimAll atomically reacquires a prior run's complete claim set. Either
+// every entry is durably assigned to runID in one ledger rewrite, or none are.
+// A live claim held by another run refuses the whole set and reports its owner.
+func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+	if leaseDuration <= 0 {
+		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
+	}
+	if len(entries) == 0 {
+		return true, runID, nil
+	}
+
+	type plannedClaim struct {
+		storageKey       string
+		legacyStorageKey string
+		key              ClaimKey
+	}
+	planned := make([]plannedClaim, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		itemID := entry.ExternalID
+		if itemID == "" {
+			itemID = entry.ItemID
+		}
+		if itemID == "" {
+			return false, "", errors.New("localscheduler: reclaim entry requires an item ID")
+		}
+		if (entry.Gaggle == "") != (entry.Provider == "") {
+			return false, "", fmt.Errorf("localscheduler: reclaim entry %q requires both gaggle and provider", itemID)
+		}
+
+		key := ClaimKey{Gaggle: entry.Gaggle, Provider: entry.Provider, ExternalID: itemID}
+		storageKey := itemID
+		legacyStorageKey := ""
+		if entry.Gaggle != "" {
+			var keyErr error
+			storageKey, keyErr = key.storageKey()
+			if keyErr != nil {
+				return false, "", keyErr
+			}
+			legacyStorageKey = itemID
+		}
+		if _, duplicate := seen[storageKey]; duplicate {
+			return false, "", fmt.Errorf("localscheduler: duplicate reclaim entry %q", itemID)
+		}
+		seen[storageKey] = struct{}{}
+		planned = append(planned, plannedClaim{
+			storageKey:       storageKey,
+			legacyStorageKey: legacyStorageKey,
+			key:              key,
+		})
+	}
+	sort.Slice(planned, func(i, j int) bool { return planned[i].storageKey < planned[j].storageKey })
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	for _, claim := range planned {
+		if claim.legacyStorageKey != "" {
+			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+				return false, existing.RunID, nil
+			}
+		}
+		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+			return false, existing.RunID, nil
+		}
+	}
+
+	previous := make(map[string]ClaimEntry, len(l.entries))
+	for storageKey, entry := range l.entries {
+		previous[storageKey] = entry
+	}
+	acquired := make([]ClaimEntry, 0, len(planned))
+	for _, claim := range planned {
+		entry := ClaimEntry{
+			ItemID:     claim.key.ExternalID,
+			Gaggle:     claim.key.Gaggle,
+			Provider:   claim.key.Provider,
+			ExternalID: claim.key.ExternalID,
+			RunID:      runID,
+			Workflow:   workflow,
+			ClaimedAt:  now,
+			ExpiresAt:  now.Add(leaseDuration),
+		}
+		l.entries[claim.storageKey] = entry
+		acquired = append(acquired, entry)
+	}
+	if err := l.persist(); err != nil {
+		l.entries = previous
+		return false, "", err
+	}
+	for _, entry := range acquired {
+		l.journal(journal.EventClaimAcquired, entry)
+	}
+	return true, runID, nil
+}
+
 func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
@@ -568,7 +665,14 @@ func (l *ClaimLedger) persist() error {
 // — a journal write failure here is deliberately swallowed rather than failing
 // the claim/release operation the ledger already committed.
 func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
-	l.journalWithRunner(eventType, entry, nil)
+	var runner map[string]any
+	if entry.Provider != "" {
+		runner = map[string]any{
+			"claimProvider":   entry.Provider,
+			"claimExternalId": entry.ExternalID,
+		}
+	}
+	l.journalWithRunner(eventType, entry, runner)
 }
 
 func (l *ClaimLedger) journalWithRunner(eventType journal.EventType, entry ClaimEntry, runner map[string]any) {

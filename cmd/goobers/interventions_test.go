@@ -66,6 +66,49 @@ func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.Eva
 	return machine
 }
 
+func interventionTwoGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "two-gate-intervention", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example", Start: "implement",
+			Tasks: []apiv1.Task{
+				{
+					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
+				},
+				{
+					Name: "finish", Type: apiv1.TaskDeterministic, Goal: "finish",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
+				},
+			},
+			Gates: []apiv1.Gate{
+				{
+					Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+					Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+					Branches: map[string]string{
+						"pass":          "approval",
+						"fail":          workflow.TargetEscalate,
+						"needs-changes": workflow.TargetEscalate,
+					},
+				},
+				{
+					Name: "approval", Evaluator: apiv1.EvaluatorHuman,
+					Human: &apiv1.HumanGate{},
+					Branches: map[string]string{
+						"pass": "finish",
+						"fail": workflow.TargetEscalate,
+					},
+				},
+			},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
 type interventionDeterministic struct{}
 
 func (interventionDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -92,6 +135,11 @@ func newInterventionServiceTestRunWithDeterministic(
 	t.Helper()
 	layout := instance.NewLayout(t.TempDir())
 	scoped := layout.ForGaggle("example")
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
 	manager, err := worktree.NewManager(scoped.WorkcopiesDir())
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +152,9 @@ func newInterventionServiceTestRunWithDeterministic(
 		Worktrees:  manager,
 		ScratchDir: filepath.Join(scoped.WorkcopiesDir(), "scratch"),
 		RunsDir:    scoped.RunsDir(),
+		FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
+			return releaseClaimsForRun(layout, instanceLog, runID)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +180,7 @@ func newInterventionServiceTestRunWithDeterministic(
 	runners := map[string]*runner.Runner{"example": runRunner}
 	runnerRegistry := newDaemonRunnerRegistry()
 	runnerRegistry.Replace(runners)
-	return &runInterventionService{
+	service := &runInterventionService{
 		layout: layout,
 		definitions: newInterventionDefinitionRegistry(interventionDefinitionSet{
 			runners:       runners,
@@ -140,7 +191,16 @@ func newInterventionServiceTestRunWithDeterministic(
 			},
 		}),
 		runnerRegistry: runnerRegistry,
-	}, filepath.Join(scoped.RunsDir(), runID)
+		instanceLog:    instanceLog,
+	}
+	service.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: machine.Def.Name,
+		Gaggle:   "example",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 1,
+		},
+	}}, instanceLog))
+	return service, filepath.Join(scoped.RunsDir(), runID)
 }
 
 func TestRunInterventionOverrideResumesAndJournalsAction(t *testing.T) {
@@ -152,18 +212,15 @@ func TestRunInterventionOverrideResumesAndJournalsAction(t *testing.T) {
 		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
 		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	result, err := service.Override(ctx, httpapi.InterventionRequest{
+	result, err := service.Override(context.Background(), httpapi.InterventionRequest{
 		RunID: "run-override", Stage: "review", Actor: "operator",
 		Decision: "pass", Rationale: "accepted after manual review",
 	})
 	if err != nil {
 		t.Fatalf("Override: %v", err)
 	}
-	if result.Phase != string(journal.PhaseRunning) || result.State != "finish" {
-		t.Fatalf("result = %+v, want running at finish", result)
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want completed", result)
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
@@ -173,7 +230,12 @@ func TestRunInterventionOverrideResumesAndJournalsAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := events[len(events)-1]
+	var resumed journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunResumed {
+			resumed = event
+		}
+	}
 	if resumed.Type != journal.EventRunResumed ||
 		resumed.Actor != "operator" ||
 		resumed.Target != "finish" ||
@@ -297,6 +359,15 @@ func TestRunInterventionUsesDefinitionsReplacedAfterReload(t *testing.T) {
 			key: {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "repo", Branch: "main"},
 		},
 	})
+	if err := service.scheduler.Load().Reload([]localscheduler.WorkflowEntry{{
+		Workflow: reloaded.Def.Name,
+		Gaggle:   "example",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 1,
+		},
+	}}, nil, time.Now(), "old", "new"); err != nil {
+		t.Fatal(err)
+	}
 
 	const runID = "run-after-reload"
 	run, err := journal.Create(service.layout.ForGaggle("example").RunsDir(), journal.RunIdentity{
@@ -318,17 +389,15 @@ func TestRunInterventionUsesDefinitionsReplacedAfterReload(t *testing.T) {
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	result, err := service.Override(cancelled, httpapi.InterventionRequest{
+	result, err := service.Override(context.Background(), httpapi.InterventionRequest{
 		RunID: runID, Stage: "review", Actor: "operator",
 		Decision: "pass", Rationale: "reviewed after reload",
 	})
 	if err != nil {
 		t.Fatalf("Override: %v", err)
 	}
-	if result.Phase != string(journal.PhaseRunning) || result.State != "finish" {
-		t.Fatalf("result = %+v, want post-reload run reopened at finish", result)
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want post-reload run completed", result)
 	}
 }
 
@@ -340,6 +409,17 @@ func (d *blockingInterventionDeterministic) Run(ctx context.Context, _ apiv1.Inv
 	close(d.started)
 	<-ctx.Done()
 	return apiv1.ResultEnvelope{}, ctx.Err()
+}
+
+type releasableInterventionDeterministic struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *releasableInterventionDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	close(d.started)
+	<-d.release
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
 func TestRunInterventionRegistersLiveOwnerForCancellation(t *testing.T) {
@@ -377,5 +457,214 @@ func TestRunInterventionRegistersLiveOwnerForCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("intervention did not return after cancellation")
+	}
+}
+
+func TestRunInterventionReacquiresClaimsAndAdmissionUntilTerminal(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	deterministic := &releasableInterventionDeterministic{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	service, _ := newInterventionServiceTestRunWithDeterministic(t, machine, "run-reserved", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	}, deterministic)
+	if err := service.instanceLog.Append(journal.Event{
+		Type: journal.EventClaimAcquired, Name: "466", Gaggle: "example",
+		RunID: "run-reserved", Workflow: machine.Def.Name,
+		Runner: map[string]any{"claimProvider": "github", "claimExternalId": "466"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.instanceLog.Append(journal.Event{
+		Type: journal.EventClaimReleased, Name: "466", Gaggle: "example",
+		RunID: "run-reserved", Workflow: machine.Def.Name,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.Override(context.Background(), httpapi.InterventionRequest{
+			RunID: "run-reserved", Stage: "review", Actor: "operator",
+			Decision: "pass", Rationale: "resume safely",
+		})
+		done <- err
+	}()
+	select {
+	case <-deterministic.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resumed stage did not start")
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
+	if entry, held := ledger.LookupScoped(key); !held || entry.RunID != "run-reserved" {
+		t.Fatalf("reacquired claim = (%+v, %v)", entry, held)
+	}
+	if release, ok, reason := service.scheduler.Load().ReserveContinuation("competing-run", "example", machine.Def.Name); ok {
+		release()
+		t.Fatal("competing run acquired admission while intervention was active")
+	} else if reason != localscheduler.ReasonMaxParallel {
+		t.Fatalf("competing admission refusal = %q", reason)
+	}
+
+	close(deterministic.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Override: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("intervention did not finish")
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.LookupScoped(key); held {
+		t.Fatalf("terminal run retained claim: %+v", entry)
+	}
+	if release, ok, reason := service.scheduler.Load().ReserveContinuation("next-run", "example", machine.Def.Name); !ok {
+		t.Fatalf("terminal run retained admission: %s", reason)
+	} else {
+		release()
+	}
+}
+
+func TestRunInterventionRetainsResourcesAcrossAnotherHumanPause(t *testing.T) {
+	machine := interventionTwoGateMachine(t)
+	service, _ := newInterventionServiceTestRun(t, machine, "run-repaused", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	if err := service.instanceLog.Append(journal.Event{
+		Type: journal.EventClaimAcquired, Name: "466", Gaggle: "example",
+		RunID: "run-repaused", Workflow: machine.Def.Name,
+		Runner: map[string]any{"claimProvider": "github", "claimExternalId": "466"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Override(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-repaused", Stage: "review", Actor: "operator",
+		Decision: "pass", Rationale: "continue to approval",
+	})
+	if err != nil {
+		t.Fatalf("Override: %v", err)
+	}
+	if result.Phase != string(journal.PhaseRunning) || result.State != "approval" {
+		t.Fatalf("override result = %+v, want paused at approval", result)
+	}
+
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.LookupScoped(key); !held || entry.RunID != "run-repaused" {
+		t.Fatalf("claim while re-paused = (%+v, %v)", entry, held)
+	}
+	if release, ok, _ := service.scheduler.Load().ReserveContinuation("competing-run", "example", machine.Def.Name); ok {
+		release()
+		t.Fatal("re-paused intervention released workflow admission")
+	}
+
+	result, err = service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-repaused", Stage: "approval", Actor: "approver", Decision: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("approval result = %+v, want completed", result)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.LookupScoped(key); held {
+		t.Fatalf("completed re-paused run retained claim: %+v", entry)
+	}
+	if release, ok, reason := service.scheduler.Load().ReserveContinuation("next-run", "example", machine.Def.Name); !ok {
+		t.Fatalf("completed re-paused run retained admission: %s", reason)
+	} else {
+		release()
+	}
+}
+
+func TestRunInterventionRejectsClaimOwnedByAnotherRun(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, runDir := newInterventionServiceTestRun(t, machine, "run-conflicted", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	if err := service.instanceLog.Append(journal.Event{
+		Type: journal.EventClaimAcquired, Name: "466", Gaggle: "example",
+		RunID: "run-conflicted", Workflow: machine.Def.Name,
+		Runner: map[string]any{"claimProvider": "github", "claimExternalId": "466"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(key, "other-run", machine.Def.Name, time.Hour); err != nil || !ok {
+		t.Fatalf("seed competing claim: ok=%v err=%v", ok, err)
+	}
+
+	_, err = service.Override(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-conflicted", Stage: "review", Actor: "operator",
+		Decision: "pass", Rationale: "resume safely",
+	})
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) || interventionErr.Status != http.StatusConflict || interventionErr.Code != "claim_unavailable" {
+		t.Fatalf("Override error = %#v, want claim_unavailable", err)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunResumed {
+			t.Fatal("claim-conflicted run was resumed")
+		}
+	}
+	if release, ok, reason := service.scheduler.Load().ReserveContinuation("probe-run", "example", machine.Def.Name); !ok {
+		t.Fatalf("failed intervention leaked admission: %s", reason)
+	} else {
+		release()
+	}
+}
+
+func TestRunInterventionResolvePrefersLiveOwnerAcrossReload(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, _ := newInterventionServiceTestRun(t, machine, "run-live-owner", []journal.Event{
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	})
+	snapshot := service.definitions.Snapshot()
+	original := snapshot.runners["example"]
+	reloaded := &runner.Runner{}
+	snapshot.runners = map[string]*runner.Runner{"example": reloaded}
+	service.definitions.Replace(snapshot)
+	service.runnerRegistry.Replace(snapshot.runners)
+	untrack := service.runnerRegistry.Track("run-live-owner", original)
+	defer untrack()
+
+	resolved, err := service.resolve("run-live-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.runner != original {
+		t.Fatalf("resolved runner = %p, want live owner %p", resolved.runner, original)
 	}
 }

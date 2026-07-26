@@ -421,7 +421,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
-	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithInterventions(newRunInterventionService(l, setup)))
+	interventions := newRunInterventionService(l, setup, &wg)
+	apiHandlerOpts = append(apiHandlerOpts,
+		httpapi.WithInterventions(interventions),
+		httpapi.WithInterventionContext(ctx),
+	)
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
 			Issuer:     auth.OIDC.Issuer,
@@ -574,6 +578,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		default:
 		}
 	}
+	interventions.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {

@@ -289,6 +289,28 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 	return true, ""
 }
 
+// ReserveContinuation reacquires concurrency capacity for an existing run.
+// Resuming a run is not a new start, so it does not consume rolling run
+// budgets or re-evaluate start-only provider and open-PR gates.
+func (c *Conditions) ReserveContinuation(identity WorkflowIdentity, r apiv1.ReadinessConditions) (ok bool, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	maxConcurrent := r.MaxConcurrentRuns
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	if c.active[identity] >= int(maxConcurrent) {
+		return false, ReasonMaxParallel
+	}
+	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+		return false, ReasonInstanceMaxParallel
+	}
+	c.active[identity]++
+	c.totalActive++
+	return true, ""
+}
+
 // Release returns a workflow's admitted slot once its run finishes.
 func (c *Conditions) Release(workflow string) {
 	c.ReleaseWorkflow(WorkflowIdentity{Workflow: workflow})

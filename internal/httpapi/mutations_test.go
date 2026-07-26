@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readservice"
@@ -27,6 +28,33 @@ type fakeInterventions struct {
 	calls  []interventionCall
 	result InterventionResult
 	err    error
+}
+
+type blockingInterventions struct {
+	started chan context.Context
+	release chan struct{}
+}
+
+func (b *blockingInterventions) call(ctx context.Context) (InterventionResult, error) {
+	b.started <- ctx
+	select {
+	case <-ctx.Done():
+		return InterventionResult{}, ctx.Err()
+	case <-b.release:
+		return InterventionResult{Phase: "completed"}, nil
+	}
+}
+
+func (b *blockingInterventions) Approve(ctx context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.call(ctx)
+}
+
+func (b *blockingInterventions) Override(ctx context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.call(ctx)
+}
+
+func (b *blockingInterventions) RerunStage(ctx context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.call(ctx)
 }
 
 func (f *fakeInterventions) call(action string, input InterventionRequest) (InterventionResult, error) {
@@ -121,6 +149,50 @@ func TestMutationRoutesUseAuthenticatedPrincipalAsActor(t *testing.T) {
 	}
 	if len(service.calls) != 1 || service.calls[0].input.Actor != "operator" {
 		t.Fatalf("calls = %+v, want authenticated actor", service.calls)
+	}
+}
+
+func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) {
+	lifecycle, stopDaemon := context.WithCancel(context.Background())
+	defer stopDaemon()
+	service := &blockingInterventions{
+		started: make(chan context.Context, 1),
+		release: make(chan struct{}),
+	}
+	handler, err := NewHandler(
+		&fakeReader{},
+		AllowAll,
+		discardLogger(),
+		WithInterventions(service),
+		WithInterventionContext(lifecycle),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestContext, disconnect := context.WithCancel(context.Background())
+	request := newMutationRequest(http.MethodPost, "override", `{"actor":"operator","rationale":"reviewed"}`)
+	request = request.WithContext(requestContext)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, request)
+		close(done)
+	}()
+
+	executionContext := <-service.started
+	disconnect()
+	select {
+	case <-done:
+		t.Fatal("client disconnect canceled the accepted intervention")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := executionContext.Err(); err != nil {
+		t.Fatalf("execution context after client disconnect: %v", err)
+	}
+	close(service.release)
+	<-done
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
 	}
 }
 

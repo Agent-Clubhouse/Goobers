@@ -137,11 +137,12 @@ type Scheduler struct {
 	refreshHeartbeat  func(time.Time) error
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 
-	mu         sync.Mutex
-	tickMu     sync.Mutex
-	triggers   map[WorkflowIdentity]TriggerState
-	dispatches sync.WaitGroup
-	wake       chan struct{}
+	mu          sync.Mutex
+	admissionMu sync.Mutex
+	tickMu      sync.Mutex
+	triggers    map[WorkflowIdentity]TriggerState
+	dispatches  sync.WaitGroup
+	wake        chan struct{}
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
@@ -428,6 +429,8 @@ func resolveRunStartedIdentities(runsDirs []string, event journal.Event, workflo
 // Matching by run prevents terminal cleanup from consuming another running
 // run's workflow-level slot when no slot was seeded for the terminal run.
 func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
 	if ok && reconciledWorkflow.Workflow == workflow {
@@ -444,6 +447,8 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 // once. Watchdogs use this after terminalizing a run; dispatch and resume
 // cleanup may safely call it again.
 func (s *Scheduler) ReleaseRun(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	identity, admitted := s.admittedRuns[runID]
 	if admitted && identity.Workflow == workflow {
@@ -467,6 +472,48 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	if released {
 		s.wakeForPendingScheduleDemand()
 	}
+}
+
+// ReserveContinuation reserves the configured workflow's concurrency slot for
+// an existing run without recording a second run start or consuming its rate
+// budget. The returned release is idempotent.
+func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release func(), ok bool, reason string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	identity := WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}
+	s.mu.Lock()
+	entry, configured := s.workflows[identity]
+	admittedIdentity, admitted := s.admittedRuns[runID]
+	_, reconciled := s.reconciledRuns[runID]
+	s.mu.Unlock()
+	switch {
+	case !configured:
+		return func() {}, false, "workflow unavailable"
+	case admitted && admittedIdentity == identity:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				s.ReleaseRun(runID, workflow)
+			})
+		}, true, ""
+	case admitted || reconciled:
+		return func() {}, false, "run already admitted"
+	}
+
+	if ok, reason := s.conditions.ReserveContinuation(identity, entry.Readiness); !ok {
+		return func() {}, false, reason
+	}
+	s.mu.Lock()
+	s.admittedRuns[runID] = identity
+	s.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.ReleaseRun(runID, workflow)
+		})
+	}, true, ""
 }
 
 func (s *Scheduler) wakeForPendingScheduleDemand() {

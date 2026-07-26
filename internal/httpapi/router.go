@@ -186,9 +186,10 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events        eventSource
-	authenticator Authenticator
-	interventions InterventionService
+	events              eventSource
+	authenticator       Authenticator
+	interventions       InterventionService
+	interventionContext context.Context
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -228,6 +229,18 @@ func WithInterventions(interventions InterventionService) HandlerOption {
 			return errors.New("http API intervention service is required")
 		}
 		config.interventions = interventions
+		return nil
+	}
+}
+
+// WithInterventionContext binds accepted mutations to the daemon lifecycle
+// rather than the requesting client's connection lifetime.
+func WithInterventionContext(ctx context.Context) HandlerOption {
+	return func(config *handlerConfig) error {
+		if ctx == nil {
+			return errors.New("http API intervention context is required")
+		}
+		config.interventionContext = ctx
 		return nil
 	}
 }
@@ -344,7 +357,10 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
-	config := handlerConfig{authenticator: NullAuthenticator{}}
+	config := handlerConfig{
+		authenticator:       NullAuthenticator{},
+		interventionContext: context.Background(),
+	}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
 			return nil, err
@@ -354,7 +370,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	registerV1Routes(router, reader, config.interventions, errorLog)
+	registerV1Routes(router, reader, config.interventions, config.interventionContext, errorLog)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -372,7 +388,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, interventions InterventionService, errorLog *log.Logger) {
+func registerV1Routes(router *Router, reader readservice.Reader, interventions InterventionService, interventionContext context.Context, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -395,7 +411,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, interventions I
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	registerMutationRoutes(router, interventions, errorLog)
+	registerMutationRoutes(router, interventions, interventionContext, errorLog)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {

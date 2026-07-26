@@ -104,6 +104,46 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 	return ids
 }
 
+func (r *daemonRunnerRegistry) TrackCompatible(runID string, owner *runner.Runner) (func(), bool) {
+	if r == nil || owner == nil {
+		return func() {}, false
+	}
+	r.mu.Lock()
+	if r.owners == nil {
+		r.owners = make(map[string]daemonRunnerOwner)
+	}
+	lease := r.owners[runID]
+	if lease.runner != nil && lease.runner != owner {
+		r.mu.Unlock()
+		return func() {}, false
+	}
+	if lease.runner == owner {
+		lease.leases++
+	} else {
+		r.nextGeneration++
+		lease = daemonRunnerOwner{runner: owner, generation: r.nextGeneration, leases: 1}
+	}
+	r.owners[runID] = lease
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			current := r.owners[runID]
+			if current.generation == lease.generation {
+				current.leases--
+				if current.leases == 0 {
+					delete(r.owners, runID)
+				} else {
+					r.owners[runID] = current
+				}
+			}
+			r.mu.Unlock()
+		})
+	}, true
+}
+
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
 	if r == nil {
 		return fallback, false

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -24,6 +26,11 @@ type runInterventionService struct {
 	layout         instance.Layout
 	definitions    *interventionDefinitionRegistry
 	runnerRegistry *daemonRunnerRegistry
+	instanceLog    *journal.InstanceLog
+	scheduler      atomic.Pointer[localscheduler.Scheduler]
+	wg             *sync.WaitGroup
+	activeMu       sync.Mutex
+	active         map[string]struct{}
 }
 
 type interventionDefinitionSet struct {
@@ -73,19 +80,31 @@ func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *ru
 }
 
 type resolvedInterventionRun struct {
+	runID        string
 	runner       *runner.Runner
 	machine      *workflow.Machine
 	gooberDigest string
 	repoRef      apiv1.RepoRef
+	runDir       string
+	gaggle       string
+	workflow     string
 	phase        journal.RunPhase
 	events       []journal.Event
 }
 
-func newRunInterventionService(layout instance.Layout, setup *schedulerSetup) *runInterventionService {
+func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup) *runInterventionService {
 	return &runInterventionService{
 		layout:         layout,
 		definitions:    setup.Interventions,
 		runnerRegistry: setup.RunnerRegistry,
+		instanceLog:    setup.InstanceLog,
+		wg:             wg,
+	}
+}
+
+func (s *runInterventionService) AttachScheduler(scheduler *localscheduler.Scheduler) {
+	if s != nil {
+		s.scheduler.Store(scheduler)
 	}
 }
 
@@ -124,13 +143,13 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("run %q is not paused at gate %q", input.RunID, input.Stage),
 			)
 		}
-		untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
-		defer untrack()
-		result, err = resolved.runner.Resume(ctx, runner.ResumeInput{
-			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-			HumanDecision: &runner.HumanGateDecision{
-				Gate: input.Stage, PauseSeq: pauseSeq, Decision: decision, Actor: input.Actor,
-			},
+		result, err = s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+			return resolved.runner.Resume(ctx, runner.ResumeInput{
+				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+				HumanDecision: &runner.HumanGateDecision{
+					Gate: input.Stage, PauseSeq: pauseSeq, Decision: decision, Actor: input.Actor,
+				},
+			})
 		})
 	case journal.PhaseEscalated, journal.PhaseFailed:
 		if gate.Evaluator != apiv1.EvaluatorHuman && gate.Evaluator != apiv1.EvaluatorAgentic {
@@ -145,12 +164,12 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 			)
 		}
-		untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
-		defer untrack()
-		result, err = resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
-			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-			Target: target, Complete: target == workflow.TerminalComplete,
-			Actor: input.Actor, Action: "approve", Gate: input.Stage, Decision: decision,
+		result, err = s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+			return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
+				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+				Target: target, Complete: target == workflow.TerminalComplete,
+				Actor: input.Actor, Action: "approve", Gate: input.Stage, Decision: decision,
+			})
 		})
 	default:
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -199,12 +218,12 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 			fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 		)
 	}
-	untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
-	defer untrack()
-	result, err := resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
-		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-		Target: target, Complete: target == workflow.TerminalComplete,
-		Actor: input.Actor, Action: "override", Gate: input.Stage, Decision: decision, Rationale: rationale,
+	result, err := s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+		return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
+			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+			Target: target, Complete: target == workflow.TerminalComplete,
+			Actor: input.Actor, Action: "override", Gate: input.Stage, Decision: decision, Rationale: rationale,
+		})
 	})
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError("override", err)
@@ -227,11 +246,11 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
 	}
-	untrack := s.runnerRegistry.Track(input.RunID, resolved.runner)
-	defer untrack()
-	result, err := resolved.runner.RerunStage(ctx, runner.RerunStageInput{
-		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
+	result, err := s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
+			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
+		})
 	})
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError("rerun stage", err)
@@ -307,7 +326,8 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			fmt.Sprintf("workflow %q for run %q is no longer available", identity.Workflow, runID),
 		)
 	}
-	if found.runner == nil {
+	runRunner, _ := s.runnerRegistry.Resolve(runID, identity.Gaggle, found.runner)
+	if runRunner == nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,
 		)
@@ -325,13 +345,256 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		)
 	}
 	return resolvedInterventionRun{
-		runner:       found.runner,
+		runID:        runID,
+		runner:       runRunner,
 		machine:      machine,
 		gooberDigest: definitions.gooberDigests[key],
 		repoRef:      definitions.repoRefs[key],
+		runDir:       found.dir,
+		gaggle:       identity.Gaggle,
+		workflow:     identity.Workflow,
 		phase:        phase,
 		events:       events,
 	}, nil
+}
+
+type interventionExecutionLease struct {
+	service          *runInterventionService
+	resolved         resolvedInterventionRun
+	releaseAdmission func()
+	releaseActive    func()
+	untrack          func()
+	reacquiredClaims bool
+	retainAdmission  bool
+}
+
+func (s *runInterventionService) execute(
+	ctx context.Context,
+	resolved resolvedInterventionRun,
+	reacquireClaims bool,
+	run func(context.Context) (runner.Result, error),
+) (runner.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return runner.Result{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "daemon_stopping", "the daemon is stopping", err,
+		)
+	}
+	if s.wg != nil {
+		s.wg.Add(1)
+		defer s.wg.Done()
+	}
+	lease, err := s.beginExecution(resolved, reacquireClaims)
+	if err != nil {
+		return runner.Result{}, err
+	}
+	defer lease.Close()
+	result, runErr := run(ctx)
+	phase := result.Phase
+	if phase == "" {
+		var phaseErr error
+		phase, phaseErr = lease.phase()
+		if phaseErr != nil {
+			lease.retainAdmission = true
+			return result, errors.Join(runErr, phaseErr)
+		}
+	}
+	if !terminalInterventionPhase(phase) {
+		lease.retainAdmission = true
+	}
+	if runErr != nil && terminalInterventionPhase(phase) {
+		runErr = errors.Join(runErr, lease.releaseReacquiredClaims())
+	}
+	return result, runErr
+}
+
+func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
+	if !exclusive {
+		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
+	}
+	lease := &interventionExecutionLease{service: s, resolved: resolved, releaseActive: releaseActive}
+
+	untrack, compatible := s.runnerRegistry.TrackCompatible(resolved.runID, resolved.runner)
+	if !compatible {
+		lease.Close()
+		return nil, interventionConflict("run_owner_changed", "run ownership changed while the intervention was being accepted")
+	}
+	lease.untrack = untrack
+
+	scheduler := s.scheduler.Load()
+	if scheduler == nil {
+		lease.Close()
+		return nil, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
+		)
+	}
+	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
+	if !admitted {
+		lease.Close()
+		return nil, interventionConflict("run_not_admitted", "run could not reacquire workflow admission: "+reason)
+	}
+	lease.releaseAdmission = release
+
+	if reacquireClaims {
+		if err := s.reacquireClaims(resolved); err != nil {
+			lease.Close()
+			return nil, err
+		}
+		lease.reacquiredClaims = true
+	}
+	return lease, nil
+}
+
+func (s *runInterventionService) trackActiveIntervention(runID string) (func(), bool) {
+	s.activeMu.Lock()
+	if s.active == nil {
+		s.active = make(map[string]struct{})
+	}
+	if _, exists := s.active[runID]; exists {
+		s.activeMu.Unlock()
+		return func() {}, false
+	}
+	s.active[runID] = struct{}{}
+	s.activeMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.activeMu.Lock()
+			delete(s.active, runID)
+			s.activeMu.Unlock()
+		})
+	}, true
+}
+
+func (l *interventionExecutionLease) Close() {
+	if l == nil {
+		return
+	}
+	if l.releaseAdmission != nil && !l.retainAdmission {
+		l.releaseAdmission()
+		l.releaseAdmission = nil
+	}
+	if l.untrack != nil {
+		l.untrack()
+		l.untrack = nil
+	}
+	if l.releaseActive != nil {
+		l.releaseActive()
+		l.releaseActive = nil
+	}
+}
+
+func (l *interventionExecutionLease) phase() (journal.RunPhase, error) {
+	reader, err := journal.OpenRead(l.resolved.runDir)
+	if err != nil {
+		return "", fmt.Errorf("inspect run after intervention: %w", err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return "", fmt.Errorf("inspect run phase after intervention: %w", err)
+	}
+	return phase, nil
+}
+
+func terminalInterventionPhase(phase journal.RunPhase) bool {
+	switch phase {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *interventionExecutionLease) releaseReacquiredClaims() error {
+	if l == nil || !l.reacquiredClaims {
+		return nil
+	}
+	return releaseClaimsForRun(l.service.layout, l.service.instanceLog, l.resolved.runID)
+}
+
+func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRun) error {
+	claims, err := s.claimHistory(resolved)
+	if err != nil {
+		return httpapi.NewInterventionError(
+			http.StatusInternalServerError, "claim_history_failed", "run claim history could not be read", err,
+		)
+	}
+	var acquired bool
+	var holder string
+	lockPath := filepath.Join(s.layout.SchedulerDir(), claimLockFileName)
+	err = withClaimLockForRun(lockPath, claimLockOperationIntervention, resolved.gaggle, resolved.runID, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithInstanceLog(s.instanceLog),
+		)
+		if err != nil {
+			return err
+		}
+		acquired, holder, err = ledger.ReclaimAll(claims, resolved.runID, resolved.workflow, DefaultClaimLease)
+		return err
+	})
+	if err != nil {
+		return httpapi.NewInterventionError(
+			http.StatusInternalServerError, "claim_reacquire_failed", "run claims could not be reacquired", err,
+		)
+	}
+	if !acquired {
+		return interventionConflict(
+			"claim_unavailable",
+			fmt.Sprintf("run claims are now held by run %q", holder),
+		)
+	}
+	return nil
+}
+
+func (s *runInterventionService) claimHistory(resolved resolvedInterventionRun) ([]localscheduler.ClaimEntry, error) {
+	events, err := journal.ReadInstanceLog(s.layout.SchedulerDir())
+	if err != nil {
+		return nil, err
+	}
+	claims := make(map[string]localscheduler.ClaimEntry)
+	for _, event := range events {
+		if event.Type != journal.EventClaimAcquired || event.RunID != resolved.runID {
+			continue
+		}
+		itemID := strings.TrimSpace(event.Name)
+		if itemID == "" {
+			return nil, errors.New("claim acquisition event has no item identity")
+		}
+		externalID, _ := event.Runner["claimExternalId"].(string)
+		if externalID == "" {
+			externalID = itemID
+		}
+		provider, _ := event.Runner["claimProvider"].(string)
+		if provider == "" && event.Gaggle != "" {
+			provider = string(resolved.repoRef.Provider)
+		}
+		entry := localscheduler.ClaimEntry{
+			ItemID:     itemID,
+			Gaggle:     event.Gaggle,
+			Provider:   provider,
+			ExternalID: externalID,
+			RunID:      resolved.runID,
+			Workflow:   resolved.workflow,
+		}
+		key := entry.Gaggle + "\x00" + entry.Provider + "\x00" + entry.ExternalID
+		claims[key] = entry
+	}
+	result := make([]localscheduler.ClaimEntry, 0, len(claims))
+	for _, entry := range claims {
+		result = append(result, entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Gaggle != result[j].Gaggle {
+			return result[i].Gaggle < result[j].Gaggle
+		}
+		if result[i].Provider != result[j].Provider {
+			return result[i].Provider < result[j].Provider
+		}
+		return result[i].ExternalID < result[j].ExternalID
+	})
+	return result, nil
 }
 
 func interventionBranch(machine *workflow.Machine, gateName, decision string) (apiv1.Gate, string, error) {
@@ -411,6 +674,10 @@ func interventionForbidden(code, message string) error {
 }
 
 func interventionExecutionError(action string, err error) error {
+	var interventionErr *httpapi.InterventionError
+	if errors.As(err, &interventionErr) {
+		return err
+	}
 	return httpapi.NewInterventionError(
 		http.StatusInternalServerError,
 		"intervention_failed",

@@ -65,13 +65,13 @@ func NewInterventionError(status int, code, message string, err error) error {
 	return &InterventionError{Status: status, Code: code, Message: message, Err: err}
 }
 
-func registerMutationRoutes(router *Router, interventions InterventionService, errorLog *log.Logger) {
-	router.Handle(apicontract.RouteApproveStage, stageMutationHandler("approve", interventions, errorLog))
-	router.Handle(apicontract.RouteOverrideStage, stageMutationHandler("override", interventions, errorLog))
-	router.Handle(apicontract.RouteRerunStage, stageMutationHandler("rerun", interventions, errorLog))
+func registerMutationRoutes(router *Router, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteApproveStage, stageMutationHandler("approve", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteOverrideStage, stageMutationHandler("override", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteRerunStage, stageMutationHandler("rerun", interventions, lifecycle, errorLog))
 }
 
-func stageMutationHandler(action string, interventions InterventionService, errorLog *log.Logger) http.HandlerFunc {
+func stageMutationHandler(action string, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if interventions == nil {
 			writeError(w, http.StatusServiceUnavailable, "interventions_unavailable", "run interventions are not available from this server")
@@ -97,11 +97,11 @@ func stageMutationHandler(action string, interventions InterventionService, erro
 		var result InterventionResult
 		switch action {
 		case "approve":
-			result, err = interventions.Approve(request.Context(), input)
+			result, err = interventions.Approve(lifecycle, input)
 		case "override":
-			result, err = interventions.Override(request.Context(), input)
+			result, err = interventions.Override(lifecycle, input)
 		case "rerun":
-			result, err = interventions.RerunStage(request.Context(), input)
+			result, err = interventions.RerunStage(lifecycle, input)
 		default:
 			panic("unknown intervention action " + action)
 		}
