@@ -63,10 +63,6 @@ type agentProvenance struct {
 	harnessVersion string
 }
 
-func (db *DB) agentProvenanceByRun(workflow string) (map[string]agentProvenance, error) {
-	return db.agentProvenanceByRunForGaggle("", workflow)
-}
-
 func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string]agentProvenance, error) {
 	query := `
 		SELECT ai.run_id, ai.model, ai.harness_version
@@ -113,12 +109,6 @@ func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string
 		}
 	}
 	return out, nil
-}
-
-// effectiveVersionRows returns workflow's runs (optionally bounded to
-// since), each assigned its EffectiveVersion cohort, in chronological order.
-func (db *DB) effectiveVersionRows(workflow string, since time.Time) ([]effectiveVersionRun, error) {
-	return db.effectiveVersionRowsForGaggle("", workflow, since)
 }
 
 func (db *DB) effectiveVersionRowsForGaggle(gaggle, workflow string, since time.Time) ([]effectiveVersionRun, error) {
@@ -273,13 +263,6 @@ func aggregateRunStats(workflow string, rows []effectiveVersionRun) RunStats {
 		s.MaxDurationMs = max
 	}
 	return s
-}
-
-// runStatsByEffectiveVersion is runStatsByDigest narrowed to one exact
-// EffectiveVersion cohort hash. Excluded runs never match any hash, so they
-// are implicitly dropped rather than counted toward either segment.
-func (db *DB) runStatsByEffectiveVersion(workflow, hash string, since time.Time) (RunStats, error) {
-	return db.runStatsByEffectiveVersionForGaggle("", workflow, hash, since, time.Time{})
 }
 
 func (db *DB) runStatsByEffectiveVersionForGaggle(

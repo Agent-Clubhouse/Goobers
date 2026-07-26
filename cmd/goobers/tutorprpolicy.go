@@ -316,14 +316,6 @@ func isWorkflowPath(filePath string) bool {
 	return hasPathSegment(filePath, "workflows") && (ext == ".yaml" || ext == ".yml")
 }
 
-func classifyLocalTutorChanges(base string) (tutorChangeClassification, error) {
-	changes, err := localTutorChanges(base)
-	if err != nil {
-		return tutorChangeClassification{}, err
-	}
-	return classifyTutorChanges(changes)
-}
-
 func localTutorChanges(base string) ([]tutorFileChange, error) {
 	diffRaw, err := tutorGitOutput("diff", "--find-renames", "--name-status", "-z", base+"...HEAD")
 	if err != nil {
