@@ -85,6 +85,8 @@ const (
 	// above are reused there to announce a run's start/end at the instance
 	// level (with Workflow/RunID set); these are scheduler-only concepts.
 
+	// EventInitCompleted records a successful fresh `goobers init` completion.
+	EventInitCompleted EventType = "init.completed"
 	// EventTriggerFired records a cron/manual trigger firing for a workflow.
 	EventTriggerFired EventType = "trigger.fired"
 	// EventTickSkipped records a tick that did not start a run, with Reason set
@@ -356,7 +358,7 @@ func (e Event) IsConformanceNormative() bool {
 	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
-		EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
+		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.

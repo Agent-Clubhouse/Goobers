@@ -107,14 +107,27 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	firstRunAt := now.Add(-48 * time.Hour)
-	firstDir := createRetentionRun(t, layout, "first-run", firstRunAt, "terminal")
-	firstPROpenAt := firstRunAt.Add(time.Hour + 10*time.Minute)
+	initCompletedAt := now.Add(-48 * time.Hour)
+	instanceLog, _, err := journal.OpenInstanceLog(
+		layout.SchedulerDir(),
+		journal.WithClock(func() time.Time { return initCompletedAt }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Append(journal.Event{Type: journal.EventInitCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstDir := createRetentionRun(t, layout, "first-run", initCompletedAt.Add(time.Minute), "terminal")
+	firstPROpenAt := initCompletedAt.Add(time.Hour + 10*time.Minute)
 	prDir := createRetentionRun(
 		t,
 		layout,
 		"first-pr-run",
-		firstRunAt.Add(time.Hour),
+		initCompletedAt.Add(time.Hour),
 		"terminal",
 		10*time.Minute,
 	)
@@ -123,6 +136,9 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
+	if err := db.IngestSchedulerLog(layout.SchedulerDir()); err != nil {
+		t.Fatalf("ingest scheduler log: %v", err)
+	}
 	for _, dir := range []string{firstDir, prDir} {
 		if err := db.IngestRun(dir); err != nil {
 			t.Fatalf("ingest %s: %v", dir, err)
@@ -145,7 +161,7 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+	if metric.InitCompletedAt == nil || !metric.InitCompletedAt.Equal(initCompletedAt) ||
 		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) {
 		t.Fatalf("TimeToFirstPR after prune = %#v", metric)
 	}

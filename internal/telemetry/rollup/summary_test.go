@@ -56,6 +56,16 @@ func seedSummaryRun(
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
 }
 
+func writeInitCompletedLog(t *testing.T, schedulerDir string, at time.Time) {
+	t.Helper()
+	mustMkdirAll(t, schedulerDir)
+	mustWriteFile(
+		t,
+		filepath.Join(schedulerDir, fileEvents),
+		eventLine(1, at, `"type":"init.completed"`)+"\n",
+	)
+}
+
 func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
@@ -75,6 +85,12 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
+	initCompletedAt := now.Add(-48 * time.Hour)
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
 
 	all, err := db.InstanceSummaryStats(time.Time{})
 	if err != nil {
@@ -99,10 +115,9 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TimeToFirstPR: %v", err)
 	}
-	wantFirstRunAt := now.Add(-48 * time.Hour)
-	wantFirstPROpenAt := wantFirstRunAt.Add(4 * time.Second)
+	wantFirstPROpenAt := initCompletedAt.Add(4 * time.Second)
 	if timeToFirstPR.Anchor != telemetry.TimeToFirstPRAnchor ||
-		timeToFirstPR.FirstRunAt == nil || !timeToFirstPR.FirstRunAt.Equal(wantFirstRunAt) ||
+		timeToFirstPR.InitCompletedAt == nil || !timeToFirstPR.InitCompletedAt.Equal(initCompletedAt) ||
 		timeToFirstPR.FirstPROpenAt == nil || !timeToFirstPR.FirstPROpenAt.Equal(wantFirstPROpenAt) ||
 		timeToFirstPR.Milliseconds == nil || *timeToFirstPR.Milliseconds != 4000 {
 		t.Fatalf("time to first PR = %#v", timeToFirstPR)
@@ -137,7 +152,7 @@ func TestInstanceSummaryStatsEmpty(t *testing.T) {
 		t.Fatalf("TimeToFirstPR: %v", err)
 	}
 	if timeToFirstPR.Anchor != telemetry.TimeToFirstPRAnchor ||
-		timeToFirstPR.FirstRunAt != nil ||
+		timeToFirstPR.InitCompletedAt != nil ||
 		timeToFirstPR.FirstPROpenAt != nil ||
 		timeToFirstPR.Milliseconds != nil {
 		t.Fatalf("empty time to first PR = %#v", timeToFirstPR)
@@ -147,15 +162,15 @@ func TestInstanceSummaryStatsEmpty(t *testing.T) {
 func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
-	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	seedSummaryRun(t, runsDir, fixtureRunID, "implement", "completed", firstRunAt, 0)
+	initCompletedAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	seedSummaryRun(t, runsDir, fixtureRunID, "implement", "completed", initCompletedAt.Add(time.Minute), 0)
 	seedSummaryRun(
 		t,
 		runsDir,
 		fixtureRunID2,
 		"implement",
 		"completed",
-		firstRunAt.Add(time.Hour),
+		initCompletedAt.Add(time.Hour),
 		0,
 		summaryMutation{kind: "pr", operation: "open"},
 	)
@@ -166,13 +181,18 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedAndIngest(t, db, runsDir)
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
 	for _, runID := range []string{fixtureRunID, fixtureRunID2} {
 		if err := db.DeleteRun(runID); err != nil {
 			t.Fatalf("DeleteRun(%s): %v", runID, err)
 		}
 	}
-	wantPROpenAt := firstRunAt.Add(time.Hour + time.Second)
-	assertTimeToFirstPR(t, db, firstRunAt, wantPROpenAt)
+	wantPROpenAt := initCompletedAt.Add(time.Hour + time.Second)
+	assertTimeToFirstPR(t, db, initCompletedAt, wantPROpenAt)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +200,7 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 	if err := os.RemoveAll(runsDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := Rebuild(dbPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
+	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	rebuilt, err := Open(dbPath)
@@ -188,20 +208,20 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = rebuilt.Close() }()
-	assertTimeToFirstPR(t, rebuilt, firstRunAt, wantPROpenAt)
+	assertTimeToFirstPR(t, rebuilt, initCompletedAt, wantPROpenAt)
 }
 
 func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
-	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	initCompletedAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	seedSummaryRun(
 		t,
 		runsDir,
 		fixtureRunID,
 		"implement",
 		"completed",
-		firstRunAt,
+		initCompletedAt.Add(time.Minute),
 		0,
 		summaryMutation{kind: "pr", operation: "open"},
 	)
@@ -210,7 +230,9 @@ func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *tes
 	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Rebuild(dbPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
+	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	rebuilt, err := Open(dbPath)
@@ -218,23 +240,30 @@ func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *tes
 		t.Fatal(err)
 	}
 	defer func() { _ = rebuilt.Close() }()
-	assertTimeToFirstPR(t, rebuilt, firstRunAt, firstRunAt.Add(time.Second))
+	assertTimeToFirstPR(t, rebuilt, initCompletedAt, initCompletedAt.Add(time.Minute+time.Second))
 }
 
-func TestOnboardingMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
+func TestFirstSuccessMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstRunAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	firstPROpenAt := firstRunAt.Add(7 * time.Minute)
+	initCompletedAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	firstPROpenAt := initCompletedAt.Add(7 * time.Minute)
 	if _, err := db.sql.Exec(`
 		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
 		VALUES ('legacy-run', 'implement', 1, 'web', ?)`,
-		formatTime(firstRunAt),
+		formatTime(initCompletedAt.Add(time.Minute)),
 	); err != nil {
 		t.Fatalf("insert legacy run: %v", err)
+	}
+	if _, err := db.sql.Exec(`
+		INSERT INTO scheduler_events (seq, type, occurred_at)
+		VALUES (1, 'init.completed', ?)`,
+		formatTime(initCompletedAt),
+	); err != nil {
+		t.Fatalf("insert init completion: %v", err)
 	}
 	if _, err := db.sql.Exec(`
 		INSERT INTO provider_mutations (
@@ -244,8 +273,8 @@ func TestOnboardingMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy provider mutation: %v", err)
 	}
-	if _, err := db.sql.Exec(`DROP TABLE onboarding_milestones`); err != nil {
-		t.Fatalf("drop onboarding milestone table: %v", err)
+	if _, err := db.sql.Exec(`DROP TABLE first_success_milestones`); err != nil {
+		t.Fatalf("drop first-success milestone table: %v", err)
 	}
 	if _, err := db.sql.Exec(`UPDATE schema_meta SET version = ?`, len(migrations)-1); err != nil {
 		t.Fatalf("restore v13 schema version: %v", err)
@@ -259,20 +288,20 @@ func TestOnboardingMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 		t.Fatalf("upgrade Open: %v", err)
 	}
 	defer func() { _ = upgraded.Close() }()
-	assertTimeToFirstPR(t, upgraded, firstRunAt, firstPROpenAt)
+	assertTimeToFirstPR(t, upgraded, initCompletedAt, firstPROpenAt)
 }
 
-func assertTimeToFirstPR(t *testing.T, db *DB, firstRunAt, firstPROpenAt time.Time) {
+func assertTimeToFirstPR(t *testing.T, db *DB, initCompletedAt, firstPROpenAt time.Time) {
 	t.Helper()
 	metric, err := db.TimeToFirstPR()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+	if metric.InitCompletedAt == nil || !metric.InitCompletedAt.Equal(initCompletedAt) ||
 		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) {
-		t.Fatalf("TimeToFirstPR = %#v, want %s to %s", metric, firstRunAt, firstPROpenAt)
+		t.Fatalf("TimeToFirstPR = %#v, want %s to %s", metric, initCompletedAt, firstPROpenAt)
 	}
-	wantMilliseconds := firstPROpenAt.Sub(firstRunAt).Milliseconds()
+	wantMilliseconds := firstPROpenAt.Sub(initCompletedAt).Milliseconds()
 	if metric.Milliseconds == nil || *metric.Milliseconds != wantMilliseconds {
 		t.Fatalf("TimeToFirstPR milliseconds = %v, want %d", metric.Milliseconds, wantMilliseconds)
 	}

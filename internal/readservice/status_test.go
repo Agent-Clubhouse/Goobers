@@ -115,14 +115,32 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 }
 
-func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
+func writeInitCompleted(t *testing.T, layout instance.Layout, at time.Time) {
+	t.Helper()
+	instanceLog, _, err := journal.OpenInstanceLog(
+		layout.SchedulerDir(),
+		journal.WithClock(func() time.Time { return at }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Append(journal.Event{Type: journal.EventInitCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTimeToFirstPRUsesInitCompletionAndOpenedRef(t *testing.T) {
 	service, layout, machine := fixtureService(t)
-	firstRunAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	initCompletedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	writeInitCompleted(t, layout, initCompletedAt)
 	first, firstClock := createFixtureRun(
 		t, layout, machine, "first-run", "implementation", "goobers",
-		firstRunAt, journal.Trigger{Kind: journal.TriggerManual}, false,
+		initCompletedAt.Add(3*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
 	)
-	firstClock.now = firstRunAt.Add(2 * time.Minute)
+	firstClock.now = initCompletedAt.Add(4 * time.Minute)
 	if err := first.Append(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "42"},
@@ -136,9 +154,9 @@ func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
 
 	second, secondClock := createFixtureRun(
 		t, layout, machine, "second-run", "implementation", "goobers",
-		firstRunAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+		initCompletedAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
 	)
-	secondClock.now = firstRunAt.Add(8 * time.Minute)
+	secondClock.now = initCompletedAt.Add(8 * time.Minute)
 	if err := second.Append(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "7"},
@@ -146,7 +164,7 @@ func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	secondClock.now = firstRunAt.Add(12 * time.Minute)
+	secondClock.now = initCompletedAt.Add(12 * time.Minute)
 	if err := second.Append(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
@@ -162,10 +180,10 @@ func TestTimeToFirstPRUsesJournalIdentityAndOpenedRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) {
-		t.Fatalf("FirstRunAt = %v, want %v", metric.FirstRunAt, firstRunAt)
+	if metric.InitCompletedAt == nil || !metric.InitCompletedAt.Equal(initCompletedAt) {
+		t.Fatalf("InitCompletedAt = %v, want %v", metric.InitCompletedAt, initCompletedAt)
 	}
-	wantOpenAt := firstRunAt.Add(12 * time.Minute)
+	wantOpenAt := initCompletedAt.Add(12 * time.Minute)
 	if metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(wantOpenAt) {
 		t.Fatalf("FirstPROpenAt = %v, want %v", metric.FirstPROpenAt, wantOpenAt)
 	}
@@ -210,12 +228,26 @@ func TestTimeToFirstPRFailsClosedOnUnreadableJournal(t *testing.T) {
 	}
 }
 
+func TestTimeToFirstPRFailsClosedOnUnreadableInstanceJournal(t *testing.T) {
+	service, layout, _ := fixtureService(t)
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.SchedulerDir(), "events.jsonl"), []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if metric, err := service.TimeToFirstPR(context.Background()); err == nil {
+		t.Fatalf("TimeToFirstPR = %#v, nil; want unreadable instance journal error", metric)
+	}
+}
+
 func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
 	_, layout, machine := fixtureService(t)
-	firstRunAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	initCompletedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	writeInitCompleted(t, layout, initCompletedAt)
 	first, _ := createFixtureRun(
 		t, layout, machine, "first-run", "implementation", "goobers",
-		firstRunAt, journal.Trigger{Kind: journal.TriggerManual}, false,
+		initCompletedAt.Add(2*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
 	)
 	firstDir := first.Dir()
 	if err := first.Close(); err != nil {
@@ -223,9 +255,9 @@ func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
 	}
 	second, clock := createFixtureRun(
 		t, layout, machine, "first-pr-run", "implementation", "goobers",
-		firstRunAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+		initCompletedAt.Add(5*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
 	)
-	clock.now = firstRunAt.Add(12 * time.Minute)
+	clock.now = initCompletedAt.Add(12 * time.Minute)
 	if err := second.Append(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
@@ -243,6 +275,9 @@ func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
+	if err := db.IngestSchedulerLog(layout.SchedulerDir()); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
 	for _, dir := range []string{firstDir, secondDir} {
 		if err := db.IngestRun(dir); err != nil {
 			t.Fatalf("IngestRun(%s): %v", dir, err)
@@ -264,7 +299,7 @@ func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metric.FirstRunAt == nil || !metric.FirstRunAt.Equal(firstRunAt) ||
+	if metric.InitCompletedAt == nil || !metric.InitCompletedAt.Equal(initCompletedAt) ||
 		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(clock.now) ||
 		metric.Milliseconds == nil || *metric.Milliseconds != (12*time.Minute).Milliseconds() {
 		t.Fatalf("TimeToFirstPR after retention = %#v", metric)

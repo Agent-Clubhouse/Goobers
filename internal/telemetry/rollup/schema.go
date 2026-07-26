@@ -409,21 +409,25 @@ CREATE TABLE IF NOT EXISTS scheduler_ingest_cursor (
 	last_seq    INTEGER NOT NULL
 );
 `,
-	// v14 (issue #1358): preserve the lifetime onboarding milestone outside
-	// per-run rows so retention cannot erase or move time-to-first-PR. Upgrade
-	// existing stores from the retained journal projection, then update the
-	// singleton transactionally during every future run ingest.
+	// v14 (issue #1358): preserve the lifetime first-run success milestone
+	// outside per-run rows so retention cannot erase or move time-to-first-PR.
+	// Upgrade existing stores from retained instance and run projections, then
+	// update the singleton transactionally during future journal ingestion.
 	`
-CREATE TABLE IF NOT EXISTS onboarding_milestones (
-	id               INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
-	first_run_at     TEXT,
-	first_pr_open_at TEXT
+CREATE TABLE IF NOT EXISTS first_success_milestones (
+	id                INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	init_completed_at TEXT,
+	first_pr_open_at  TEXT
 );
 
-INSERT OR IGNORE INTO onboarding_milestones (id, first_run_at, first_pr_open_at)
+INSERT OR IGNORE INTO first_success_milestones (id, init_completed_at, first_pr_open_at)
 VALUES (
 	1,
-	(SELECT MIN(started_at) FROM runs),
+	(
+		SELECT MIN(occurred_at)
+		FROM scheduler_events
+		WHERE type = 'init.completed'
+	),
 	(
 		SELECT MIN(occurred_at)
 		FROM provider_mutations

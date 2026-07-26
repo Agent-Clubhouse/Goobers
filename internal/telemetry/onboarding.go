@@ -2,33 +2,33 @@ package telemetry
 
 import "time"
 
-// TimeToFirstPRAnchor identifies the immutable journal field used as the
-// onboarding metric's starting point.
-const TimeToFirstPRAnchor = "firstRunStartedAt"
+// TimeToFirstPRAnchor identifies the successful-init journal timestamp used as
+// the first-run success interval's starting point.
+const TimeToFirstPRAnchor = "initCompletedAt"
 
-// TimeToFirstPRMetric is the lifetime onboarding interval from the first run
-// recorded by an instance to its first journaled pull-request open.
+// TimeToFirstPRMetric is the lifetime first-run success interval from successful
+// instance initialization to its first journaled pull-request open.
 type TimeToFirstPRMetric struct {
-	Anchor        string     `json:"anchor"`
-	FirstRunAt    *time.Time `json:"firstRunAt,omitempty"`
-	FirstPROpenAt *time.Time `json:"firstPROpenAt,omitempty"`
-	Milliseconds  *int64     `json:"milliseconds,omitempty"`
+	Anchor          string     `json:"anchor"`
+	InitCompletedAt *time.Time `json:"initCompletedAt,omitempty"`
+	FirstPROpenAt   *time.Time `json:"firstPROpenAt,omitempty"`
+	Milliseconds    *int64     `json:"milliseconds,omitempty"`
 }
 
 // NewTimeToFirstPRMetric builds the structured metric while preserving absent
 // timestamps as absent rather than reporting a misleading zero.
-func NewTimeToFirstPRMetric(firstRunAt, firstPROpenAt time.Time) TimeToFirstPRMetric {
+func NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt time.Time) TimeToFirstPRMetric {
 	metric := TimeToFirstPRMetric{Anchor: TimeToFirstPRAnchor}
-	if !firstRunAt.IsZero() {
-		firstRunAt = firstRunAt.UTC()
-		metric.FirstRunAt = &firstRunAt
+	if !initCompletedAt.IsZero() {
+		initCompletedAt = initCompletedAt.UTC()
+		metric.InitCompletedAt = &initCompletedAt
 	}
 	if !firstPROpenAt.IsZero() {
 		firstPROpenAt = firstPROpenAt.UTC()
 		metric.FirstPROpenAt = &firstPROpenAt
 	}
-	if metric.FirstRunAt != nil && metric.FirstPROpenAt != nil {
-		elapsed := metric.FirstPROpenAt.Sub(*metric.FirstRunAt)
+	if metric.InitCompletedAt != nil && metric.FirstPROpenAt != nil {
+		elapsed := metric.FirstPROpenAt.Sub(*metric.InitCompletedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}

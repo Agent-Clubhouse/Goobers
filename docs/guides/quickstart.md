@@ -35,7 +35,8 @@ Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
 implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
 `telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
 gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
-pieces are left untouched.
+pieces are left untouched. A fresh successful initialization records
+`init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
 
 ### Onboarding-only template
 
@@ -144,10 +145,11 @@ bin/goobers status ./my-instance
 ```
 
 `status` revalidates the active configuration before listing runs. On a new
-instance it reports that Time to First PR is waiting for the first run or first
-PR; after the onboarding workflow journals its first PR open, it celebrates
-`First PR in <duration>`. The duration is read from the earliest run identity
-and the first PR-open `ref.touched` event, not from command timing. Non-fatal
+instance its first-run success indicator waits for the first PR; after the
+workflow journals its first PR open, it celebrates
+`First-run success: first PR in <duration>`. The duration is read from the
+successful-init `init.completed` event and the first PR-open `ref.touched`
+event, not from command timing. Non-fatal
 configuration warnings use the same `WARNING <code> <scope>: <explanation>`
 lines printed during `up` startup. `status --json` returns an object with
 `warnings` and `runs` arrays plus the structured `timeToFirstPR` metric; warning

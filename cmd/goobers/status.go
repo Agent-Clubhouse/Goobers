@@ -40,7 +40,7 @@ const (
 	statusNextFireScheduled    = "scheduled"
 	statusNextFireManual       = "manual"
 	statusNextFireEvent        = "event"
-	statusOnboardingRefresh    = 10 * time.Second
+	statusFirstSuccessRefresh  = 10 * time.Second
 )
 
 func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -72,18 +72,18 @@ func prLabelStatusUnavailableText(err error) string {
 
 func timeToFirstPRStatusText(metric telemetry.TimeToFirstPRMetric) string {
 	switch {
-	case metric.FirstRunAt == nil:
-		return "Time to first PR: waiting for first run\n"
+	case metric.InitCompletedAt == nil:
+		return "First-run success: waiting for successful init\n"
 	case metric.Milliseconds == nil:
-		return "Time to first PR: waiting for first PR\n"
+		return "First-run success: waiting for first PR\n"
 	default:
 		elapsed := time.Duration(*metric.Milliseconds) * time.Millisecond
-		return fmt.Sprintf("First PR in %s\n", elapsed.Truncate(time.Second))
+		return fmt.Sprintf("First-run success: first PR in %s\n", elapsed.Truncate(time.Second))
 	}
 }
 
 func timeToFirstPRStatusUnavailableText(err error) string {
-	return fmt.Sprintf("Time to first PR unavailable: %v\n", err)
+	return fmt.Sprintf("First-run success unavailable: %v\n", err)
 }
 
 type statusTimeToFirstPRCache struct {
@@ -104,7 +104,7 @@ func (c *statusTimeToFirstPRCache) Load(ctx context.Context) (telemetry.TimeToFi
 	if c.metric.Milliseconds != nil {
 		return c.metric, c.err
 	}
-	if c.loadedAt.IsZero() || !c.now().Before(c.loadedAt.Add(statusOnboardingRefresh)) {
+	if c.loadedAt.IsZero() || !c.now().Before(c.loadedAt.Add(statusFirstSuccessRefresh)) {
 		c.metric, c.err = c.load(ctx)
 		c.loadedAt = c.now()
 	}

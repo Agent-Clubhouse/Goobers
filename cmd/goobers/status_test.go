@@ -55,6 +55,23 @@ func writeStatusRunWithPhase(
 	}
 }
 
+func writeStatusInitCompleted(t *testing.T, root string, at time.Time) {
+	t.Helper()
+	instanceLog, _, err := journal.OpenInstanceLog(
+		instance.NewLayout(root).SchedulerDir(),
+		journal.WithClock(func() time.Time { return at }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Append(journal.Event{Type: journal.EventInitCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
 // printing the misleading "no runs found" at exit 0 — indistinguishable from
@@ -83,7 +100,7 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 		"Workflow summary (success rate over last 10 terminal runs):",
 		"default-implement",
 		"0/1",
-		"Time to first PR: waiting for first run",
+		"First-run success: waiting for first PR",
 		"Open PRs with goobers:blocked-on-sibling: 0",
 		"Open PRs with goobers:merge-escalated: 0",
 		"no runs found — trigger one with 'goobers run <workflow>'",
@@ -96,10 +113,11 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 
 func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	root := initScheduledDemo(t)
-	firstRunAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
-	writeStatusRun(t, root, "first-run", "default-implement", "example", firstRunAt)
+	initCompletedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	writeStatusInitCompleted(t, root, initCompletedAt)
+	writeStatusRun(t, root, "first-run", "default-implement", "example", initCompletedAt.Add(3*time.Minute))
 
-	eventTime := firstRunAt.Add(5 * time.Minute)
+	eventTime := initCompletedAt.Add(5 * time.Minute)
 	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
 		RunID:     "pr-run",
 		Workflow:  "default-implement",
@@ -109,7 +127,7 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventTime = firstRunAt.Add(12 * time.Minute)
+	eventTime = initCompletedAt.Add(12 * time.Minute)
 	if err := run.Append(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"},
@@ -125,7 +143,7 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "First PR in 12m0s") {
+	if !strings.Contains(stdout, "First-run success: first PR in 12m0s") {
 		t.Fatalf("stdout = %q, want journal-derived first-PR duration", stdout)
 	}
 
@@ -138,7 +156,7 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 		t.Fatalf("status JSON = %q: %v", stdout, err)
 	}
 	if got.TimeToFirstPR == nil ||
-		got.TimeToFirstPR.FirstRunAt == nil || !got.TimeToFirstPR.FirstRunAt.Equal(firstRunAt) ||
+		got.TimeToFirstPR.InitCompletedAt == nil || !got.TimeToFirstPR.InitCompletedAt.Equal(initCompletedAt) ||
 		got.TimeToFirstPR.FirstPROpenAt == nil || !got.TimeToFirstPR.FirstPROpenAt.Equal(eventTime) ||
 		got.TimeToFirstPR.Milliseconds == nil || *got.TimeToFirstPR.Milliseconds != (12*time.Minute).Milliseconds() {
 		t.Fatalf("timeToFirstPR = %#v", got.TimeToFirstPR)
@@ -169,7 +187,7 @@ func TestStatusKeepsRunsWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, `Time to first PR unavailable: read run "unreadable-run"`) {
+	if !strings.Contains(stdout, `First-run success unavailable: read run "unreadable-run"`) {
 		t.Fatalf("stdout = %q, want unavailable TTFP enrichment", stdout)
 	}
 
@@ -203,28 +221,28 @@ func TestStatusKeepsRunsWhenTimeToFirstPRRollupIsUnreadable(t *testing.T) {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
 	if !strings.Contains(stdout, "healthy-run") ||
-		!strings.Contains(stdout, "Time to first PR unavailable: open telemetry rollup") {
+		!strings.Contains(stdout, "First-run success unavailable: open telemetry rollup") {
 		t.Fatalf("stdout = %q, want healthy run and unavailable TTFP enrichment", stdout)
 	}
 }
 
 func TestStatusTimeToFirstPRCacheRefreshesUntilAchieved(t *testing.T) {
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
-	firstRunAt := now.Add(-time.Minute)
+	initCompletedAt := now.Add(-time.Minute)
 	calls := 0
 	cache := newStatusTimeToFirstPRCache(func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
 		calls++
 		if calls == 1 {
-			return telemetry.NewTimeToFirstPRMetric(firstRunAt, time.Time{}), nil
+			return telemetry.NewTimeToFirstPRMetric(initCompletedAt, time.Time{}), nil
 		}
-		return telemetry.NewTimeToFirstPRMetric(firstRunAt, now), nil
+		return telemetry.NewTimeToFirstPRMetric(initCompletedAt, now), nil
 	})
 	cache.now = func() time.Time { return now }
 
 	if metric, err := cache.Load(context.Background()); err != nil || metric.Milliseconds != nil {
 		t.Fatalf("first Load = %#v, %v; want waiting metric", metric, err)
 	}
-	now = now.Add(statusOnboardingRefresh - time.Second)
+	now = now.Add(statusFirstSuccessRefresh - time.Second)
 	if _, err := cache.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +390,7 @@ func TestStatusSkipsMalformedHistoricalRun(t *testing.T) {
 		strings.Contains(stdout, "malformed-run                         implementation") {
 		t.Fatalf("stdout = %q, want only the healthy run", stdout)
 	}
-	if !strings.Contains(stdout, `Time to first PR unavailable: read run "malformed-run"`) {
+	if !strings.Contains(stdout, `First-run success unavailable: read run "malformed-run"`) {
 		t.Fatalf("stdout = %q, want unavailable TTFP enrichment", stdout)
 	}
 }

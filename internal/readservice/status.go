@@ -32,22 +32,35 @@ func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
 }
 
-// TimeToFirstPR merges the retained lifetime milestone with every live run
-// identity and ref.touched event. Scanning all retained journals keeps the
-// metric fail-closed on incomplete history while the milestone survives
-// retention.
+// TimeToFirstPR merges the retained lifetime milestone with the successful-init
+// instance event and every live ref.touched event. Scanning all retained
+// journals keeps the metric fail-closed on incomplete history while the
+// milestone survives retention.
 func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
-	var firstRunAt, firstPROpenAt time.Time
+	var initCompletedAt, firstPROpenAt time.Time
 	if s.sources.Telemetry != nil {
 		persisted, err := s.sources.Telemetry.TimeToFirstPR()
 		if err != nil {
 			return telemetry.TimeToFirstPRMetric{}, err
 		}
-		if persisted.FirstRunAt != nil {
-			firstRunAt = *persisted.FirstRunAt
+		if persisted.InitCompletedAt != nil {
+			initCompletedAt = *persisted.InitCompletedAt
 		}
 		if persisted.FirstPROpenAt != nil {
 			firstPROpenAt = *persisted.FirstPROpenAt
+		}
+	}
+	instanceEvents, err := journal.ReadInstanceLog(s.sources.Layout.SchedulerDir())
+	if err != nil {
+		return telemetry.TimeToFirstPRMetric{}, fmt.Errorf("read instance journal for time to first PR: %w", err)
+	}
+	for _, event := range instanceEvents {
+		if err := ctx.Err(); err != nil {
+			return telemetry.TimeToFirstPRMetric{}, err
+		}
+		if event.Type == journal.EventInitCompleted && !event.Time.IsZero() &&
+			(initCompletedAt.IsZero() || event.Time.Before(initCompletedAt)) {
+			initCompletedAt = event.Time
 		}
 	}
 	runIDs, err := s.RunIDs(ctx)
@@ -66,10 +79,6 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 				err,
 			)
 		}
-		if startedAt := run.identity.StartedAt; !startedAt.IsZero() &&
-			(firstRunAt.IsZero() || startedAt.Before(firstRunAt)) {
-			firstRunAt = startedAt
-		}
 		for _, record := range run.records {
 			event := record.Event
 			operation, _ := event.Runner["operation"].(string)
@@ -85,7 +94,7 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 			}
 		}
 	}
-	return telemetry.NewTimeToFirstPRMetric(firstRunAt, firstPROpenAt), nil
+	return telemetry.NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt), nil
 }
 
 // SchedulerStatus returns the current scheduler status recorded in the

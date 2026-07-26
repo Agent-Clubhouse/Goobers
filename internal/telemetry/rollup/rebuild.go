@@ -12,7 +12,7 @@ import (
 
 // Rebuild derives telemetry.db from scratch by wiping any existing rollup at
 // dbPath and re-ingesting every run directory under runsDir plus the instance
-// journal and spans at schedulerDir. The lifetime onboarding milestone is
+// journal and spans at schedulerDir. The lifetime first-success milestone is
 // carried forward when the old rollup is readable because retention may already
 // have removed its source run. All other rollup data remains a journal-derived
 // projection (TEL-032). This is the primitive behind `goobers telemetry
@@ -28,7 +28,7 @@ func Rebuild(dbPath, runsDir, schedulerDir string) error {
 
 // RebuildAll derives telemetry.db from every per-gaggle run root.
 func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
-	onboarding := existingTimeToFirstPR(dbPath)
+	firstSuccess := existingTimeToFirstPR(dbPath)
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
@@ -42,8 +42,8 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 	defer func() { _ = db.Close() }()
 
 	if err := db.recordTimeToFirstPR(
-		timeOrZero(onboarding.FirstRunAt),
-		timeOrZero(onboarding.FirstPROpenAt),
+		timeOrZero(firstSuccess.InitCompletedAt),
+		timeOrZero(firstSuccess.FirstPROpenAt),
 	); err != nil {
 		return err
 	}
