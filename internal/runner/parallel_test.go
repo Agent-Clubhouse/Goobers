@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -120,25 +119,96 @@ func TestBranchStatusFor(t *testing.T) {
 	}
 }
 
-// FO-5 executes continue_on_error only. The cancelling policies must fail
-// CLOSED rather than silently behaving like continue_on_error, which would let
-// a workflow believe it had fail-fast semantics it does not have.
-func TestUnsupportedFailurePoliciesFailClosed(t *testing.T) {
-	if err := supportedFailurePolicy(apiv1.BranchContinueOnError); err != nil {
-		t.Errorf("continue_on_error must execute: %v", err)
-	}
-	for _, policy := range []apiv1.BranchFailurePolicy{apiv1.BranchFailFast, apiv1.BranchAllOrNothing} {
-		err := supportedFailurePolicy(policy)
-		if err == nil {
-			t.Errorf("policy %q must fail closed until FO-6 implements cancellation", policy)
-			continue
-		}
-		if !strings.Contains(err.Error(), "not yet implemented") {
-			t.Errorf("policy %q error = %q, want it to say the policy is unimplemented", policy, err)
+func TestEveryDeclaredFailurePolicyExecutes(t *testing.T) {
+	for _, policy := range []apiv1.BranchFailurePolicy{
+		apiv1.BranchContinueOnError, apiv1.BranchFailFast, apiv1.BranchAllOrNothing,
+	} {
+		if err := supportedFailurePolicy(policy); err != nil {
+			t.Errorf("policy %q must execute: %v", policy, err)
 		}
 	}
 	if err := supportedFailurePolicy("nonsense"); err == nil {
-		t.Error("an unknown policy must fail closed")
+		t.Error("an unknown policy must fail closed rather than default to permissive")
+	}
+}
+
+// When nothing fails, all three policies behave identically: the join runs.
+// They differ ONLY on failure.
+func TestRouteRunsJoinWhenNoBranchFailed(t *testing.T) {
+	for _, policy := range []apiv1.BranchFailurePolicy{
+		apiv1.BranchContinueOnError, apiv1.BranchFailFast, apiv1.BranchAllOrNothing,
+	} {
+		p := newParallelExec(apiv1.Parallel{
+			Name: "fan", FailurePolicy: policy, Join: "collate", OnFailure: "@escalate",
+			Branches: []apiv1.Branch{{Name: "a", Start: "a1"}, {Name: "b", Start: "b1"}},
+		})
+		p.advance(journal.BranchSucceeded)
+		p.advance(journal.BranchNoOutput)
+		target, runJoin := p.route()
+		if !runJoin || target != "collate" {
+			t.Errorf("policy %q with no failure routed to (%q, join=%v), want collate/true", policy, target, runJoin)
+		}
+	}
+}
+
+func TestRouteOnFailureByPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		policy     apiv1.BranchFailurePolicy
+		wantTarget string
+		wantJoin   bool
+	}{
+		// The join owns the decision via the completeness record.
+		{apiv1.BranchContinueOnError, "collate", true},
+		{apiv1.BranchFailFast, "park", false},
+		{apiv1.BranchAllOrNothing, "park", false},
+	} {
+		p := newParallelExec(apiv1.Parallel{
+			Name: "fan", FailurePolicy: tc.policy, Join: "collate", OnFailure: "park",
+			Branches: []apiv1.Branch{{Name: "a", Start: "a1"}, {Name: "b", Start: "b1"}},
+		})
+		p.advance(journal.BranchFailed)
+		p.advance(journal.BranchSucceeded)
+		target, runJoin := p.route()
+		if target != tc.wantTarget || runJoin != tc.wantJoin {
+			t.Errorf("policy %q routed to (%q, join=%v), want (%q, %v)", tc.policy, target, runJoin, tc.wantTarget, tc.wantJoin)
+		}
+	}
+}
+
+// no-output is a SUCCESSFUL settle — a research lens that found nothing must
+// not trip a failure policy.
+func TestNoOutputIsNotAFailure(t *testing.T) {
+	p := newParallelExec(apiv1.Parallel{
+		Name: "fan", FailurePolicy: apiv1.BranchFailFast, Join: "collate", OnFailure: "park",
+		Branches: []apiv1.Branch{{Name: "a", Start: "a1"}},
+	})
+	p.advance(journal.BranchNoOutput)
+	if p.anyFailed() {
+		t.Error("a no-output branch must not count as failed")
+	}
+	if target, runJoin := p.route(); !runJoin || target != "collate" {
+		t.Errorf("routed to (%q, join=%v), want the join to run", target, runJoin)
+	}
+}
+
+func TestCancelRemainingSettlesUnstartedBranches(t *testing.T) {
+	p := newParallelExec(apiv1.Parallel{
+		Name: "fan", FailurePolicy: apiv1.BranchFailFast, Join: "collate", OnFailure: "park",
+		Branches: []apiv1.Branch{{Name: "a", Start: "a1"}, {Name: "b", Start: "b1"}, {Name: "c", Start: "c1"}},
+	})
+	p.advance(journal.BranchFailed) // a fails, b becomes active
+	cancelled := p.cancelRemaining()
+	if len(cancelled) != 2 {
+		t.Fatalf("cancelled %d branches, want b and c", len(cancelled))
+	}
+	record := p.completeness()
+	if record[0].Status != journal.BranchFailed {
+		t.Errorf("branch a = %q, want failed", record[0].Status)
+	}
+	for _, i := range []int{1, 2} {
+		if record[i].Status != journal.BranchCancelled {
+			t.Errorf("branch %d = %q, want cancelled", i, record[i].Status)
+		}
 	}
 }
 
