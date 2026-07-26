@@ -131,6 +131,20 @@ func TestReconstructStageOutputsLastAttemptWins(t *testing.T) {
 	}
 }
 
+func TestReconstructStageOutputsEmptyLastAttemptWins(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Outputs: map[string]any{"digest": "old"}},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2},
+	}
+	outputs, seen := reconstructStageOutputs(events, nil)["implement"]
+	if !seen {
+		t.Fatal("implement outputs are absent, want the completed empty attempt recorded")
+	}
+	if len(outputs) != 0 {
+		t.Fatalf("implement outputs = %#v, want empty latest attempt", outputs)
+	}
+}
+
 func TestReconstructStageOutputsIsNilWhenNothingFinished(t *testing.T) {
 	if got := reconstructStageOutputs([]journal.Event{{Type: journal.EventRunStarted}}, nil); got != nil {
 		t.Errorf("stage outputs = %#v, want nil", got)

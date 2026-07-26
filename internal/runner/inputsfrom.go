@@ -14,7 +14,7 @@ import (
 type stageOutputs map[string]map[string]any
 
 func (s stageOutputs) record(stage string, outputs map[string]any) {
-	if stage == "" || len(outputs) == 0 {
+	if stage == "" {
 		return
 	}
 	if s == nil {
@@ -215,9 +215,6 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 				out.clear(e.Stage)
 				continue
 			}
-		}
-		if len(e.Outputs) == 0 {
-			continue
 		}
 		out.record(e.Stage, e.Outputs)
 	}

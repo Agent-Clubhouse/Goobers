@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,42 @@ func (c *committingFanInExecutor) Run(ctx context.Context, env apiv1.InvocationE
 	runGit(c.t, env.Workspace, "add", name)
 	runGit(c.t, env.Workspace, "commit", "-m", env.TaskID)
 	return c.delegate.Run(ctx, env, run)
+}
+
+type emptyRepassFanInExecutor struct {
+	calls map[string]int
+}
+
+func (e *emptyRepassFanInExecutor) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	e.calls[env.TaskID]++
+	switch {
+	case strings.HasSuffix(env.TaskID, ":review-security"):
+		if e.calls[env.TaskID] == 1 {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultSuccess,
+				Outputs: map[string]any{"summary": "superseded"},
+			}, nil
+		}
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	case strings.HasSuffix(env.TaskID, ":review-performance"):
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	case strings.HasSuffix(env.TaskID, ":collate"):
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	default:
+		return apiv1.ResultEnvelope{}, fmt.Errorf("unexpected task %q", env.TaskID)
+	}
+}
+
+type failThenPassAutomated struct {
+	calls int
+}
+
+func (a *failThenPassAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	a.calls++
+	if a.calls == 1 {
+		return gate.OutcomeFail, nil
+	}
+	return gate.OutcomePass, nil
 }
 
 func fanInMachine(t *testing.T, failedPerformance bool) *workflow.Machine {
@@ -139,6 +176,56 @@ func branchGateFanInMachine(t *testing.T) *workflow.Machine {
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile branch gate fan-in machine: %v", err)
+	}
+	return machine
+}
+
+func emptyRepassFanInMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "empty-repass-fan-in", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("review-security", "accept-security"),
+				task("review-performance", workflow.TargetJoin),
+				{
+					Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate",
+					Run:        &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					InputsFrom: map[string]string{"security": "fan.security.review-security.summary"},
+					Next:       workflow.TerminalComplete,
+				},
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "accept-security",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches: map[string]string{
+					gate.OutcomePass: workflow.TargetJoin,
+					gate.OutcomeFail: "review-security",
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+				Join: "collate",
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile empty repass fan-in machine: %v", err)
 	}
 	return machine
 }
@@ -714,6 +801,33 @@ func TestRunnerResumeMidParallelContinuesRemainingBranches(t *testing.T) {
 		if got := join.Inputs[branch]; got != branch {
 			t.Errorf("join input %q = %#v, want %q", branch, got, branch)
 		}
+	}
+}
+
+func TestRunnerBranchGateEmptyRepassClearsPriorOutputs(t *testing.T) {
+	const runID = "fan-in-empty-repass"
+	executor := &emptyRepassFanInExecutor{calls: map[string]int{}}
+	automated := &failThenPassAutomated{}
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return executor, nil
+	}, automated)
+	r.cfg.ScratchDir = t.TempDir()
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: emptyRepassFanInMachine(t), Gaggle: "goobers",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `branch output "fan.security.review-security.summary" not found`) {
+		t.Fatalf("Start error = %v, want missing latest-attempt branch output", err)
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", result.Phase)
+	}
+	if got := executor.calls[runID+":review-security"]; got != 2 {
+		t.Fatalf("review-security calls = %d, want initial attempt and repass", got)
+	}
+	if got := executor.calls[runID+":collate"]; got != 0 {
+		t.Fatalf("collate calls = %d, want stale output rejected before invocation", got)
 	}
 }
 
