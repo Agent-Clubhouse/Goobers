@@ -268,9 +268,30 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 	if len(events) > 0 {
 		r.lastActivity = events[len(events)-1].Time
 	}
+	needsBranchCheckpoint := false
 	diskSt, diskErr := rd.State()
 	if diskErr == nil {
 		r.machineState = diskSt.MachineState
+		r.branches = diskSt.Branches
+	}
+
+	// Branch cursors are reconstructed from the log rather than trusted from
+	// the checkpoint. state.json is a derived convenience and the crash window
+	// it can be stranded in is exactly the one that matters here: a
+	// branch.finished can be fsynced while the crash lands before the
+	// checkpoint rename. The log is the source of truth (§4), so where the two
+	// disagree the log wins.
+	if logCursors, ok := reconstructBranchCursors(events); ok {
+		if !equalBranchCursors(r.branches, logCursors) {
+			r.branches = logCursors
+			needsBranchCheckpoint = true
+		}
+	} else if len(r.branches) > 0 {
+		// The log shows no live parallel (it never started, or it finished and
+		// the run is single-cursor again) but the checkpoint still carries
+		// cursors — a stranded checkpoint. Clear them.
+		r.branches = nil
+		needsBranchCheckpoint = true
 	}
 
 	// Heal state.json if it disagrees with what the log durably shows
@@ -288,7 +309,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 	// non-terminal case the journal can heal exactly because it durably names
 	// the chosen MachineState; other running checkpoints still require the
 	// workflow Machine and remain the caller's responsibility.
-	needsCheckpoint := tornBytes > 0
+	needsCheckpoint := tornBytes > 0 || needsBranchCheckpoint
 	if r.phase != PhaseRunning {
 		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" || diskSt.Reason != r.reason {
 			r.machineState = ""

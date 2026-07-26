@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -20,6 +21,34 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+// TestNewDoesNotMutateGlobalOTelState guards against #1557: New used to call
+// otel.SetTracerProvider/SetMeterProvider, leaking a process-global pointer at
+// a client's exporter target that could outlive the client (e.g. a dead
+// ephemeral collector port from a prior test's incompletely-shutdown
+// provider) and blow the export deadline for spans from an unrelated later
+// client in the same process.
+func TestNewDoesNotMutateGlobalOTelState(t *testing.T) {
+	wantTracerProvider := otel.GetTracerProvider()
+	wantMeterProvider := otel.GetMeterProvider()
+
+	ctx := context.Background()
+	client, err := New(ctx, Config{
+		ServiceName:  "telemetry-test",
+		SpanExporter: NewMemoryExporter(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Errorf("New changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Errorf("New changed the global meter provider: got %v, want %v", got, wantMeterProvider)
+	}
+}
 
 func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	ctx := context.Background()

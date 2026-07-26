@@ -71,10 +71,13 @@ execution. Two runners implement the same contract:
   Tutor, and operators see one shape everywhere. Raw Temporal mechanics (replay,
   task queues, worker lifecycle) are never part of the product surface.
 - Brings durable long waits (multi-day human gates), schedules at scale, and
-  per-gaggle worker isolation. Parallel branches and child workflows are **tier-3 DSL
-  extensions**: DSL v0 compiles sequential machines, and a definition that uses these
-  extensions is tier-3-only until the local runner implements them (`CFG-022`,
-  `GAG-010`) — they are not part of the cross-runner conformance surface.
+  per-gaggle worker isolation. **Child workflows** remain a **tier-3 DSL extension**: a
+  definition that uses them is tier-3-only until the local runner implements them
+  (`CFG-022`, `GAG-010`), and they are not part of the cross-runner conformance
+  surface. **Static parallel branches are not** — they are core DSL, implemented by the
+  local runner first, and inside the conformance surface
+  ([`design/static-fan-out-fan-in.md`](design/static-fan-out-fan-in.md) §4). Dynamic
+  (data-driven) branch width remains future work.
 
 ### 3.3 Conformance property
 
@@ -84,15 +87,19 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
 
 - **The conformance set** is the ordered sequence of orchestration events: run
   started/finished, stage started/finished (policy-retry attempts included), gate
-  verdicts, artifacts recorded (with digests), external refs touched. Events are
-  compared in `seq` order (§4); at tier 3, parallel-branch events order by
-  `(branch, seq)`.
+  verdicts, artifacts recorded (with digests), external refs touched, parallel and
+  branch lifecycle (`parallel.started`, `branch.started`, `branch.finished`,
+  `parallel.finished`) including the branch completeness record. Events are compared in
+  `seq` order (§4); parallel-branch events order by `(branch, seq)` **at every tier**.
 - **Excluded** from comparison: timestamps and durations; infrastructure-retry
   attempts (attempt events are tagged `policy` vs `infra`, and only `policy`
   attempts are normative); `spans/` contents (telemetry, not conformance);
-  `state.json` (a derived checkpoint); and runner-specific annotations, which MUST
-  live under a namespaced `runner.*` field — that namespace is the *only* sanctioned
-  runner-specific divergence.
+  `state.json` (a derived checkpoint); the **absolute value of `seq` across distinct
+  non-zero branches** (branch interleaving is a scheduling artefact, so `seq` is
+  compared *within* a branch — it stays fully normative for the root branch and for
+  every run that never forks); and runner-specific annotations, which MUST live under a
+  namespaced `runner.*` field — that namespace is the *only* sanctioned runner-specific
+  divergence.
 - **Fixed stage effects** means: deterministic stages with pinned commands over
   fixture inputs, provider reads mocked or replayed from journaled responses, and
   agentic stages driven by the fixture harness. For **live agentic runs** the

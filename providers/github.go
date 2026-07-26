@@ -2413,6 +2413,24 @@ func (p *GitHubProvider) getGitHubRef(ctx context.Context, repo RepositoryRef, r
 	return out, nil
 }
 
+// RepositorySizeKB returns the repository's on-disk size in KB, as reported
+// by GitHub's repo-metadata endpoint (GET /repos/{owner}/{repo}, "size"
+// field) — used by `goobers validate --check-repos` (#1547) to warn on an
+// oversized target repository before it is checked out.
+func (p *GitHubProvider) RepositorySizeKB(ctx context.Context, repo RepositoryRef) (int64, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		Size int64 `json:"size"`
+	}
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Size, nil
+}
+
 func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
 	return p.doStatus(ctx, method, endpoint, body, out, nil)
 }

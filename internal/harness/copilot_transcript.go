@@ -361,7 +361,7 @@ func copilotSessionLogPath(home, sessionID string) string {
 }
 
 func copilotConfigHome(env []string) (string, bool) {
-	var home string
+	var home, userProfile, homeDrive, homePath string
 	for _, entry := range env {
 		name, value, ok := strings.Cut(entry, "=")
 		if !ok {
@@ -374,12 +374,30 @@ func copilotConfigHome(env []string) (string, bool) {
 			}
 		case "HOME":
 			home = value
+		case "USERPROFILE":
+			userProfile = value
+		case "HOMEDRIVE":
+			homeDrive = value
+		case "HOMEPATH":
+			homePath = value
 		}
 	}
-	if home == "" {
+	switch {
+	case home != "":
+		return filepath.Join(home, ".copilot"), true
+	case userProfile != "":
+		return filepath.Join(userProfile, ".copilot"), true
+	case homeDrive != "" && homePath != "":
+		profileHome := homeDrive
+		if os.IsPathSeparator(homePath[0]) {
+			profileHome += homePath
+		} else {
+			profileHome = filepath.Join(homeDrive, homePath)
+		}
+		return filepath.Join(profileHome, ".copilot"), true
+	default:
 		return "", false
 	}
-	return filepath.Join(home, ".copilot"), true
 }
 
 func copilotCommandSelectsSession(argv []string) bool {
