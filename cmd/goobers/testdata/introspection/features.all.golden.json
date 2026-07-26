@@ -365,6 +365,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.inputsFrom.stageQualified",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.limits",
       "stability": "ga",
       "sinceVersion": "dev"
