@@ -43,6 +43,7 @@
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
 | [`goobers gather-issue-context`](#goobers-gather-issue-context) | add originating issue bodies to a remediation brief (a workflow stage) |
@@ -907,6 +908,29 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+~~~
+
+## `goobers gate-removal-guard`
+
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+
+~~~text
+Usage: goobers gate-removal-guard [path]
+
+Block a tutor run whose drafted change removes or loosens the specific
+gate its own finding flagged as noisy, unless the finding cites
+independent proof the gate is dead. Runs after draft-change, before
+validate-config, reading the analyze stage's finding.md from the run
+journal and diffing every changed workflow YAML file against base.
+A finding unrelated to gate noise, or a diff that doesn't touch the
+named gate, is a no-op pass-through.
+Exit codes: 0 = clear (or nothing to check), 1 = blocked, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gate-removal-guard
 ~~~
 
 ## `goobers gather-ci-failures`

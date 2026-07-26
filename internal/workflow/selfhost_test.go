@@ -341,9 +341,41 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 	for _, task := range tutor.Spec.Tasks {
 		tasks[task.Name] = task
 	}
-	if got := tasks["draft-change"].Next; got != "validate-config" {
-		t.Fatalf("draft-change next = %q, want validate-config", got)
+	if got := tasks["draft-change"].Next; got != "gate-removal-guard" {
+		t.Fatalf("draft-change next = %q, want gate-removal-guard", got)
 	}
+	guardTask, ok := tasks["gate-removal-guard"]
+	if !ok {
+		t.Fatal("tutor workflow has no gate-removal-guard task")
+	}
+	if guardTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("gate-removal-guard type = %q, want deterministic", guardTask.Type)
+	}
+	if guardTask.Run == nil || len(guardTask.Run.Command) != 2 ||
+		guardTask.Run.Command[0] != "goobers" || guardTask.Run.Command[1] != "gate-removal-guard" {
+		t.Fatalf("gate-removal-guard run = %+v, want the gate-removal-guard command", guardTask.Run)
+	}
+	if guardTask.Next != "gate-removal-clear" {
+		t.Fatalf("gate-removal-guard next = %q, want gate-removal-clear", guardTask.Next)
+	}
+
+	var sawGateRemovalClear bool
+	for _, gate := range tutor.Spec.Gates {
+		if gate.Name != "gate-removal-clear" {
+			continue
+		}
+		sawGateRemovalClear = true
+		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
+			t.Fatalf("gate-removal-clear evaluator = %+v, want automated status-equals", gate)
+		}
+		if gate.Branches["pass"] != "validate-config" || gate.Branches["fail"] != "@abort" {
+			t.Fatalf("gate-removal-clear branches = %v, want pass->validate-config and fail->@abort", gate.Branches)
+		}
+	}
+	if !sawGateRemovalClear {
+		t.Fatal("tutor workflow has no gate-removal-clear gate")
+	}
+
 	validateTask, ok := tasks["validate-config"]
 	if !ok {
 		t.Fatal("tutor workflow has no validate-config task")

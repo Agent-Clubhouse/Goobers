@@ -132,6 +132,9 @@ list the workflow-DSL features this build supports
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
+\fBgoobers gate-removal-guard\fR
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+.TP
 \fBgoobers gather-ci-failures\fR
 add failing CI diagnostics to a remediation brief (a workflow stage)
 .TP
@@ -365,6 +368,7 @@ show a workflow as a text DAG
 \fBgoobers-examples-show\fR(1),
 \fBgoobers-features\fR(1),
 \fBgoobers-fix\fR(1),
+\fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
 \fBgoobers-gather-issue-context\fR(1),
