@@ -7,19 +7,21 @@
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
-    "apiVersion": { "const": "goobers.dev/v1alpha1" },
-    "kind": { "const": "Workflow" },
-    "dslVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
-    "metadata": { "$ref": "#/$defs/metadata" },
+    "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this workflow definition." },
+    "kind": { "const": "Workflow", "description": "Definition kind; always Workflow." },
+    "dslVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "Workflow DSL version in major.minor form. Omit to use the current supported version." },
+    "metadata": { "$ref": "#/$defs/metadata", "description": "Identity and optional labels or annotations for this workflow." },
     "spec": {
       "type": "object",
+      "description": "The workflow's triggers, run controls, and deterministic state-machine definition.",
       "additionalProperties": false,
       "required": ["gaggle", "triggers", "start"],
       "properties": {
-        "gaggle": { "type": "string", "minLength": 1 },
-        "displayName": { "type": "string" },
+        "gaggle": { "type": "string", "minLength": 1, "description": "Name of the gaggle this workflow belongs to." },
+        "displayName": { "type": "string", "description": "Human-facing workflow name shown in the portal." },
         "triggers": {
           "type": "array",
+          "description": "Conditions that may start a run once readiness checks also pass. A manual trigger must be the only trigger.",
           "minItems": 1,
           "items": { "$ref": "#/$defs/trigger" },
           "allOf": [
@@ -37,17 +39,18 @@
         },
         "readiness": {
           "type": "object",
+          "description": "Admission limits that bound when runs may start and prevent runaway workflow chains.",
           "additionalProperties": false,
           "properties": {
-            "maxConcurrentRuns": { "type": "integer", "minimum": 1 },
-            "maxRunsPerHour": { "type": "integer", "minimum": 0 },
-            "maxRunsPerDay": { "type": "integer", "minimum": 0 },
-            "maxChainDepth": { "type": "integer", "minimum": 0 },
-            "maxOpenPRs": { "type": "integer", "minimum": 0 }
+            "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
+            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Omitted uses the scheduler default." },
+            "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },
+            "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Maximum depth of signal-triggered workflow chains. Zero or omitted uses the scheduler default." },
+            "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
           }
         },
-        "runControls": { "$ref": "#/$defs/runControls" },
-        "start": { "type": "string", "minLength": 1 },
+        "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
+        "start": { "type": "string", "minLength": 1, "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
           "type": "array",
           "description": "In-repo documentation roots this workflow keeps current (docs-updater, #472/#1016). Ordered repo-relative paths (files or directories); the run's writes are confined to these roots. Each must be non-empty and must not escape the repository.",
@@ -59,13 +62,13 @@
           "additionalProperties": false,
           "required": ["tier"],
           "properties": {
-            "tier": { "type": "string", "enum": ["per-workflow", "per-gaggle"] },
-            "target": { "type": "string", "minLength": 1 }
+            "tier": { "type": "string", "enum": ["per-workflow", "per-gaggle"], "description": "Tutor topology tier: confined to one workflow or shared across its gaggle." },
+            "target": { "type": "string", "minLength": 1, "description": "Workflow name a per-workflow tutor is confined to. Omit for a per-gaggle tutor." }
           }
         },
-        "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
-        "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } },
-        "parallels": { "type": "array", "items": { "$ref": "#/$defs/parallel" } }
+        "tasks": { "type": "array", "description": "Work states in the workflow state machine.", "items": { "$ref": "#/$defs/task" } },
+        "gates": { "type": "array", "description": "Validation and branching states in the workflow state machine.", "items": { "$ref": "#/$defs/gate" } },
+        "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } }
       }
     }
   },
@@ -75,8 +78,8 @@
       "additionalProperties": false,
       "required": ["name", "start"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "start": { "type": "string", "minLength": 1 }
+        "name": { "type": "string", "minLength": 1, "description": "Branch identifier used in journal events, completeness records, and branch-qualified input references." },
+        "start": { "type": "string", "minLength": 1, "description": "Name of this branch's first task or gate." }
       }
     },
     "parallel": {
@@ -85,13 +88,13 @@
       "additionalProperties": false,
       "required": ["name", "failurePolicy", "branches", "join"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "failurePolicy": { "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"] },
-        "branches": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/branch" } },
-        "join": { "type": "string", "minLength": 1 },
-        "onFailure": { "type": "string", "minLength": 1 },
-        "branchTimeoutSeconds": { "type": "integer", "minimum": 0 },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1 }
+        "name": { "type": "string", "minLength": 1, "description": "State name used as a transition target." },
+        "failurePolicy": { "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "description": "How branch failures affect sibling branches, the join state, and failure routing." },
+        "branches": { "type": "array", "minItems": 2, "description": "Statically declared branches, assigned deterministic branch IDs in declaration order.", "items": { "$ref": "#/$defs/branch" } },
+        "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
+        "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
+        "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Wall-clock bound for each branch. A timeout is handled as a branch failure." },
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum branches executed simultaneously. Omitted means deterministic sequential execution." }
       },
       "allOf": [
         {
@@ -106,9 +109,9 @@
       "type": "object",
       "required": ["name"],
       "properties": {
-        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "description": "DNS-label-compatible workflow name, unique within its gaggle." },
+        "labels": { "type": "object", "description": "String labels used to organize this workflow.", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "description": "Non-identifying string metadata attached to this workflow.", "additionalProperties": { "type": "string" } }
       }
     },
     "runControls": {
@@ -116,8 +119,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1 },
-        "stalledRunTimeout": { "type": "string", "minLength": 1 }
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
       }
     },
     "trigger": {
@@ -149,10 +152,11 @@
           "type": "integer",
           "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
         },
-        "schedule": { "type": "string" },
-        "signal": { "type": "string" },
+        "schedule": { "type": "string", "description": "Cron expression or @every interval used by a schedule trigger." },
+        "signal": { "type": "string", "description": "External signal name used by a signal trigger." },
         "events": {
           "type": "array",
+          "description": "GitHub webhook event names accepted by a webhook trigger, such as pull_request, issues, or check_suite.",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         }
@@ -163,20 +167,21 @@
       "additionalProperties": false,
       "required": ["name", "type", "goal"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "enum": ["deterministic", "agentic"] },
-        "goal": { "type": "string", "minLength": 1 },
-        "goober": { "type": "string" },
+        "name": { "type": "string", "minLength": 1, "description": "State name, unique within this workflow." },
+        "type": { "type": "string", "enum": ["deterministic", "agentic"], "description": "Execution kind: deterministic runs declared code; agentic invokes a goober." },
+        "goal": { "type": "string", "minLength": 1, "description": "Intended outcome supplied to the stage invocation." },
+        "goober": { "type": "string", "description": "Goober definition invoked by an agentic task. Forbidden for deterministic tasks." },
         "run": {
           "type": "object",
+          "description": "Host command or script executed by a deterministic task. Forbidden for agentic tasks.",
           "additionalProperties": false,
           "properties": {
-            "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-            "script": { "type": "string", "minLength": 1 },
-            "env": { "type": "object", "additionalProperties": { "type": "string" } },
-            "network": { "type": "string", "enum": ["none"] },
-            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
-            "syncBase": { "type": "boolean" }
+            "command": { "type": "array", "minItems": 1, "description": "Executable followed by its arguments, invoked without shell interpretation.", "items": { "type": "string" } },
+            "script": { "type": "string", "minLength": 1, "description": "Inline script executed by the host's native command interpreter. Mutually exclusive with command." },
+            "env": { "type": "object", "description": "Explicit environment variables added to the runner's minimal environment and scoped credentials.", "additionalProperties": { "type": "string" } },
+            "network": { "type": "string", "enum": ["none"], "description": "Network policy for the command. Set to none to deny network access." },
+            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for the command: writable repository, empty scratch directory, or detached read-only repository." },
+            "syncBase": { "type": "boolean", "description": "Whether to merge the freshly fetched base ref into an existing run branch before execution. Valid only for a writable repository workspace." }
           },
           "oneOf": [
             { "required": ["command"] },
@@ -194,10 +199,10 @@
             }
           ]
         },
-        "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
-        "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
-        "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
-        "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
+        "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
+        "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
+        "capabilities": { "type": "array", "description": "Credential capability grants available to this task. Agentic grants must be a subset of the referenced goober's grants.", "items": { "type": "string", "minLength": 1 } },
         "policyActions": {
           "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Agentic tasks must include every unconditional action declared by their referenced goober, and compiler admission requires each action's canonical capability.",
           "type": "array",
@@ -211,27 +216,29 @@
         },
         "retry": {
           "type": "object",
+          "description": "Deterministic retry policy for failed stage attempts.",
           "additionalProperties": false,
           "required": ["maxAttempts"],
           "properties": {
-            "maxAttempts": { "type": "integer", "minimum": 1 },
-            "backoffSeconds": { "type": "integer", "minimum": 0 }
+            "maxAttempts": { "type": "integer", "minimum": 1, "description": "Total attempts including the first; one disables retries." },
+            "backoffSeconds": { "type": "integer", "minimum": 0, "description": "Constant delay in seconds between attempts." }
           }
         },
-        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Wall-clock limit for one task attempt. Omitted preserves the executor default." },
         "limits": {
           "type": "object",
+          "description": "Execution and agent-usage limits for this task.",
           "additionalProperties": false,
           "properties": {
-            "maxDurationSeconds": { "type": "integer", "minimum": 0 },
-            "maxTokens": { "type": "integer", "minimum": 0 },
-            "maxCostUSD": { "type": "number", "minimum": 0 }
+            "maxDurationSeconds": { "type": "integer", "minimum": 0, "description": "Maximum wall-clock duration. timeoutSeconds, when set, is authoritative." },
+            "maxTokens": { "type": "integer", "minimum": 0, "description": "Maximum model tokens this task may consume. Zero means no explicit limit." },
+            "maxCostUSD": { "type": "number", "minimum": 0, "description": "Maximum model spend in US dollars. Zero means no explicit limit." }
           }
         },
-        "expectedOutputs": { "type": "array", "items": { "type": "string" } },
-        "continueOnError": { "type": "boolean" },
-        "onTimeout": { "type": "string", "enum": ["fail", "salvage"] },
-        "next": { "type": "string" }
+        "expectedOutputs": { "type": "array", "description": "Intended task postconditions. Accepted for forward compatibility but not enforced by the local runner.", "items": { "type": "string" } },
+        "continueOnError": { "type": "boolean", "description": "Whether a failed result remains visible to the next gate instead of immediately failing the run. Failed-task outputs are discarded." },
+        "onTimeout": { "type": "string", "enum": ["fail", "salvage"], "description": "Agentic timeout behavior: fail the attempt or salvage a viable committed diff." },
+        "next": { "type": "string", "description": "Next task, gate, or parallel state. Empty means successful terminal completion." }
       },
       "allOf": [
         {
@@ -253,16 +260,18 @@
       "additionalProperties": false,
       "required": ["name", "evaluator", "branches"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "evaluator": { "type": "string", "enum": ["automated", "agentic", "human"] },
+        "name": { "type": "string", "minLength": 1, "description": "State name, unique within this workflow." },
+        "evaluator": { "type": "string", "enum": ["automated", "agentic", "human"], "description": "Evaluator kind configured by exactly one of automated, agentic, or human." },
         "automated": {
           "type": "object",
+          "description": "Configuration for a deterministic built-in check. Set only when evaluator is automated.",
           "additionalProperties": false,
           "required": ["check"],
           "properties": {
             "check": {
               "type": "string",
               "minLength": 1,
+              "enum": ["status-equals", "output-equals", "output-not-equals", "output-numeric-gte", "output-numeric-lte", "output-numeric-lt", "output-matches", "ci-status", "land-outcome", "queue-outcome"],
               "description": "Built-in check name: status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, or queue-outcome."
             },
             "params": {
@@ -270,45 +279,49 @@
               "description": "Check parameters. Output equality checks use key+equals; numeric checks use key+threshold; output-matches uses key+pattern (RE2).",
               "additionalProperties": { "type": "string" }
             },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Wall-clock limit for one automated evaluator attempt." },
             "retry": {
               "type": "object",
+              "description": "Retry policy for failed automated evaluator attempts.",
               "additionalProperties": false,
               "required": ["maxAttempts"],
               "properties": {
-                "maxAttempts": { "type": "integer", "minimum": 1 },
-                "backoffSeconds": { "type": "integer", "minimum": 0 }
+                "maxAttempts": { "type": "integer", "minimum": 1, "description": "Total evaluator attempts including the first; one disables retries." },
+                "backoffSeconds": { "type": "integer", "minimum": 0, "description": "Constant delay in seconds between evaluator attempts." }
               }
             },
-            "pollIntervalSeconds": { "type": "integer", "minimum": 1 }
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "description": "Polling cadence for remote checks such as ci-status." }
           }
         },
         "agentic": {
           "type": "object",
+          "description": "Configuration for a reviewer goober. Set only when evaluator is agentic.",
           "additionalProperties": false,
           "required": ["goober"],
           "properties": {
-            "goober": { "type": "string", "minLength": 1 },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
-            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"] },
+            "goober": { "type": "string", "minLength": 1, "description": "Reviewer goober that returns the gate verdict." },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Wall-clock limit for one reviewer attempt." },
+            "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for the reviewer. Omitted preserves the writable repository default." },
             "retry": {
               "type": "object",
+              "description": "Retry policy for failed reviewer attempts.",
               "additionalProperties": false,
               "required": ["maxAttempts"],
               "properties": {
-                "maxAttempts": { "type": "integer", "minimum": 1 },
-                "backoffSeconds": { "type": "integer", "minimum": 0 }
+                "maxAttempts": { "type": "integer", "minimum": 1, "description": "Total reviewer attempts including the first; one disables retries." },
+                "backoffSeconds": { "type": "integer", "minimum": 0, "description": "Constant delay in seconds between reviewer attempts." }
               }
             }
           }
         },
         "human": {
           "type": "object",
+          "description": "Configuration for an explicit human decision. Set only when evaluator is human.",
           "additionalProperties": false,
           "properties": {
-            "approvers": { "type": "array", "items": { "type": "string" } },
-            "timeoutSeconds": { "type": "integer", "minimum": 0 },
-            "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"] }
+            "approvers": { "type": "array", "description": "Optional identities or groups allowed to approve the gate.", "items": { "type": "string" } },
+            "timeoutSeconds": { "type": "integer", "minimum": 0, "description": "Maximum seconds to wait for a decision. Zero or omitted leaves the wait unbounded." },
+            "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"], "description": "Action taken when the human decision timeout elapses." }
           }
         },
         "maxRepasses": {
@@ -318,6 +331,7 @@
         },
         "branches": {
           "type": "object",
+          "description": "Outcome-to-next-state mapping. The pass key is the success branch; escalate may route forced escalation.",
           "minProperties": 1,
           "additionalProperties": { "type": "string" }
         }

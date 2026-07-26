@@ -7,20 +7,20 @@
   "additionalProperties": false,
   "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "workspace", "repoRef", "limits"],
   "properties": {
-    "taskId": { "type": "string", "minLength": 1 },
-    "workflowId": { "type": "string", "minLength": 1 },
-    "runId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1, "description": "Stage instance identifier within this run." },
+    "workflowId": { "type": "string", "minLength": 1, "description": "Workflow definition identifier being executed." },
+    "runId": { "type": "string", "minLength": 1, "description": "Run identifier, also used as the run's OpenTelemetry trace ID." },
     "triggerRef": {
       "type": "string",
       "minLength": 1,
       "description": "The event or item that caused the run. Bounded scheduler metadata only, never the provider's raw trigger payload."
     },
-    "gaggle": { "type": "string", "minLength": 1 },
+    "gaggle": { "type": "string", "minLength": 1, "description": "Gaggle this run belongs to." },
     "branchNamespace": {
       "type": "string",
       "description": "The gaggle's run-branch namespace root (GaggleSpec.BranchNamespace); empty means the default 'goobers/'. Injected as GOOBERS_BRANCH_NAMESPACE (#965/#1010)."
     },
-    "goal": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
     "instructionAddendum": {
       "type": "string",
       "minLength": 1,
@@ -31,8 +31,8 @@
       "minLength": 1,
       "description": "Absolute path to the fresh, isolated, disposable working copy the stage runs in (§5)."
     },
-    "item": { "$ref": "#/$defs/backlogItem" },
-    "repoRef": { "$ref": "#/$defs/repoRef" },
+    "item": { "$ref": "#/$defs/backlogItem", "description": "Bounded provider-neutral descriptor of the backlog item that started the run. Omitted when no item triggered the run." },
+    "repoRef": { "$ref": "#/$defs/repoRef", "description": "Primary repository targeted by this run." },
     "additionalWorkspaces": {
       "type": "array",
       "description": "Read-only checkouts of the gaggle's reference repos (GaggleSpec.AdditionalRepos, MGV-11 #1286). The stage may read them; no push credential is provisioned, so they are read-only by construction. Surfaced as GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<path>.",
@@ -48,7 +48,7 @@
       "description": "Declared capability grants (e.g. 'github:issues:write'). Undeclared use fails closed (§5).",
       "items": { "type": "string", "minLength": 1 }
     },
-    "limits": { "$ref": "#/$defs/limits" },
+    "limits": { "$ref": "#/$defs/limits", "description": "Execution and agent-usage limits applied to this stage." },
     "inputs": {
       "type": "object",
       "description": "The stage's static config from its definition. The stage's own config — not another stage's state. Unlike result.schema.json's outputs (scalar-bounded by schema), inputs is intentionally unconstrained: the anti-smuggling invariant here is convention-backed, not schema-enforced, because the runner deliberately routes a gate's subject-stage status/outputs through a gate's own inputs (internal/runner's flattening into env.Inputs before an automated/agentic gate evaluation, internal/gate.InputKeyStatus) — a small, scalar-only, one-directional bridge, not the general reach-through §2.4 forbids (#125)."
@@ -57,45 +57,49 @@
   "$defs": {
     "backlogItem": {
       "type": "object",
+      "description": "Provider-neutral snapshot descriptor for the item that triggered the run; the content-digested snapshot remains in the journal.",
       "additionalProperties": false,
       "required": ["id", "provider"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "provider": { "type": "string", "enum": ["github", "ado"] },
-        "title": { "type": "string" },
-        "body": { "type": "string" },
-        "url": { "type": "string" },
-        "labels": { "type": "array", "items": { "type": "string" } }
+        "id": { "type": "string", "minLength": 1, "description": "Provider-native item identifier, such as an issue or work-item number." },
+        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Provider the item came from." },
+        "title": { "type": "string", "description": "Short item title." },
+        "body": { "type": "string", "description": "Item description or details." },
+        "url": { "type": "string", "description": "Provider URL for the item." },
+        "labels": { "type": "array", "description": "Provider labels attached to the item.", "items": { "type": "string" } }
       }
     },
     "additionalWorkspace": {
       "type": "object",
+      "description": "Read-only checkout of one gaggle reference repository supplied alongside the primary workspace.",
       "additionalProperties": false,
       "required": ["name", "path"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "path": { "type": "string", "minLength": 1 }
+        "name": { "type": "string", "minLength": 1, "description": "Reference repository name from the gaggle definition." },
+        "path": { "type": "string", "minLength": 1, "description": "Absolute path to the read-only checkout." }
       }
     },
     "repoRef": {
       "type": "object",
+      "description": "Provider-neutral repository identity and credential-connection reference.",
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"] },
-        "owner": { "type": "string", "minLength": 1 },
-        "name": { "type": "string", "minLength": 1 },
-        "branch": { "type": "string" },
-        "connectionRef": { "type": "string" }
+        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Repository provider." },
+        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
+        "name": { "type": "string", "minLength": 1, "description": "Repository name." },
+        "branch": { "type": "string", "description": "Default branch checked out and targeted by the run." },
+        "connectionRef": { "type": "string", "description": "Connection that supplies credentials for the repository." }
       }
     },
     "limits": {
       "type": "object",
+      "description": "Stage execution limits. Zero values mean no explicit limit.",
       "additionalProperties": false,
       "properties": {
-        "maxDurationSeconds": { "type": "integer", "minimum": 0 },
-        "maxTokens": { "type": "integer", "minimum": 0 },
-        "maxCostUSD": { "type": "number", "minimum": 0 }
+        "maxDurationSeconds": { "type": "integer", "minimum": 0, "description": "Maximum stage wall-clock duration in seconds." },
+        "maxTokens": { "type": "integer", "minimum": 0, "description": "Maximum model tokens the stage may consume." },
+        "maxCostUSD": { "type": "number", "minimum": 0, "description": "Maximum model spend in US dollars." }
       }
     },
     "contextPointer": {
@@ -104,7 +108,7 @@
       "required": ["name"],
       "description": "Exactly one of artifact or external.",
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1, "description": "Logical handle the stage uses to refer to this input." },
         "branch": {
           "type": "integer",
           "minimum": 1,
@@ -115,8 +119,8 @@
           "minLength": 1,
           "description": "Declared name of the parallel branch that produced this artifact. Paired with branch."
         },
-        "artifact": { "$ref": "artifact-pointer.schema.json" },
-        "external": { "$ref": "#/$defs/externalRef" },
+        "artifact": { "$ref": "artifact-pointer.schema.json", "description": "Pointer to a digest-verified artifact in this run or the run named by runId." },
+        "external": { "$ref": "#/$defs/externalRef", "description": "Locator for a resource outside the run journal, such as an issue or pull request." },
         "runId": {
           "type": "string",
           "description": "The run whose journal `artifact` lives in, when it is NOT this stage's own run (cross-run evidence resolution, #103/T3). Empty/absent means the artifact is this run's own upstream output. A non-empty value crosses a trust boundary and requires the journal:read capability, enforced by the harness. Mirrors ContextPointer.RunID (Go); present here so a valid cross-run envelope passes this closed schema (#125)."
@@ -137,12 +141,13 @@
     },
     "externalRef": {
       "type": "object",
+      "description": "Content-free locator for a resource outside the run journal.",
       "additionalProperties": false,
       "required": ["kind", "uri"],
       "properties": {
-        "kind": { "type": "string", "minLength": 1 },
-        "uri": { "type": "string", "minLength": 1 },
-        "description": { "type": "string" }
+        "kind": { "type": "string", "minLength": 1, "description": "Reference category, such as issue, pull-request, or url." },
+        "uri": { "type": "string", "minLength": 1, "description": "Resource locator." },
+        "description": { "type": "string", "description": "Optional human-facing label for the reference." }
       }
     }
   }

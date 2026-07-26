@@ -7,23 +7,24 @@
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
-    "apiVersion": { "const": "goobers.dev/v1alpha1" },
-    "kind": { "const": "Goober" },
-    "metadata": { "$ref": "#/$defs/metadata" },
+    "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this goober definition." },
+    "kind": { "const": "Goober", "description": "Definition kind; always Goober." },
+    "metadata": { "$ref": "#/$defs/metadata", "description": "Identity and optional labels or annotations for this goober." },
     "spec": {
       "type": "object",
+      "description": "The goober's role, instruction source, harness configuration, and granted authority.",
       "additionalProperties": false,
       "required": ["gaggle", "role", "instructions"],
       "properties": {
-        "gaggle": { "type": "string", "minLength": 1 },
-        "role": { "type": "string", "minLength": 1 },
-        "displayName": { "type": "string" },
-        "instructions": { "type": "string", "minLength": 1 },
-        "harness": { "type": "string", "enum": ["copilot", "claude-code"] },
-        "model": { "type": "string" },
-        "harnessOptions": { "type": "object", "additionalProperties": true },
-        "timeoutSeconds": { "type": "integer", "minimum": 1 },
-        "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "gaggle": { "type": "string", "minLength": 1, "description": "Name of the gaggle this goober belongs to." },
+        "role": { "type": "string", "minLength": 1, "description": "Role specialization, such as coder, reviewer, or perf-hunter." },
+        "displayName": { "type": "string", "description": "Human-facing goober name shown in the portal." },
+        "instructions": { "type": "string", "minLength": 1, "description": "Markdown instruction file path relative to the goober definition directory." },
+        "harness": { "type": "string", "enum": ["copilot", "claude-code"], "description": "Agent harness used for this goober. Omitted defaults to copilot." },
+        "model": { "type": "string", "description": "Harness-specific model name, validated by the selected adapter before a run starts." },
+        "harnessOptions": { "type": "object", "description": "Opaque harness-specific settings validated by the selected adapter.", "additionalProperties": true },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Default per-attempt wall-clock limit for this goober's agentic stages. A task timeout takes precedence." },
+        "capabilities": { "type": "array", "description": "Credential capability grants this goober may use. Invoking tasks may grant only a subset.", "items": { "type": "string", "minLength": 1 } },
         "policyActions": {
           "description": "Closed vocabulary of externally mutating actions this persona unconditionally prescribes. Invoking tasks must redeclare every action and grant its canonical capability.",
           "type": "array",
@@ -36,14 +37,15 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
-        "skills": { "type": "array", "items": { "type": "string" } },
-        "tools": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "description": "Named skills available to this goober.", "items": { "type": "string" } },
+        "tools": { "type": "array", "description": "Default-deny allowlist of tools or MCP servers reachable by this goober.", "items": { "type": "string" } },
         "mcpServers": {
           "type": "array",
+          "description": "External stdio or remote MCP servers materialized only for this goober's Copilot harness invocation.",
           "items": { "$ref": "#/$defs/mcpServer" }
         },
-        "scaleFactor": { "type": "integer", "minimum": 1 },
-        "workflows": { "type": "array", "items": { "type": "string" } }
+        "scaleFactor": { "type": "integer", "minimum": 1, "description": "Desired replica count for concurrent work. Omitted defaults to one." },
+        "workflows": { "type": "array", "description": "Names of workflows that invoke this goober.", "items": { "type": "string" } }
       },
       "allOf": [
         {
@@ -66,30 +68,35 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "DNS-label-compatible goober name, unique within its gaggle."
         },
-        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+        "labels": { "type": "object", "description": "String labels used to organize this goober.", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "description": "Non-identifying string metadata attached to this goober.", "additionalProperties": { "type": "string" } }
       }
     },
     "mcpServer": {
       "type": "object",
+      "description": "One invocation-local MCP server. Configure exactly one of command for local stdio or url for remote HTTP.",
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
         "name": {
           "type": "string",
           "maxLength": 63,
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Invocation-local, DNS-label-compatible MCP server name."
         },
-        "command": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1, "description": "Executable that starts a local stdio MCP server." },
         "args": {
           "type": "array",
+          "description": "Arguments passed directly to command without shell interpretation.",
           "items": { "type": "string" }
         },
-        "url": { "type": "string", "format": "uri" },
+        "url": { "type": "string", "format": "uri", "description": "HTTP or HTTPS endpoint of a remote MCP server." },
         "credentialRefs": {
           "type": "array",
+          "description": "Capability-scoped credentials exposed to this server.",
           "items": { "$ref": "#/$defs/mcpCredentialRef" }
         }
       },
@@ -106,13 +113,14 @@
     },
     "mcpCredentialRef": {
       "type": "object",
+      "description": "Binding from one granted capability credential to either a local environment variable or a remote HTTP header.",
       "additionalProperties": false,
       "required": ["capability"],
       "properties": {
-        "capability": { "type": "string", "minLength": 1 },
-        "env": { "type": "string", "minLength": 1 },
-        "header": { "type": "string", "minLength": 1 },
-        "scheme": { "type": "string", "enum": ["bearer", "basic"] }
+        "capability": { "type": "string", "minLength": 1, "description": "Goober capability whose scoped credential is resolved." },
+        "env": { "type": "string", "minLength": 1, "description": "Environment variable name exposed to a local stdio server. Mutually exclusive with header." },
+        "header": { "type": "string", "minLength": 1, "description": "HTTP header name sent to a remote server. Mutually exclusive with env." },
+        "scheme": { "type": "string", "enum": ["bearer", "basic"], "description": "Optional authorization scheme prefix for a remote header credential." }
       },
       "oneOf": [
         {
