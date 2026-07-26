@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { activeArea, parseRoute, routeHash } from "./routing";
 
+describe("definition routing", () => {
+  it("round-trips gaggle and workflow identities", () => {
+    const gaggle = { page: "gaggle" as const, id: "core tools" };
+    const workflow = {
+      page: "workflow" as const,
+      gaggle: "core tools",
+      id: "implementation/v2",
+    };
+
+    expect(routeHash(gaggle)).toBe("#/gaggle/core%20tools");
+    expect(parseRoute(routeHash(gaggle))).toEqual(gaggle);
+    expect(parseRoute(routeHash(workflow))).toEqual(workflow);
+    expect(activeArea(gaggle)).toBe("workflows");
+  });
+});
+
 describe("Insight routing", () => {
   it("round-trips scoped run drill-through filters", () => {
     const route = {

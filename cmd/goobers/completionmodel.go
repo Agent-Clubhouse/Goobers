@@ -79,10 +79,27 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"scaffold workflow": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},
+	"agent-kit install": {
+		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
+	},
+	"agent-kit update": {
+		{name: "dry-run", desc: "Show the update diff without writing"},
+		{name: "write", desc: "Apply product-owned changes"},
+		{name: "replace-modified", desc: "Acknowledge replacement of modified owned files"},
+	},
 	"validate": {
+		{name: "json", desc: "Emit a versioned findings envelope"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
+		{name: "strict", desc: "Treat config warnings as validation errors"},
+	},
+	"lint": {
+		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
+		{name: "check-repos", desc: "Verify target repositories are reachable"},
+		{name: "source-tree", desc: "Lint a checked-in config source tree"},
+		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"up": {
 		{name: "quiet", desc: "Suppress liveness heartbeats"},
@@ -123,6 +140,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
 		{name: "json", desc: "Emit JSON"},
+	},
+	"features": {
+		{name: "json", desc: "Emit a versioned feature-discovery envelope"},
+		{name: "dsl-version", takesArg: true, desc: "Scope features to one DSL version"},
+		{name: "used", desc: "List only features referenced by the instance"},
 	},
 	"blocked list": {
 		{name: "json", desc: "Emit JSON"},

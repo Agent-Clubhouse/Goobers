@@ -32,6 +32,23 @@ const DefaultRemediationBudget = 10
 
 const remediationEscalatedLabel = "goobers:merge-escalated"
 
+// remediationBudgetDefault resolves the declared maxCycles policy input
+// (#941/PRR-6) as the --budget flag's default, so a workflow can override
+// D4's liberal cycle budget in YAML without a bespoke CLI invocation. An
+// unset, empty, non-numeric, or non-positive value falls back to
+// DefaultRemediationBudget.
+func remediationBudgetDefault() int {
+	raw := providerInput("maxCycles", "")
+	if raw == "" {
+		return DefaultRemediationBudget
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return DefaultRemediationBudget
+	}
+	return n
+}
+
 const siblingOverlapLookback = 30 * 24 * time.Hour
 
 type siblingOverlapFinding struct {
@@ -279,7 +296,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "remediation-checkpoint")
-	budget := fs.Int("budget", DefaultRemediationBudget, "liberal per-PR repass-cycle budget before escalating (D4)")
+	budget := fs.Int("budget", remediationBudgetDefault(), "liberal per-PR repass-cycle budget before escalating (D4)")
 	// --escalate is the reviewer-verdict=fail path (design doc §4 D2: "a
 	// fundamentally wrong approach is not burned on remediation budget"), not
 	// a loop-control outcome: escalate unconditionally with the caller's
@@ -407,7 +424,19 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
-	forced := *escalateReason != ""
+	// A rebase-pr cycle whose only detected cause(s) the declared `remediate`
+	// policy excludes (#941/PRR-6) escalates immediately here, exactly like
+	// an explicit --escalate: no agent ever ran on this cycle, so budget/
+	// no-progress checks would just delay the same inevitable outcome.
+	// *escalateReason (the reviewer-fail path, §4 D2) wins if somehow both
+	// are set — it is the more specific, caller-supplied terminal reason.
+	escalateReasonValue := *escalateReason
+	if escalateReasonValue == "" {
+		if excluded, err := strconv.ParseBool(providerInput("policyExcluded", "false")); err == nil && excluded {
+			escalateReasonValue = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
+		}
+	}
+	forced := escalateReasonValue != ""
 	attemptMatchesLiveHead := false
 	if conflicted && !forced && attemptedHeadSHA != "" {
 		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
@@ -502,12 +531,12 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 				collision.Function, collision.Path, collision.SiblingNumber,
 			)
 		}
-		// Checked last so an explicit caller-supplied reason always wins the
-		// prose, even on a cycle that also happens to be stalled or over
-		// budget — the reviewer's terminal verdict is the more specific and
-		// more actionable cause to show a human.
+		// Checked last so an explicit caller-supplied or policy-excluded
+		// reason always wins the prose, even on a cycle that also happens to
+		// be stalled or over budget — the more specific, more actionable
+		// cause to show a human.
 		if forced {
-			reason = *escalateReason
+			reason = escalateReasonValue
 		}
 		var overlaps []siblingOverlapFinding
 		if exceeded || stalled {

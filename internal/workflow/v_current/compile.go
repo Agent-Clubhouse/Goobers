@@ -215,7 +215,10 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	// DSL 1.4 has no fan-out construct: parallels are nil, so Has/Outgoing
+	// report nothing for them and a `parallels:` block is rejected as an
+	// unknown field by this version's schema.
+	return model.NewMachine(def, tasks, gates, nil, buildGraph(def))
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {
@@ -414,6 +417,26 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		for _, cap := range t.Capabilities {
 			if !grants[cap] {
 				problems = append(problems, fmt.Sprintf("task %q uses capability %q not granted to goober %q", t.Name, cap, t.Goober))
+			}
+		}
+		taskCapabilities := toSet(t.Capabilities)
+		requiredMCPCapabilities := map[string]bool{}
+		for _, server := range g.MCPServers {
+			for _, ref := range server.CredentialRefs {
+				requiredMCPCapabilities[ref.Capability] = true
+			}
+		}
+		requiredNames := make([]string, 0, len(requiredMCPCapabilities))
+		for name := range requiredMCPCapabilities {
+			requiredNames = append(requiredNames, name)
+		}
+		sort.Strings(requiredNames)
+		for _, name := range requiredNames {
+			if !taskCapabilities[name] {
+				problems = append(problems, fmt.Sprintf(
+					"task %q must declare MCP credential capability %q required by goober %q",
+					t.Name, name, t.Goober,
+				))
 			}
 		}
 	}

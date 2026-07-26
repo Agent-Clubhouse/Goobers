@@ -1,0 +1,4 @@
+ERROR   gaggles/example/workflows/default-implement.yaml Workflow/default-implement: start state "missing" is not a defined task or gate
+ERROR   gaggles/example/workflows/default-implement.yaml Workflow/default-implement: task "query-backlog" next state "also-missing" is not defined
+
+config directory failed validation

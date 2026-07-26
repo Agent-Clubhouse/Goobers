@@ -394,6 +394,7 @@ const (
 	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
 	featureGooberSkills                   FeatureID = "goober.spec.skills"
 	featureGooberTools                    FeatureID = "goober.spec.tools"
+	featureGooberMCPServers               FeatureID = "goober.spec.mcpServers"
 	featureGooberScaleFactor              FeatureID = "goober.spec.scaleFactor"
 	featureGooberWorkflows                FeatureID = "goober.spec.workflows"
 	featureTriggerManual                  FeatureID = "trigger.manual"
@@ -513,6 +514,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGooberCapabilities,
 		featureGooberSkills,
 		featureGooberTools,
+		featureGooberMCPServers,
 		featureGooberScaleFactor,
 		featureGooberWorkflows,
 		featureTriggerManual,
@@ -732,6 +734,9 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	}
 	if spec.Tools != nil {
 		used.add(featureGooberTools)
+	}
+	if spec.MCPServers != nil {
+		used.add(featureGooberMCPServers)
 	}
 	used.add(featureGooberScaleFactor)
 	if spec.Workflows != nil {

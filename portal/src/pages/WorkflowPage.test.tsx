@@ -71,6 +71,19 @@ describe("workflow detail page", () => {
     ).toBeInTheDocument();
   });
 
+  it("navigates back to the owning gaggle topology", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const breadcrumbs = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    await user.click(within(breadcrumbs).getByRole("button", { name: "core" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/gaggle/core"));
+    expect(
+      await screen.findByRole("heading", { name: "Workflow topology" }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the graph available across dark and light themes", async () => {
     window.localStorage.setItem("goobers-theme", "dark");
     const user = userEvent.setup();

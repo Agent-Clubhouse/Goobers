@@ -1,5 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "1.4"
 metadata:
   name: demo
 spec:
