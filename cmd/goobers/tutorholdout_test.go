@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,7 +15,17 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
 )
+
+type tutorHoldoutPollerStub struct {
+	result providers.PullRequestPollResult
+	err    error
+}
+
+func (s tutorHoldoutPollerStub) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	return s.result, s.err
+}
 
 func TestTutorChangeClassificationRequiresLiveVerification(t *testing.T) {
 	tests := []struct {
@@ -176,6 +187,134 @@ func TestPrepareTutorHoldoutPinsSkillBodyTransition(t *testing.T) {
 	}
 }
 
+func TestPrepareTutorHoldoutSupportsWorkflowLifecycleChanges(t *testing.T) {
+	root := initDemo(t)
+	const gaggle = "example"
+	liveConfig := instance.NewLayout(root).ConfigDir()
+	workflowPath := filepath.Join(liveConfig, "gaggles", gaggle, "workflows", "default-implement.yaml")
+	workflowRaw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(workflowRaw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	retired := workflow
+	retired.Name = "retired-implement"
+	retiredRaw, err := yaml.Marshal(retired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredPath := filepath.Join(liveConfig, "gaggles", gaggle, "workflows", "retired-implement.yaml")
+	if err := os.WriteFile(retiredPath, retiredRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		lifecycle tutorHoldoutLifecycle
+		mutate    func(t *testing.T, proposed string) tutorFileChange
+	}{
+		{
+			name: "addition", lifecycle: tutorHoldoutAddition,
+			mutate: func(t *testing.T, proposed string) tutorFileChange {
+				t.Helper()
+				added := workflow
+				added.Name = "added-implement"
+				raw, err := yaml.Marshal(added)
+				if err != nil {
+					t.Fatal(err)
+				}
+				addedPath := filepath.Join(proposed, "gaggles", gaggle, "workflows", "added-implement.yaml")
+				if err := os.WriteFile(addedPath, raw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return tutorFileChange{Path: filepath.ToSlash(addedPath), After: raw}
+			},
+		},
+		{
+			name: "removal", lifecycle: tutorHoldoutRemoval,
+			mutate: func(t *testing.T, proposed string) tutorFileChange {
+				t.Helper()
+				removedPath := filepath.Join(proposed, "gaggles", gaggle, "workflows", "retired-implement.yaml")
+				if err := os.Remove(removedPath); err != nil {
+					t.Fatal(err)
+				}
+				return tutorFileChange{Path: filepath.ToSlash(removedPath), Before: retiredRaw}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proposed := filepath.Join(t.TempDir(), "proposed")
+			if err := os.CopyFS(proposed, os.DirFS(liveConfig)); err != nil {
+				t.Fatal(err)
+			}
+			change := tc.mutate(t, proposed)
+			runID := "tutor-lifecycle-" + tc.name
+			writeTutorFindingFixture(t, root, gaggle, runID)
+			record, err := prepareTutorHoldout(
+				root,
+				gaggle,
+				runID,
+				proposed,
+				tutorChangeClassification{Types: []tutorChangeType{tutorChangeStructure}},
+				[]tutorFileChange{change},
+				time.Now(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record == nil || len(record.Targets) != 1 {
+				t.Fatalf("record = %+v, want one lifecycle target", record)
+			}
+			target := record.Targets[0]
+			if target.Lifecycle != tc.lifecycle {
+				t.Fatalf("lifecycle = %q, want %q", target.Lifecycle, tc.lifecycle)
+			}
+			if tc.lifecycle == tutorHoldoutAddition && target.OldAxes != (tutorVersionAxes{}) {
+				t.Fatalf("addition old axes = %+v, want empty", target.OldAxes)
+			}
+			if tc.lifecycle == tutorHoldoutRemoval && target.NewAxes != (tutorVersionAxes{}) {
+				t.Fatalf("removal new axes = %+v, want empty", target.NewAxes)
+			}
+		})
+	}
+}
+
+func TestRefreshTutorHoldoutMergeStatePinsMergedPR(t *testing.T) {
+	root := initDemo(t)
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	record := tutorHoldoutRecord{
+		Schema: tutorHoldoutSchemaVersion, ID: "sha256:merge", FindingDigest: "sha256:finding",
+		Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42,
+		State: tutorHoldoutStatePending, CreatedAt: createdAt,
+	}
+	if err := writeTutorHoldout(root, record); err != nil {
+		t.Fatal(err)
+	}
+	mergedAt := time.Now().UTC()
+	err := refreshTutorHoldoutMergeState(
+		context.Background(),
+		root,
+		"example",
+		providers.RepositoryRef{Owner: "acme", Name: "app"},
+		tutorHoldoutPollerStub{result: providers.PullRequestPollResult{
+			Number: 42, Merged: true, MergedAt: &mergedAt,
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := loadTutorHoldouts(root, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].MergedAt == nil || !records[0].MergedAt.Equal(mergedAt) {
+		t.Fatalf("records = %+v, want merged timestamp %s", records, mergedAt)
+	}
+}
+
 func TestPrepareTutorHoldoutSkipsOptionalPersonaChange(t *testing.T) {
 	record, err := prepareTutorHoldout(
 		"", "", "", "",
@@ -304,6 +443,7 @@ func TestVerifyTutorHoldoutUsesPinnedTransitionNotLatest(t *testing.T) {
 		t.Fatalf("prepared result = %+v, want fail-closed pending state", prepared)
 	}
 	record.PRNumber = 42
+	record.MergedAt = &createdAt
 	if err := writeTutorHoldout(root, record); err != nil {
 		t.Fatal(err)
 	}
@@ -325,12 +465,213 @@ func TestVerifyTutorHoldoutUsesPinnedTransitionNotLatest(t *testing.T) {
 	}
 }
 
+func TestVerifyTutorHoldoutRefreshesAmendedTransitionFromPostMergeTelemetry(t *testing.T) {
+	root := initDemo(t)
+	const workflowName = "default-implement"
+	finalConfig := filepath.Join(t.TempDir(), "final")
+	if err := os.CopyFS(finalConfig, os.DirFS(instance.NewLayout(root).ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	workflowPath := filepath.Join(finalConfig, "gaggles", "example", "workflows", workflowName+".yaml")
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &definition); err != nil {
+		t.Fatal(err)
+	}
+	definition.Spec.DisplayName = "final amended behavior"
+	raw, err = yaml.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workflowPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finalVersions, err := tutorConfigVersions(finalConfig, "example", []string{workflowName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalAxes := finalVersions[workflowName]
+	proposalAxes := tutorVersionAxes{WorkflowDigest: "sha256:proposal", GooberDigest: finalAxes.GooberDigest}
+	interveningAxes := tutorVersionAxes{WorkflowDigest: "sha256:intervening", GooberDigest: finalAxes.GooberDigest}
+	createdAt := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRun(
+			t, root, "initial-"+string(rune('a'+i)), workflowName,
+			"sha256:initial", finalAxes.GooberDigest, "model", "1.0.0", journal.PhaseFailed,
+		)
+	}
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRun(
+			t, root, "intervening-"+string(rune('a'+i)), workflowName,
+			interveningAxes.WorkflowDigest, interveningAxes.GooberDigest, "model", "1.0.0", journal.PhaseFailed,
+		)
+	}
+	mergedAt := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRun(
+			t, root, "final-"+string(rune('a'+i)), workflowName,
+			finalAxes.WorkflowDigest, finalAxes.GooberDigest, "model", "1.0.0", journal.PhaseCompleted,
+		)
+	}
+	record := tutorHoldoutRecord{
+		Schema: tutorHoldoutSchemaVersion, ID: "sha256:amended", FindingDigest: "sha256:finding",
+		Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42,
+		MergedAt: &mergedAt, ChangeTypes: []tutorChangeType{tutorChangeStructure},
+		State: tutorHoldoutStatePending, CreatedAt: createdAt,
+		Targets: []tutorHoldoutTarget{{
+			Workflow: workflowName, Lifecycle: tutorHoldoutTransition,
+			OldAxes: tutorVersionAxes{WorkflowDigest: "sha256:initial", GooberDigest: finalAxes.GooberDigest},
+			NewAxes: proposalAxes,
+		}},
+	}
+	if err := writeTutorHoldout(root, record); err != nil {
+		t.Fatal(err)
+	}
+	rebuildTelemetryQueryRollup(t, root)
+	db, err := openRollup(instance.NewLayout(root), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	result, err := verifyTutorHoldouts(
+		root, "example", db, 24*time.Hour, createdAt.Add(-24*time.Hour), time.Now(),
+		rollup.DefaultEfficacyThresholds(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CanProceed {
+		t.Fatalf("result = %+v, want amended final transition to close", result)
+	}
+	target := result.Findings[0].Targets[0]
+	if target.OldAxes != interveningAxes || target.NewAxes != finalAxes {
+		t.Fatalf("refreshed axes = %+v -> %+v, want %+v -> %+v", target.OldAxes, target.NewAxes, interveningAxes, finalAxes)
+	}
+	if target.NewAxes == proposalAxes {
+		t.Fatalf("new axes retained stale proposal value: %+v", target.NewAxes)
+	}
+}
+
+func TestVerifyTutorHoldoutWorkflowLifecycleSemantics(t *testing.T) {
+	t.Run("addition requires healthy post-promotion cohort", func(t *testing.T) {
+		root := initDemo(t)
+		mergedAt := time.Now().UTC()
+		axes := tutorVersionAxes{WorkflowDigest: "sha256:added", GooberDigest: "sha256:goober"}
+		record := tutorHoldoutRecord{
+			Schema: tutorHoldoutSchemaVersion, ID: "sha256:addition", FindingDigest: "sha256:finding",
+			Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42, MergedAt: &mergedAt,
+			State: tutorHoldoutStatePending, CreatedAt: mergedAt.Add(-time.Hour),
+			Targets: []tutorHoldoutTarget{{
+				Workflow: "added-workflow", Lifecycle: tutorHoldoutAddition, NewAxes: axes,
+			}},
+		}
+		if err := writeTutorHoldout(root, record); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 5; i++ {
+			writeEffectiveVersionFixtureRun(
+				t, root, "added-"+string(rune('a'+i)), "added-workflow",
+				axes.WorkflowDigest, axes.GooberDigest, "model", "1.0.0", journal.PhaseCompleted,
+			)
+		}
+		rebuildTelemetryQueryRollup(t, root)
+		db, err := openRollup(instance.NewLayout(root), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		result, err := verifyTutorHoldouts(
+			root, "example", db, 24*time.Hour, mergedAt.Add(-24*time.Hour), time.Now(),
+			rollup.DefaultEfficacyThresholds(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.CanProceed || result.Findings[0].Targets[0].After.CompletedRuns != 5 {
+			t.Fatalf("result = %+v, want healthy added cohort to close", result)
+		}
+	})
+
+	t.Run("removal waits for live reconciliation", func(t *testing.T) {
+		root := initDemo(t)
+		const workflowName = "retired-implement"
+		liveConfig := instance.NewLayout(root).ConfigDir()
+		sourcePath := filepath.Join(liveConfig, "gaggles", "example", "workflows", "default-implement.yaml")
+		raw, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var definition apiv1.Workflow
+		if err := yaml.Unmarshal(raw, &definition); err != nil {
+			t.Fatal(err)
+		}
+		definition.Name = workflowName
+		raw, err = yaml.Marshal(definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		liveWorkflow := filepath.Join(liveConfig, "gaggles", "example", "workflows", workflowName+".yaml")
+		if err := os.WriteFile(liveWorkflow, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		finalConfig := filepath.Join(t.TempDir(), "final")
+		if err := os.CopyFS(finalConfig, os.DirFS(liveConfig)); err != nil {
+			t.Fatal(err)
+		}
+		finalWorkflow := filepath.Join(finalConfig, "gaggles", "example", "workflows", workflowName+".yaml")
+		if err := os.Remove(finalWorkflow); err != nil {
+			t.Fatal(err)
+		}
+		mergedAt := time.Now().UTC()
+		record := tutorHoldoutRecord{
+			Schema: tutorHoldoutSchemaVersion, ID: "sha256:removal", FindingDigest: "sha256:finding",
+			Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42,
+			MergedAt: &mergedAt, State: tutorHoldoutStatePending, CreatedAt: mergedAt.Add(-time.Hour),
+			Targets: []tutorHoldoutTarget{{
+				Workflow: workflowName, Lifecycle: tutorHoldoutRemoval,
+				OldAxes: tutorVersionAxes{WorkflowDigest: "sha256:old", GooberDigest: "sha256:goober"},
+			}},
+		}
+		if err := writeTutorHoldout(root, record); err != nil {
+			t.Fatal(err)
+		}
+		pending, err := verifyTutorHoldouts(
+			root, "example", nil, 24*time.Hour, mergedAt.Add(-24*time.Hour), time.Now(),
+			rollup.DefaultEfficacyThresholds(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending.CanProceed {
+			t.Fatalf("result = %+v, want removal pending while live config still contains workflow", pending)
+		}
+		if err := os.Remove(liveWorkflow); err != nil {
+			t.Fatal(err)
+		}
+		closed, err := verifyTutorHoldouts(
+			root, "example", nil, 24*time.Hour, mergedAt.Add(-24*time.Hour), time.Now(),
+			rollup.DefaultEfficacyThresholds(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !closed.CanProceed || closed.Findings[0].Targets[0].Verdict != rollup.EfficacyHelped {
+			t.Fatalf("result = %+v, want reconciled removal to close", closed)
+		}
+	})
+}
+
 func TestVerifyTutorHoldoutExcludesEarlierRunsFromRepromotedCohort(t *testing.T) {
 	root := initDemo(t)
 	for i := 0; i < 5; i++ {
 		writeEffectiveVersionFixtureRun(t, root, "initial-old-"+string(rune('a'+i)), "implementation",
 			"sha256:old", "sha256:goober", "model", "1.0.0", journal.PhaseFailed)
 	}
+
 	for i := 0; i < 5; i++ {
 		writeEffectiveVersionFixtureRun(t, root, "earlier-new-"+string(rune('a'+i)), "implementation",
 			"sha256:new", "sha256:goober", "model", "1.0.0", journal.PhaseCompleted)
@@ -344,7 +685,7 @@ func TestVerifyTutorHoldoutExcludesEarlierRunsFromRepromotedCohort(t *testing.T)
 	record := tutorHoldoutRecord{
 		Schema: tutorHoldoutSchemaVersion, ID: "sha256:repromoted", FindingDigest: "sha256:finding",
 		Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42, ChangeTypes: []tutorChangeType{tutorChangeStructure},
-		State: tutorHoldoutStatePending, CreatedAt: createdAt,
+		State: tutorHoldoutStatePending, CreatedAt: createdAt, MergedAt: &createdAt,
 		Targets: []tutorHoldoutTarget{{
 			Workflow: "implementation",
 			OldAxes:  tutorVersionAxes{WorkflowDigest: "sha256:old", GooberDigest: "sha256:goober"},
@@ -389,7 +730,7 @@ func TestVerifyTutorHoldoutExcludesLaterCohortReentry(t *testing.T) {
 	record := tutorHoldoutRecord{
 		Schema: tutorHoldoutSchemaVersion, ID: "sha256:reentry", FindingDigest: "sha256:finding",
 		Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42, ChangeTypes: []tutorChangeType{tutorChangeStructure},
-		State: tutorHoldoutStatePending, CreatedAt: createdAt,
+		State: tutorHoldoutStatePending, CreatedAt: createdAt, MergedAt: &createdAt,
 		Targets: []tutorHoldoutTarget{{
 			Workflow: "implementation",
 			OldAxes:  tutorVersionAxes{WorkflowDigest: "sha256:old", GooberDigest: "sha256:goober"},
@@ -437,7 +778,7 @@ func TestVerifyTutorHoldoutBaselineWindowIsAnchoredToFinding(t *testing.T) {
 	record := tutorHoldoutRecord{
 		Schema: tutorHoldoutSchemaVersion, ID: "sha256:delayed", FindingDigest: "sha256:finding",
 		Gaggle: "example", AuthoringRunID: "authoring", PRNumber: 42, ChangeTypes: []tutorChangeType{tutorChangeStructure},
-		State: tutorHoldoutStatePending, CreatedAt: createdAt,
+		State: tutorHoldoutStatePending, CreatedAt: createdAt, MergedAt: &createdAt,
 		Targets: []tutorHoldoutTarget{{
 			Workflow: "implementation",
 			OldAxes:  tutorVersionAxes{WorkflowDigest: "sha256:old", GooberDigest: "sha256:goober"},
@@ -504,6 +845,7 @@ func TestVerifyTutorHoldoutDoesNotCloseWithoutImprovement(t *testing.T) {
 					NewAxes:  tutorVersionAxes{WorkflowDigest: "sha256:new", GooberDigest: "sha256:goober"},
 				}},
 			}
+			record.MergedAt = &record.CreatedAt
 			if err := writeTutorHoldout(root, record); err != nil {
 				t.Fatal(err)
 			}
@@ -565,5 +907,21 @@ func TestTutorClassificationPRSectionStatesLiveVerificationPolicy(t *testing.T) 
 	optional := tutorClassificationPRSection(tutorChangeClassification{Types: []tutorChangeType{tutorChangePersona}})
 	if !strings.Contains(optional, "**Live verification:** Optional") {
 		t.Fatalf("optional section does not state persona policy:\n%s", optional)
+	}
+}
+
+func writeTutorFindingFixture(t *testing.T, root, gaggle, runID string) {
+	t.Helper()
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "tutor", Gaggle: gaggle,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordStageArtifact("analyze", 1, "", "finding.md", []byte("finding")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

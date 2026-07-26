@@ -287,7 +287,11 @@ func configDirectoryDigest(root string) (string, error) {
 		if err := writeEntry(path, 0, content); err != nil {
 			return err
 		}
-		for _, contentPath := range gooberContentReferences(root, path, content) {
+		references, err := gooberContentReferences(root, path, content)
+		if err != nil {
+			return err
+		}
+		for _, contentPath := range references {
 			contentPaths[contentPath] = struct{}{}
 		}
 		return nil
@@ -333,19 +337,19 @@ type configDigestDocument struct {
 	} `json:"spec"`
 }
 
-func gooberContentReferences(configDir, definitionPath string, content []byte) []string {
+func gooberContentReferences(configDir, definitionPath string, content []byte) ([]string, error) {
 	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(content), 4096)
 	var paths []string
 	for {
 		var document configDigestDocument
 		err := decoder.Decode(&document)
 		if errors.Is(err, io.EOF) {
-			return paths
+			return paths, nil
 		}
 		if err != nil {
 			// The YAML bytes already move the digest; config validation owns the
 			// diagnostic for malformed documents.
-			return paths
+			return paths, nil
 		}
 		if document.Kind != "Goober" {
 			continue
@@ -354,8 +358,12 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) [
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			if skillPath, ok := skillBodyPath(configDir, skill); ok {
-				paths = append(paths, skillPath)
+			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			if err != nil {
+				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
+			}
+			if ok {
+				paths = append(paths, skillPaths...)
 			}
 		}
 	}

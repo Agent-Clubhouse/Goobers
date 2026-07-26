@@ -14,7 +14,7 @@ type effectiveGoober struct {
 	Name           string                     `json:"name"`
 	Instructions   string                     `json:"instructions"`
 	Skills         []string                   `json:"skills,omitempty"`
-	SkillBodies    []effectiveSkillBody       `json:"skillBodies,omitempty"`
+	SkillPackages  []effectiveSkillPackage    `json:"skillPackages,omitempty"`
 	Model          string                     `json:"model,omitempty"`
 	Harness        string                     `json:"harness"`
 	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
@@ -22,8 +22,14 @@ type effectiveGoober struct {
 	Tools          []string                   `json:"tools,omitempty"`
 }
 
-type effectiveSkillBody struct {
-	Name    string `json:"name"`
+type effectiveSkillPackage struct {
+	Name  string      `json:"name"`
+	Files []SkillFile `json:"files,omitempty"`
+}
+
+// SkillFile is one canonically named regular file in a declared skill package.
+type SkillFile struct {
+	Path    string `json:"path"`
 	Content string `json:"content"`
 }
 
@@ -33,7 +39,7 @@ func ComputeGooberDigest(
 	def Definition,
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
-	skillBodies map[string]string,
+	skillPackages map[string][]SkillFile,
 ) (string, error) {
 	names := participatingGoobers(def)
 	effective := make([]effectiveGoober, 0, len(names))
@@ -64,7 +70,7 @@ func ComputeGooberDigest(
 			Name:           name,
 			Instructions:   content,
 			Skills:         canonicalSet(spec.Skills),
-			SkillBodies:    resolvedSkillBodies(spec.Skills, skillBodies),
+			SkillPackages:  resolvedSkillPackages(spec.Skills, skillPackages),
 			Model:          spec.Model,
 			Harness:        string(harness),
 			HarnessOptions: options,
@@ -75,11 +81,13 @@ func ComputeGooberDigest(
 	return canonicalDigest(effective)
 }
 
-func resolvedSkillBodies(skills []string, bodies map[string]string) []effectiveSkillBody {
-	var resolved []effectiveSkillBody
+func resolvedSkillPackages(skills []string, packages map[string][]SkillFile) []effectiveSkillPackage {
+	var resolved []effectiveSkillPackage
 	for _, name := range canonicalSet(skills) {
-		if content, ok := bodies[name]; ok {
-			resolved = append(resolved, effectiveSkillBody{Name: name, Content: content})
+		if files, ok := packages[name]; ok {
+			canonical := append([]SkillFile(nil), files...)
+			sort.Slice(canonical, func(i, j int) bool { return canonical[i].Path < canonical[j].Path })
+			resolved = append(resolved, effectiveSkillPackage{Name: name, Files: canonical})
 		}
 	}
 	return resolved

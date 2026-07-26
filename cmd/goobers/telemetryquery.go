@@ -246,9 +246,10 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 	"segmented cohort key (workflow digest + goober digest + model + harness\n" +
 	"version) from the Tutor v2 design — and emits a helped/regressed/no-change/\n" +
 	"insufficient-data verdict. --format tutor-live-verification evaluates all\n" +
-	"durable mandatory Tutor holdouts for the current gaggle against their\n" +
-	"pinned pre/post WorkflowDigest + GooberDigest axes; only an exact new\n" +
-	"EffectiveVersion cohort with a helped verdict closes a finding.\n\n" +
+	"durable mandatory Tutor holdouts for the current gaggle from each PR's\n" +
+	"merge time and first observed post-merge configuration transition. Exact\n" +
+	"EffectiveVersion cohorts verify transitions and additions; a removal is\n" +
+	"verified when the workflow is absent from the live reconciled config.\n\n" +
 	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -299,7 +300,14 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	since := time.Now().UTC().Add(-*window)
-	l := layoutFor(providerStageRoot(pathArg))
+	root := providerStageRoot(pathArg)
+	if *format == telemetryQueryTutorHoldoutsFormat {
+		if err := refreshTutorHoldoutMergeStateFromProvider(root, os.Getenv("GOOBERS_GAGGLE")); err != nil {
+			pf(stderr, "error: refresh Tutor live holdout merge state: %v\n", err)
+			return 1
+		}
+	}
+	l := layoutFor(root)
 	dbPath := l.TelemetryDB()
 	if _, err := os.Stat(dbPath); err != nil {
 		if !os.IsNotExist(err) {
@@ -318,7 +326,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			efficacyThresholds := rollup.DefaultEfficacyThresholds()
 			efficacyThresholds.MinSamples = thresholds.MinSamples
 			result, verifyErr := verifyTutorHoldouts(
-				providerStageRoot(pathArg),
+				root,
 				os.Getenv("GOOBERS_GAGGLE"),
 				nil,
 				*window,
@@ -359,7 +367,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		efficacyThresholds := rollup.DefaultEfficacyThresholds()
 		efficacyThresholds.MinSamples = thresholds.MinSamples
 		result, err := verifyTutorHoldouts(
-			providerStageRoot(pathArg),
+			root,
 			os.Getenv("GOOBERS_GAGGLE"),
 			db,
 			*window,

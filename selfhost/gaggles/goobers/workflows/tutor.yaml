@@ -55,6 +55,7 @@ spec:
         resultFile: "tutor-live-verification.json"
       capabilities:
         - telemetry:read
+        - github:pr:write
       next: gather-signals
 
     # Built-in provider-chain style stage: queries the telemetry rollup for

@@ -143,7 +143,8 @@ not just workflow structure:
 ```
 EffectiveVersion = H( WorkflowDigest
                      ⊕ GooberDigest         # sha256 over each participating goober's RESOLVED spec:
-                     #                         loaded instructions *content* (not path), skills set,
+                     #                         loaded instructions *content* (not path), skills set +
+                     #                         complete skill-package file contents,
                      #                         model id, harness id + options
                      ⊕ ModelId              # per agentic stage
                      ⊕ HarnessVersion )     # the preflight CLI/model version we currently discard
@@ -151,7 +152,8 @@ EffectiveVersion = H( WorkflowDigest
 
 Concretely:
 
-- **P1 — GooberDigest.** Fold the *resolved* `GooberSpec` (instructions **content**, skills, model, harness,
+- **P1 — GooberDigest.** Fold the *resolved* `GooberSpec` (instructions **content**, complete declared skill
+  packages, model, harness,
   options) into the run's identity — either extend `computeDigest` (`internal/workflow/compile.go`) to a full
   "effective definition" hash, or add a separate `GooberDigest` to `RunIdentity` + a rollup column. Today the
   digest sees only `{Name, Version, Spec}` and the Spec names goobers.

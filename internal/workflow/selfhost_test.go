@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -508,6 +509,9 @@ func TestSelfhostTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
 	}
 	if verify.Inputs["resultFile"] != "tutor-live-verification.json" || verify.Next != "gather-signals" {
 		t.Fatalf("verify-live-holdouts = %+v", verify)
+	}
+	if !slices.Contains(verify.Capabilities, "github:pr:write") {
+		t.Fatalf("verify-live-holdouts capabilities = %v, want GitHub PR polling grant", verify.Capabilities)
 	}
 	openPR := tasks["open-pr"]
 	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "selfhost" {

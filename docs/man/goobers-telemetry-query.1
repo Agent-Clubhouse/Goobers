@@ -19,9 +19,10 @@ the workflow's most recent EffectiveVersion transition — the version-
 segmented cohort key (workflow digest + goober digest + model + harness
 version) from the Tutor v2 design — and emits a helped/regressed/no-change/
 insufficient-data verdict. --format tutor-live-verification evaluates all
-durable mandatory Tutor holdouts for the current gaggle against their
-pinned pre/post WorkflowDigest + GooberDigest axes; only an exact new
-EffectiveVersion cohort with a helped verdict closes a finding.
+durable mandatory Tutor holdouts for the current gaggle from each PR's
+merge time and first observed post-merge configuration transition. Exact
+EffectiveVersion cohorts verify transitions and additions; a removal is
+verified when the workflow is absent from the live reconciled config.
 
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.

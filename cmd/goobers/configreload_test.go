@@ -431,6 +431,20 @@ spec:
 	if withSkill == withInstructions {
 		t.Fatalf("referenced skill edit did not change digest: %s", withSkill)
 	}
+	referencePath := filepath.Join(filepath.Dir(skillPath), "references", "cases.md")
+	if err := os.MkdirAll(filepath.Dir(referencePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(referencePath, []byte("Handle the retry case.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withSkillReference, err := configDirectoryDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withSkillReference == withSkill {
+		t.Fatalf("referenced skill support-file addition did not change digest: %s", withSkillReference)
+	}
 
 	asset := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets", ".hidden", "reference.txt")
 	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
@@ -443,7 +457,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withAsset == withSkill {
+	if withAsset == withSkillReference {
 		t.Fatalf("asset addition did not change digest: %s", withAsset)
 	}
 

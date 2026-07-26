@@ -186,6 +186,14 @@ type EffectiveVersionChange struct {
 	ChangedAt   time.Time
 }
 
+// EffectiveVersionCohort is one contiguous observed cohort for a workflow.
+type EffectiveVersionCohort struct {
+	Version   EffectiveVersion
+	Hash      string
+	StartedAt time.Time
+	Stats     RunStats
+}
+
 // DigestHistoryByEffectiveVersion returns every EffectiveVersion transition
 // for workflow, in chronological order, mirroring DigestHistory but keyed on
 // the full cohort (workflow + goober + model + harness) rather than
@@ -223,6 +231,46 @@ func (db *DB) DigestHistoryByEffectiveVersionForGaggle(gaggle, workflow string) 
 		prev = row
 	}
 	return changes, nil
+}
+
+// FirstEffectiveVersionCohortForGaggle returns the first contiguous cohort
+// observed after since with the requested configuration axes. An empty digest
+// is a wildcard. Model and harness remain part of the exact cohort boundary.
+func (db *DB) FirstEffectiveVersionCohortForGaggle(
+	gaggle, workflow, workflowDigest, gooberDigest string,
+	since time.Time,
+) (*EffectiveVersionCohort, error) {
+	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, since)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: effective version cohort for %q: %w", workflow, err)
+	}
+	var selected []effectiveVersionRun
+	for _, row := range rows {
+		if row.Excluded {
+			continue
+		}
+		if len(selected) == 0 {
+			if (workflowDigest != "" && row.Version.WorkflowDigest != workflowDigest) ||
+				(gooberDigest != "" && row.Version.GooberDigest != gooberDigest) {
+				continue
+			}
+			selected = append(selected, row)
+			continue
+		}
+		if row.Hash != selected[0].Hash {
+			break
+		}
+		selected = append(selected, row)
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	return &EffectiveVersionCohort{
+		Version:   selected[0].Version,
+		Hash:      selected[0].Hash,
+		StartedAt: selected[0].StartedAt,
+		Stats:     aggregateRunStats(workflow, selected),
+	}, nil
 }
 
 // aggregateRunStats reduces a set of effectiveVersionRun rows (already
