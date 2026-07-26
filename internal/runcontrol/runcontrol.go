@@ -9,9 +9,11 @@ import (
 )
 
 const (
+	// DefaultMaxRepasses is the fallback bounded-repass budget.
 	DefaultMaxRepasses = 3
 )
 
+// DefaultStalledRunTimeout is the fallback inactivity threshold for a run.
 const DefaultStalledRunTimeout = 45 * time.Minute
 
 // Effective is a fully resolved run-control policy.
