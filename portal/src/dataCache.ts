@@ -18,43 +18,46 @@ export type DataCacheDependency =
 
 interface DataCacheEntry {
   data: unknown;
+  dependencies: readonly DataCacheDependency[];
   expiresAt: number;
 }
 
-interface DataCacheMetadata {
+interface DataCacheWrite {
   dependencies: readonly DataCacheDependency[];
   revision: number;
+  expiresAt: number;
 }
 
 export class SessionDataCache {
   private readonly entries = new Map<string, DataCacheEntry>();
-  private readonly metadata = new Map<string, DataCacheMetadata>();
+  private readonly writes = new Map<string, DataCacheWrite>();
+  private evictionTimer: ReturnType<typeof setTimeout> | undefined;
+  private revision = 0;
 
-  constructor(
-    private readonly ttlMs = DATA_CACHE_TTL_MS,
-    private readonly now: () => number = Date.now,
-  ) {}
+  constructor(private readonly ttlMs = DATA_CACHE_TTL_MS) {}
 
   get<T>(key: string): T | undefined {
     const entry = this.entries.get(key);
     if (!entry) {
       return undefined;
     }
-    if (entry.expiresAt <= this.now()) {
+    if (entry.expiresAt <= Date.now()) {
       this.entries.delete(key);
+      this.scheduleEviction();
       return undefined;
     }
     return entry.data as T;
   }
 
   beginWrite(key: string, dependencies: readonly DataCacheDependency[]): number {
-    const metadata = this.metadata.get(key);
-    if (metadata) {
-      metadata.dependencies = dependencies;
-      return metadata.revision;
-    }
-    this.metadata.set(key, { dependencies, revision: 0 });
-    return 0;
+    this.revision += 1;
+    this.writes.set(key, {
+      dependencies,
+      revision: this.revision,
+      expiresAt: Date.now() + this.ttlMs,
+    });
+    this.scheduleEviction();
+    return this.revision;
   }
 
   set<T>(
@@ -63,37 +66,96 @@ export class SessionDataCache {
     dependencies: readonly DataCacheDependency[],
     revision?: number,
   ): boolean {
-    const currentRevision = this.beginWrite(key, dependencies);
-    if (revision !== undefined && revision !== currentRevision) {
-      return false;
+    if (revision !== undefined) {
+      if (this.writes.get(key)?.revision !== revision) {
+        return false;
+      }
+      this.writes.delete(key);
+    } else {
+      this.writes.delete(key);
     }
     this.entries.set(key, {
       data,
-      expiresAt: this.now() + this.ttlMs,
+      dependencies,
+      expiresAt: Date.now() + this.ttlMs,
     });
+    this.scheduleEviction();
     return true;
   }
 
   remove(key: string): void {
     this.entries.delete(key);
-    const metadata = this.metadata.get(key);
-    if (metadata) {
-      metadata.revision += 1;
-    }
+    this.writes.delete(key);
+    this.scheduleEviction();
   }
 
   invalidate(invalidation: ModelInvalidation): void {
     const models = new Set<UpdateModel>(invalidation.models);
-    for (const [key, metadata] of this.metadata) {
+    for (const [key, entry] of this.entries) {
       if (
-        metadata.dependencies.some(
+        entry.dependencies.some(
           (dependency) =>
             models.has(dependency.model) && invalidatesDependency(dependency, invalidation),
         )
       ) {
         this.entries.delete(key);
-        metadata.revision += 1;
       }
+    }
+    for (const [key, write] of this.writes) {
+      if (
+        write.dependencies.some(
+          (dependency) =>
+            models.has(dependency.model) && invalidatesDependency(dependency, invalidation),
+        )
+      ) {
+        this.writes.delete(key);
+      }
+    }
+    this.scheduleEviction();
+  }
+
+  // Cancels the pending eviction timer. LiveDataController.stop() calls this so
+  // teardown leaves no live timers behind; the next write reschedules eviction.
+  dispose(): void {
+    if (this.evictionTimer !== undefined) {
+      clearTimeout(this.evictionTimer);
+      this.evictionTimer = undefined;
+    }
+  }
+
+  private readonly evictExpired = (): void => {
+    this.evictionTimer = undefined;
+    const now = Date.now();
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt <= now) {
+        this.entries.delete(key);
+      }
+    }
+    for (const [key, write] of this.writes) {
+      if (write.expiresAt <= now) {
+        this.writes.delete(key);
+      }
+    }
+    this.scheduleEviction();
+  };
+
+  private scheduleEviction(): void {
+    if (this.evictionTimer !== undefined) {
+      clearTimeout(this.evictionTimer);
+      this.evictionTimer = undefined;
+    }
+    let nextExpiration = Number.POSITIVE_INFINITY;
+    for (const entry of this.entries.values()) {
+      nextExpiration = Math.min(nextExpiration, entry.expiresAt);
+    }
+    for (const write of this.writes.values()) {
+      nextExpiration = Math.min(nextExpiration, write.expiresAt);
+    }
+    if (Number.isFinite(nextExpiration)) {
+      this.evictionTimer = setTimeout(
+        this.evictExpired,
+        Math.max(0, nextExpiration - Date.now()),
+      );
     }
   }
 }

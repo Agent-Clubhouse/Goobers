@@ -105,8 +105,11 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
   }, [cache, cacheKey, refresh, subscribe]);
 
   const retry = useCallback(() => {
+    // Evict the cached snapshot so a retry refetches rather than re-serving the
+    // entry that just failed — but do NOT reset to "loading". Blanking the page
+    // to a full skeleton on retry is the regression #1684 fixed; refresh() already
+    // moves ready/stale data to "stale" and keeps it visible while the refetch runs.
     cache.remove(cacheKey);
-    setState({ status: "loading" });
     void refresh();
   }, [cache, cacheKey, refresh]);
   return { retry, state };

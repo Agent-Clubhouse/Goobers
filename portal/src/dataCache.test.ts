@@ -1,26 +1,46 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dataCacheKey, SessionDataCache } from "./dataCache";
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("SessionDataCache", () => {
   it("returns a cached resource within its TTL", () => {
-    let now = 1_000;
-    const cache = new SessionDataCache(5_000, () => now);
+    const cache = new SessionDataCache(5_000);
     const key = dataCacheKey("run-detail", "run-1");
     cache.set(key, { id: "run-1" }, [{ model: "run", runId: "run-1" }]);
 
-    now += 4_999;
+    vi.setSystemTime(5_999);
 
     expect(cache.get(key)).toEqual({ id: "run-1" });
   });
 
   it("treats an expired resource as a cache miss", () => {
-    let now = 1_000;
-    const cache = new SessionDataCache(5_000, () => now);
+    const cache = new SessionDataCache(5_000);
     const key = dataCacheKey("run-detail", "run-1");
     cache.set(key, { id: "run-1" }, [{ model: "run", runId: "run-1" }]);
 
-    now += 5_000;
+    vi.setSystemTime(6_000);
 
+    expect(cache.get(key)).toBeUndefined();
+  });
+
+  it("evicts expired entries and pending write metadata without another read", async () => {
+    const cache = new SessionDataCache(5_000);
+    const key = dataCacheKey("run-detail", "run-1");
+    const dependencies = [{ model: "run" as const, runId: "run-1" }];
+    cache.set(key, { id: "run-1" }, dependencies);
+    const revision = cache.beginWrite(key, dependencies);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(cache.set(key, "obsolete", dependencies, revision)).toBe(false);
     expect(cache.get(key)).toBeUndefined();
   });
 

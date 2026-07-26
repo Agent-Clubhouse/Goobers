@@ -244,6 +244,7 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
+    this.cache.dispose();
     this.pendingInvalidations.length = 0;
   }
 

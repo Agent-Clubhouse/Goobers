@@ -70,6 +70,52 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  // Uses an `invalidate` event rather than the connect `snapshot`: a cold connect
+  // already fires its own full refresh, so #1685 deliberately skips the snapshot
+  // that follows it. The behaviour under test here is the cache contract — an
+  // invalidating event must drop an in-flight write and force a refetch, so the
+  // response it was about to store cannot land as fresh.
+  it("refreshes again after an invalidation drops an in-flight cache write", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const cache = new SessionDataCache();
+    const controller = new LiveDataController(client, testConfig, { cache });
+    const firstRefresh = deferred<void>();
+    const key = dataCacheKey("run-detail", "run-1");
+    const dependencies = [{ model: "run" as const, runId: "run-1" }];
+    let attempt = 0;
+    const refresh = vi.fn(() => {
+      attempt += 1;
+      const revision = cache.beginWrite(key, dependencies);
+      if (attempt === 1) {
+        return firstRefresh.promise.then(() =>
+          cache.set(key, "first snapshot", dependencies, revision),
+        );
+      }
+      return cache.set(key, "refreshed snapshot", dependencies, revision);
+    });
+
+    controller.start();
+    controller.subscribe(["run"], refresh);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    stream.push({
+      id: "session:0",
+      type: "invalidate",
+      data: { cursor: "session:0", models: ["instance", "run", "workflow"] },
+    });
+    await settle();
+    firstRefresh.resolve();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(cache.get(key)).toBe("refreshed snapshot");
+    controller.stop();
+  });
+
   it("deduplicates ordered events into one effective model refresh window", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
@@ -132,8 +178,8 @@ describe("LiveDataController", () => {
     await settle();
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]));
-    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]));
+    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]), "refresh");
+    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]), "refresh");
     expect(unrelatedRun).not.toHaveBeenCalled();
     expect(unrelatedWorkflow).not.toHaveBeenCalled();
 
@@ -239,7 +285,7 @@ describe("LiveDataController", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
-    expect(refresh).toHaveBeenCalledWith(new Set(["run"]));
+    expect(refresh).toHaveBeenCalledWith(new Set(["run"]), "refresh");
 
     controller.stop();
   });
@@ -286,7 +332,7 @@ describe("LiveDataController", () => {
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]));
+    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]), "refresh");
 
     controller.stop();
   });

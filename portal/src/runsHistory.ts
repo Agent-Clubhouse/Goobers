@@ -146,7 +146,7 @@ export function useRunsHistory(
         }
         loadingMore.current = false;
         runs.current = mergeRuns(runs.current, fetched);
-        publish(isFresh());
+        publish(isFresh(), cacheRevision);
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
