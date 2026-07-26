@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "goobers.dev/diagnostics/v1",
+  "version": "dev",
+  "commit": "none",
+  "ok": true,
+  "counts": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "findings": []
+}

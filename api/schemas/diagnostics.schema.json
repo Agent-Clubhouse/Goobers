@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/diagnostics.schema.json",
+  "title": "DiagnosticsEnvelope",
+  "description": "Machine-readable findings emitted by goobers validate and goobers lint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "version", "commit", "ok", "counts", "findings"],
+  "properties": {
+    "schemaVersion": { "const": "goobers.dev/diagnostics/v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "commit": { "type": "string", "minLength": 1 },
+    "ok": { "type": "boolean" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errors", "warnings"],
+      "properties": {
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "code", "severity", "message"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 1 },
+        "path": { "type": "string", "pattern": "^/" },
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["error", "warning"] },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["line", "col"] },
+        { "required": ["path"] }
+      ]
+    }
+  }
+}

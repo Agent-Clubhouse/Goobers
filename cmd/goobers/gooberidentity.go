@@ -13,6 +13,33 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+type gooberInstructionsError struct {
+	Goober string
+	Err    error
+}
+
+func (e *gooberInstructionsError) Error() string {
+	return fmt.Sprintf("read goober %q instructions: %v", e.Goober, e.Err)
+}
+
+func (e *gooberInstructionsError) Unwrap() error {
+	return e.Err
+}
+
+type workflowDigestError struct {
+	Gaggle   string
+	Workflow string
+	Err      error
+}
+
+func (e *workflowDigestError) Error() string {
+	return fmt.Sprintf("digest workflow %q goobers: %v", e.Workflow, e.Err)
+}
+
+func (e *workflowDigestError) Unwrap() error {
+	return e.Err
+}
+
 func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
 	names := make([]string, 0, len(goobers))
 	for name := range goobers {
@@ -23,7 +50,7 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	for _, name := range names {
 		content, err := os.ReadFile(instructionsPath(configDir, goobers[name], name))
 		if err != nil {
-			return nil, fmt.Errorf("read goober %q instructions: %w", name, err)
+			return nil, &gooberInstructionsError{Goober: name, Err: err}
 		}
 		instructions[name] = string(content)
 	}
@@ -86,7 +113,11 @@ func compiledMachinesWithGooberDigests(
 	for identity, machine := range machines {
 		digest, err := workflow.ComputeGooberDigest(machine.Def, goobers, instructions, skillBodies)
 		if err != nil {
-			return nil, nil, fmt.Errorf("digest workflow %q goobers: %w", identity.Workflow, err)
+			return nil, nil, &workflowDigestError{
+				Gaggle:   identity.Gaggle,
+				Workflow: identity.Workflow,
+				Err:      err,
+			}
 		}
 		gooberDigests[identity] = digest
 	}
