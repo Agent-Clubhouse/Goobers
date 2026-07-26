@@ -28,6 +28,7 @@ type stageDistributionKey struct {
 	workflow       string
 	stage          string
 	branch         int
+	branchKnown    bool
 	model          string
 	harnessVersion string
 }
@@ -38,6 +39,7 @@ type usageDistributionKey struct {
 	workflow       string
 	stage          string
 	branch         int
+	branchKnown    bool
 	model          string
 	harnessVersion string
 }
@@ -128,12 +130,12 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		JOIN runs r ON r.run_id = sa.run_id
 		%s
 		LEFT JOIN stage_usage su
-			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal AND su.branch = sa.branch
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal AND su.branch IS sa.branch
 		JOIN (
 			SELECT run_id, stage, branch, MAX(traversal) AS final_traversal
 			FROM stage_attempts
 			GROUP BY run_id, stage, branch
-		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage AND latest.branch = sa.branch
+		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage AND latest.branch IS sa.branch
 		%s
 		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, where, groupedColumns(dimensions))
 	rows, err := db.sql.Query(query, args...)
@@ -148,17 +150,19 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		var wasted bool
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
-		var branch int
+		var branch sql.NullInt64
 		scan := []any{&key.gaggle, &key.workflow, &key.stage}
 		scan = appendStageDimensionScan(scan, req, &branch, &key.model, &key.harnessVersion)
 		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &premiumRequests, &costUSD)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage distribution: %w", err)
 		}
-		if req.GroupByBranch {
-			key.branch = branch
+		if req.GroupByBranch && branch.Valid {
+			key.branch = int(branch.Int64)
+			key.branchKnown = true
 		} else if req.Branch != nil {
 			key.branch = *req.Branch
+			key.branchKnown = true
 		}
 		accum := accums[key]
 		if accum == nil {
@@ -245,6 +249,7 @@ func populateStageDistributions(stages []StageStats, accums map[stageDistributio
 		}
 		if stages[i].Branch != nil {
 			key.branch = *stages[i].Branch
+			key.branchKnown = true
 		}
 		accum := accums[key]
 		if accum == nil {
@@ -287,10 +292,10 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum, in
 	accums := make(map[usageDistributionKey]*stageDistributionAccum)
 	for stageKey, stageAccum := range stageAccums {
 		keys := []usageDistributionKey{
-			{scope: "instance", branch: stageKey.branch, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
-			{scope: "gaggle", gaggle: stageKey.gaggle, branch: stageKey.branch, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
-			{scope: "workflow", gaggle: stageKey.gaggle, workflow: stageKey.workflow, branch: stageKey.branch, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
-			{scope: "stage", gaggle: stageKey.gaggle, workflow: stageKey.workflow, stage: stageKey.stage, branch: stageKey.branch, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
+			{scope: "instance", branch: stageKey.branch, branchKnown: stageKey.branchKnown, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
+			{scope: "gaggle", gaggle: stageKey.gaggle, branch: stageKey.branch, branchKnown: stageKey.branchKnown, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
+			{scope: "workflow", gaggle: stageKey.gaggle, workflow: stageKey.workflow, branch: stageKey.branch, branchKnown: stageKey.branchKnown, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
+			{scope: "stage", gaggle: stageKey.gaggle, workflow: stageKey.workflow, stage: stageKey.stage, branch: stageKey.branch, branchKnown: stageKey.branchKnown, model: stageKey.model, harnessVersion: stageKey.harnessVersion},
 		}
 		for _, key := range keys {
 			accum := accums[key]
@@ -330,7 +335,7 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum, in
 			RetryWasteTokens:      accum.wasteTokens,
 			RetryWasteCostUSD:     accum.wasteCostUSD,
 		}
-		if includeBranch {
+		if includeBranch && key.branchKnown {
 			branch := key.branch
 			stat.Branch = &branch
 		}
@@ -386,6 +391,9 @@ func usageKeyLess(left, right usageDistributionKey) bool {
 	}
 	if left.stage != right.stage {
 		return left.stage < right.stage
+	}
+	if left.branchKnown != right.branchKnown {
+		return !left.branchKnown
 	}
 	if left.branch != right.branch {
 		return left.branch < right.branch

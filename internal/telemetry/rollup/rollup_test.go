@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -667,7 +668,7 @@ func TestTraversalMigrationOrdersLegacyAttemptsByStartTime(t *testing.T) {
 	}
 }
 
-func TestBranchMigrationDefaultsLegacyRowsToRoot(t *testing.T) {
+func TestBranchMigrationPreservesLegacyRowsAsUnknown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
 	legacy, err := sql.Open("sqlite", path+dsnParams)
 	if err != nil {
@@ -685,6 +686,8 @@ func TestBranchMigrationDefaultsLegacyRowsToRoot(t *testing.T) {
 		t.Fatalf("set legacy schema version: %v", err)
 	}
 	if _, err := legacy.Exec(`
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
+		VALUES ('legacy-run', 'quality-sprint', 1, 'web', '2026-07-13T00:00:00.000000000Z');
 		INSERT INTO stage_attempts (run_id, stage, traversal, attempt)
 		VALUES ('legacy-run', 'research', 1, 1);
 		INSERT INTO stage_usage (run_id, stage, traversal, attempt, cost_usd)
@@ -703,13 +706,37 @@ func TestBranchMigrationDefaultsLegacyRowsToRoot(t *testing.T) {
 	}
 	defer func() { _ = upgraded.Close() }()
 	for _, table := range []string{"stage_attempts", "stage_usage", "gate_verdicts"} {
-		var branch int
+		var branch sql.NullInt64
 		if err := upgraded.sql.QueryRow(`SELECT branch FROM ` + table + ` WHERE run_id = 'legacy-run'`).Scan(&branch); err != nil {
 			t.Fatalf("query %s branch: %v", table, err)
 		}
-		if branch != 0 {
-			t.Fatalf("%s legacy branch = %d, want root branch 0", table, branch)
+		if branch.Valid {
+			t.Fatalf("%s legacy branch = %d, want unknown NULL", table, branch.Int64)
 		}
+	}
+	attempts, err := upgraded.StageAttempts("legacy-run")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("StageAttempts after upgrade: %v, %#v", err, attempts)
+	}
+	if attempts[0].BranchKnown {
+		t.Fatalf("legacy attempt branch = %#v, want unknown", attempts[0])
+	}
+	verdicts, err := upgraded.GateVerdicts("legacy-run")
+	if err != nil || len(verdicts) != 1 {
+		t.Fatalf("GateVerdicts after upgrade: %v, %#v", err, verdicts)
+	}
+	if verdicts[0].BranchKnown {
+		t.Fatalf("legacy gate branch = %#v, want unknown", verdicts[0])
+	}
+	if _, err := upgraded.Stats(StatsRequest{}); err != nil {
+		t.Fatalf("ordinary stats with unknown branch attribution: %v", err)
+	}
+	branch := 0
+	if _, err := upgraded.Stats(StatsRequest{Branch: &branch}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+		t.Fatalf("branch-filtered stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
+	}
+	if _, err := upgraded.Stats(StatsRequest{GroupByBranch: true}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+		t.Fatalf("branch-grouped stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
 	}
 }
 

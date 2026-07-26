@@ -469,7 +469,8 @@ WHERE first_pr_open_at IS NOT NULL
 	// v16 (issue #1699): journal events already carry the deterministic
 	// parallel-branch id. Preserve it on the attempt, usage, and gate projections
 	// that consumers use for branch-level outcome, duration, and cost queries.
-	// Existing rows predate this projection and therefore belong to root branch 0.
+	// Existing rows have unknown attribution until their journals are re-ingested;
+	// NULL keeps them distinct from events that actually ran on root branch 0.
 	`
 ALTER TABLE stage_attempts RENAME TO stage_attempts_v15;
 ALTER TABLE stage_usage RENAME TO stage_usage_v15;
@@ -488,7 +489,7 @@ CREATE TABLE stage_attempts (
 	error_code    TEXT,
 	error_class   TEXT,
 	runner_json   TEXT,
-	branch        INTEGER NOT NULL DEFAULT 0,
+	branch        INTEGER,
 	PRIMARY KEY (run_id, stage, traversal)
 );
 
@@ -510,7 +511,7 @@ CREATE TABLE stage_usage (
 	output_tokens            INTEGER,
 	copilot_premium_requests REAL,
 	cost_usd                 REAL,
-	branch                   INTEGER NOT NULL DEFAULT 0,
+	branch                   INTEGER,
 	PRIMARY KEY (run_id, stage, traversal)
 );
 
@@ -531,7 +532,7 @@ CREATE TABLE gate_verdicts (
 	target      TEXT,
 	occurred_at TEXT,
 	runner_json TEXT,
-	branch      INTEGER NOT NULL DEFAULT 0,
+	branch      INTEGER,
 	PRIMARY KEY (run_id, seq)
 );
 
