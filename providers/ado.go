@@ -1402,36 +1402,25 @@ func adoChangedFileStatus(changeType string) string {
 	}
 }
 
-func mapADOWorkItem(item adoWorkItem) WorkItem {
-	state, known := knownADOCommonWorkItemState(stringField(item.Fields, "System.State"))
-	if !known {
-		state = "open"
-	}
-	return mapADOWorkItemState(item, state)
-}
-
 func (p *ADOProvider) mapADOWorkItem(ctx context.Context, repo RepositoryRef, item adoWorkItem) (WorkItem, error) {
 	nativeState := stringField(item.Fields, "System.State")
-	state, known := knownADOCommonWorkItemState(nativeState)
-	if !known {
-		itemType := stringField(item.Fields, "System.WorkItemType")
-		categories, err := p.adoWorkItemStateCategories(ctx, repo, itemType)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		definition, found := findADOWorkItemState(categories, nativeState)
-		if !found {
-			return WorkItem{}, fmt.Errorf("ADO work item type %q has unknown state %q", itemType, nativeState)
-		}
-		state, err = commonADOStateCategory(definition.Category)
-		if err != nil {
-			return WorkItem{}, fmt.Errorf("map ADO work item type %q state %q: %w", itemType, nativeState, err)
-		}
+	itemType := stringField(item.Fields, "System.WorkItemType")
+	categories, err := p.adoWorkItemStateCategories(ctx, repo, itemType)
+	if err != nil {
+		return WorkItem{}, err
 	}
-	return mapADOWorkItemState(item, state), nil
+	definition, found := findADOWorkItemState(categories, nativeState)
+	if !found {
+		return WorkItem{}, fmt.Errorf("ADO work item type %q has unknown state %q", itemType, nativeState)
+	}
+	state, status, err := commonADOStateCategory(definition.Category)
+	if err != nil {
+		return WorkItem{}, fmt.Errorf("map ADO work item type %q state %q: %w", itemType, nativeState, err)
+	}
+	return mapADOWorkItemState(item, state, status), nil
 }
 
-func mapADOWorkItemState(item adoWorkItem, state string) WorkItem {
+func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) WorkItem {
 	labels := adoVisibleLabels(adoRawTags(item))
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
@@ -1444,7 +1433,7 @@ func mapADOWorkItemState(item adoWorkItem, state string) WorkItem {
 		Body:       stringField(item.Fields, "System.Description"),
 		Labels:     labels,
 		State:      state,
-		Status:     statusFromLabels(labels, state),
+		Status:     statusFromLabels(labels, string(status)),
 		Assignee:   stringField(item.Fields, "System.AssignedTo"),
 		Links:      links,
 		Parent:     parent,
@@ -1585,17 +1574,6 @@ func escapeWIQLString(value string) string {
 	return strings.ReplaceAll(strings.TrimSpace(value), "'", "''")
 }
 
-func knownADOCommonWorkItemState(state string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "closed", "done", "removed":
-		return "closed", true
-	case "", "new", "active", "approved", "committed", "to do", "doing", "proposed", "in progress", "resolved":
-		return "open", true
-	default:
-		return "", false
-	}
-}
-
 type adoWorkItemStatesResponse struct {
 	Value []adoWorkItemState `json:"value"`
 }
@@ -1666,14 +1644,16 @@ func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemSt
 	return adoWorkItemState{}, false
 }
 
-func commonADOStateCategory(category string) (string, error) {
+func commonADOStateCategory(category string) (string, WorkItemStatus, error) {
 	switch strings.ToLower(category) {
 	case "completed", "removed":
-		return "closed", nil
-	case "proposed", "inprogress", "resolved":
-		return "open", nil
+		return "closed", WorkItemStatusDone, nil
+	case "inprogress", "resolved":
+		return "open", WorkItemStatusInProgress, nil
+	case "proposed":
+		return "open", WorkItemStatusOpen, nil
 	default:
-		return "", fmt.Errorf("unsupported state category %q", category)
+		return "", "", fmt.Errorf("unsupported state category %q", category)
 	}
 }
 
@@ -1738,8 +1718,8 @@ func isADORevisionConflict(err error) bool {
 	}
 	body := strings.ToLower(responseErr.body)
 	return responseErr.statusCode == http.StatusBadRequest &&
-		strings.Contains(body, "revision") &&
-		(strings.Contains(body, "match") || strings.Contains(body, "test"))
+		strings.Contains(body, "/rev") &&
+		(strings.Contains(body, "vs403351") || strings.Contains(body, "test operation"))
 }
 
 func hasAllLabels(itemLabels, required []string) bool {

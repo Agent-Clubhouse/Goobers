@@ -25,7 +25,7 @@ type adoWorkItemBackend struct {
 	comments []map[string]interface{}
 	query    string
 
-	completedState    string
+	stateDefinitions  []adoContractState
 	commentStatus     int
 	claimBarrier      chan struct{}
 	claimReads        int
@@ -34,13 +34,12 @@ type adoWorkItemBackend struct {
 
 func newADOWorkItemBackend() *adoWorkItemBackend {
 	return &adoWorkItemBackend{
-		revision:       3,
-		title:          "Fix API",
-		body:           "do it",
-		state:          "Active",
-		tags:           []string{"route/backend"},
-		assignee:       "Mona",
-		completedState: "Done",
+		revision: 3,
+		title:    "Fix API",
+		body:     "do it",
+		state:    "Active",
+		tags:     []string{"route/backend"},
+		assignee: "Mona",
 	}
 }
 
@@ -108,7 +107,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 			}
 			if revision, ok := numberAsInt(patch[0].Value); !ok || revision != b.revision {
 				b.revisionConflicts++
-				http.Error(w, "revision does not match", http.StatusPreconditionFailed)
+				http.Error(w, "VS403351: Test Operation for path /rev failed", http.StatusBadRequest)
 				return
 			}
 			b.apply(patch[1:])
@@ -151,14 +150,18 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, _ *http.Request) {
 		b.mu.Lock()
-		completedState := b.completedState
+		states := append([]adoContractState(nil), b.stateDefinitions...)
 		b.mu.Unlock()
-		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
-			{"name": "New", "category": "Proposed"},
-			{"name": "Active", "category": "InProgress"},
-			{"name": "Awaiting Verification", "category": "Resolved"},
-			{"name": completedState, "category": "Completed"},
-		}})
+		if len(states) == 0 {
+			states = []adoContractState{
+				{Name: "New", Category: "Proposed"},
+				{Name: "Active", Category: "InProgress"},
+				{Name: "Resolved", Category: "Resolved"},
+				{Name: "Awaiting Verification", Category: "Resolved"},
+				{Name: "Done", Category: "Completed"},
+			}
+		}
+		writeJSON(t, w, map[string]interface{}{"value": states})
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -169,6 +172,11 @@ type adoContractPatch struct {
 	Op    string      `json:"op"`
 	Path  string      `json:"path"`
 	Value interface{} `json:"value"`
+}
+
+type adoContractState struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
 }
 
 func (b *adoWorkItemBackend) item(id int) map[string]interface{} {
@@ -240,7 +248,8 @@ func TestContract_ADOWorkItemOperations(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("ListWorkItems = %#v, %v", items, err)
 	}
-	if items[0].State != "open" || items[0].CreatedAt == nil || items[0].UpdatedAt == nil {
+	if items[0].State != "open" || items[0].Status != providers.WorkItemStatusInProgress ||
+		items[0].CreatedAt == nil || items[0].UpdatedAt == nil {
 		t.Fatalf("mapped item = %#v", items[0])
 	}
 	backend.mu.Lock()
@@ -322,32 +331,43 @@ func TestContract_ADOWorkItemOperations(t *testing.T) {
 }
 
 func TestContract_ADOCustomStateCategoryMapping(t *testing.T) {
-	backend := newADOWorkItemBackend()
-	backend.state = "Finished"
-	backend.completedState = "Finished"
-	server := backend.server(t)
-	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
-		p.BaseURL = server.URL
-	})
-	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"}
+	tests := []struct {
+		name  string
+		state string
+	}{
+		{name: "custom name", state: "Finished"},
+		{name: "familiar name uses configured category", state: "Resolved"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newADOWorkItemBackend()
+			backend.state = test.state
+			backend.stateDefinitions = []adoContractState{{Name: test.state, Category: "Completed"}}
+			server := backend.server(t)
+			provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+				p.BaseURL = server.URL
+			})
+			repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"}
 
-	item, err := provider.GetWorkItem(context.Background(), repo, "42")
-	if err != nil || item.State != "closed" {
-		t.Fatalf("GetWorkItem = %#v, %v", item, err)
-	}
-	closed, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
-		Repository: repo,
-		State:      "closed",
-	})
-	if err != nil || len(closed) != 1 {
-		t.Fatalf("closed ListWorkItems = %#v, %v", closed, err)
-	}
-	open, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
-		Repository: repo,
-		State:      "open",
-	})
-	if err != nil || len(open) != 0 {
-		t.Fatalf("open ListWorkItems = %#v, %v", open, err)
+			item, err := provider.GetWorkItem(context.Background(), repo, "42")
+			if err != nil || item.State != "closed" || item.Status != providers.WorkItemStatusDone {
+				t.Fatalf("GetWorkItem = %#v, %v", item, err)
+			}
+			closed, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+				Repository: repo,
+				State:      "closed",
+			})
+			if err != nil || len(closed) != 1 {
+				t.Fatalf("closed ListWorkItems = %#v, %v", closed, err)
+			}
+			open, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+				Repository: repo,
+				State:      "open",
+			})
+			if err != nil || len(open) != 0 {
+				t.Fatalf("open ListWorkItems = %#v, %v", open, err)
+			}
+		})
 	}
 }
 
@@ -363,7 +383,7 @@ func TestContract_ADOResolvedStatesRemainOpen(t *testing.T) {
 			repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"}
 
 			item, err := provider.GetWorkItem(context.Background(), repo, "42")
-			if err != nil || item.State != "open" {
+			if err != nil || item.State != "open" || item.Status != providers.WorkItemStatusInProgress {
 				t.Fatalf("GetWorkItem = %#v, %v", item, err)
 			}
 			open, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
@@ -410,6 +430,11 @@ func TestContract_ADOCreateWorkItemIdempotentOnRetry(t *testing.T) {
 				"System.State":        "Active",
 			},
 		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"value": []adoContractState{
+			{Name: "Active", Category: "InProgress"},
+		}})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, _ *http.Request) {
 		createRequests++

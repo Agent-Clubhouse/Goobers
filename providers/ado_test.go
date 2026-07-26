@@ -10,8 +10,22 @@ import (
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
+func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
+	t.Helper()
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Done", "category": "Completed"},
+		}})
+	})
+}
+
 func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
@@ -66,6 +80,7 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 	getRequests := 0
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("$top"); got != "" {
 			t.Fatalf("$top = %q, want no raw candidate limit", got)
@@ -86,8 +101,10 @@ func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 		writeJSON(t, w, map[string]interface{}{
 			"id": numericID,
 			"fields": map[string]interface{}{
-				"System.Title": id,
-				"System.Tags":  tags,
+				"System.WorkItemType": "Issue",
+				"System.Title":        id,
+				"System.State":        "New",
+				"System.Tags":         tags,
 			},
 		})
 	})
@@ -115,6 +132,7 @@ func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 	}
 	getRequests := 0
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("$top"); got != "1" {
 			t.Fatalf("$top = %q, want 1", got)
@@ -139,8 +157,10 @@ func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 		writeJSON(t, w, map[string]interface{}{
 			"id": numericID,
 			"fields": map[string]interface{}{
-				"System.Title": id,
-				"System.Tags":  tags,
+				"System.WorkItemType": "Issue",
+				"System.Title":        id,
+				"System.State":        "New",
+				"System.Tags":         tags,
 			},
 		})
 	})
@@ -178,6 +198,7 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	var patchBody []adoPatchOperation
 	var reviewerPath string
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/refs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -435,6 +456,7 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	var wiqlCalls int
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		var patch []adoPatchOperation
