@@ -59,7 +59,7 @@ export function InsightPage({
   const [scopeKey, setScopeKey] = useState(scopeToKey({ kind: "instance" }));
   const requestedScope = scopeFromKey(scopeKey);
   const errorScope = errorSignatureScope(requestedScope);
-  const query = useInsightStats(client, window);
+  const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const errorSignatures = useInsightErrorSignatures(
     client,
     window,

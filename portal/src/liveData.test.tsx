@@ -8,6 +8,7 @@ import type {
   DaemonUpdateEvent,
   EventStreamRequest,
   Instance,
+  ModelInvalidation,
   RequestOptions,
   ValidationWarning,
 } from "./api/types";
@@ -72,6 +73,47 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("refreshes only subscriptions matching event entity identities", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const matchingRun = vi.fn();
+    const unrelatedRun = vi.fn();
+    const matchingWorkflow = vi.fn();
+    const unrelatedWorkflow = vi.fn();
+    controller.subscribe(["run"], matchingRun, { runId: "run-a" });
+    controller.subscribe(["run"], unrelatedRun, { runId: "run-b" });
+    controller.subscribe(["workflow", "run"], matchingWorkflow, {
+      gaggle: "core",
+      workflow: "implementation",
+    });
+    controller.subscribe(["workflow", "run"], unrelatedWorkflow, {
+      gaggle: "other",
+      workflow: "implementation",
+    });
+    controller.start();
+    await settle();
+    matchingRun.mockClear();
+    unrelatedRun.mockClear();
+    matchingWorkflow.mockClear();
+    unrelatedWorkflow.mockClear();
+    stream.push(
+      update("session:1", ["run", "workflow"], {
+        runIds: ["run-a"],
+        workflows: [{ gaggle: "core", name: "implementation" }],
+      }),
+    );
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]));
+    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]));
+    expect(unrelatedRun).not.toHaveBeenCalled();
+    expect(unrelatedWorkflow).not.toHaveBeenCalled();
+
+    controller.stop();
+  });
+
   it("reconnects with the last applied event ID", async () => {
     const first = new ControlledEventStream();
     const second = new ControlledEventStream();
@@ -97,9 +139,136 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("resumes after visibility changes without a blanket refresh", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    first.push(snapshot("session:0"));
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockClear();
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+    refresh.mockClear();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(client.requests[1]).toEqual({ cursor: "session:0" });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(controller.freshness).toBe("connected");
+
+    controller.stop();
+  });
+
+  it("preserves queued invalidations across a visibility reconnect", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh, { runId: "run-a" });
+    refresh.mockClear();
+
+    controller.start();
+    await settle();
+    refresh.mockClear();
+    first.push(update("session:1", ["run"], { runIds: ["run-a"] }));
+    await settle();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.requests[1]).toEqual({ cursor: "session:1" });
+    expect(refresh).toHaveBeenCalledWith(new Set(["run"]));
+
+    controller.stop();
+  });
+
+  it("retries an unsuccessful in-flight invalidation after refocus", async () => {
+    window.sessionStorage.setItem("goobers-live-event-cursor", "session:0");
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, testConfig);
+    const firstRefresh = deferred<boolean>();
+    const refresh = vi.fn();
+    controller.subscribe(["run"], refresh, { runId: "run-a" });
+    refresh.mockReset();
+    refresh.mockReturnValueOnce(firstRefresh.promise).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    first.push(update("session:1", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    firstRefresh.resolve(false);
+    await settle();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.requests[1]).toEqual({ cursor: "session:1" });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]));
+
+    controller.stop();
+  });
+
   it("clears an expired cursor, requests a full snapshot, and reconnects cleanly", async () => {
     window.sessionStorage.setItem("goobers-live-event-cursor", "expired:9");
     const recovered = new ControlledEventStream();
+    recovered.push(snapshot("current:0"));
     const client = new ScriptedClient([
       () => Promise.reject(new DaemonApiError(409, "stale_cursor", "expired")),
       () => Promise.resolve(recovered),
@@ -128,6 +297,7 @@ describe("LiveDataController", () => {
 
   it("retries a failed post-connect snapshot until it succeeds", async () => {
     const stream = new ControlledEventStream();
+    stream.push(snapshot("session:0"));
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
     const controller = new LiveDataController(client, testConfig);
     const refresh = vi.fn();
@@ -153,6 +323,7 @@ describe("LiveDataController", () => {
 
   it("collapses invalidation windows during a snapshot into one follow-up refresh", async () => {
     const stream = new ControlledEventStream();
+    stream.push(snapshot("session:0"));
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
     const controller = new LiveDataController(client, testConfig);
     const states: LiveFreshness[] = [];
@@ -189,6 +360,7 @@ describe("LiveDataController", () => {
 
   it("hands off an immediate full refresh queued as a flush completes", async () => {
     const stream = new ControlledEventStream();
+    stream.push(snapshot("session:0"));
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
     const controller = new LiveDataController(client, {
       ...testConfig,
@@ -330,7 +502,15 @@ describe("live page integration", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"));
     const initialReads = getRun.mock.calls.length;
 
-    client.stream.push(update("fixture:1", ["run"]));
+    client.stream.push(
+      update("fixture:1", ["run"], { runIds: ["01JZ441DAEMONAPI"] }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(getRun).toHaveBeenCalledTimes(initialReads);
+
+    client.stream.push(
+      update("fixture:2", ["run"], { runIds: ["01JZ402DASHBOARD"] }),
+    );
 
     await waitFor(() => expect(getRun.mock.calls.length).toBeGreaterThan(initialReads));
   });
@@ -365,6 +545,15 @@ describe("live page integration", () => {
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
       await vi.advanceTimersByTimeAsync(0);
+      await settle();
+    });
+    expect(getRun).toHaveBeenCalledTimes(visibleReads);
+
+    client.stream.push(
+      update("fixture:1", ["run"], { runIds: ["01JZ441DAEMONAPI"] }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
       await settle();
     });
     expect(getRun.mock.calls.length).toBeGreaterThan(visibleReads);
@@ -488,15 +677,23 @@ class ScriptedClient extends FixtureDaemonClient {
 }
 
 class MutableFixtureClient extends FixtureDaemonClient {
-  readonly stream = new ControlledEventStream();
+  private currentStream = new ControlledEventStream();
   instanceName = "goobers-dev";
 
   constructor() {
     super(populatedDaemonFixtures());
   }
 
-  override connectEvents(): Promise<DaemonEventStream> {
-    return Promise.resolve(this.stream);
+  get stream(): ControlledEventStream {
+    return this.currentStream;
+  }
+
+  override connectEvents(request?: EventStreamRequest): Promise<DaemonEventStream> {
+    this.currentStream = new ControlledEventStream();
+    if (!request?.cursor) {
+      this.currentStream.push(snapshot("fixture:0"));
+    }
+    return Promise.resolve(this.currentStream);
   }
 
   override async getInstance(options?: RequestOptions): Promise<Instance> {
@@ -549,11 +746,23 @@ class ControlledEventStream implements DaemonEventStream {
   }
 }
 
-function update(id: string, models: ("instance" | "run" | "workflow")[]): DaemonUpdateEvent {
+function update(
+  id: string,
+  models: ("instance" | "run" | "workflow")[],
+  targets: Pick<ModelInvalidation, "runIds" | "workflows"> = {},
+): DaemonUpdateEvent {
   return {
     id,
     type: "invalidate",
-    data: { cursor: id, models },
+    data: { cursor: id, models, ...targets },
+  };
+}
+
+function snapshot(id: string): DaemonUpdateEvent {
+  return {
+    id,
+    type: "snapshot",
+    data: { cursor: id, models: ["instance", "run", "workflow"] },
   };
 }
 

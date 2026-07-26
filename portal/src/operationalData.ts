@@ -143,7 +143,10 @@ function useCoalescedOperationalRefresh(
   return refresh;
 }
 
-export function useOperationalSnapshot(client: DaemonClient): OperationalSnapshotQuery {
+export function useOperationalSnapshot(
+  client: DaemonClient,
+  scope: { gaggle?: string; workflow?: string } = {},
+): OperationalSnapshotQuery {
   const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
   const { freshness, isFresh, subscribe } = useLiveData();
 
@@ -181,8 +184,8 @@ export function useOperationalSnapshot(client: DaemonClient): OperationalSnapsho
   const refresh = useCoalescedOperationalRefresh(performRefresh);
 
   useEffect(
-    () => subscribe(["instance", "workflow", "run"], refresh),
-    [refresh, subscribe],
+    () => subscribe(["instance", "workflow", "run"], refresh, scope),
+    [refresh, scope.gaggle, scope.workflow, subscribe],
   );
 
   useEffect(() => {

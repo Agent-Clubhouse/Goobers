@@ -129,6 +129,9 @@ export function useConfigurationWarnings(
     const unsubscribe = subscribe(
       [source.kind === "instance" ? "instance" : "workflow"],
       refreshWarnings,
+      source.kind === "workflow"
+        ? { gaggle: source.gaggle, workflow: source.workflow }
+        : undefined,
     );
     return () => {
       unsubscribe();

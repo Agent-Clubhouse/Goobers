@@ -76,7 +76,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
 
   useEffect(() => {
     setState({ status: "loading" });
-    const unsubscribe = subscribe(["run"], refresh);
+    const unsubscribe = subscribe(["run"], refresh, { runId });
     return () => {
       unsubscribe();
       request.current?.abort();
