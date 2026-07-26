@@ -44,7 +44,8 @@ export interface OperationalSnapshot {
   health: Health;
   instance: Instance;
   inventories: GaggleInventory[];
-  runs: RunSummary[];
+  // `${gaggle}/${workflow}` -> most recent terminal run, if any.
+  latestOutcomes: Map<string, RunSummary>;
 }
 
 export interface OperationalRunGroups {
@@ -206,11 +207,10 @@ export async function loadOperationalSnapshot(
   signal?: AbortSignal,
 ): Promise<OperationalSnapshot> {
   const options = { signal };
-  const [health, instance, gaggles, runs] = await Promise.all([
+  const [health, instance, gaggles] = await Promise.all([
     client.getHealth(options),
     client.getInstance(options),
     collectPages((cursor) => client.listGaggles({ cursor, limit: PAGE_LIMIT }, options)),
-    collectRuns(client, signal),
   ]);
 
   const inventories = await Promise.all(
@@ -227,21 +227,43 @@ export async function loadOperationalSnapshot(
     }),
   );
 
-  return { health, instance, inventories, runs: sortRuns(runs) };
+  const latestOutcomes = await loadLatestWorkflowOutcomes(client, inventories, options);
+
+  return { health, instance, inventories, latestOutcomes };
 }
 
-export function latestWorkflowOutcome(
-  runs: RunSummary[],
-  gaggle: string,
-  workflow: string,
-): RunSummary | undefined {
-  return runs.find(
-    (run) =>
-      run.gaggle === gaggle &&
-      run.workflow === workflow &&
-      run.phase !== "running" &&
-      run.terminal,
+// The Workflow inventory only ever renders one run per workflow — its most
+// recent terminal outcome — so it is fetched with one small, workflow-scoped
+// query per workflow rather than paging the daemon's entire run history
+// (which used to make this page O(all runs ever) and time out on busy
+// instances, the same bug class DASH-12/#1367 fixed for the Overview).
+const OUTCOME_LOOKBACK_LIMIT = 5;
+
+async function loadLatestWorkflowOutcomes(
+  client: DaemonClient,
+  inventories: GaggleInventory[],
+  options: { signal?: AbortSignal },
+): Promise<Map<string, RunSummary>> {
+  const identities = inventories.flatMap((inventory) =>
+    inventory.workflows.map((workflow) => workflow.identity),
   );
+
+  const outcomes = await Promise.all(
+    identities.map(async (identity) => {
+      const { runs } = await client.listRuns(
+        { gaggle: identity.gaggle, workflow: identity.name, limit: OUTCOME_LOOKBACK_LIMIT },
+        options,
+      );
+      const outcome = runs.find((run) => run.terminal && run.phase !== "running");
+      return outcome ? ([workflowKey(identity.gaggle, identity.name), outcome] as const) : null;
+    }),
+  );
+
+  return new Map(outcomes.filter((entry): entry is readonly [string, RunSummary] => entry !== null));
+}
+
+export function workflowKey(gaggle: string, workflow: string): string {
+  return `${gaggle}/${workflow}`;
 }
 
 async function collectPages<T>(
@@ -258,24 +280,6 @@ async function collectPages<T>(
       return items;
     }
     cursor = nextCursor(response.page.nextCursor, seenCursors);
-  }
-}
-
-async function collectRuns(client: DaemonClient, signal?: AbortSignal): Promise<RunSummary[]> {
-  const runs: RunSummary[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-
-  for (;;) {
-    const response = await client.listRuns(
-      { cursor, limit: PAGE_LIMIT },
-      { signal },
-    );
-    runs.push(...response.runs);
-    if (!response.nextCursor) {
-      return runs;
-    }
-    cursor = nextCursor(response.nextCursor, seenCursors);
   }
 }
 
@@ -300,8 +304,8 @@ function sortRuns(runs: RunSummary[]): RunSummary[] {
 //
 // The Overview reads only what it renders: pre-grouped, capped run lists plus
 // the small inventory it needs to label runs and detect an empty instance. It
-// deliberately does not reuse the full-history OperationalSnapshot above, which
-// remains the data source for the Workflows inventory page.
+// deliberately does not reuse the OperationalSnapshot above, which has its own
+// bounded, workflow-scoped outcome lookup for the Workflows inventory page.
 
 export interface OverviewInventory {
   gaggleCount: number;

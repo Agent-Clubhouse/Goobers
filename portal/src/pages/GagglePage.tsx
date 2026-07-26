@@ -1,9 +1,9 @@
 import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
-  latestWorkflowOutcome,
   type GaggleInventory,
   useOperationalSnapshot,
+  workflowKey,
 } from "../operationalData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
@@ -59,20 +59,20 @@ export function GagglePage({
   return (
     <GaggleTopology
       inventory={inventory}
+      latestOutcomes={query.state.data.latestOutcomes}
       navigate={navigate}
-      runs={query.state.data.runs}
     />
   );
 }
 
 function GaggleTopology({
   inventory,
+  latestOutcomes,
   navigate,
-  runs,
 }: {
   inventory: GaggleInventory;
+  latestOutcomes: Map<string, RunSummary>;
   navigate: Navigate;
-  runs: RunSummary[];
 }) {
   const { gaggle } = inventory;
 
@@ -135,10 +135,8 @@ function GaggleTopology({
               <WorkflowNode
                 gaggleDisplayName={gaggle.displayName}
                 key={workflow.identity.name}
-                latestOutcome={latestWorkflowOutcome(
-                  runs,
-                  workflow.identity.gaggle,
-                  workflow.identity.name,
+                latestOutcome={latestOutcomes.get(
+                  workflowKey(workflow.identity.gaggle, workflow.identity.name),
                 )}
                 workflow={workflow}
               />

@@ -150,30 +150,35 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
     unmount();
   });
 
+  // populatedDaemonFixtures() provisions 2 workflows (core/implementation,
+  // tools/implementation); the snapshot's latest-outcome lookup issues one
+  // workflow-scoped listRuns per workflow (see loadLatestWorkflowOutcomes).
+  const SNAPSHOT_LISTRUNS_CALLS = 2;
+
   it("keeps one snapshot request in flight and aborts the active replay on unmount", async () => {
     const client = new GatedRunsClient(populatedDaemonFixtures());
     const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
       wrapper: wrapper(client),
     });
 
-    await waitFor(() => expect(client.signals).toHaveLength(1));
-    const firstSignal = client.signals[0];
+    await waitFor(() => expect(client.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS));
+    const firstSignals = [...client.signals];
 
     act(() => {
       result.current.retry();
       result.current.retry();
     });
     await act(async () => Promise.resolve());
-    expect(client.signals).toHaveLength(1);
-    expect(firstSignal?.aborted).toBe(false);
+    expect(client.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS);
+    expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
 
-    act(() => client.release(1));
-    await waitFor(() => expect(client.signals).toHaveLength(2));
-    const replaySignal = client.signals[1];
+    act(() => client.release(SNAPSHOT_LISTRUNS_CALLS));
+    await waitFor(() => expect(client.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS * 2));
+    const replaySignals = client.signals.slice(SNAPSHOT_LISTRUNS_CALLS);
     unmount();
-    expect(replaySignal?.aborted).toBe(true);
-    expect(firstSignal?.aborted).toBe(false);
-    client.release(1);
+    expect(replaySignals.every((signal) => signal?.aborted === true)).toBe(true);
+    expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
+    client.release(SNAPSHOT_LISTRUNS_CALLS);
   });
 
   it("keeps replacement-client work out of a detached operation", async () => {
@@ -187,25 +192,29 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       },
     );
 
-    await waitFor(() => expect(firstClient.signals).toHaveLength(1));
-    const detachedSignal = firstClient.signals[0];
+    await waitFor(() => expect(firstClient.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS));
+    const detachedSignals = [...firstClient.signals];
 
     rerender({ client: replacementClient });
-    expect(detachedSignal?.aborted).toBe(true);
+    expect(detachedSignals.every((signal) => signal?.aborted === true)).toBe(true);
     act(() => {
       result.current.retry();
       result.current.retry();
     });
-    await waitFor(() => expect(replacementClient.signals).toHaveLength(1));
+    await waitFor(() =>
+      expect(replacementClient.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS),
+    );
 
-    act(() => firstClient.release(1));
+    act(() => firstClient.release(SNAPSHOT_LISTRUNS_CALLS));
     await settle();
-    expect(replacementClient.signals).toHaveLength(1);
+    expect(replacementClient.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS);
 
-    act(() => replacementClient.release(1));
-    await waitFor(() => expect(replacementClient.signals).toHaveLength(2));
+    act(() => replacementClient.release(SNAPSHOT_LISTRUNS_CALLS));
+    await waitFor(() =>
+      expect(replacementClient.signals).toHaveLength(SNAPSHOT_LISTRUNS_CALLS * 2),
+    );
     unmount();
-    replacementClient.release(1);
+    replacementClient.release(SNAPSHOT_LISTRUNS_CALLS);
   });
 });
 

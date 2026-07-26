@@ -1,10 +1,10 @@
 import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
-  latestWorkflowOutcome,
   type GaggleInventory,
   type OperationalSnapshot,
   useOperationalSnapshot,
+  workflowKey,
 } from "../operationalData";
 import { routeHash } from "../routing";
 import { Icon } from "../ui/Icon";
@@ -82,7 +82,7 @@ function WorkflowInventory({
           <GaggleSection
             inventory={inventory}
             key={inventory.gaggle.name}
-            runs={snapshot.runs}
+            latestOutcomes={snapshot.latestOutcomes}
           />
         ))
       )}
@@ -92,10 +92,10 @@ function WorkflowInventory({
 
 function GaggleSection({
   inventory,
-  runs,
+  latestOutcomes,
 }: {
   inventory: GaggleInventory;
-  runs: RunSummary[];
+  latestOutcomes: Map<string, RunSummary>;
 }) {
   const { gaggle } = inventory;
   const headingId = `gaggle-${gaggle.name}`;
@@ -152,10 +152,8 @@ function GaggleSection({
             gridClassName="workflow-grid"
           >
             {inventory.workflows.map((workflow) => {
-              const outcome = latestWorkflowOutcome(
-                runs,
-                workflow.identity.gaggle,
-                workflow.identity.name,
+              const outcome = latestOutcomes.get(
+                workflowKey(workflow.identity.gaggle, workflow.identity.name),
               );
               return (
                 <DataRow
