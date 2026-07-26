@@ -64,6 +64,7 @@ const inReviewStatusLabel = "goobers/status:in-review"
 type backlogClaimLedger interface {
 	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
+	ForRunAll(runID string) []localscheduler.ClaimEntry
 }
 
 var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
@@ -541,16 +542,8 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// Claim up to maxItems eligible items under this run (#236): curation runs a
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
-	var claimed []providers.WorkItem
+	var claimed, newlyClaimed []providers.WorkItem
 	claimResultCommitted := false
-	defer func() {
-		if claimResultCommitted || len(claimed) == 0 {
-			return
-		}
-		if releaseErr := releaseClaimsForRun(l, instanceLog, runID); releaseErr != nil {
-			pf(stderr, "error: roll back claims after backlog query failure: %v\n", releaseErr)
-		}
-	}()
 
 	gaggle := providerGaggle()
 	if beforeClaimTransaction != nil {
@@ -558,6 +551,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	}
 	nextClaimIndex := 0
 	claimSetPrepared := false
+	var preexistingClaimIDs map[string]struct{}
 	acquireClaims := func() error {
 		return withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
 			if !claimSetPrepared {
@@ -608,6 +602,20 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			if lerr != nil {
 				return fmt.Errorf("open claim ledger: %w", lerr)
 			}
+			if preexistingClaimIDs == nil {
+				preexistingClaimIDs = make(map[string]struct{})
+				for _, entry := range ledger.ForRunAll(runID) {
+					if gaggle == "" {
+						if entry.Gaggle == "" && entry.Provider == "" {
+							preexistingClaimIDs[entry.ItemID] = struct{}{}
+						}
+						continue
+					}
+					if entry.Gaggle == gaggle && entry.Provider == string(repo.Provider) {
+						preexistingClaimIDs[entry.ExternalID] = struct{}{}
+					}
+				}
+			}
 			for nextClaimIndex < len(eligible) && len(claimed) < maxItems {
 				item := eligible[nextClaimIndex]
 				nextClaimIndex++
@@ -627,6 +635,9 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				}
 				if ok {
 					claimed = append(claimed, item)
+					if _, preexisting := preexistingClaimIDs[item.ID]; !preexisting {
+						newlyClaimed = append(newlyClaimed, item)
+					}
 				}
 			}
 			return nil
@@ -651,6 +662,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			}, runID)
 		})
 	}
+	defer func() {
+		if claimResultCommitted {
+			return
+		}
+		for _, item := range newlyClaimed {
+			if releaseErr := releaseClaim(item); releaseErr != nil {
+				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
+			}
+		}
+	}()
 
 	malformedReadyItems := 0
 	for !claimSetPrepared || (len(claimed) < maxItems && nextClaimIndex < len(eligible)) {
@@ -717,16 +738,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 	}
 
-	// Provider-visible marker per claimed item: best-effort mirror of the
-	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
-	// decision, for human visibility on the provider. A failure here does not
-	// undo the ledger claim — the ledger, not this marker, is the source of truth.
-	for i := range claimed {
-		if _, err := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed[i].ID, RunID: runID}); err != nil {
-			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
-		}
-	}
-
 	// Result-file shape follows the workflow's cardinality: a single-item run
 	// (maxItems 1, implementation) writes the claimed WorkItem as an object so
 	// its scalar fields (id/title) merge into the stage's journaled Outputs
@@ -752,6 +763,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
+	}
+
+	// Provider-visible marker per claimed item: best-effort mirror of the
+	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
+	// decision, for human visibility on the provider. A failure here does not
+	// undo the ledger claim — the ledger, not this marker, is the source of truth.
+	for i := range claimed {
+		if _, err := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed[i].ID, RunID: runID}); err != nil {
+			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
+		}
 	}
 
 	if len(claimed) == 1 {
