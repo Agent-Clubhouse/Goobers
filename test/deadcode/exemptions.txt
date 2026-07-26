@@ -19,6 +19,7 @@ github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature h
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/internal/workflow.IsReservedTarget # Terminal-vs-branch target distinction retained for shipped-workflow routing assertions (#929); production callers use IsReservedAnyTarget.
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
@@ -120,6 +121,8 @@ github.com/goobers/goobers/internal/journal.ConformanceView # Cross-runner confo
 github.com/goobers/goobers/internal/journal.projectNormative # Cross-runner conformance helper retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Cross-runner conformance helper retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.NormativeEvent.String # Cross-runner conformance formatter retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.encodeCompleteness # Cross-runner conformance helper (branch completeness record) retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/localscheduler.ClaimLedger.MigrateLegacyNamespace # Claim-ledger migration seam retained for upgrades from legacy instances.

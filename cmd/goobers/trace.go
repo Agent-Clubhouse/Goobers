@@ -177,6 +177,12 @@ func runTraceWithFactories(
 		// telemetry-disabled, missing, or unreadable rollups.
 		spans = []rollup.SpanSummary{}
 	}
+	telemetryAttempts, err := reads.RunTelemetryStageAttempts(ctx, runID)
+	if err != nil {
+		// Same best-effort contract as spans: the requested model is
+		// informational enrichment, never a reason to fail the trace.
+		telemetryAttempts = []rollup.StageAttempt{}
+	}
 	traceEscalationDetail, err := reads.RunEscalation(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: escalation summary: %v\n", err)
@@ -195,7 +201,7 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
-	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, now)
+	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
@@ -206,6 +212,7 @@ func runTraceWithFactories(
 			Timeline:      timeline,
 			TerminalCause: terminal,
 			Escalation:    escalation,
+			Outcome:       detail.Outcome,
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 		}
@@ -236,6 +243,9 @@ func runTraceWithFactories(
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
 		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
+	}
+	if detail.Outcome != nil && detail.Outcome.Gate != "" {
+		pf(stdout, "outcome:  gate=%s verdict=%s target=%s\n", detail.Outcome.Gate, detail.Outcome.Verdict, detail.Outcome.Target)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -337,15 +347,16 @@ func traceEventsTerminal(events []readservice.RunEvent) bool {
 }
 
 type traceJSONResult struct {
-	Identity      journal.RunIdentity  `json:"identity"`
-	Phase         journal.RunPhase     `json:"phase"`
-	State         *journal.State       `json:"state,omitempty"`
-	Repasses      int                  `json:"repasses"`
-	Timeline      []traceTimelineStage `json:"timeline"`
-	TerminalCause *traceTerminalCause  `json:"terminalCause,omitempty"`
-	Escalation    *escalationSummary   `json:"escalation,omitempty"`
-	Events        []traceJSONEvent     `json:"events"`
-	Spans         []rollup.SpanSummary `json:"spans"`
+	Identity      journal.RunIdentity     `json:"identity"`
+	Phase         journal.RunPhase        `json:"phase"`
+	State         *journal.State          `json:"state,omitempty"`
+	Repasses      int                     `json:"repasses"`
+	Timeline      []traceTimelineStage    `json:"timeline"`
+	TerminalCause *traceTerminalCause     `json:"terminalCause,omitempty"`
+	Escalation    *escalationSummary      `json:"escalation,omitempty"`
+	Outcome       *readservice.RunOutcome `json:"outcome,omitempty"`
+	Events        []traceJSONEvent        `json:"events"`
+	Spans         []rollup.SpanSummary    `json:"spans"`
 }
 
 type traceJSONEvent struct {

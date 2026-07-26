@@ -1,6 +1,9 @@
 package journal
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // NormativeEvent is the cross-runner comparable projection of an Event: the
 // full conformance-normative field set (§3.3), with excluded fields (Time,
@@ -35,6 +38,15 @@ type NormativeEvent struct {
 	WorkflowDigest      string
 	RefDigest           string
 	Name                string
+
+	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
+	// the branch completeness record rather than a slice, because
+	// NormativeEvent must stay directly ==-comparable; see
+	// encodeCompleteness for the (stable, declaration-ordered) format.
+	Parallel     string
+	BranchName   string
+	BranchStatus BranchStatus
+	Completeness string
 
 	// ExternalRef* project ExternalRef's normative identity (Provider, Kind,
 	// ID); URL is dropped. All empty when the source event has no ExternalRef.
@@ -80,6 +92,9 @@ func projectNormative(e Event) NormativeEvent {
 		Gate: e.Gate, Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
+		Parallel: e.Parallel, BranchName: e.BranchName,
+		BranchStatus: e.BranchStatus,
+		Completeness: encodeCompleteness(e.Completeness),
 	}
 	if e.Ref != nil && !isContextManifestArtifact(e) {
 		ne.RefDigest = e.Ref.Digest
@@ -102,6 +117,41 @@ func projectNormative(e Event) NormativeEvent {
 	return ne
 }
 
+// encodeCompleteness flattens a branch completeness record into a stable
+// string. Entries are emitted in the record's own (declaration) order — NOT
+// sorted — because declaration order is itself normative: it is what assigns
+// branch ids.
+func encodeCompleteness(record []BranchOutcome) string {
+	if len(record) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(record))
+	for _, outcome := range record {
+		parts = append(parts, fmt.Sprintf("%d:%s:%s:%d", outcome.Branch, outcome.Name, outcome.Status, outcome.Artifacts))
+	}
+	return strings.Join(parts, ",")
+}
+
+// ConformanceBranches groups a normative view by branch id, preserving
+// within-branch order.
+//
+// This is the comparison surface for a run that forks. Absolute `seq` is NOT
+// comparable across distinct non-zero branches (ARCHITECTURE §3.3): branch
+// interleaving is a scheduling artefact, so two conformant runners may
+// interleave differently and still be equivalent. Within a branch — and for
+// the root branch, and for every run that never forks — ordering is total and
+// fully normative, which is exactly what this grouping preserves.
+func ConformanceBranches(events []Event) map[int][]NormativeEvent {
+	out := map[int][]NormativeEvent{}
+	for _, e := range events {
+		if !e.IsConformanceNormative() {
+			continue
+		}
+		out[e.Branch] = append(out[e.Branch], projectNormative(e))
+	}
+	return out
+}
+
 func isContextManifestArtifact(e Event) bool {
 	return e.Type == EventArtifactRecorded &&
 		e.Stage != "" &&
@@ -116,10 +166,11 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|ext=%s|err=%s|redact=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.InstructionAddendum, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ext, ne.ErrorCode, redaction,
+		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness,
 	)
 }
 

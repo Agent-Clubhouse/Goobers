@@ -116,6 +116,138 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+func TestLabelPredicatesValidatedAtConfigLoad(t *testing.T) {
+	valid := `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`
+	tests := []struct {
+		name              string
+		gaggleExpression  string
+		triggerExpression string
+		taskExpression    string
+		taskExpressionSet bool
+		want              string
+	}{
+		{
+			name:              "valid grouped expressions",
+			gaggleExpression:  valid,
+			triggerExpression: valid,
+			taskExpression:    valid,
+		},
+		{
+			name:             "invalid gaggle expression",
+			gaggleExpression: `labels.size() > 0`,
+			want:             "spec.backlog.labelPredicate is invalid",
+		},
+		{
+			name:              "invalid trigger expression",
+			triggerExpression: `labels.exists(label, label == "size:s")`,
+			want:              "spec.triggers[0].labelPredicate is invalid",
+		},
+		{
+			name:           "invalid backlog-query input",
+			taskExpression: `"size:s" in`,
+			want:           "spec.tasks[0].inputs.labelPredicate is invalid",
+		},
+		{
+			name:             "blank gaggle expression",
+			gaggleExpression: " \t",
+			want:             "spec.backlog.labelPredicate is invalid",
+		},
+		{
+			name:              "blank trigger expression",
+			triggerExpression: " \t",
+			want:              "spec.triggers[0].labelPredicate is invalid",
+		},
+		{
+			name:           "blank backlog-query input",
+			taskExpression: " \t",
+			want:           "spec.tasks[0].inputs.labelPredicate is invalid",
+		},
+		{
+			name:              "empty backlog-query input",
+			taskExpressionSet: true,
+			want:              "spec.tasks[0].inputs.labelPredicate is invalid",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			field := func(indent, name, value string, includeEmpty bool) string {
+				if value == "" && !includeEmpty {
+					return ""
+				}
+				return fmt.Sprintf("%s%s: %q\n", indent, name, value)
+			}
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: local
+spec:
+  instance:
+    name: local
+    environment: dev
+  gaggles: [acme]
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+    labels: [trusted]
+%s  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: select
+spec:
+  gaggle: acme
+  triggers:
+    - type: backlog-item
+      selector:
+        area:runner: "true"
+%s  start: query
+  tasks:
+    - name: query
+      type: deterministic
+      goal: Query matching backlog items.
+      run:
+        command: ["goobers", "backlog-query"]
+      inputs:
+        requireLabels: area:runner
+        excludeLabels: goobers:claimed
+%s`, field("    ", "labelPredicate", tt.gaggleExpression, false),
+				field("      ", "labelPredicate", tt.triggerExpression, false),
+				field("        ", "labelPredicate", tt.taskExpression, tt.taskExpressionSet))
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			issues := joinIssues(report)
+			if tt.want == "" {
+				if report.HasErrors() {
+					t.Fatalf("valid predicates reported errors:\n%s", issues)
+				}
+				return
+			}
+			if !report.HasErrors() || !strings.Contains(issues, tt.want) {
+				t.Fatalf("issues = %q, want error containing %q", issues, tt.want)
+			}
+		})
+	}
+}
+
 // TestCanonicalConfigIsGAWithoutPreviewOptIn is the #1196 regression: the
 // canonical DSL surface that guided-init scaffolds and /config-examples model
 // must validate with NO VER002 preview findings even without the preview

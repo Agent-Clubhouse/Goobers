@@ -10,6 +10,7 @@
 # the new checked-in default, not a live-only tuning knob.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "1.4"
 metadata:
   name: merge-review
 spec:
@@ -73,17 +74,19 @@ spec:
       next: pr-select
 
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI implementation or docs-updater PR
-    # not already carrying a merge-review label. The selected PR is leased in
-    # the same claim namespace gather-pr-context uses, excluding concurrent
-    # review/remediation of one PR.
+    # PRs): one open, non-draft, green-CI implementation, docs-updater, or
+    # low-risk Tutor PR not already carrying a merge-review label. pr-select
+    # classifies Tutor diffs and excludes structure/skill/validation changes;
+    # those remain manual-only even if every ordinary merge gate passes.
+    # The selected PR is leased in the same claim namespace
+    # gather-pr-context uses, excluding concurrent review/remediation of one PR.
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.
       run:
         command: ["goobers", "pr-select"]
       inputs:
-        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -136,7 +139,12 @@ spec:
         # reviewer's classification. Empty string when nothing overlaps (same
         # always-emitted, possibly-empty shape as reviewDigest above).
         - overlappingSiblingsCsv
-      next: review
+        # scopeGateParked (#1313): whether this PR is currently parked before
+        # review for exceeding the size threshold — scope-gate branches on
+        # this directly, so a stale/missing value here would silently let an
+        # oversized diff reach review.
+        - scopeGateParked
+      next: scope-gate
 
     - name: apply-verdict
       type: deterministic
@@ -392,6 +400,26 @@ spec:
       # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:
+    # Scope gate (#1313): escalates the advisory goobers:scope-drift flag
+    # (#1111) into an actual merge-review gate. gather-sibling-context
+    # already reconciled the goobers:scope-gate label/comment and reports
+    # the outcome as scopeGateParked — this gate just routes on it:
+    # not-parked proceeds to the ordinary review path unchanged; parked
+    # skips review entirely this cycle (the label/comment already explains
+    # why, and the run completes cleanly — merge-review re-evaluates fresh
+    # next cycle, self-healing the moment the diff shrinks or an operator
+    # acks it).
+    - name: scope-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: scopeGateParked
+          equals: "false"
+      branches:
+        pass: review
+        fail: ""
+
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
     # explicit reuse-over-new-goober call), evaluating gather-sibling-
     # context's own Outputs (the selected PR's identity/SHAs + every

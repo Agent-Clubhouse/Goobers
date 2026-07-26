@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS AGENT KIT CHECK" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers agent-kit check \- report agent toolkit version and drift
+.SH SYNOPSIS
+\fBgoobers agent-kit check\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers agent-kit check [path]
+
+Compare the installed manifest and product-owned file digests with the toolkit
+bundled in this binary. Report the exact bundle and binary release identities,
+modified or missing owned files, and whether an explicit update is available.
+
+Exit codes: 0 = current, 1 = drift, missing manifest, available update, or
+inspection error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers agent-kit check ./config-repo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

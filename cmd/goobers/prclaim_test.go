@@ -30,7 +30,7 @@ func TestPRSelectConcurrentRunsExactlyOneClaimsPR(t *testing.T) {
 		go func(runID string) {
 			defer wg.Done()
 			<-start
-			selected, err := claimPullRequest(root, eligible, runID, "merge-review", time.Hour)
+			selected, err := claimPullRequestInOrder(root, eligible, runID, "merge-review", time.Hour)
 			outcomes <- outcome{runID: runID, selected: selected, err: err}
 		}(runID)
 	}
@@ -210,7 +210,7 @@ func TestPullRequestClaimExpiredLeaseIsSelectable(t *testing.T) {
 		t.Fatalf("seed expired claim: ok = %v, err = %v", ok, err)
 	}
 
-	selected, err := claimPullRequest(
+	selected, err := claimPullRequestInOrder(
 		root,
 		[]providers.PullRequestSummary{{Number: 79}},
 		"new-run",
