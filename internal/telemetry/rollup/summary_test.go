@@ -270,6 +270,39 @@ func TestTimeToFirstPRRejectsPROpenBeforeInitCompletion(t *testing.T) {
 	assertTimeToFirstPR(t, db, initCompletedAt, initCompletedAt.Add(5*time.Minute+time.Second))
 }
 
+func TestEarlierInitAnchorSelectsRetainedPROpen(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	earlierInit := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
+	laterInit := earlierInit.Add(2 * time.Hour)
+	firstPROpenAt := earlierInit.Add(time.Hour + time.Second)
+
+	db := openTestDB(t, tmp)
+	if err := db.recordTimeToFirstPR(laterInit, time.Time{}); err != nil {
+		t.Fatalf("record later init: %v", err)
+	}
+	seedSummaryRun(
+		t,
+		runsDir,
+		fixtureRunID,
+		"implement",
+		"completed",
+		firstPROpenAt.Add(-time.Second),
+		0,
+		summaryMutation{kind: "pr", operation: "open"},
+	)
+	if err := db.IngestRun(filepath.Join(runsDir, fixtureRunID)); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	writeInitCompletedLog(t, schedulerDir, earlierInit)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
+	assertTimeToFirstPR(t, db, earlierInit, firstPROpenAt)
+}
+
 func TestRebuildSelectsFirstPostInitPROpen(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")

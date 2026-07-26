@@ -35,7 +35,9 @@ Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
 implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
 `telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
 gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
-pieces are left untouched. A fresh successful initialization records
+pieces are left untouched.
+
+A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
 
 ### Onboarding-only template

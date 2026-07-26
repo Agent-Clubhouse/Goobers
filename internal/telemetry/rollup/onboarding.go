@@ -65,6 +65,7 @@ func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) e
 	var retainedFirstPR time.Time
 	if !initCompletedAt.IsZero() &&
 		(currentInit.IsZero() ||
+			!initCompletedAt.Equal(currentInit) ||
 			(!currentFirstPR.IsZero() && currentFirstPR.Before(initCompletedAt))) {
 		retainedFirstPR, err = firstRetainedPROpenAt(tx, initCompletedAt)
 		if err != nil {
