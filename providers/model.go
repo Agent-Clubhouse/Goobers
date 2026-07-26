@@ -397,12 +397,13 @@ type PullRequestPollRequest struct {
 // against a previously-computed verdict's SHA-pin before acting on it — never
 // trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number    int    `json:"number"`
-	Title     string `json:"title,omitempty"`
-	State     string `json:"state"`
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable,omitempty"`
-	Draft     bool   `json:"draft"`
+	Number    int        `json:"number"`
+	Title     string     `json:"title,omitempty"`
+	State     string     `json:"state"`
+	Merged    bool       `json:"merged"`
+	MergedAt  *time.Time `json:"mergedAt,omitempty"`
+	Mergeable *bool      `json:"mergeable,omitempty"`
+	Draft     bool       `json:"draft"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete

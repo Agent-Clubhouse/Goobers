@@ -39,8 +39,25 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
-  start: gather-signals
+  start: verify-live-holdouts
   tasks:
+    # TUT-A7: findings behind structure/skill/validation changes remain
+    # durable across the PR -> CD promotion boundary. Before mining another
+    # finding, reassess each pending change against the exact expected
+    # WorkflowDigest + GooberDigest transition. Only a version-segmented
+    # `helped` verdict closes it.
+    - name: verify-live-holdouts
+      type: deterministic
+      goal: Verify mandatory post-promotion Tutor holdouts against their exact EffectiveVersion cohorts.
+      run:
+        command: ["goobers", "telemetry-query", "--format", "tutor-live-verification", "--window", "168h"]
+      inputs:
+        resultFile: "tutor-live-verification.json"
+      capabilities:
+        - telemetry:read
+        - github:pr:write
+      next: gather-signals
+
     # Built-in provider-chain style stage: queries the telemetry rollup for
     # cross-run aggregates (T2, #102) and emits the versioned
     # candidate-findings artifact (#148's schema) for the analyst to
@@ -157,6 +174,10 @@ spec:
         runIdFooter: "true"
         title: "tutor: config improvement"
         resultFile: "pr-result.json"
+        # Persist required structure/skill/validation findings outside this
+        # run so later scheduled passes can verify them after CD promotion.
+        recordLiveVerification: "true"
+        tutorConfigSource: "selfhost"
         # Action-root write-boundary (#104/T4, activated here per #223;
         # widened to skill-body authoring by TUT-A5/#1217): every file this
         # run's branch changed (relative to base) must resolve into the SAME

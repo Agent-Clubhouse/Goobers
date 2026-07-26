@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -444,6 +445,7 @@ func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var tutor apiv1.Workflow
 	if err := yaml.Unmarshal(raw, &tutor); err != nil {
 		t.Fatal(err)
@@ -480,4 +482,39 @@ func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 		return
 	}
 	t.Fatal("tutor workflow has no open-pr task")
+}
+
+func TestSelfhostTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+	if tutor.Spec.Start != "verify-live-holdouts" {
+		t.Fatalf("start = %q, want verify-live-holdouts", tutor.Spec.Start)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(tutor.Spec.Tasks))
+	for _, task := range tutor.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	verify := tasks["verify-live-holdouts"]
+	if verify.Run == nil || strings.Join(verify.Run.Command, " ") !=
+		"goobers telemetry-query --format tutor-live-verification --window 168h" {
+		t.Fatalf("verify-live-holdouts run = %+v", verify.Run)
+	}
+	if verify.Inputs["resultFile"] != "tutor-live-verification.json" || verify.Next != "gather-signals" {
+		t.Fatalf("verify-live-holdouts = %+v", verify)
+	}
+	if !slices.Contains(verify.Capabilities, "github:pr:write") {
+		t.Fatalf("verify-live-holdouts capabilities = %v, want GitHub PR polling grant", verify.Capabilities)
+	}
+	openPR := tasks["open-pr"]
+	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "selfhost" {
+		t.Fatalf("open-pr live-verification inputs = %v", openPR.Inputs)
+	}
 }

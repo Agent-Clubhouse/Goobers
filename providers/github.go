@@ -810,6 +810,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Title:            pr.Title,
 		State:            pr.State,
 		Merged:           pr.Merged,
+		MergedAt:         pr.MergedAt,
 		Mergeable:        pr.Mergeable,
 		MergeableState:   pr.MergeableState,
 		Draft:            pr.Draft,

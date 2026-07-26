@@ -206,7 +206,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		diagnostics.add(file, "/spec/instructions", "GBO004", string(validate.Error), err.Error())
 		return 1
 	}
-	if _, _, err := compiledMachinesWithGooberDigests(set, goobers, instructions); err != nil {
+	if _, _, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions); err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		file, path, code := compiledConfigDiagnostic(root, configDir, set, err)
 		diagnostics.add(file, path, code, string(validate.Error), err.Error())

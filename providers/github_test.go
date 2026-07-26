@@ -2228,9 +2228,11 @@ func TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress(t *testing.T) {
 // repository because a fork PR's branch does not live in the base repository.
 func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	mux := http.NewServeMux()
+	mergedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
-			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
+			"number": 9, "state": "closed", "merged": true, "merged_at": mergedAt.Format(time.RFC3339),
+			"draft": true, "html_url": "https://github.com/acme/app/pull/9",
 			"title": "Improve merge history",
 			"body":  "Implements the thing.\n\nFixes #42",
 			"head": map[string]interface{}{
@@ -2270,6 +2272,9 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	}
 	if result.Title != "Improve merge history" {
 		t.Fatalf("Title = %q, want Improve merge history", result.Title)
+	}
+	if result.MergedAt == nil || !result.MergedAt.Equal(mergedAt) {
+		t.Fatalf("MergedAt = %v, want %s", result.MergedAt, mergedAt)
 	}
 	if result.HeadSHA != "headsha123" {
 		t.Fatalf("HeadSHA = %q, want headsha123", result.HeadSHA)
