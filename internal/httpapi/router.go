@@ -1,5 +1,6 @@
-// Package httpapi exposes the versioned, read-only loopback HTTP adapter over
-// readservice.Reader.
+// Package httpapi exposes the versioned loopback HTTP adapter: read routes
+// over readservice.Reader, plus the tier-2 human-intervention mutation routes
+// (approve/override/rerun — HITL-7/#469).
 package httpapi
 
 import (
@@ -339,6 +340,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
+	registerMutationRoutes(router)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
