@@ -60,6 +60,13 @@ const clientRoutes = {
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
   events: apiRoutes.events,
+  // Tier-2 human-intervention stub routes (HITL-7/#469). No DaemonClient
+  // method calls these yet — the real approve/override/rerun UI wiring is
+  // #466/#468's scope — but they must appear here for this exhaustiveness
+  // check to keep passing as the contract grows.
+  approveStage: apiRoutes.approveStage,
+  overrideStage: apiRoutes.overrideStage,
+  rerunStage: apiRoutes.rerunStage,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
