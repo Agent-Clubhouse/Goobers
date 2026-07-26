@@ -192,6 +192,79 @@ func TestTimeToFirstPRUsesInitCompletionAndOpenedRef(t *testing.T) {
 	}
 }
 
+func TestTimeToFirstPRIgnoresPersistedPROpenBeforeLegacyInitCompletion(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	initCompletedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	legacy, legacyClock := createFixtureRun(
+		t, layout, machine, "legacy-run", "implementation", "goobers",
+		initCompletedAt.Add(-time.Hour), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	legacyClock.now = initCompletedAt.Add(-30 * time.Minute)
+	if err := legacy.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "7"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacyDir := legacy.Dir()
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(legacyDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	writeInitCompleted(t, layout, initCompletedAt)
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		Telemetry:   db,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err := service.TimeToFirstPR(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.InitCompletedAt == nil || !metric.InitCompletedAt.Equal(initCompletedAt) ||
+		metric.FirstPROpenAt != nil || metric.Milliseconds != nil {
+		t.Fatalf("TimeToFirstPR after legacy no-op init = %#v", metric)
+	}
+
+	current, currentClock := createFixtureRun(
+		t, layout, machine, "current-run", "implementation", "goobers",
+		initCompletedAt.Add(time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	currentClock.now = initCompletedAt.Add(5 * time.Minute)
+	if err := current.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "8"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err = service.TimeToFirstPR(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(currentClock.now) ||
+		metric.Milliseconds == nil || *metric.Milliseconds != (5*time.Minute).Milliseconds() {
+		t.Fatalf("TimeToFirstPR after post-init PR = %#v", metric)
+	}
+}
+
 func TestTimeToFirstPRFailsClosedOnUnreadableJournal(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)

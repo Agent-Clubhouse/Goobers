@@ -116,12 +116,12 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
 
 | JSON field | Unit | Journal source | Definition |
 |---|---|---|---|
-| `timeToFirstPR.milliseconds` | milliseconds | Earliest `scheduler/events.jsonl` `init.completed` event; earliest run-journal `ref.touched` event with `externalRef.kind: pr` and `runner.operation: open` | Lifetime first-run success interval from successful `goobers init` completion to the instance's first autonomously opened pull request. The field is absent until both endpoints exist. Scheduler ticks and completed no-work runs do not satisfy the PR endpoint. |
+| `timeToFirstPR.milliseconds` | milliseconds | Earliest `scheduler/events.jsonl` `init.completed` event; earliest run-journal `ref.touched` event at or after that anchor with `externalRef.kind: pr` and `runner.operation: open` | Lifetime first-run success interval from successful `goobers init` completion to the instance's first autonomously opened pull request. The field is absent until both chronologically valid endpoints exist. Scheduler ticks and completed no-work runs do not satisfy the PR endpoint. |
 
 `timeToFirstPR.anchor` is the stable value `initCompletedAt`;
 `timeToFirstPR.initCompletedAt` and `timeToFirstPR.firstPROpenAt` carry the two
 source timestamps for manual journal comparison. Read the first from
-`scheduler/events.jsonl` and the second from the earliest matching run
+`scheduler/events.jsonl` and the second from the earliest matching post-init run
 `events.jsonl`; subtracting them must equal `timeToFirstPR.milliseconds`. The
 structured object appears in `goobers status --json` and `goobers stats --json`;
 the SQLite rollup derives the same values from `scheduler_events` and

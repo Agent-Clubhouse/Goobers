@@ -163,6 +163,67 @@ func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	}
 }
 
+func TestStatusIgnoresPRBeforeLegacyNoOpInitCompletion(t *testing.T) {
+	previousStatusPRLabelCounts := loadStatusPRLabelCounts
+	loadStatusPRLabelCounts = func(context.Context, *instance.Config) (statusPRLabelCounts, error) {
+		return statusPRLabelCounts{}, nil
+	}
+	t.Cleanup(func() { loadStatusPRLabelCounts = previousStatusPRLabelCounts })
+
+	root := filepath.Join(t.TempDir(), "legacy-instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	preInitAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:     "legacy-pr-run",
+		Workflow:  "default-implement",
+		Gaggle:    "example",
+		StartedAt: preInitAt.Add(-time.Minute),
+	}, nil, journal.WithClock(func() time.Time { return preInitAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "init", root)
+	if code != 0 || !strings.Contains(stdout, "nothing to do") {
+		t.Fatalf("legacy no-op init: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "First-run success: waiting for first PR") ||
+		strings.Contains(stdout, "First-run success: first PR in") {
+		t.Fatalf("status = %q, want pre-init PR excluded", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code=%d stderr=%q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if got.TimeToFirstPR == nil ||
+		got.TimeToFirstPR.InitCompletedAt == nil ||
+		got.TimeToFirstPR.FirstPROpenAt != nil ||
+		got.TimeToFirstPR.Milliseconds != nil {
+		t.Fatalf("timeToFirstPR = %#v, want init anchor without a PR endpoint", got.TimeToFirstPR)
+	}
+}
+
 func TestStatusKeepsRunsWhenTimeToFirstPRJournalIsUnreadable(t *testing.T) {
 	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)

@@ -63,6 +63,10 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 			initCompletedAt = event.Time
 		}
 	}
+	if initCompletedAt.IsZero() ||
+		(!firstPROpenAt.IsZero() && firstPROpenAt.Before(initCompletedAt)) {
+		firstPROpenAt = time.Time{}
+	}
 	runIDs, err := s.RunIDs(ctx)
 	if err != nil {
 		return telemetry.TimeToFirstPRMetric{}, err
@@ -87,6 +91,9 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 				event.ExternalRef.Kind != "pr" ||
 				operation != "open" ||
 				event.Time.IsZero() {
+				continue
+			}
+			if initCompletedAt.IsZero() || event.Time.Before(initCompletedAt) {
 				continue
 			}
 			if firstPROpenAt.IsZero() || event.Time.Before(firstPROpenAt) {

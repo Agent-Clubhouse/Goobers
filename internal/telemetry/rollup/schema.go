@@ -424,15 +424,46 @@ INSERT OR IGNORE INTO first_success_milestones (id, init_completed_at, first_pr_
 VALUES (
 	1,
 	(
-		SELECT MIN(occurred_at)
+		SELECT occurred_at
 		FROM scheduler_events
 		WHERE type = 'init.completed'
+			AND julianday(occurred_at) IS NOT NULL
+		ORDER BY julianday(occurred_at), occurred_at
+		LIMIT 1
 	),
 	(
-		SELECT MIN(occurred_at)
+		SELECT occurred_at
 		FROM provider_mutations
 		WHERE kind = 'pr' AND operation = 'open'
+			AND julianday(occurred_at) >= (
+				SELECT MIN(julianday(occurred_at))
+				FROM scheduler_events
+				WHERE type = 'init.completed'
+			)
+		ORDER BY julianday(occurred_at), occurred_at
+		LIMIT 1
 	)
 );
+`,
+	// v15 (issue #1358): early versions of the first-success milestone selected
+	// init and PR timestamps independently. Replace a pre-init endpoint with the
+	// earliest retained PR open that follows the anchor, or clear it when
+	// retention has removed every valid source event.
+	`
+UPDATE first_success_milestones
+SET first_pr_open_at = (
+	SELECT occurred_at
+	FROM provider_mutations
+	WHERE kind = 'pr'
+		AND operation = 'open'
+		AND julianday(occurred_at) >= julianday(first_success_milestones.init_completed_at)
+	ORDER BY julianday(occurred_at), occurred_at
+	LIMIT 1
+)
+WHERE first_pr_open_at IS NOT NULL
+	AND (
+		init_completed_at IS NULL
+		OR julianday(first_pr_open_at) < julianday(init_completed_at)
+	);
 `,
 }

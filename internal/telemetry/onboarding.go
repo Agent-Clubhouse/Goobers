@@ -15,23 +15,21 @@ type TimeToFirstPRMetric struct {
 	Milliseconds    *int64     `json:"milliseconds,omitempty"`
 }
 
-// NewTimeToFirstPRMetric builds the structured metric while preserving absent
-// timestamps as absent rather than reporting a misleading zero.
+// NewTimeToFirstPRMetric builds the structured metric while omitting an absent
+// anchor or any PR endpoint that predates it rather than reporting a misleading zero.
 func NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt time.Time) TimeToFirstPRMetric {
 	metric := TimeToFirstPRMetric{Anchor: TimeToFirstPRAnchor}
 	if !initCompletedAt.IsZero() {
 		initCompletedAt = initCompletedAt.UTC()
 		metric.InitCompletedAt = &initCompletedAt
 	}
-	if !firstPROpenAt.IsZero() {
+	if metric.InitCompletedAt != nil && !firstPROpenAt.IsZero() {
 		firstPROpenAt = firstPROpenAt.UTC()
-		metric.FirstPROpenAt = &firstPROpenAt
-	}
-	if metric.InitCompletedAt != nil && metric.FirstPROpenAt != nil {
-		elapsed := metric.FirstPROpenAt.Sub(*metric.InitCompletedAt)
-		if elapsed < 0 {
-			elapsed = 0
+		if firstPROpenAt.Before(*metric.InitCompletedAt) {
+			return metric
 		}
+		metric.FirstPROpenAt = &firstPROpenAt
+		elapsed := metric.FirstPROpenAt.Sub(*metric.InitCompletedAt)
 		milliseconds := elapsed.Milliseconds()
 		metric.Milliseconds = &milliseconds
 	}
