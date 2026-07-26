@@ -17,6 +17,7 @@ import {
   type LiveDataConfig,
   type LiveFreshness,
 } from "./liveData";
+import type { PortalDiagnostics } from "./portalDiagnostics";
 import { populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const testConfig: LiveDataConfig = {
@@ -261,6 +262,54 @@ describe("LiveDataController", () => {
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]));
+
+    controller.stop();
+  });
+
+  it("reports SSE causes across retries and visibility changes", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const third = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+      () => Promise.resolve(third),
+    ]);
+    const recordSSE = vi.fn();
+    const diagnostics: PortalDiagnostics = {
+      startRequest: () => ({ finish: () => undefined }),
+      recordSSE,
+    };
+    const controller = new LiveDataController(client, testConfig, { diagnostics });
+
+    controller.start();
+    await settle();
+    first.end();
+    await settle();
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+
+    expect(recordSSE.mock.calls.map((call) => call[0])).toEqual([
+      { event: "connect", cause: "initial" },
+      { event: "disconnect", cause: "stream-ended" },
+      { event: "reconnect", cause: "stream-ended", delayMs: 100 },
+      { event: "connect", cause: "stream-ended" },
+      { event: "disconnect", cause: "visibility-hidden" },
+      { event: "reconnect", cause: "visibility-visible", delayMs: undefined },
+      { event: "connect", cause: "visibility-visible" },
+    ]);
 
     controller.stop();
   });
