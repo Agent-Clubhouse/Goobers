@@ -3,9 +3,13 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
@@ -18,6 +22,22 @@ type capturingFanInExecutor struct {
 
 func (c *capturingFanInExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	c.envs[env.TaskID] = env
+	return c.delegate.Run(ctx, env, run)
+}
+
+type committingFanInExecutor struct {
+	t        *testing.T
+	delegate *stubDeterministic
+}
+
+func (c *committingFanInExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	name := strings.ReplaceAll(env.TaskID, ":", "-") + ".txt"
+	if err := os.WriteFile(filepath.Join(env.Workspace, name), []byte(env.TaskID+"\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", name)
+	runGit(c.t, env.Workspace, "commit", "-m", env.TaskID)
 	return c.delegate.Run(ctx, env, run)
 }
 
@@ -73,6 +93,97 @@ func fanInMachine(t *testing.T, failedPerformance bool) *workflow.Machine {
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fan-in machine: %v", err)
+	}
+	return machine
+}
+
+func branchGateFanInMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "branch-gate-fan-in", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("review-security", "accept-security"),
+				task("review-performance", workflow.TargetJoin),
+				task("collate", workflow.TerminalComplete),
+				task("recover", workflow.TerminalComplete),
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "accept-security",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches: map[string]string{
+					gate.OutcomePass: workflow.TargetJoin,
+					gate.OutcomeFail: workflow.TargetJoin,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchAllOrNothing, OnFailure: "recover",
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+				Join: "collate",
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile branch gate fan-in machine: %v", err)
+	}
+	return machine
+}
+
+func agenticGateFanInMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: workflow.TargetJoin,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "agentic-gate-fan-in", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("review-security"),
+				task("review-performance"),
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "collate",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TerminalComplete,
+					string(apiv1.VerdictNeedsChanges): workflow.TargetEscalate,
+					string(apiv1.VerdictFail):         workflow.TargetAbort,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+				Join: "collate",
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile agentic gate fan-in machine: %v", err)
 	}
 	return machine
 }
@@ -181,6 +292,122 @@ func TestRunnerFansInThreeBranchScalarsAndArtifacts(t *testing.T) {
 	}
 	if string(firstPointers) != string(secondPointers) {
 		t.Errorf("journaled pointer sets differ across runs:\n%s\n%s", firstPointers, secondPointers)
+	}
+}
+
+func TestRunnerPassingBranchGateClearsTaskFailure(t *testing.T) {
+	envs := map[string]apiv1.InvocationEnvelope{}
+	results := map[string]stubTaskResult{
+		"branch-gate:review-security": {
+			status:    apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{Code: "review_failed", Message: "review requires gate approval"},
+		},
+		"branch-gate:review-performance": {
+			status:  apiv1.ResultSuccess,
+			outputs: map[string]interface{}{"summary": "performance"},
+		},
+		"branch-gate:collate": {status: apiv1.ResultSuccess},
+		"branch-gate:recover": {status: apiv1.ResultSuccess},
+	}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &capturingFanInExecutor{
+			delegate: &stubDeterministic{rec: rec, byTask: results},
+			envs:     envs,
+		}, nil
+	}, fixedOutcomeAutomated(gate.OutcomePass))
+	r.cfg.ScratchDir = t.TempDir()
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "branch-gate", Machine: branchGateFanInMachine(t), Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	join, ok := envs["branch-gate:collate"]
+	if !ok {
+		t.Fatalf("join was suppressed; invocations = %+v", envs)
+	}
+	if _, recovered := envs["branch-gate:recover"]; recovered {
+		t.Fatalf("passing branch gate incorrectly routed through recovery")
+	}
+	completeness, ok := join.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	if !ok || len(completeness) != 2 || completeness[0].Status != journal.BranchNoOutput {
+		t.Fatalf("branch completeness = %#v, want cleared security failure", join.Inputs[BranchCompletenessInput])
+	}
+}
+
+func TestGateClearsFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		gate apiv1.Gate
+		gr   gate.Result
+		want bool
+	}{
+		{name: "passing automated gate", gate: apiv1.Gate{Evaluator: apiv1.EvaluatorAutomated}, gr: gate.Result{Outcome: gate.OutcomePass}, want: true},
+		{name: "human decision", gate: apiv1.Gate{Evaluator: apiv1.EvaluatorHuman}, gr: gate.Result{Outcome: gate.OutcomeFail}, want: true},
+		{name: "failing automated gate", gate: apiv1.Gate{Evaluator: apiv1.EvaluatorAutomated}, gr: gate.Result{Outcome: gate.OutcomeFail}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := gateClearsFailure(test.gr, test.gate); got != test.want {
+				t.Fatalf("gateClearsFailure() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunnerAgenticJoinReceivesBranchArtifactsOnce(t *testing.T) {
+	const runID = "agentic-gate-fan-in"
+	reviewer := &capturingReviewer{}
+	results := map[string]stubTaskResult{
+		runID + ":review-security": {
+			status: apiv1.ResultSuccess, artifactName: "security.md",
+			artifactData: []byte("security"), artifactMediaType: "text/markdown",
+		},
+		runID + ":review-performance": {
+			status: apiv1.ResultSuccess, artifactName: "performance.md",
+			artifactData: []byte("performance"), artifactMediaType: "text/markdown",
+		},
+	}
+	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &committingFanInExecutor{
+			t:        t,
+			delegate: &stubDeterministic{rec: rec, byTask: results},
+		}, nil
+	})
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: agenticGateFanInMachine(t), Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !reviewer.called {
+		t.Fatal("agentic join reviewer was not invoked")
+	}
+	if len(reviewer.gotPointers) != 3 {
+		t.Fatalf("reviewer pointers = %+v, want two branch artifacts and one diff", reviewer.gotPointers)
+	}
+	for i, branch := range []string{"security", "performance"} {
+		pointer := reviewer.gotPointers[i]
+		if pointer.Branch != i+1 || pointer.BranchName != branch || pointer.Artifact == nil {
+			t.Errorf("pointer %d = %+v, want artifact tagged branch %d/%q", i, pointer, i+1, branch)
+		}
+	}
+	if reviewer.gotPointers[2].Name != "collate.diff" {
+		t.Fatalf("final pointer = %+v, want reviewer diff", reviewer.gotPointers[2])
 	}
 }
 
@@ -298,6 +525,85 @@ func TestRunnerResumeAfterSkippedJoinKeepsOnlyRootPointers(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeAfterParallelFinishedUsesJoinTarget(t *testing.T) {
+	const runID = "fan-in-finished-resume"
+	machine := fanInMachine(t, false)
+	capturing := &capturingDeterministic{}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return capturing, nil
+	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("review-reliability")
+	branches := []struct {
+		id    int
+		name  string
+		stage string
+	}{
+		{id: 1, name: "security", stage: "review-security"},
+		{id: 2, name: "performance", stage: "review-performance"},
+		{id: 3, name: "reliability", stage: "review-reliability"},
+	}
+	completeness := make([]journal.BranchOutcome, 0, len(branches))
+	if err := jr.Append(journal.Event{
+		Type: journal.EventParallelStarted, Parallel: "fan",
+		Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security"},
+			{Branch: 2, Name: "performance"},
+			{Branch: 3, Name: "reliability"},
+		},
+	}); err != nil {
+		t.Fatalf("append parallel.started: %v", err)
+	}
+	for _, branch := range branches {
+		events := []journal.Event{
+			{Type: journal.EventBranchStarted, Parallel: "fan", Branch: branch.id, BranchName: branch.name, Stage: branch.stage},
+			{Type: journal.EventStageStarted, Stage: branch.stage, Branch: branch.id, Attempt: 1},
+			{Type: journal.EventStageFinished, Stage: branch.stage, Branch: branch.id, Attempt: 1,
+				Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"summary": branch.name}},
+			{Type: journal.EventBranchFinished, Parallel: "fan", Branch: branch.id, BranchName: branch.name,
+				BranchStatus: journal.BranchSucceeded},
+		}
+		for _, event := range events {
+			if err := jr.Append(event); err != nil {
+				t.Fatalf("append %s for %s: %v", event.Type, branch.name, err)
+			}
+		}
+		completeness = append(completeness, journal.BranchOutcome{
+			Branch: branch.id, Name: branch.name, Status: journal.BranchSucceeded,
+		})
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventParallelFinished, Parallel: "fan", Target: "collate", Completeness: completeness,
+	}); err != nil {
+		t.Fatalf("append parallel.finished: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if capturing.calls != 1 || capturing.lastEnv.TaskID != runID+":collate" {
+		t.Fatalf("resume invocation = %+v (calls %d), want only collate", capturing.lastEnv, capturing.calls)
+	}
+}
+
 func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 	machine := fanInMachine(t, true)
 	events := []journal.Event{
@@ -336,5 +642,19 @@ func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 		"fan.performance.summary", machine, completed, fanIn,
 	); !branchRef || !absent || ok {
 		t.Errorf("resumed failed branch = ok=%v branchRef=%v absent=%v, want absent", ok, branchRef, absent)
+	}
+}
+
+func TestPendingFanInClearsAfterJoinGateEvaluation(t *testing.T) {
+	machine := agenticGateFanInMachine(t)
+	events := []journal.Event{
+		{Type: journal.EventParallelFinished, Parallel: "fan", Target: "collate", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security", Status: journal.BranchSucceeded},
+			{Branch: 2, Name: "performance", Status: journal.BranchSucceeded},
+		}},
+		{Type: journal.EventGateEvaluated, Gate: "collate", Verdict: gate.OutcomePass, Target: workflow.TerminalComplete},
+	}
+	if fanIn := pendingFanIn(events, machine); fanIn != nil {
+		t.Fatalf("pending fan-in = %+v, want nil after join gate evaluation", fanIn)
 	}
 }

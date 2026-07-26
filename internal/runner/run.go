@@ -1293,7 +1293,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if par != nil {
 					gatePointers = par.currentPointers(parallelRootPointers)
 				}
-				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, gatePointers, fanIn, instructionAddendum, workspaceBranch, knownOutcome)
+				gateSubject := lastResult
+				if fanIn != nil && g.Name == fanIn.spec.Join {
+					// gatePointers already contains the declaration-ordered,
+					// branch-qualified artifact union. ReviewerInvocation must
+					// not append the final branch's artifacts a second time.
+					gateSubject.Artifacts = nil
+				}
+				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, gateSubject, gatePointers, fanIn, instructionAddendum, workspaceBranch, knownOutcome)
 			}
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
 				return stalledResult, stalledErr
@@ -1357,7 +1364,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					pointers = append(pointers, pointer)
 				}
 			}
-			if par != nil && next == workflow.TargetJoin && lastResult.Status == apiv1.ResultFailure {
+			if par != nil && next == workflow.TargetJoin && lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
 				par.markCurrentFailed()
 			}
 			if fanIn != nil && g.Name == fanIn.spec.Join {
@@ -1404,8 +1411,7 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 		// cleared that same result.
 		subject, _ := machine.Task(lastStage)
 		gateDef, _ := machine.Gate(gr.Gate)
-		clearedFailure := gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
-		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !clearedFailure {
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !gateClearsFailure(gr, gateDef) {
 			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
 			return "", res, false, err
 		}
@@ -1414,6 +1420,10 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 	default:
 		return gr.Target, Result{}, true, nil
 	}
+}
+
+func gateClearsFailure(gr gate.Result, gateDef apiv1.Gate) bool {
+	return gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
 }
 
 func terminalGateNotificationReason(gr gate.Result) (string, bool) {

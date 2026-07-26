@@ -381,6 +381,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
+	if rerun == nil && seed.fanIn != nil {
+		// parallel.finished is authoritative over a checkpoint that still names
+		// the final branch stage from immediately before the fan-in completed.
+		startState = seed.fanIn.spec.Join
+	}
 	if humanProgress.waiting || humanProgress.decided {
 		// The event log is authoritative when gate.paused or gate.evaluated
 		// was fsynced but the corresponding checkpoint was lost or stale.
@@ -869,7 +874,9 @@ func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelEx
 			continue
 		}
 		for _, later := range events[i+1:] {
-			if later.Type == journal.EventStageFinished && later.Stage == spec.Join && !isInterruptedAttemptMarker(later) {
+			stageFinished := later.Type == journal.EventStageFinished && later.Stage == spec.Join && !isInterruptedAttemptMarker(later)
+			gateFinished := later.Type == journal.EventGateEvaluated && later.Gate == spec.Join
+			if stageFinished || gateFinished {
 				return nil
 			}
 		}
