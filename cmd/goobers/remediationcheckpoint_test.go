@@ -479,6 +479,69 @@ func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
 	}
 }
 
+// TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded is #941/
+// PRR-6's checkpoint-side acceptance: rebase-pr's policyExcluded/
+// policyExcludedReason inputs escalate this cycle immediately, exactly like
+// an explicit --escalate, even on cycle 1 (nowhere near budget) with no
+// stalled diff — no agent ever ran on this cycle, so the ordinary D4/D5
+// checks have nothing to gain by running first.
+func TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_POLICYEXCLUDED", "true")
+	t.Setenv("GOOBERS_INPUT_POLICYEXCLUDEDREASON", `remediation policy "conflict" excludes the only detected cause(s) (substantive)`)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "escalated") {
+		t.Fatalf("stdout = %q, want a mention of escalation", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	found := false
+	for _, l := range st.labels {
+		if l == remediationEscalatedLabel {
+			found = true
+		}
+		if l == needsRemediationLabel {
+			t.Fatalf("labels = %v, want needs-remediation cleared on escalation", st.labels)
+		}
+	}
+	if !found {
+		t.Fatalf("labels = %v, want goobers:merge-escalated added", st.labels)
+	}
+	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "excludes the only detected cause") {
+		t.Fatalf("comments = %v, want the escalation reason to name the policy exclusion", st.comments)
+	}
+}
+
+// TestRemediationBudgetDefaultReadsMaxCyclesInput is #941/PRR-6's maxCycles
+// coverage: an unset --budget flag falls back to the declared maxCycles
+// workflow input rather than always using DefaultRemediationBudget.
+func TestRemediationBudgetDefaultReadsMaxCyclesInput(t *testing.T) {
+	t.Setenv("GOOBERS_INPUT_MAXCYCLES", "3")
+	if got := remediationBudgetDefault(); got != 3 {
+		t.Fatalf("remediationBudgetDefault() = %d, want 3", got)
+	}
+}
+
+func TestRemediationBudgetDefaultFallsBackOnInvalidMaxCycles(t *testing.T) {
+	for _, raw := range []string{"", "not-a-number", "0", "-1"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("GOOBERS_INPUT_MAXCYCLES", raw)
+			if got := remediationBudgetDefault(); got != DefaultRemediationBudget {
+				t.Fatalf("remediationBudgetDefault() = %d, want default %d for input %q", got, DefaultRemediationBudget, raw)
+			}
+		})
+	}
+}
+
 // TestRemediationCheckpointEscalatesOnSameDiff is D5's headline acceptance:
 // a second cycle whose diff is byte-identical to the first's escalates
 // immediately, independent of the (liberal, unexhausted) budget — mirroring
