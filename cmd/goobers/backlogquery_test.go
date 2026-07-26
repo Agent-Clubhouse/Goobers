@@ -274,6 +274,22 @@ func TestBacklogQueryUnavailableNativeFieldFails(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryUnavailableOrderFieldFails(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Candidate", "trusted")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_FIELDORDER", "milestone.number:asc")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", root)
+	if code != 1 || !strings.Contains(stderr, `field "milestone.number" is unavailable`) {
+		t.Fatalf("code = %d, stderr = %q, want unavailable-field order error", code, stderr)
+	}
+}
+
 func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
