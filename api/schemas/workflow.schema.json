@@ -39,13 +39,13 @@
         },
         "readiness": {
           "type": "object",
-          "description": "Admission limits that bound when runs may start and prevent runaway workflow chains.",
+          "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",
           "additionalProperties": false,
           "properties": {
             "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
             "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Omitted uses the scheduler default." },
             "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },
-            "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Maximum depth of signal-triggered workflow chains. Zero or omitted uses the scheduler default." },
+            "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Reserved maximum depth for signal-triggered workflow chains. The scheduler does not currently enforce this field, and configuring it has no effect." },
             "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
           }
         },
@@ -94,7 +94,7 @@
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
         "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Wall-clock bound for each branch. A timeout is handled as a branch failure." },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum branches executed simultaneously. Omitted means deterministic sequential execution." }
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Branch execution limit. Omit or set to 1 for the local runner's supported sequential execution; values greater than 1 are rejected because concurrent branch execution is not yet implemented." }
       },
       "allOf": [
         {
