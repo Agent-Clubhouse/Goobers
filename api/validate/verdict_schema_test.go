@@ -97,3 +97,28 @@ func TestCrossPRBlockedVerdictWithBlockingPRsValidatesAgainstSchema(t *testing.T
 		t.Fatalf("cross-pr-blocked verdict with blockingPrs should validate, got: %v", err)
 	}
 }
+
+// TestElectionVerdictWithOverlapClusterValidatesAgainstSchema is issue
+// #1700's regression: #1587 added OverlapCluster/Elected to the Go Verdict
+// struct without updating verdict.schema.json, so every published verdict
+// with OverlapCluster true failed gather-pr-context's schema validation.
+func TestElectionVerdictWithOverlapClusterValidatesAgainstSchema(t *testing.T) {
+	v, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	verdict := apiv1.Verdict{
+		Decision:       apiv1.VerdictPass,
+		HeadSHA:        "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+		BaseSHA:        "0123456789abcdef0123456789abcdef01234567",
+		OverlapCluster: true,
+		Elected:        true,
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := v.ValidateJSON("verdict.schema.json", data); err != nil {
+		t.Fatalf("overlap-cluster verdict should validate, got: %v", err)
+	}
+}
