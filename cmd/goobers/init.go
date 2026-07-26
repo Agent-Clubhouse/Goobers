@@ -75,6 +75,12 @@ func runInitWithInputForOSAndGitHub(
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	sourceTreeSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source-tree" {
+			sourceTreeSet = true
+		}
+	})
 	selectedModes := 0
 	for _, selected := range []bool{*demo, *guided, *template != ""} {
 		if selected {
@@ -91,6 +97,10 @@ func runInitWithInputForOSAndGitHub(
 	}
 	if *template != "" && *template != instance.QuickstartTemplate {
 		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
+		return 2
+	}
+	if sourceTreeSet && *sourceTree == "" {
+		pf(stderr, "error: --source-tree destination must not be empty\n")
 		return 2
 	}
 	if *sourceTree != "" && *template != instance.QuickstartTemplate {
