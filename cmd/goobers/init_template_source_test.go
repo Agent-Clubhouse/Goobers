@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,7 +153,7 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 }
 
 func TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "config source O'Brien")
+	root := filepath.Join(t.TempDir(), "config $HOME $([char]0x58) `n O'Brien")
 	var stdout, stderr bytes.Buffer
 	code := runInitWithInputForOS(
 		[]string{
@@ -173,9 +174,40 @@ func TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode result: %v\n%s", err, stdout.String())
 	}
-	want := `goobers validate --source-tree --json "` + absolutePath(root) + `"`
+	want := "goobers validate --source-tree --json '" +
+		strings.ReplaceAll(absolutePath(root), "'", "''") + "'"
 	if envelope.NextCommand != want {
 		t.Fatalf("nextCommand = %q, want %q", envelope.NextCommand, want)
+	}
+}
+
+func TestQuoteShellArgPowerShellLiteralSemantics(t *testing.T) {
+	var shell string
+	for _, name := range []string{"pwsh", "powershell"} {
+		if path, err := exec.LookPath(name); err == nil {
+			shell = path
+			break
+		}
+	}
+	if shell == "" {
+		t.Skip("PowerShell is not installed")
+	}
+
+	arg := `C:\config\$HOME $([char]0x58) ` + "`n O'Brien"
+	script := "[Console]::Out.Write(" + quoteShellArg(arg, "windows") + ")"
+	output, err := exec.Command(
+		shell,
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		script,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("evaluate quoted argument: %v\n%s", err, output)
+	}
+	if string(output) != arg {
+		t.Fatalf("PowerShell argument = %q, want %q", output, arg)
 	}
 }
 
