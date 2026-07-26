@@ -61,6 +61,15 @@ const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
 const inReviewStatusLabel = "goobers/status:in-review"
 
+type backlogClaimLedger interface {
+	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
+	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
+}
+
+var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
+	return localscheduler.OpenClaimLedger(path, opts...)
+}
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
@@ -533,81 +542,150 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
+	claimResultCommitted := false
+	defer func() {
+		if claimResultCommitted || len(claimed) == 0 {
+			return
+		}
+		if releaseErr := releaseClaimsForRun(l, instanceLog, runID); releaseErr != nil {
+			pf(stderr, "error: roll back claims after backlog query failure: %v\n", releaseErr)
+		}
+	}()
+
 	gaggle := providerGaggle()
 	if beforeClaimTransaction != nil {
 		beforeClaimTransaction()
 	}
-	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
-		var lerr error
-		eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
-			blockedRecordsPath(l),
-			repo,
-			eligible,
-			observedRecords,
-			remainingRecords,
-			verifiedSkips,
-		)
-		if lerr != nil {
-			return lerr
-		}
-		for _, skip := range observedSkips {
-			runner := map[string]any{
-				"annotation":   blockedEligibilitySkipAnnotation,
-				"itemId":       skip.ItemID,
-				"openBlockers": skip.OpenBlockers,
+	nextClaimIndex := 0
+	claimSetPrepared := false
+	acquireClaims := func() error {
+		return withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+			if !claimSetPrepared {
+				var lerr error
+				eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
+					blockedRecordsPath(l),
+					repo,
+					eligible,
+					observedRecords,
+					remainingRecords,
+					verifiedSkips,
+				)
+				if lerr != nil {
+					return lerr
+				}
+				for _, skip := range observedSkips {
+					runner := map[string]any{
+						"annotation":   blockedEligibilitySkipAnnotation,
+						"itemId":       skip.ItemID,
+						"openBlockers": skip.OpenBlockers,
+					}
+					if skip.ItemStateUnresolved {
+						runner["itemStateUnresolved"] = true
+					}
+					if len(skip.UnresolvedBlockers) != 0 {
+						runner["unresolvedBlockers"] = skip.UnresolvedBlockers
+					}
+					if skip.VerificationPending {
+						runner["verificationPending"] = true
+					}
+					if jerr := instanceLog.Append(journal.Event{
+						Type:     journal.EventRunnerAnnotation,
+						Workflow: workflow,
+						RunID:    runID,
+						Reason:   skip.reason(),
+						Runner:   runner,
+					}); jerr != nil {
+						return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
+					}
+				}
+				claimSetPrepared = true
 			}
-			if skip.ItemStateUnresolved {
-				runner["itemStateUnresolved"] = true
-			}
-			if len(skip.UnresolvedBlockers) != 0 {
-				runner["unresolvedBlockers"] = skip.UnresolvedBlockers
-			}
-			if skip.VerificationPending {
-				runner["verificationPending"] = true
-			}
-			if jerr := instanceLog.Append(journal.Event{
-				Type:     journal.EventRunnerAnnotation,
-				Workflow: workflow,
-				RunID:    runID,
-				Reason:   skip.reason(),
-				Runner:   runner,
-			}); jerr != nil {
-				return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
-			}
-		}
 
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
-		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		for i := range eligible {
-			if len(claimed) >= maxItems {
-				break
+			ledger, lerr := openBacklogClaimLedger(
+				filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+				localscheduler.WithInstanceLog(instanceLog),
+			)
+			if lerr != nil {
+				return fmt.Errorf("open claim ledger: %w", lerr)
 			}
-			item := eligible[i]
-			var ok bool
-			var cerr error
+			for nextClaimIndex < len(eligible) && len(claimed) < maxItems {
+				item := eligible[nextClaimIndex]
+				nextClaimIndex++
+				var ok bool
+				var cerr error
+				if gaggle == "" {
+					ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
+				} else {
+					ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
+						Gaggle:     gaggle,
+						Provider:   string(repo.Provider),
+						ExternalID: item.ID,
+					}, runID, workflow, leaseDuration)
+				}
+				if cerr != nil {
+					return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
+				}
+				if ok {
+					claimed = append(claimed, item)
+				}
+			}
+			return nil
+		})
+	}
+	releaseClaim := func(item providers.WorkItem) error {
+		return withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
+			ledger, lerr := localscheduler.OpenClaimLedger(
+				filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+				localscheduler.WithInstanceLog(instanceLog),
+			)
+			if lerr != nil {
+				return fmt.Errorf("open claim ledger: %w", lerr)
+			}
 			if gaggle == "" {
-				ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
-			} else {
-				ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
-					Gaggle:     gaggle,
-					Provider:   string(repo.Provider),
-					ExternalID: item.ID,
-				}, runID, workflow, leaseDuration)
+				return ledger.Release(item.ID, runID)
 			}
-			if cerr != nil {
-				return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
-			}
-			if ok {
-				claimed = append(claimed, item)
-			}
+			return ledger.ReleaseScoped(localscheduler.ClaimKey{
+				Gaggle:     gaggle,
+				Provider:   string(repo.Provider),
+				ExternalID: item.ID,
+			}, runID)
+		})
+	}
+
+	malformedReadyItems := 0
+	for !claimSetPrepared || (len(claimed) < maxItems && nextClaimIndex < len(eligible)) {
+		firstNewClaim := len(claimed)
+		if err := acquireClaims(); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
 		}
-		return nil
-	})
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		if !labelFilter.ReferencesLabel(providers.LabelReady) {
+			continue
+		}
+		for i := firstNewClaim; i < len(claimed); {
+			if !claimed[i].HasLabel(providers.LabelReady) {
+				i++
+				continue
+			}
+			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
+				ctx, repo, claimed[i].ID, providers.LabelReady,
+			)
+			if transitionErr != nil {
+				return failProviderStage(stderr, "read ready-label transitions", transitionErr, "claimed-item.json")
+			}
+			if transitionErr := annotateReadyTimes(claimed[i:i+1], providers.LabelReady, transitions); transitionErr != nil {
+				malformed := claimed[i]
+				if releaseErr := releaseClaim(malformed); releaseErr != nil {
+					pf(stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+					return 1
+				}
+				pf(stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, transitionErr)
+				claimed = append(claimed[:i], claimed[i+1:]...)
+				malformedReadyItems++
+				continue
+			}
+			i++
+		}
 	}
 	if len(eligible) == 0 {
 		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
@@ -625,35 +703,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
+		if malformedReadyItems > 0 {
+			return writeNoWorkResult(stdout, stderr, "no well-formed eligible item could be claimed")
+		}
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
-	}
-	// The lease is only committed once enrichment and result persistence finish.
-	// Otherwise a post-claim failure can hide the item from every later tick.
-	claimResultCommitted := false
-	defer func() {
-		if claimResultCommitted {
-			return
-		}
-		if releaseErr := releaseClaimsForRun(l, instanceLog, runID); releaseErr != nil {
-			pf(stderr, "error: roll back claims after backlog query failure: %v\n", releaseErr)
-		}
-	}()
-	if labelFilter.ReferencesLabel(providers.LabelReady) {
-		for i := range claimed {
-			if !claimed[i].HasLabel(providers.LabelReady) {
-				continue
-			}
-			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
-				ctx, repo, claimed[i].ID, providers.LabelReady,
-			)
-			if transitionErr != nil {
-				return failProviderStage(stderr, "read ready-label transitions", transitionErr, "claimed-item.json")
-			}
-			if transitionErr := annotateReadyTimes(claimed[i:i+1], providers.LabelReady, transitions); transitionErr != nil {
-				pf(stderr, "error: measure ready age: %v\n", transitionErr)
-				return 1
-			}
-		}
 	}
 
 	var curationItems []curationClaimedItem
