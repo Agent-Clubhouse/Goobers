@@ -271,6 +271,8 @@ func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedH
 		"conflictLocations":           "[]",
 		"attemptedHeadSha":            attemptedHeadSHA,
 		"rebaseBaseSha":               rebaseBaseSHA,
+		"policyExcluded":              "false",
+		"policyExcludedReason":        "",
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,
