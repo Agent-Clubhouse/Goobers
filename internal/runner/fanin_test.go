@@ -143,6 +143,43 @@ func branchGateFanInMachine(t *testing.T) *workflow.Machine {
 	return machine
 }
 
+func continueOnErrorFanInMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name string, continueOnError bool, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			ContinueOnError: continueOnError,
+			Next:            next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "continue-on-error-fan-in", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("review-security", true, workflow.TargetJoin),
+				task("review-performance", false, workflow.TargetJoin),
+				task("collate", false, workflow.TerminalComplete),
+			},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+				Join: "collate",
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile continue-on-error fan-in machine: %v", err)
+	}
+	return machine
+}
+
 func agenticGateFanInMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
 	task := func(name string) apiv1.Task {
@@ -604,6 +641,236 @@ func TestRunnerResumeAfterParallelFinishedUsesJoinTarget(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeMidParallelContinuesRemainingBranches(t *testing.T) {
+	const runID = "fan-in-mid-parallel-resume"
+	machine := fanInMachine(t, false)
+	envs := map[string]apiv1.InvocationEnvelope{}
+	results := map[string]stubTaskResult{
+		runID + ":review-reliability": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "reliability"},
+		},
+		runID + ":collate": {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &capturingFanInExecutor{
+			delegate: &stubDeterministic{rec: rec, byTask: results},
+			envs:     envs,
+		}, nil
+	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("review-performance")
+	events := []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security"},
+			{Branch: 2, Name: "performance"},
+			{Branch: 3, Name: "reliability"},
+		}},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security", Stage: "review-security"},
+		{Type: journal.EventStageStarted, Stage: "review-security", Branch: 1, Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "review-security", Branch: 1, Attempt: 1,
+			Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"summary": "security"}},
+		{Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "security",
+			BranchStatus: journal.BranchSucceeded},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 2, BranchName: "performance", Stage: "review-performance"},
+		{Type: journal.EventStageStarted, Stage: "review-performance", Branch: 2, Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "review-performance", Branch: 2, Attempt: 1,
+			Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"summary": "performance"}},
+	}
+	for _, event := range events {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Type, err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if _, reran := envs[runID+":review-security"]; reran {
+		t.Fatal("resume reran the settled security branch")
+	}
+	if _, reran := envs[runID+":review-performance"]; reran {
+		t.Fatal("resume reran the already-finished performance stage")
+	}
+	join := envs[runID+":collate"]
+	for _, branch := range []string{"security", "performance", "reliability"} {
+		if got := join.Inputs[branch]; got != branch {
+			t.Errorf("join input %q = %#v, want %q", branch, got, branch)
+		}
+	}
+}
+
+func TestRunnerResumeAfterParallelStartedRecordsFirstBranchStart(t *testing.T) {
+	const runID = "fan-in-started-resume"
+	machine := continueOnErrorFanInMachine(t)
+	results := map[string]stubTaskResult{
+		runID + ":review-security":    {status: apiv1.ResultSuccess},
+		runID + ":review-performance": {status: apiv1.ResultSuccess},
+		runID + ":collate":            {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: results}, nil
+	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("fan")
+	if err := jr.Append(journal.Event{
+		Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security"},
+			{Branch: 2, Name: "performance"},
+		},
+	}); err != nil {
+		t.Fatalf("append parallel.started: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	firstStarts := 0
+	for _, event := range events {
+		if event.Type == journal.EventBranchStarted && event.Branch == 1 && event.BranchName == "security" {
+			firstStarts++
+		}
+	}
+	if firstStarts != 1 {
+		t.Fatalf("security branch.started count = %d, want 1", firstStarts)
+	}
+}
+
+func TestRunnerResumeBranchTransitionKeepsBranchAttribution(t *testing.T) {
+	const runID = "fan-in-branch-attribution-resume"
+	machine := continueOnErrorFanInMachine(t)
+	results := map[string]stubTaskResult{
+		runID + ":review-performance": {status: apiv1.ResultSuccess},
+		runID + ":collate":            {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: results}, nil
+	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("review-security")
+	for _, event := range []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{
+			{Branch: 1, Name: "security"},
+			{Branch: 2, Name: "performance"},
+		}},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security", Stage: "review-security"},
+		{Type: journal.EventStageStarted, Stage: "review-security", Branch: 1, Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "review-security", Branch: 1, Attempt: 1,
+			Status: string(apiv1.ResultFailure), Outputs: map[string]any{"summary": "must-not-resume"}},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Type, err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			if event.Branch != 1 {
+				t.Fatalf("tolerated failure branch = %d, want 1", event.Branch)
+			}
+			return
+		}
+	}
+	t.Fatal("missing tolerated failure event")
+}
+
+func TestPendingParallelDoesNotCrossTerminalResume(t *testing.T) {
+	machine := continueOnErrorFanInMachine(t)
+	terminalResume := []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security", Stage: "review-security"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
+		{Type: journal.EventRunResumed, Target: "collate"},
+	}
+	if par, _ := pendingParallel(terminalResume, machine); par != nil {
+		t.Fatalf("pending parallel = %+v, want nil after terminal resume", par)
+	}
+
+	stageRerun := []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security", Stage: "review-security"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+		{Type: journal.EventStageRerunRequested, Stage: "review-security", Branch: 1},
+	}
+	if par, _ := pendingParallel(stageRerun, machine); par == nil {
+		t.Fatal("pending parallel is nil after a stage rerun reopened the branch")
+	}
+}
+
 func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 	machine := fanInMachine(t, true)
 	events := []journal.Event{
@@ -632,7 +899,7 @@ func TestReconstructParallelPointersAndPendingFanIn(t *testing.T) {
 	if fanIn == nil || fanIn.branch("performance").status != journal.BranchFailed {
 		t.Fatalf("pending fan-in = %+v, want failed performance outcome restored", fanIn)
 	}
-	completed := reconstructStageOutputs(events)
+	completed := reconstructStageOutputs(events, machine)
 	if got, ok, branchRef, absent := resolveBranchInput(
 		"fan.security.review-security.summary", machine, completed, fanIn,
 	); !branchRef || absent || !ok || got != "security" {

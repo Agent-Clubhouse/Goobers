@@ -789,11 +789,13 @@ type walkSeed struct {
 	// stageOutputs is every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	stageOutputs    stageOutputs
-	fanIn           *parallelExec
-	workspaceBranch string
-	branchRecorded  bool
-	humanDecision   *HumanGateDecision
+	stageOutputs         stageOutputs
+	parallel             *parallelExec
+	parallelRootPointers []apiv1.ContextPointer
+	fanIn                *parallelExec
+	workspaceBranch      string
+	branchRecorded       bool
+	humanDecision        *HumanGateDecision
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -955,10 +957,25 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	humanDecision := seed.humanDecision
 	// Live parallel state. nil whenever the run is single-cursor, which is
 	// every run that never forks — so the sequential path is untouched.
-	var par *parallelExec
+	par := seed.parallel
 	fanIn := seed.fanIn
-	var parallelRootPointers []apiv1.ContextPointer
+	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
 	steps := 0
+	if par != nil {
+		jr.SetBranchCursors(par.cursors())
+		if current := par.current(); current != nil {
+			if !current.started {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: current.id,
+					Parallel: par.spec.Name, BranchName: current.name, Stage: current.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, startState, steps, err)
+				}
+				current.started = true
+			}
+			jr.SetBranch(current.id)
+		}
+	}
 
 	for {
 		steps++
@@ -974,12 +991,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			settling := par.current()
 			status := par.currentStatus()
-			if err := jr.Append(journal.Event{
-				Type: journal.EventBranchFinished, Branch: settling.id,
-				Parallel: par.spec.Name, BranchName: settling.name,
-				BranchStatus: status,
-			}); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			if !settling.settled {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchFinished, Branch: settling.id,
+					Parallel: par.spec.Name, BranchName: settling.name,
+					BranchStatus: status,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
 			}
 			next, more := par.advance(status)
 			// fail_fast abandons the branches that have not started. At
@@ -1006,6 +1025,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}); err != nil {
 					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 				}
+				next.started = true
 				jr.SetBranch(next.id)
 				state = next.start
 				continue
@@ -1072,6 +1092,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}); err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 			}
+			first.started = true
 			jr.SetBranch(first.id)
 			state = first.start
 			continue
@@ -1197,7 +1218,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			} else {
 				pointers = append(pointers, produced...)
 			}
-			completed.record(t.Name, outputs)
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				completed.clear(t.Name)
+			} else {
+				completed.record(t.Name, outputs)
+			}
 			// Sticky for the rest of the run, and only ever set by a stage
 			// that actually emitted the key — see WorkspaceBranchOutput. This
 			// runs AFTER the stage that emits it, so that stage itself still

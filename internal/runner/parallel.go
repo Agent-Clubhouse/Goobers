@@ -23,6 +23,7 @@ type branchState struct {
 	produced  bool
 	failed    bool
 	noOutput  bool
+	started   bool
 	settled   bool
 }
 
@@ -119,6 +120,9 @@ func (p *parallelExec) currentStatus() journal.BranchStatus {
 	current := p.current()
 	if current == nil {
 		return journal.BranchCancelled
+	}
+	if current.settled && current.status != "" {
+		return current.status
 	}
 	if current.failed {
 		return journal.BranchFailed

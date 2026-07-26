@@ -27,6 +27,12 @@ func (s stageOutputs) record(stage string, outputs map[string]any) {
 	s[stage] = copied
 }
 
+func (s stageOutputs) clear(stage string) {
+	if s != nil {
+		delete(s, stage)
+	}
+}
+
 // resolveInputsFrom resolves one inputsFrom value against the run's completed
 // stage outputs.
 //
@@ -178,6 +184,16 @@ func sortStrings(v []string) {
 	}
 }
 
+func discardToleratedFailureOutputs(machine *workflow.Machine, stage string, result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	if machine == nil || result.Status != apiv1.ResultFailure {
+		return result
+	}
+	if task, ok := machine.Task(stage); ok && task.ContinueOnError {
+		result.Outputs = nil
+	}
+	return result
+}
+
 // reconstructStageOutputs rebuilds every completed stage's Outputs from the
 // journal, so a resumed run can resolve a stage-qualified inputsFrom reference
 // to a stage that finished before the crash.
@@ -187,10 +203,20 @@ func sortStrings(v []string) {
 // is deliberately a FORWARD scan with last-write-wins per stage, so a repassed
 // stage's later attempt supersedes its earlier one, matching what the live walk
 // does when it re-records the stage.
-func reconstructStageOutputs(events []journal.Event) stageOutputs {
+func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) stageOutputs {
 	out := stageOutputs{}
 	for _, e := range events {
-		if e.Type != journal.EventStageFinished || e.Stage == "" || len(e.Outputs) == 0 {
+		if e.Type != journal.EventStageFinished || e.Stage == "" {
+			continue
+		}
+		if machine != nil {
+			if task, ok := machine.Task(e.Stage); ok &&
+				e.Status == string(apiv1.ResultFailure) && task.ContinueOnError {
+				out.clear(e.Stage)
+				continue
+			}
+		}
+		if len(e.Outputs) == 0 {
 			continue
 		}
 		out.record(e.Stage, e.Outputs)

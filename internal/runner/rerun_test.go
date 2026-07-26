@@ -248,6 +248,49 @@ func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 	}
 }
 
+func TestRunnerRerunStageRestoresActiveBranch(t *testing.T) {
+	const runID = "run-rerun-active-branch"
+	machine := rerunBranchGateMachine(t)
+	reviewer := &rerunGateReviewer{}
+	results := map[string]stubTaskResult{
+		runID + ":review-security":    {status: apiv1.ResultSuccess},
+		runID + ":review-performance": {status: apiv1.ResultSuccess},
+		runID + ":collate":            {status: apiv1.ResultSuccess},
+	}
+	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: results}, nil
+	})
+	r.cfg.ScratchDir = t.TempDir()
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+
+	started, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", started.Phase)
+	}
+
+	result, err := r.RerunStage(context.Background(), RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: repo, Stage: "accept-security",
+		Actor: "release-manager", InstructionAddendum: "Accept the reviewed security result.",
+	})
+	if err != nil {
+		t.Fatalf("RerunStage: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("rerun phase = %s, want completed", result.Phase)
+	}
+	if len(reviewer.addenda) != 2 || reviewer.addenda[0] != "" || reviewer.addenda[1] == "" {
+		t.Fatalf("reviewer addenda = %q, want initial and guided branch reviews", reviewer.addenda)
+	}
+}
+
 func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	const addendum = "Do not block on the generated fixture."
 	machine := rerunGateMachine(t)
@@ -823,6 +866,50 @@ func rerunFanInMachine(t *testing.T) *workflow.Machine {
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fan-in rerun machine: %v", err)
+	}
+	return machine
+}
+
+func rerunBranchGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "rerun-branch-gate", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "fan",
+			Tasks: []apiv1.Task{
+				task("review-security", "accept-security"),
+				task("review-performance", workflow.TargetJoin),
+				task("collate", workflow.TerminalComplete),
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "accept-security",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TargetJoin,
+					string(apiv1.VerdictNeedsChanges): workflow.TargetEscalate,
+					string(apiv1.VerdictFail):         workflow.TargetEscalate,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+				Join: "collate",
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile branch-gate rerun machine: %v", err)
 	}
 	return machine
 }
