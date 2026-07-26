@@ -60,6 +60,9 @@ safely remove one blocked-item record, under claims.lock
 \fBgoobers blocked list\fR
 print the learned blocked-item ledger (scheduler/blocked.json)
 .TP
+\fBgoobers check-fail-first\fR
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+.TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
 .TP
@@ -207,8 +210,17 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
+\fBgoobers run approve\fR
+approve an escalated gate (not yet implemented, HITL-7/#469)
+.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
+.TP
+\fBgoobers run override\fR
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+.TP
+\fBgoobers run rerun\fR
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -314,6 +326,7 @@ show a workflow as a text DAG
 \fBgoobers-blocked\fR(1),
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
+\fBgoobers-check-fail-first\fR(1),
 \fBgoobers-claims\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),
@@ -363,7 +376,10 @@ show a workflow as a text DAG
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
+\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
+\fBgoobers-run-override\fR(1),
+\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),

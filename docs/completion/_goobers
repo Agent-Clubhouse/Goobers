@@ -46,6 +46,7 @@ _goobers_completion()
             'backlog-query:query/claim one eligible backlog item (a workflow stage)'
             'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
             'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'
+            'check-fail-first:enforce fail-first evidence for a new workflow gate (a workflow stage)'
             'open-pr:open or update the run'\''s PR (a workflow stage)'
             'gate-removal-guard:block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)'
             'issue-close-out:comment + close out the claimed issue (a workflow stage)'
@@ -230,7 +231,7 @@ _goobers_completion()
             ;;
         run)
             if (( CURRENT == 3 )); then
-                candidates=(abort cancel)
+                candidates=(abort cancel approve override rerun)
                 candidates+=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
                 _describe -V 'workflow' candidates
                 return

@@ -3,7 +3,10 @@ import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
-import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
+import {
+  WorkflowTopologyGraph,
+  type WorkflowGraphFullscreenMode,
+} from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
   eventHeading,
@@ -98,6 +101,9 @@ function RunDetailWorkspace({
   );
   const [followingLatest, setFollowingLatest] = useState(true);
   const inspectorRef = useRef<HTMLElement>(null);
+  const fullscreenRootRef = useRef<HTMLDivElement>(null);
+  const [fullscreenMode, setFullscreenMode] =
+    useState<WorkflowGraphFullscreenMode>("none");
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
@@ -222,50 +228,72 @@ function RunDetailWorkspace({
         data-scroll-owner="page"
         data-responsive-layout="stack-under-820"
       >
-        <GraphFrame
-          action={
-            <span aria-live="polite" className="graph-legend">
-              State at sequence {selectedSeq || "—"}
-            </span>
+        <div
+          aria-label={
+            fullscreenMode === "fallback" ? "Run graph fullscreen view" : undefined
           }
-          className="run-graph-panel"
+          aria-modal={fullscreenMode === "fallback" ? "true" : undefined}
+          className={[
+            "run-graph-fullscreen-root",
+            "workflow-graph-fullscreen-target",
+            fullscreenMode === "fallback" ? "workflow-graph-shell-expanded" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          data-fullscreen={fullscreenMode}
+          ref={fullscreenRootRef}
+          role={fullscreenMode === "fallback" ? "dialog" : undefined}
         >
-          {run.graphStatus === "pinned" && run.graph ? (
-            <WorkflowTopologyGraph
-              causalNodeId={causalNodeId}
-              graph={run.graph}
-              nodeStates={nodeStates}
-              onSelectStage={selectNode}
-              selectedStageId={selectedNodeId}
-              stateSeq={selectedSeq}
+          <GraphFrame
+            action={
+              <span aria-live="polite" className="graph-legend">
+                State at sequence {selectedSeq || "—"}
+              </span>
+            }
+            className="run-graph-panel"
+          >
+            {run.graphStatus === "pinned" && run.graph ? (
+              <WorkflowTopologyGraph
+                causalNodeId={causalNodeId}
+                fullscreenTargetRef={fullscreenRootRef}
+                graph={run.graph}
+                nodeStates={nodeStates}
+                onFullscreenModeChange={setFullscreenMode}
+                onSelectStage={selectNode}
+                selectedStageId={selectedNodeId}
+                stateSeq={selectedSeq}
+              />
+            ) : (
+              <div className="empty-detail" role="status">
+                <strong>Pinned graph unavailable</strong>
+                <span>
+                  This historic run predates graph snapshots. Its event ledger remains
+                  available.
+                </span>
+              </div>
+            )}
+          </GraphFrame>
+
+          {events.length > 0 && (
+            <ReplayScrubber
+              events={events}
+              onSeek={replaySeek}
+              selectedSeq={selectedSeq}
+              terminal={run.finishedAt != null}
             />
-          ) : (
-            <div className="empty-detail" role="status">
-              <strong>Pinned graph unavailable</strong>
-              <span>This historic run predates graph snapshots. Its event ledger remains available.</span>
-            </div>
           )}
-        </GraphFrame>
 
-        {events.length > 0 && (
-          <ReplayScrubber
-            events={events}
-            onSeek={replaySeek}
-            selectedSeq={selectedSeq}
-            terminal={run.finishedAt != null}
-          />
-        )}
-
-        {run.graphStatus === "pinned" && run.graph && (
-          <RunStageInspector
-            client={client}
-            events={events}
-            inspectorRef={inspectorRef}
-            node={selectedNode}
-            runId={runId}
-            selectedSeq={selectedSeq}
-          />
-        )}
+          {run.graphStatus === "pinned" && run.graph && (
+            <RunStageInspector
+              client={client}
+              events={events}
+              inspectorRef={inspectorRef}
+              node={selectedNode}
+              runId={runId}
+              selectedSeq={selectedSeq}
+            />
+          )}
+        </div>
 
         <EventLedger
           events={events}

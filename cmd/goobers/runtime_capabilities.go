@@ -197,6 +197,18 @@ func init() {
 				withSynopsis(synopsisByID["run cancel"]).
 				withHelp("cancel a live in-flight run via the daemon", runCancelHelp).
 				withExamples("goobers run cancel <run-id>"),
+			runtimeSubcommand("run approve", "approve", "approve", runRunApprove).
+				withSynopsis(synopsisByID["run approve"]).
+				withHelp("approve an escalated gate (not yet implemented, HITL-7/#469)", runApproveHelp).
+				withExamples("goobers run approve <run-id> <stage>"),
+			runtimeSubcommand("run override", "override", "override", runRunOverride).
+				withSynopsis(synopsisByID["run override"]).
+				withHelp("force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)", runOverrideHelp).
+				withExamples("goobers run override <run-id> <stage>"),
+			runtimeSubcommand("run rerun", "rerun", "rerun", runRunRerun).
+				withSynopsis(synopsisByID["run rerun"]).
+				withHelp("rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)", runRerunHelp).
+				withExamples("goobers run rerun <run-id> <stage>"),
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
@@ -379,6 +391,10 @@ func init() {
 			withSynopsis(synopsisByID["push-branch"]).
 			withHelp("push the worktree's checked-out branch to origin (a workflow stage)", pushBranchHelp).
 			withExamples("goobers push-branch"),
+		command("check-fail-first", apicontract.ActionWorkflowExecution, runCheckFailFirst).
+			withSynopsis(synopsisByID["check-fail-first"]).
+			withHelp("enforce fail-first evidence for a new workflow gate (a workflow stage)", checkFailFirstHelp).
+			withExamples("goobers check-fail-first"),
 		command("open-pr", apicontract.ActionWorkflowExecution, runOpenPR).
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).

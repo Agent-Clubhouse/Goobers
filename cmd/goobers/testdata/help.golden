@@ -30,6 +30,9 @@ Usage:
                                 trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
+  goobers run approve <run-id> <stage> [path]  approve an escalated gate (not yet implemented, #469)
+  goobers run override <run-id> <stage> [path]  force-pass a nondeterministic gate (not yet implemented, #469)
+  goobers run rerun <run-id> <stage> [path]  rerun a stage with an instruction addendum (not yet implemented, #469)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
@@ -66,6 +69,7 @@ Usage:
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
+  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
@@ -149,6 +153,9 @@ Usage:
                                 trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
+  goobers run approve <run-id> <stage> [path]  approve an escalated gate (not yet implemented, #469)
+  goobers run override <run-id> <stage> [path]  force-pass a nondeterministic gate (not yet implemented, #469)
+  goobers run rerun <run-id> <stage> [path]  rerun a stage with an instruction addendum (not yet implemented, #469)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
@@ -185,6 +192,7 @@ Usage:
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
+  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
@@ -396,6 +404,19 @@ under claims.lock. A single-repository ledger uses #N (or PR #N); when
 multiple repositories are present, refs use owner/repo#N. --json emits a
 stable ordered array with ref, kind (issue or pull_request), and blockedBy.
 Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
+
+### check-fail-first
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
 
 ### claims
 Usage: goobers claims <command> [flags] [path]
@@ -896,14 +917,22 @@ Usage: goobers rebase-pr [path]
 
 Check out the selected PR's branch, attempt a rebase onto its base
 (force-with-lease is mandatory for the eventual push — never a bare
-push), and route on the result: a clean rebase with no substantive
-finding or failing CI force-pushes and clears goobers:needs-remediation;
-anything else (an unsafe conflict, substantive finding, or failing CI) needs the
-agentic remediation chain, reported via the needsAgent output for the
-workflow to route on. Requires selectedNumber/head/base
-(Task.InputsFrom gather-pr-context's own outputs) and
-hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =
-business error, 2 = usage/IO error.
+push), and route on the result: a clean rebase with no detected,
+policy-allowed cause force-pushes and clears goobers:needs-remediation;
+a detected cause the declared policy allows needs the agentic remediation
+chain, reported via the needsAgent output for the workflow to route on; a
+detected cause the policy excludes is left untouched for a human
+(policyExcluded/policyExcludedReason outputs — #941/PRR-6). Requires
+selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
+outputs) and hasSubstantiveFindings/hasFailingCI.
+
+remediate (input, default "conflict,substantive,failing-ci,behind-base,
+sibling-overlap") is a comma-separated policy naming which detected
+causes are allowed to trigger remediation; the shipped default is fully
+liberal. behind-base and sibling-overlap are accepted vocabulary but
+cannot fire yet (no detection reaches this stage's decision today).
+
+Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 
 ### reconcile-branches
 Usage: goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH] [path]
@@ -1014,6 +1043,16 @@ run.finished(status=aborted) event to its own journal (default path
 "."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 
+### run approve
+Usage: goobers run approve <run-id> <stage> [path]
+
+Approve an escalated human/reviewer gate, unblocking the run past it.
+Not yet implemented (HITL-4/#466) — this command is registered now so the
+CLI surface, the daemon API route, and the access-control seam (HITL-7/
+#469) are all in place before the real behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+
 ### run cancel
 Usage: goobers run cancel <run-id> [path]
 
@@ -1025,6 +1064,29 @@ journal behind its back. Use `run abort` instead when no daemon is running
 (that path finalizes a stuck run's journal directly). Exit codes: 0 =
 cancelled, 1 = business error (already terminal, not currently running, or
 no daemon to cancel it), 2 = usage/IO error (unknown run).
+
+### run override
+Usage: goobers run override <run-id> <stage> [path]
+
+Force-pass a nondeterministic gate with an operator-supplied rationale,
+overriding its own verdict. Not yet implemented (HITL-6/#468) — this
+command is registered now so the CLI surface, the daemon API route, and
+the access-control seam (HITL-7/#469) are all in place before the real
+behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+
+### run rerun
+Usage: goobers run rerun <run-id> <stage> [path]
+
+Re-enter an escalated run at one agentic task or reviewer gate with a
+one-off recorded instruction addendum. The underlying primitive already
+exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing
+outside the runner package calls it yet — this command is registered now
+so the CLI surface, the daemon API route, and the access-control seam
+(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
 
 ### runs
 Usage: goobers runs <command> [flags] [path]

@@ -118,6 +118,20 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Per-target-action-root write-boundary (TUT-A5/#1217). The Tutor's
+	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
+	// by default. When set, every file this run's branch changes must resolve
+	// into the SAME single declared action root (the comma/newline
+	// `actionRoots` input, e.g. "selfhost,skills") — a skill-authoring action
+	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
+	// CLOSED before the PR opens (configboundary.ConfineExclusive).
+	if providerInput("confineToActionRoots", "") == "true" {
+		if err := confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))); err != nil {
+			pf(stderr, "error: action write-boundary: %v\n", err)
+			return 1
+		}
+	}
+
 	if isTutorWorkflow(workflow) {
 		classification, err := classifyLocalTutorChanges(base)
 		if err != nil {

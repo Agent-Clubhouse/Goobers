@@ -34,6 +34,15 @@ const (
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
 	EventsPath                   = V1Prefix + "/events"
+
+	// Tier-2 human-intervention mutation routes (HITL-7/#469). Handler bodies
+	// are deliberate stubs today: the real gate-resolution and rerun
+	// primitives are #466/#468's scope. Landing the route surface now, wired
+	// through the same access-control seam every read route already uses,
+	// means #466/#468 only ever fill in a handler body later.
+	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
+	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
+	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -57,6 +66,10 @@ const (
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
 	RouteEvents                   RouteID = "events"
+
+	RouteApproveStage  RouteID = "approveStage"
+	RouteOverrideStage RouteID = "overrideStage"
+	RouteRerunStage    RouteID = "rerunStage"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -85,6 +98,10 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation},
+
+	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve"},
+	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override"},
+	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun"},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
@@ -262,11 +279,21 @@ type SurfaceRegistry struct {
 	Actions []SurfaceAction
 }
 
-var v1RuntimeCapabilities []Capability
+// v1RuntimeCapabilities lists V1's first runtime mutations (HITL-7/#469):
+// approve, override, and rerun. Every registered CLI/API/UI surface action
+// referencing one of these is a deliberate stub today (the real gate
+// resolution and rerun-wiring land separately, #466/#468) — this registry,
+// and ValidateRuntimeParity's enforcement of it, exist so every surface
+// stays in lockstep as those land, rather than drifting until a parity gap
+// is discovered late.
+var v1RuntimeCapabilities = []Capability{
+	{ID: "approve", Class: ActionRuntimeMutation},
+	{ID: "override", Class: ActionRuntimeMutation},
+	{ID: "rerun", Class: ActionRuntimeMutation},
+}
 
-// V1RuntimeCapabilities is intentionally empty: V1 has no runtime mutations,
-// while retaining the typed registry needed by future approve, override, and
-// rerun capabilities.
+// V1RuntimeCapabilities returns V1's registered runtime mutation
+// capabilities (HITL-7/#469): approve, override, and rerun.
 func V1RuntimeCapabilities() []Capability {
 	return slices.Clone(v1RuntimeCapabilities)
 }

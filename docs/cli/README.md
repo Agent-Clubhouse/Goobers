@@ -19,6 +19,7 @@
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
+| [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
@@ -68,7 +69,10 @@
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
+| [`goobers run approve`](#goobers-run-approve) | approve an escalated gate (not yet implemented, HITL-7/#469) |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
+| [`goobers run override`](#goobers-run-override) | force-pass a nondeterministic gate (not yet implemented, HITL-7/#469) |
+| [`goobers run rerun`](#goobers-run-rerun) | rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469) |
 | [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
 | [`goobers runs du`](#goobers-runs-du) | report per-run journal and artifact bytes |
 | [`goobers runs list`](#goobers-runs-list) | alias for the status run table (same flags, no --watch) |
@@ -379,6 +383,30 @@ Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~console
 $ goobers blocked list
 $ goobers blocked list --json
+~~~
+
+## `goobers check-fail-first`
+
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+
+~~~text
+Usage: goobers check-fail-first [path]
+
+Enforce TUT-A2's fail-first validation-authorship contract (#1214): any
+new Workflow gate this run's branch adds under workflows/*.yaml must be
+accompanied by fail-first evidence — a JSON file (default
+fail-first-evidence.json, override with the evidenceFile input) proving
+the new gate fails against the pre-change config and passes against the
+post-change config. A branch that adds no gate passes trivially.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = no new gate, or every new gate has valid fail-first
+evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-fail-first
 ~~~
 
 ## `goobers claims`
@@ -1308,14 +1336,22 @@ Usage: goobers rebase-pr [path]
 
 Check out the selected PR's branch, attempt a rebase onto its base
 (force-with-lease is mandatory for the eventual push — never a bare
-push), and route on the result: a clean rebase with no substantive
-finding or failing CI force-pushes and clears goobers:needs-remediation;
-anything else (an unsafe conflict, substantive finding, or failing CI) needs the
-agentic remediation chain, reported via the needsAgent output for the
-workflow to route on. Requires selectedNumber/head/base
-(Task.InputsFrom gather-pr-context's own outputs) and
-hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =
-business error, 2 = usage/IO error.
+push), and route on the result: a clean rebase with no detected,
+policy-allowed cause force-pushes and clears goobers:needs-remediation;
+a detected cause the declared policy allows needs the agentic remediation
+chain, reported via the needsAgent output for the workflow to route on; a
+detected cause the policy excludes is left untouched for a human
+(policyExcluded/policyExcludedReason outputs — #941/PRR-6). Requires
+selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
+outputs) and hasSubstantiveFindings/hasFailingCI.
+
+remediate (input, default "conflict,substantive,failing-ci,behind-base,
+sibling-overlap") is a comma-separated policy naming which detected
+causes are allowed to trigger remediation; the shipped default is fully
+liberal. behind-base and sibling-overlap are accepted vocabulary but
+cannot fire yet (no detection reaches this stage's decision today).
+
+Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1523,6 +1559,27 @@ run.finished(status=aborted) event to its own journal (default path
 $ goobers run abort <run-id>
 ~~~
 
+## `goobers run approve`
+
+approve an escalated gate (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run approve <run-id> <stage> [path]
+
+Approve an escalated human/reviewer gate, unblocking the run past it.
+Not yet implemented (HITL-4/#466) — this command is registered now so the
+CLI surface, the daemon API route, and the access-control seam (HITL-7/
+#469) are all in place before the real behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run approve <run-id> <stage>
+~~~
+
 ## `goobers run cancel`
 
 cancel a live in-flight run via the daemon
@@ -1544,6 +1601,51 @@ no daemon to cancel it), 2 = usage/IO error (unknown run).
 
 ~~~console
 $ goobers run cancel <run-id>
+~~~
+
+## `goobers run override`
+
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run override <run-id> <stage> [path]
+
+Force-pass a nondeterministic gate with an operator-supplied rationale,
+overriding its own verdict. Not yet implemented (HITL-6/#468) — this
+command is registered now so the CLI surface, the daemon API route, and
+the access-control seam (HITL-7/#469) are all in place before the real
+behavior lands.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run override <run-id> <stage>
+~~~
+
+## `goobers run rerun`
+
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
+
+~~~text
+Usage: goobers run rerun <run-id> <stage> [path]
+
+Re-enter an escalated run at one agentic task or reviewer gate with a
+one-off recorded instruction addendum. The underlying primitive already
+exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing
+outside the runner package calls it yet — this command is registered now
+so the CLI surface, the daemon API route, and the access-control seam
+(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.
+
+Exit codes: 1 = not yet implemented, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers run rerun <run-id> <stage>
 ~~~
 
 ## `goobers runs`

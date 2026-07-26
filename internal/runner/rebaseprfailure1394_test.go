@@ -58,6 +58,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 		}, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
 			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
+			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "false", "selectedNumber": "77",
