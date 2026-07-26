@@ -2536,6 +2536,41 @@ a.telemetry-error-row:hover {
   margin-bottom: 10px;
 }
 
+.run-stale-state {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted-strong);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 8px 10px;
+}
+
+.run-stale-state .loading-mark {
+  border-width: 1px;
+  flex: 0 0 auto;
+  height: 14px;
+  width: 14px;
+}
+
+.run-stale-state-error {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: inherit;
+  justify-content: space-between;
+}
+
+.run-stale-state-error > span {
+  display: grid;
+  gap: 2px;
+}
+
+.run-stale-state-error small {
+  color: var(--muted-strong);
+}
+
 .run-id {
   color: var(--muted);
   font-size: 9px;

@@ -38,6 +38,11 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
+    setState((current) =>
+      current.status === "ready" || current.status === "stale"
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
 
     return loadRunDetail(client, runId, controller.signal).then(
       (data) => {
@@ -57,10 +62,13 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         if (request.current === controller) {
           request.current = undefined;
         }
-        setState({
-          status: "error",
-          error: error instanceof Error ? error : new Error("Unable to read run detail."),
-        });
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read run detail.");
+        setState((current) =>
+          current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
         return false;
       },
     );
