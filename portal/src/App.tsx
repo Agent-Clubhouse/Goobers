@@ -199,13 +199,19 @@ function Portal({
         )}
         {route.page === "insight" && <InsightPage client={client} standalone={standalone} />}
         {route.page === "errors" && (
-          <ErrorsPage client={client} filters={route.filters} standalone={standalone} />
+          <ErrorsPage
+            client={client}
+            filters={route.filters}
+            key={routeHash(route)}
+            standalone={standalone}
+          />
         )}
         {route.page === "workflow" && route.gaggle && (
           <WorkflowPage
             client={client}
             configurationWarnings={configurationWarnings}
             gaggle={route.gaggle}
+            key={`${route.gaggle}/${route.id}`}
             navigate={navigate}
             standalone={standalone}
             workflowName={route.id}
