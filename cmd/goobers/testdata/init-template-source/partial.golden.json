@@ -14,5 +14,5 @@
     "manifest.yaml"
   ],
   "path": "$SOURCE",
-  "nextCommand": "goobers validate --source-tree --json \"$SOURCE\""
+  "nextCommand": "goobers validate --source-tree --json '$SOURCE'"
 }

@@ -22,18 +22,14 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 			name: "partial",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
-				if err := os.MkdirAll(root, 0o755); err != nil {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatalf("seed partial fixture: %v", err)
+				}
+				if err := os.Remove(filepath.Join(root, instance.GuidedSourceInstanceFile)); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("user-owned\n"), 0o644); err != nil {
+				if err := os.RemoveAll(filepath.Join(root, "gaggles")); err != nil {
 					t.Fatal(err)
-				}
-			},
-			check: func(t *testing.T, root string) {
-				t.Helper()
-				data, err := os.ReadFile(filepath.Join(root, "manifest.yaml"))
-				if err != nil || string(data) != "user-owned\n" {
-					t.Fatalf("existing manifest changed: data=%q err=%v", data, err)
 				}
 			},
 		},
@@ -100,6 +96,58 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 				assertQuickstartSourceValid(t, root)
 			}
 		})
+	}
+}
+
+func TestInitQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "config-source")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(root, "manifest.yaml")
+	if err := os.WriteFile(manifest, []byte("user-owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(
+		t,
+		"init",
+		"--template=quickstart",
+		"--source-tree",
+		root,
+		"--json",
+	)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "manifest.yaml differs from the quickstart template") {
+		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(manifest)
+	if err != nil || string(data) != "user-owned\n" {
+		t.Fatalf("conflicting manifest changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "config $HOME ' $(touch-pwned) `touch-pwned`")
+	code, stdout, stderr := runArgs(
+		t,
+		"init",
+		"--template=quickstart",
+		"--source-tree",
+		root,
+		"--json",
+	)
+	if code != 0 || stderr != "" {
+		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var envelope configSourceActionEnvelope
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout)
+	}
+	abs := absolutePath(root)
+	quotedAbs := "'" + strings.ReplaceAll(abs, "'", `'"'"'`) + "'"
+	want := "goobers validate --source-tree --json " + quotedAbs
+	if envelope.NextCommand != want {
+		t.Fatalf("nextCommand = %q, want %q", envelope.NextCommand, want)
 	}
 }
 

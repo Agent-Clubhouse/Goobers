@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"bytes"
 	"embed"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // starterFS embeds the valid configuration templates that init can seed into a
@@ -65,17 +67,15 @@ func InitQuickstart(root string) (*InitResult, error) {
 }
 
 // SeedQuickstartConfigSource creates the checked-in form of the quickstart
-// template without runtime state. Existing paths are preserved file by file.
+// template without runtime state. Identical files are preserved; conflicting
+// managed paths are rejected.
 func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
-	info, err := os.Stat(root)
-	if err == nil && !info.IsDir() {
-		return nil, fmt.Errorf("config source path %s is not a directory", root)
+	if root == "" {
+		return nil, errors.New("config source path is required")
 	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("inspect config source %s: %w", root, err)
-	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return nil, fmt.Errorf("create config source %s: %w", root, err)
+	root = filepath.Clean(root)
+	if err := prepareConfigSourceRoot(root); err != nil {
+		return nil, err
 	}
 
 	config, err := marshalConfig(defaultConfig())
@@ -97,16 +97,29 @@ func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
 		Created: []string{},
 		Skipped: []string{},
 	}
-	for _, file := range files {
-		created, err := writeConfigSeedFile(root, file)
+	existing := make([]bool, len(files))
+	for i, file := range files {
+		existing[i], err = inspectConfigSeedFile(root, file)
 		if err != nil {
 			return nil, fmt.Errorf("seed config source %s: %w", root, err)
 		}
-		if created {
-			result.Created = append(result.Created, file.path)
-		} else {
+		if existing[i] {
 			result.Skipped = append(result.Skipped, file.path)
 		}
+	}
+	for i, file := range files {
+		if existing[i] {
+			continue
+		}
+		if err := writeConfigSeedFile(root, file); err != nil {
+			return nil, fmt.Errorf("seed config source %s: %w", root, err)
+		}
+		result.Created = append(result.Created, file.path)
+	}
+	if _, report, err := LoadConfigDir(root); err != nil {
+		return nil, fmt.Errorf("validate seeded config source %s: %w (report: %+v)", root, err, report)
+	} else if report != nil && len(report.Issues) != 0 {
+		return nil, fmt.Errorf("validate seeded config source %s: validation reported findings: %+v", root, report.Issues)
 	}
 	return result, nil
 }
@@ -264,17 +277,122 @@ func copyConfig(dir, source string) error {
 	return nil
 }
 
-func writeConfigSeedFile(root string, file configSeedFile) (bool, error) {
-	target := filepath.Join(root, filepath.FromSlash(file.path))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return false, fmt.Errorf("create parent for %s: %w", file.path, err)
+func prepareConfigSourceRoot(root string) error {
+	info, err := os.Lstat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return fmt.Errorf("create config source %s: %w", root, err)
+		}
+		info, err = os.Lstat(root)
 	}
-	output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if errors.Is(err, fs.ErrExist) {
+	if err != nil {
+		return fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config source path %s must not be a symlink", root)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config source path %s is not a directory", root)
+	}
+	return nil
+}
+
+func inspectConfigSeedFile(root string, file configSeedFile) (bool, error) {
+	rel := filepath.FromSlash(file.path)
+	if !filepath.IsLocal(rel) {
+		return false, fmt.Errorf("managed path %s is not relative to the config source", file.path)
+	}
+	if err := inspectConfigSeedParents(root, filepath.Dir(rel)); err != nil {
+		return false, fmt.Errorf("inspect parent for %s: %w", file.path, err)
+	}
+	target := filepath.Join(root, rel)
+	info, err := os.Lstat(target)
+	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("create %s: %w", file.path, err)
+		return false, fmt.Errorf("inspect %s: %w", file.path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("managed path %s must not be a symlink", file.path)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("managed path %s must be a regular file", file.path)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", file.path, err)
+	}
+	if !bytes.Equal(data, file.data) {
+		return false, fmt.Errorf("managed file %s differs from the quickstart template; refusing to overwrite", file.path)
+	}
+	return true, nil
+}
+
+func inspectConfigSeedParents(root, relDir string) error {
+	if relDir == "." {
+		return nil
+	}
+	current := root
+	for _, part := range strings.Split(relDir, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s must not be a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func createConfigSeedParents(root, relDir string) error {
+	if relDir == "." {
+		return nil
+	}
+	current := root
+	for _, part := range strings.Split(relDir, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		err := os.Mkdir(current, 0o755)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s must not be a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func writeConfigSeedFile(root string, file configSeedFile) error {
+	rel := filepath.FromSlash(file.path)
+	target := filepath.Join(root, rel)
+	if err := createConfigSeedParents(root, filepath.Dir(rel)); err != nil {
+		return fmt.Errorf("create parent for %s: %w", file.path, err)
+	}
+	output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("create %s: destination changed after preflight", file.path)
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", file.path, err)
 	}
 	written, writeErr := output.Write(file.data)
 	if writeErr == nil && written != len(file.data) {
@@ -282,10 +400,10 @@ func writeConfigSeedFile(root string, file configSeedFile) (bool, error) {
 	}
 	closeErr := output.Close()
 	if writeErr == nil && closeErr == nil {
-		return true, nil
+		return nil
 	}
 	removeErr := os.Remove(target)
-	return false, errors.Join(
+	return errors.Join(
 		wrapConfigSeedFileError("write", file.path, writeErr),
 		wrapConfigSeedFileError("close", file.path, closeErr),
 		wrapConfigSeedFileError("remove incomplete", file.path, removeErr),
