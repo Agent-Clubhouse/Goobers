@@ -186,6 +186,68 @@ func TestRunnerRerunStageAppliesAddendumToOneAgenticTaskAttempt(t *testing.T) {
 	}
 }
 
+func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
+	const runID = "run-rerun-fan-in"
+	machine := rerunFanInMachine(t)
+	collator := &rerunTaskGoober{}
+	results := map[string]stubTaskResult{
+		runID + ":review-security": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "security"},
+		},
+		runID + ":review-performance": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "performance"},
+		},
+	}
+	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return collator, nil
+	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: results}, nil
+	})
+	r.cfg.ScratchDir = t.TempDir()
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+
+	started, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", started.Phase)
+	}
+
+	result, err := r.RerunStage(context.Background(), RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: repo, Stage: "collate",
+		Actor: "release-manager", InstructionAddendum: "Collate the completed branch reports.",
+	})
+	if err != nil {
+		t.Fatalf("RerunStage: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("rerun phase = %s, want completed", result.Phase)
+	}
+	if len(collator.invocations) != 2 {
+		t.Fatalf("collator invocations = %d, want 2", len(collator.invocations))
+	}
+	rerun := collator.invocations[1]
+	if got := rerun.Inputs["security"]; got != "security" {
+		t.Errorf("rerun security input = %#v, want security", got)
+	}
+	if got := rerun.Inputs["performance"]; got != "performance" {
+		t.Errorf("rerun performance input = %#v, want performance", got)
+	}
+	completeness, ok := rerun.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	if !ok || len(completeness) != 2 {
+		t.Fatalf("rerun branch completeness = %#v, want two outcomes", rerun.Inputs[BranchCompletenessInput])
+	}
+	for i, branch := range completeness {
+		if branch.Branch != i+1 || branch.Status != journal.BranchSucceeded {
+			t.Errorf("rerun completeness %d = %+v, want succeeded branch %d", i, branch, i+1)
+		}
+	}
+}
+
 func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	const addendum = "Do not block on the generated fixture."
 	machine := rerunGateMachine(t)
@@ -720,6 +782,47 @@ func rerunTaskMachineWithMaxAttempts(t *testing.T, maxAttempts int32) *workflow.
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile task rerun machine: %v", err)
+	}
+	return machine
+}
+
+func rerunFanInMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	branchTask := func(name string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			ExpectedOutputs: []string{"summary"},
+			Next:            workflow.TargetJoin,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "rerun-fan-in", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "fan",
+			Tasks: []apiv1.Task{
+				branchTask("review-security"),
+				branchTask("review-performance"),
+				{
+					Name: "collate", Type: apiv1.TaskAgentic, Goober: "collator", Goal: "collate branch reports",
+					InputsFrom: map[string]string{
+						"security":    "fan.security.review-security.summary",
+						"performance": "fan.performance.summary",
+					},
+					Next: workflow.TerminalComplete,
+				},
+			},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError, Join: "collate",
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "performance", Start: "review-performance"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile fan-in rerun machine: %v", err)
 	}
 	return machine
 }
