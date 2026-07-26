@@ -4,6 +4,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,6 +33,14 @@ type InitResult struct {
 	Skipped []string
 }
 
+// ConfigSourceSeedResult reports the quickstart source files that were created
+// or preserved.
+type ConfigSourceSeedResult struct {
+	Root    string
+	Created []string
+	Skipped []string
+}
+
 // Init scaffolds an instance root at root: instance.yaml, config/ (seeded
 // with a starter example), gaggles/, scheduler/, and a
 // telemetry.db placeholder (INST-010, ARCHITECTURE.md §6).
@@ -49,10 +58,57 @@ func InitDemo(root string) (*InitResult, error) {
 	return initWithConfig(root, demoDir, demoConfig())
 }
 
-// InitQuickstart scaffolds the versioned onboarding template: one manual
+// InitQuickstart scaffolds the versioned onboarding template: one linear
 // backlog-to-PR workflow with no production remediation or escalation paths.
 func InitQuickstart(root string) (*InitResult, error) {
 	return initWithConfig(root, quickstartDir, defaultConfig())
+}
+
+// SeedQuickstartConfigSource creates the checked-in form of the quickstart
+// template without runtime state. Existing paths are preserved file by file.
+func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
+	info, err := os.Stat(root)
+	if err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("config source path %s is not a directory", root)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("inspect config source %s: %w", root, err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("create config source %s: %w", root, err)
+	}
+
+	config, err := marshalConfig(defaultConfig())
+	if err != nil {
+		return nil, err
+	}
+	files := []configSeedFile{{
+		path: GuidedSourceInstanceFile,
+		data: config,
+	}}
+	templateFiles, err := embeddedConfigFiles(quickstartDir)
+	if err != nil {
+		return nil, fmt.Errorf("load quickstart template: %w", err)
+	}
+	files = append(files, templateFiles...)
+
+	result := &ConfigSourceSeedResult{
+		Root:    root,
+		Created: []string{},
+		Skipped: []string{},
+	}
+	for _, file := range files {
+		created, err := writeConfigSeedFile(root, file)
+		if err != nil {
+			return nil, fmt.Errorf("seed config source %s: %w", root, err)
+		}
+		if created {
+			result.Created = append(result.Created, file.path)
+		} else {
+			result.Skipped = append(result.Skipped, file.path)
+		}
+	}
+	return result, nil
 }
 
 func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error) {
@@ -161,24 +217,84 @@ func dirHasFiles(dir string) (bool, error) {
 	return len(entries) > 0, nil
 }
 
+type configSeedFile struct {
+	path string
+	data []byte
+}
+
+func embeddedConfigFiles(source string) ([]configSeedFile, error) {
+	var files []configSeedFile
+	err := fs.WalkDir(starterFS, source, func(filePath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, filePath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		data, err := starterFS.ReadFile(filePath)
+		if err != nil {
+			return err
+		}
+		files = append(files, configSeedFile{path: rel, data: data})
+		return nil
+	})
+	return files, err
+}
+
 // copyConfig extracts one embedded config tree into dir.
 func copyConfig(dir, source string) error {
-	return fs.WalkDir(starterFS, source, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
+	files, err := embeddedConfigFiles(source)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		target := filepath.Join(dir, filepath.FromSlash(file.path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
+		if err := os.WriteFile(target, file.data, 0o644); err != nil {
 			return err
 		}
-		target := filepath.Join(dir, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		data, err := starterFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o644)
-	})
+	}
+	return nil
+}
+
+func writeConfigSeedFile(root string, file configSeedFile) (bool, error) {
+	target := filepath.Join(root, filepath.FromSlash(file.path))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return false, fmt.Errorf("create parent for %s: %w", file.path, err)
+	}
+	output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("create %s: %w", file.path, err)
+	}
+	written, writeErr := output.Write(file.data)
+	if writeErr == nil && written != len(file.data) {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := output.Close()
+	if writeErr == nil && closeErr == nil {
+		return true, nil
+	}
+	removeErr := os.Remove(target)
+	return false, errors.Join(
+		wrapConfigSeedFileError("write", file.path, writeErr),
+		wrapConfigSeedFileError("close", file.path, closeErr),
+		wrapConfigSeedFileError("remove incomplete", file.path, removeErr),
+	)
+}
+
+func wrapConfigSeedFileError(action, filePath string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s %s: %w", action, filePath, err)
 }

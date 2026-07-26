@@ -44,6 +44,8 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (co
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt for repository, credentials, and workflows'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d 'Seed the template as a checked-in config source'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from goober' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from workflow' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from install' -l harness -r -a 'copilot claude generic' -d 'Harness adapter'

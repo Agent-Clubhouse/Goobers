@@ -1753,16 +1753,24 @@ func validateLoopbackListenAddress(address string) error {
 
 // WriteConfig marshals cfg as YAML and writes it to path.
 func WriteConfig(path string, cfg *Config) error {
-	jsonBytes, err := json.Marshal(cfg)
+	yamlBytes, err := marshalConfig(cfg)
 	if err != nil {
-		return fmt.Errorf("marshal instance config: %w", err)
-	}
-	yamlBytes, err := yaml.JSONToYAML(jsonBytes)
-	if err != nil {
-		return fmt.Errorf("marshal instance config: %w", err)
+		return err
 	}
 	if err := os.WriteFile(path, yamlBytes, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+func marshalConfig(cfg *Config) ([]byte, error) {
+	jsonBytes, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal instance config: %w", err)
+	}
+	yamlBytes, err := yaml.JSONToYAML(jsonBytes)
+	if err != nil {
+		return nil, fmt.Errorf("marshal instance config: %w", err)
+	}
+	return yamlBytes, nil
 }

@@ -15,7 +15,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         init)
-            flags+=" --demo --guided --template"
+            flags+=" --demo --guided --template --source-tree --json"
             ;;
         scaffold)
             case "${COMP_WORDS[2]:-}" in
