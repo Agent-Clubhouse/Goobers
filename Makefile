@@ -83,6 +83,14 @@ generate:
 manifests:
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
+## manifests-check: Fail if the committed CRD manifests drift from the CRD types.
+## The CRDs are a published contract — a field present in the Go types but absent
+## from the manifests is a contract that silently lies about the DSL. Mirrors
+## portal-contract's regenerate-then-diff guard.
+.PHONY: manifests-check
+manifests-check: manifests
+	git diff --exit-code -- config/crd/bases
+
 ## docs: Regenerate the committed CLI reference (docs/cli), man pages (docs/man),
 ## and shell completions (docs/completion) from the command registry, and the feature matrix (docs/feature-matrix.md)
 ## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and

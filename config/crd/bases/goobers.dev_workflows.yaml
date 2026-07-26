@@ -52,6 +52,24 @@ spec:
               displayName:
                 description: DisplayName is the human-facing name shown on the portal.
                 type: string
+              docsRoots:
+                description: |-
+                  DocsRoots declares the in-repo documentation roots this workflow is
+                  responsible for keeping current (docs-updater, epic #472/#1016). It is an
+                  ordered list of repo-relative paths — files or directories, e.g. "docs",
+                  "docs/design", "README.md", "ARCHITECTURE.md". When set it does two things:
+                  the docs-drift signal-gather stage (docs-churn, #1015) groups the churn it
+                  reports by whether a change landed under a declared root, and the write
+                  boundary confines the run's PR to these roots (mirrors the
+                  confineToConfigRoot/configRoot boundary open-pr already honors), so a docs
+                  run can never touch code. Same-repo, in-repo roots only in Phase 1;
+                  separate-repo / wiki sinks are their own gated children (#1019/#1020/#1021).
+                  A declared root must be non-empty, repo-relative, and must not escape the
+                  repository (validated at config-load); `goobers validate` additionally
+                  rejects a root that does not exist in the repository.
+                items:
+                  type: string
+                type: array
               gaggle:
                 description: Gaggle is the name of the Gaggle this workflow belongs
                   to (WF-003).
@@ -98,6 +116,15 @@ spec:
                           format: int32
                           minimum: 1
                           type: integer
+                        workspace:
+                          description: |-
+                            Workspace selects the filesystem workspace the reviewer evaluates in.
+                            Unset preserves the historical behaviour (a writable repo worktree).
+                          enum:
+                          - repo
+                          - scratch
+                          - repo-readonly
+                          type: string
                       required:
                       - goober
                       type: object
@@ -106,14 +133,15 @@ spec:
                         iff evaluator=automated.
                       properties:
                         check:
-                          description: Check names the coded check to run (e.g. "tests-pass",
-                            "coverage-gte").
+                          description: |-
+                            Check names a built-in coded check such as "status-equals",
+                            "output-numeric-lte", or "output-matches".
                           type: string
                         params:
                           additionalProperties:
                             type: string
-                          description: 'Params parameterize the check (e.g. {"threshold":
-                            "80"}).'
+                          description: 'Params parameterize the check (e.g. {"key":
+                            "coverage", "threshold": "80"}).'
                           type: object
                         pollIntervalSeconds:
                           description: |-
@@ -156,7 +184,9 @@ spec:
                         type: string
                       description: |-
                         Branches maps an outcome to the next state name. Supports more than two
-                        branches (GT-004). The "pass" key is the success branch.
+                        branches (GT-004). The "pass" key is the success branch. The optional
+                        "escalate" control branch routes runner-forced escalation through a
+                        workflow state; when absent, escalation terminates at @escalate.
                       type: object
                     evaluator:
                       description: Evaluator selects the pluggable evaluator kind.
@@ -198,6 +228,96 @@ spec:
                   - name
                   type: object
                 type: array
+              parallels:
+                description: |-
+                  Parallels are the fan-out/fan-in states of the machine: a parallel forks
+                  the run into a statically-declared set of named branches and joins them at
+                  a single successor once every branch has settled
+                  (docs/design/static-fan-out-fan-in.md).
+                items:
+                  description: |-
+                    Parallel is a fan-out/fan-in state. Branch width is fixed at author time;
+                    dynamic (data-driven) width is deliberately not supported (#817).
+                  properties:
+                    branchTimeoutSeconds:
+                      description: |-
+                        BranchTimeoutSeconds bounds one branch. A branch exceeding it terminates
+                        at its next stage boundary, is recorded timed-out, and is then handled as
+                        a failure under the declared policy — so a branch that never settles is a
+                        defined outcome rather than a hang.
+                      format: int32
+                      type: integer
+                    branches:
+                      description: |-
+                        Branches are the statically-declared arms, at least two. Branch ids are
+                        assigned by declaration order (from 1; 0 is the run's root branch), so
+                        they are deterministic and reproducible across runs and runners.
+                      items:
+                        description: |-
+                          Branch is one statically-declared arm of a Parallel. Its body is ordinary
+                          tasks and gates declared in the same Tasks/Gates lists; a branch is not a
+                          nested scope but a named entry point into a subgraph the compiler proves is
+                          disjoint from every other branch's.
+                        properties:
+                          name:
+                            description: |-
+                              Name identifies the branch in journal events, the completeness record,
+                              and branch-qualified inputsFrom references. Unique within its parallel.
+                            type: string
+                          start:
+                            description: Start is the name of the branch's first state
+                              (task or gate).
+                            type: string
+                        required:
+                        - name
+                        - start
+                        type: object
+                      minItems: 2
+                      type: array
+                    failurePolicy:
+                      description: FailurePolicy declares what happens when a branch
+                        fails. Required.
+                      enum:
+                      - fail_fast
+                      - all_or_nothing
+                      - continue_on_error
+                      type: string
+                    join:
+                      description: |-
+                        Join is the state that runs exactly once, after every branch has settled.
+                        It may only be entered through this parallel.
+                      type: string
+                    maxConcurrentBranches:
+                      description: |-
+                        MaxConcurrentBranches bounds how many branches execute at once. Unset
+                        means 1 — deterministic sequential execution unless the author opts into
+                        concurrency. Concurrent repo-backed branches additionally require the
+                        read-only workspace mode, because every stage worktree is otherwise
+                        created on one run branch and git forbids two worktrees on one branch.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    name:
+                      description: |-
+                        Name identifies this state; it is a valid next/branches target like any
+                        other state name.
+                      type: string
+                    onFailure:
+                      description: |-
+                        OnFailure is the transition target when the policy is fail_fast or
+                        all_or_nothing and a branch failed — a state name or a reserved terminal
+                        target, so failure is always a defined branch and never a silent stop
+                        (mirroring GT-002). Required for those two policies and FORBIDDEN under
+                        continue_on_error, where the join always runs and owns the decision;
+                        declaring both would name two contradictory owners of the same failure.
+                      type: string
+                  required:
+                  - branches
+                  - failurePolicy
+                  - join
+                  - name
+                  type: object
+                type: array
               readiness:
                 description: Readiness bounds when a run may start (WF-011).
                 properties:
@@ -213,10 +333,44 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
-                  maxRunsPerHour:
-                    description: MaxRunsPerHour is a run budget that bounds emergent
-                      chains (WF-015).
+                  maxOpenPRs:
+                    description: |-
+                      MaxOpenPRs caps how many un-merged PRs this workflow's runs may leave open
+                      at once (#353). A looped implementation workflow branches every run off
+                      origin/main; once several unmerged sibling PRs touch overlapping files they
+                      become mutually un-mergeable as a set (the V0.3 ladder hit this). Gating
+                      dispatch on the count of the workflow's own open PRs keeps the loop
+                      merge-paced and the open set integrable, WITHOUT the runner doing cross-PR
+                      rebase/conflict resolution — that is V0.5's merge-review/pr-remediation
+                      layer (epic #357). Enforced as a readiness condition at admit time. 0 (the
+                      default) disables the cap, so it is opt-in: only a PR-producing workflow
+                      (implementation) sets it — capping curation/nomination, which open no PRs,
+                      would wrongly block them on an unrelated open implementation PR.
                     format: int32
+                    type: integer
+                  maxRunsPerDay:
+                    description: |-
+                      MaxRunsPerDay is a native daily run budget (#340), enforced the same
+                      way as MaxRunsPerHour over a rolling 24h window. Before this field
+                      existed, a daily ceiling could only be faked by combining a specific
+                      cron cadence with MaxRunsPerHour (e.g. 2x/day cadence x
+                      maxRunsPerHour:1 = a ceiling of 2/day) — fragile and impossible to
+                      reason about without mentally multiplying schedule-fires-per-day by
+                      the hourly cap. Unset (0) means no daily cap — unlike MaxRunsPerHour,
+                      this has no non-zero spec default, since MaxRunsPerHour's own default
+                      already provides a baseline guardrail.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxRunsPerHour:
+                    default: 10
+                    description: |-
+                      MaxRunsPerHour is a run budget that bounds emergent chains (WF-015).
+                      Unset falls back to a spec default of 10 (internal/localscheduler's
+                      Conditions.Admit), not "unenforced" — every workflow gets some
+                      guardrail against a runaway chain out of the box (#339).
+                    format: int32
+                    minimum: 1
                     type: integer
                 type: object
               start:
@@ -230,6 +384,15 @@ spec:
                     Task is a state in the workflow's state machine — the smallest unit of work the
                     engine tracks. It is exactly one of deterministic or agentic (TSK-002).
                   properties:
+                    capabilities:
+                      description: |-
+                        Capabilities are the capability grants this stage uses (e.g.
+                        "github:issues:write", "repo:push"). For an agentic stage they MUST be a
+                        subset of the invoked goober's granted capabilities; the compiler fails
+                        closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
+                      items:
+                        type: string
+                      type: array
                     continueOnError:
                       description: |-
                         ContinueOnError makes a ResultFailure best-effort: the failed status is
@@ -238,8 +401,9 @@ spec:
                         discarded so downstream tasks cannot consume partial results.
                       type: boolean
                     expectedOutputs:
-                      description: ExpectedOutputs are postconditions downstream gates
-                        can validate (TSK-003).
+                      description: |-
+                        ExpectedOutputs declares intended task postconditions. The V0 local runner
+                        accepts but does not enforce this field; validation emits VER003 when set.
                       items:
                         type: string
                       type: array
@@ -257,6 +421,23 @@ spec:
                       description: |-
                         Inputs are static, task-specific inputs merged into the invocation
                         envelope's inputs blob at runtime.
+                      type: object
+                    inputsFrom:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        InputsFrom declares an explicit, small output->input handoff from the
+                        immediately preceding task's ResultEnvelope.Outputs into this task's
+                        Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
+                        every upstream Output key flattened automatically, per
+                        internal/gate/automated.go's runner-contract convention — a gate never
+                        mutates run state, so a wide-open read is safe), a task-to-task handoff
+                        can feed a stage's actual behavior, so it requires an explicit
+                        declaration per key rather than blanket propagation — an auditable,
+                        named data-flow edge in the DSL instead of an implicit wide-open
+                        channel between arbitrary tasks. A declared outputKey missing from the
+                        preceding task's Outputs fails the stage closed (the declaration is a
+                        contract, not a hint).
                       type: object
                     limits:
                       description: |-
@@ -292,7 +473,8 @@ spec:
                       description: |-
                         OnTimeout selects what the runner does when this stage's agentic session
                         hits its wall-clock timeout. Empty or "fail" (the default) discards the
-                        timed-out attempt and lets Task.Retry run, failing the run once the budget is exhausted —
+                        timed-out attempt and lets Task.Retry run, failing the run once the budget
+                        is exhausted —
                         historically this discarded real, in-progress work whose only remaining
                         step was CI (#724). "salvage" instead checks the run branch for a viable
                         committed diff and, if present, completes the stage with that diff so the
@@ -316,6 +498,44 @@ spec:
                       items:
                         type: string
                       type: array
+                    requiredCapabilities:
+                      description: |-
+                        RequiredCapabilities are the runner (toolchain/platform) capabilities this
+                        stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
+                        `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct
+                        from Capabilities above: those are credential grants validated against the
+                        canonical internal/capability registry, whereas these are free-form,
+                        version-parameterized runner claims matched at *schedule* time against a
+                        runner's advertised capability set. A run is refused at schedule with a
+                        diagnostic naming the missing capability when the runner does not claim
+                        every entry (across every stage of the workflow plus its gaggle's own
+                        RequiredCapabilities). Empty imposes no requirement.
+                      items:
+                        type: string
+                      type: array
+                    retry:
+                      description: |-
+                        Retry declares how the runner retries this stage on failure. Retries are a
+                        runner concern (WF-021): the policy is data, not behavior, so the compiled
+                        machine stays deterministic. A retried attempt appears in the journal as a
+                        new attempt, never overwritten history.
+                      properties:
+                        backoffSeconds:
+                          description: BackoffSeconds is the constant delay between
+                            attempts, in seconds.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxAttempts:
+                          description: |-
+                            MaxAttempts is the total number of attempts including the first (>=1). 1
+                            means no retry.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      required:
+                      - maxAttempts
+                      type: object
                     run:
                       description: |-
                         Run defines the code to execute for a deterministic task. Required when
@@ -383,6 +603,21 @@ spec:
                       - deterministic
                       - agentic
                       type: string
+                    workspace:
+                      description: |-
+                        Workspace selects the filesystem workspace for this stage, for stages
+                        that cannot express it through Run — i.e. AGENTIC tasks, which have no
+                        DeterministicRun and were previously hardcoded to the writable repo
+                        worktree. A deterministic task should keep using Run.Workspace, which
+                        takes precedence when both are set.
+
+                        The motivating case is repo-readonly for an agentic research stage
+                        inside a parallel branch (docs/design/static-fan-out-fan-in.md §6.5).
+                      enum:
+                      - repo
+                      - scratch
+                      - repo-readonly
+                      type: string
                   required:
                   - goal
                   - name
@@ -406,6 +641,13 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    labelPredicate:
+                      description: |-
+                        LabelPredicate is a CEL expression over the item's label set. The only
+                        supported operations are string membership in `labels` and boolean
+                        composition with &&, ||, and !. It is ANDed with Selector.
+                      minLength: 1
+                      type: string
                     priority:
                       description: |-
                         Priority orders provider-backed polling when a quota window cannot cover
@@ -417,13 +659,6 @@ spec:
                       description: |-
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
                         type=schedule.
-                      type: string
-                    labelPredicate:
-                      description: |-
-                        LabelPredicate is a CEL expression over the item's label set. The only
-                        supported operations are string membership in `labels` and boolean
-                        composition with &&, ||, and !. It is ANDed with Selector.
-                      minLength: 1
                       type: string
                     selector:
                       additionalProperties:
@@ -455,6 +690,33 @@ spec:
                 x-kubernetes-validations:
                 - message: type=manual must be the only trigger
                   rule: '!self.exists(t, t.type == ''manual'') || size(self) == 1'
+              tutorScope:
+                description: |-
+                  TutorScope declares this workflow as a Tutor-role definition and names
+                  its topology tier (TUT-A4, Tutor v2 design doc §4.3): every tutor is
+                  already confined to one gaggle via Gaggle above (the hard silo — there
+                  is no cross-gaggle tutor), and TutorScope additionally states whether
+                  this particular tutor's config-write is further confined to one target
+                  workflow's own subtree (Tier=per-workflow, persona/gate/wiring) or
+                  spans the whole gaggle's shared config (Tier=per-gaggle, shared
+                  skills/validation/structure). Unset means this workflow is not a
+                  tutor.
+                properties:
+                  target:
+                    description: |-
+                      Target names the workflow this per-workflow tutor is scoped to. It
+                      must reference a workflow in the same gaggle. Required when Tier is
+                      per-workflow; must be empty when Tier is per-gaggle.
+                    type: string
+                  tier:
+                    description: Tier is per-workflow or per-gaggle.
+                    enum:
+                    - per-workflow
+                    - per-gaggle
+                    type: string
+                required:
+                - tier
+                type: object
             required:
             - gaggle
             - start

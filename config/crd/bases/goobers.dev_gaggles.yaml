@@ -66,6 +66,21 @@ spec:
                       description: Branch is the default branch goober runs check
                         out and target.
                       type: string
+                    checkout:
+                      description: |-
+                        Checkout narrows how much of the repository run workspaces materialize
+                        (B2, #649). Accepted but not honored by the local runner yet: declaring
+                        it is inert and surfaces a VER003 compatibility warning at validate time.
+                      properties:
+                        sparse:
+                          description: |-
+                            Sparse lists repo-relative path cones a sparse checkout materializes;
+                            paths outside every cone are absent from run workspaces. Empty means a
+                            full checkout.
+                          items:
+                            type: string
+                          type: array
+                      type: object
                     connectionRef:
                       description: |-
                         ConnectionRef names the connection (and thus credentials) used to reach
@@ -79,7 +94,8 @@ spec:
                         organization).
                       type: string
                     project:
-                      description: Project is the Azure DevOps project. It is omitted for GitHub.
+                      description: Project is the Azure DevOps project. It is omitted
+                        for GitHub.
                       type: string
                     provider:
                       description: |-
@@ -147,6 +163,21 @@ spec:
                   branches in distinct namespaces; a value with no trailing "/" is treated as
                   if it had one. Most gaggles omit it and share the default.
                 type: string
+              ciCommand:
+                description: |-
+                  CICommand is the local CI-equivalent command (build + lint + tests) this
+                  gaggle's deterministic `local-ci` stage runs in place of the command that
+                  stage declares (the Go default `["make","ci"]`), so a foreign, non-Go
+                  gaggle can gate its PRs on its own stack's suite (e.g.
+                  `["npm","run","ci"]`, `["dotnet","test"]`) without rewriting the shared
+                  workflow template (MGV-1/#1009, docs/design/v1/multi-gaggle-validation.md
+                  §G2). Empty leaves the `local-ci` stage's declared command untouched, so a
+                  single Go gaggle behaves exactly as before. A non-zero exit fails the gate
+                  exactly as `make ci` does today, and a bad command only ever fails this
+                  gaggle's own PRs — never another gaggle's.
+                items:
+                  type: string
+                type: array
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.
@@ -176,6 +207,21 @@ spec:
                     description: Branch is the default branch goober runs check out
                       and target.
                     type: string
+                  checkout:
+                    description: |-
+                      Checkout narrows how much of the repository run workspaces materialize
+                      (B2, #649). Accepted but not honored by the local runner yet: declaring
+                      it is inert and surfaces a VER003 compatibility warning at validate time.
+                    properties:
+                      sparse:
+                        description: |-
+                          Sparse lists repo-relative path cones a sparse checkout materializes;
+                          paths outside every cone are absent from run workspaces. Empty means a
+                          full checkout.
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   connectionRef:
                     description: |-
                       ConnectionRef names the connection (and thus credentials) used to reach
@@ -189,7 +235,8 @@ spec:
                       organization).
                     type: string
                   project:
-                    description: Project is the Azure DevOps project. It is omitted for GitHub.
+                    description: Project is the Azure DevOps project. It is omitted
+                      for GitHub.
                     type: string
                   provider:
                     description: |-
@@ -203,6 +250,39 @@ spec:
                 - name
                 - owner
                 - provider
+                type: object
+              requiredCapabilities:
+                description: |-
+                  RequiredCapabilities are the runner (toolchain/platform) capabilities every
+                  run of this gaggle needs on the runner it executes on — e.g. `dotnet@8`,
+                  `xcode`, `os=windows` (RRQ-1/#1101,
+                  docs/design/v1/polyglot-stacks.md §5). These are NOT the credential grants
+                  a Task declares (`internal/capability`, `repo:push` &c.): they are
+                  free-form, version-parameterized claims a runner advertises statically
+                  (instance.yaml `runner.capabilities`). The scheduler fails a run to
+                  schedule — with a diagnostic naming the missing capability — when the
+                  runner does not claim every entry here; a runner that falsely claims one it
+                  lacks degrades to a runtime error, which the scheduler does not prevent.
+                  Empty imposes no requirement, so an instance that declares none schedules
+                  exactly as today.
+                items:
+                  type: string
+                type: array
+              sandbox:
+                description: |-
+                  Sandbox overrides the instance-wide isolation posture for this gaggle's
+                  agentic stages (#1305). Effective posture is gaggle override, else the
+                  instance.yaml sandbox block, else disabled — sandboxing is strictly
+                  opt-in, so a gaggle that omits this behaves exactly as before.
+                properties:
+                  agentic:
+                    description: |-
+                      Agentic is the posture for agentic stages: "disabled" or "enforced".
+                      Empty inherits the instance-wide posture.
+                    enum:
+                    - disabled
+                    - enforced
+                    type: string
                 type: object
             required:
             - backlog
