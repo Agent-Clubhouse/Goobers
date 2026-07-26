@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
@@ -156,6 +157,41 @@ func TestBacklogPollTriggerAppliesExactLabelPredicate(t *testing.T) {
 	}
 	if len(fb.listReq.Labels) != 1 || fb.listReq.Labels[0] != "area:runner" {
 		t.Fatalf("provider optimization labels = %v, want [area:runner]", fb.listReq.Labels)
+	}
+}
+
+func TestBacklogPollTriggerAppliesExactFieldPredicate(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["number"] >= 2`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	fb := &fakeBacklog{items: []providers.WorkItem{
+		{Provider: providers.ProviderGitHub, ID: "1", Fields: fieldpredicate.Fields{"number": int64(1)}},
+		{Provider: providers.ProviderGitHub, ID: "2", Fields: fieldpredicate.Fields{"number": int64(2)}},
+	}}
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Unix(0, 0)
+	close(ticks)
+	out := make(chan Event, len(fb.items))
+	tr := BacklogPollTrigger{
+		WorkflowName:   "flow",
+		Provider:       fb,
+		Repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		FieldPredicate: predicate,
+		Ticks:          ticks,
+		Limit:          10,
+	}
+	if err := tr.Watch(context.Background(), out); err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	close(out)
+
+	event := <-out
+	if event.Item == nil || event.Item.ID != "2" {
+		t.Fatalf("event item = %+v, want matching item 2", event.Item)
+	}
+	if extra, ok := <-out; ok {
+		t.Fatalf("unexpected extra event: %+v", extra)
 	}
 }
 

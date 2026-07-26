@@ -248,6 +248,120 @@ spec:
 	}
 }
 
+func TestFieldSelectionsValidatedAtConfigLoad(t *testing.T) {
+	valid := `fields["number"] >= 10 && fields["state"] == "open"`
+	tests := []struct {
+		name             string
+		gagglePredicate  string
+		triggerPredicate string
+		taskPredicate    string
+		fieldOrder       string
+		want             string
+	}{
+		{
+			name:             "valid field selection",
+			gagglePredicate:  valid,
+			triggerPredicate: valid,
+			taskPredicate:    valid,
+			fieldOrder:       "milestone.number:desc,number:asc",
+		},
+		{
+			name:            "invalid gaggle predicate",
+			gagglePredicate: `fields.number == 10`,
+			want:            "spec.backlog.fieldPredicate is invalid",
+		},
+		{
+			name:             "invalid trigger predicate",
+			triggerPredicate: `fields["number"] + 1 == 10`,
+			want:             "spec.triggers[0].fieldPredicate is invalid",
+		},
+		{
+			name:          "invalid task predicate",
+			taskPredicate: `fields["number"]`,
+			want:          "spec.tasks[0].inputs.fieldPredicate is invalid",
+		},
+		{
+			name:       "invalid field order",
+			fieldOrder: "priority:sideways",
+			want:       "spec.tasks[0].inputs.fieldOrder is invalid",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			field := func(indent, name, value string) string {
+				if value == "" {
+					return ""
+				}
+				return fmt.Sprintf("%s%s: %q\n", indent, name, value)
+			}
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: local
+spec:
+  instance:
+    name: local
+    environment: dev
+  gaggles: [acme]
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+%s  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: select
+spec:
+  gaggle: acme
+  triggers:
+    - type: backlog-item
+%s  start: query
+  tasks:
+    - name: query
+      type: deterministic
+      goal: Query matching backlog items.
+      run:
+        command: ["goobers", "backlog-query"]
+      inputs:
+%s%s`, field("    ", "fieldPredicate", tt.gagglePredicate),
+				field("      ", "fieldPredicate", tt.triggerPredicate),
+				field("        ", "fieldPredicate", tt.taskPredicate),
+				field("        ", "fieldOrder", tt.fieldOrder))
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			issues := joinIssues(report)
+			if tt.want == "" {
+				if report.HasErrors() {
+					t.Fatalf("valid field selection reported errors:\n%s", issues)
+				}
+				return
+			}
+			if !report.HasErrors() || !strings.Contains(issues, tt.want) {
+				t.Fatalf("issues = %q, want error containing %q", issues, tt.want)
+			}
+		})
+	}
+}
+
 // TestCanonicalConfigIsGAWithoutPreviewOptIn is the #1196 regression: the
 // canonical DSL surface that guided-init scaffolds and /config-examples model
 // must validate with NO VER002 preview findings even without the preview

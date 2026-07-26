@@ -65,6 +65,7 @@ func TestGaggleRoundTrip(t *testing.T) {
 			Backlog: BacklogRef{
 				Provider: ProviderGitHub, Project: "acme/web", Labels: []string{"goobers"},
 				LabelPredicate: `"area:web" in labels && !("platform:windows" in labels)`,
+				FieldPredicate: `fields["milestone.title"] == "V1"`,
 				ConnectionRef:  "github-backlog",
 			},
 			Isolation: GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
@@ -113,6 +114,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 				Type:           TriggerBacklogItem,
 				Selector:       map[string]string{"goobers": "true"},
 				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+				FieldPredicate: `fields["number"] >= 100`,
 				Priority:       10,
 			}},
 			Readiness: ReadinessConditions{MaxConcurrentRuns: 2, MaxRunsPerHour: 10, MaxChainDepth: 3},

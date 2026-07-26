@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
 // errADOBacklogV1 marks the extended backlog operations that reach ADO parity in
@@ -557,6 +559,13 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		if err != nil {
 			return nil, err
 		}
+		if !matched {
+			continue
+		}
+		matched, err = req.MatchesFieldPredicate(item.Fields)
+		if err != nil {
+			return nil, err
+		}
 		if hasAllLabels(item.Labels, req.Labels) && matched {
 			items = append(items, item)
 			if !boundedScan && req.Limit > 0 && len(items) >= req.Limit {
@@ -1053,8 +1062,26 @@ func mapADOWorkItem(item adoWorkItem) WorkItem {
 		Hierarchy:  hierarchy,
 		URL:        item.URL,
 		UpdatedAt:  updated,
+		Fields:     adoWorkItemFields(item),
 		Raw:        item,
 	}
+}
+
+func adoWorkItemFields(item adoWorkItem) fieldpredicate.Fields {
+	fields := fieldpredicate.Fields{
+		"System.Id":  int64(item.ID),
+		"System.Rev": int64(item.Rev),
+	}
+	for name, value := range item.Fields {
+		switch value.(type) {
+		case string, bool,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64:
+			fields[name] = value
+		}
+	}
+	return fields
 }
 
 func adoLabels(tags string) []string {

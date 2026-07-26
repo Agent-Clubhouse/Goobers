@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -69,7 +70,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
 	"labelPredicate CEL expression. CEL supports string membership in `labels`\n" +
-	"combined with &&, ||, and !. With --claim, claims\n" +
+	"combined with &&, ||, and !. fieldPredicate adds typed comparisons against\n" +
+	"provider-native scalar fields using fields[\"name\"]; unavailable fields fail\n" +
+	"explicitly. With --claim, claims\n" +
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
@@ -99,7 +102,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"carrying only a later one or none at all; FIFO still breaks ties within\n" +
 	"a priority tier. An item carrying more than one listed label ranks by\n" +
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
-	"preserves plain FIFO exactly.\n\n" +
+	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
+	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -155,6 +159,18 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	labelFilter, err := labelpredicate.Compile(labelExpression, requireLabels, excludeLabels)
 	if err != nil {
 		pf(stderr, "error: invalid labelPredicate: %v\n", err)
+		return 1
+	}
+	fieldExpression := providerInput("fieldPredicate", "")
+	fieldFilter, err := fieldpredicate.Compile(fieldExpression)
+	if err != nil {
+		pf(stderr, "error: invalid fieldPredicate: %v\n", err)
+		return 1
+	}
+	fieldOrderExpression := providerInput("fieldOrder", "")
+	fieldOrder, err := fieldpredicate.ParseOrder(fieldOrderExpression)
+	if err != nil {
+		pf(stderr, "error: invalid fieldOrder: %v\n", err)
 		return 1
 	}
 	// selectionPriority is #1335's opt-in priority contract: an ordered label
@@ -265,15 +281,20 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	labels = append(labels, labelFilter.RequiredLabels()...)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	cursorPath := backlogScanCursorPath(
-		l.SchedulerDir(), repo, trustLabel, labelExpression, requireLabels, excludeLabels,
+		l.SchedulerDir(), repo, trustLabel, labelExpression, fieldExpression,
+		requireLabels, excludeLabels,
 	)
-	scanCursor, err := readBacklogScanCursor(lockPath, cursorPath)
-	if err != nil {
-		pf(stderr, "error: read backlog scan cursor: %v\n", err)
-		return 1
+	exhaustiveScan := fieldOrder.Configured()
+	scanCursor := backlogScanCursor{}
+	if !exhaustiveScan {
+		scanCursor, err = readBacklogScanCursor(lockPath, cursorPath)
+		if err != nil {
+			pf(stderr, "error: read backlog scan cursor: %v\n", err)
+			return 1
+		}
 	}
 	items, nextScanCursor, err := listBacklogScanWindow(
-		ctx, issueProvider, repo, labels, scanLimit, scanCursor,
+		ctx, issueProvider, repo, labels, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
@@ -290,6 +311,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		matched, matchErr := labelFilter.Matches(item.Labels)
 		if matchErr != nil {
 			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched {
+			continue
+		}
+		matched, matchErr = fieldFilter.Matches(item.Fields)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
 			return 1
 		}
 		if !matched {
@@ -377,7 +406,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// FIFO still breaks ties within a tier, and an unconfigured
 	// selectionPriority ranks every item identically, so behavior is
 	// byte-identical to plain FIFO until an operator opts in.
-	sortEligibleFIFO(eligible, selectionPriority)
+	if err := sortEligibleByFields(eligible, selectionPriority, fieldOrder); err != nil {
+		pf(stderr, "error: apply fieldOrder: %v\n", err)
+		return 1
+	}
 
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
@@ -850,27 +882,29 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 	return out
 }
 
-// sortEligibleFIFO orders items ascending by numeric ID in place — both
-// GitHubProvider and ADOProvider mint WorkItem.ID as strconv.Itoa of the
-// issue/work-item number, which is monotonically increasing with creation
-// order, so this is exactly "oldest filed first" without needing a
-// dedicated CreatedAt field or per-provider sort-parameter wiring (#350).
-// A non-numeric ID (a future provider whose IDs don't work this way) falls
-// back to a stable lexical compare rather than leaving that item's relative
-// position to whatever order the provider happened to return it in.
-// sortEligibleFIFO orders items by opt-in priority tier (priorityLabels,
-// #1335: an ordered label list, highest priority first), then ascending by
-// numeric ID within a tier — the starvation-safe FIFO baseline every claim
-// order still falls back to for tie-breaking. An item carrying more than one
-// priorityLabels entry ranks by whichever entry appears earliest in
-// priorityLabels, a deterministic precedence rather than an ambiguous one.
-// priorityLabels empty (the default) ranks every item identically, so an
-// unconfigured instance's claim order is byte-identical to plain FIFO.
-func sortEligibleFIFO(items []providers.WorkItem, priorityLabels []string) {
+// sortEligibleByFields applies opt-in label priority, then native-field
+// ordering, then the starvation-safe numeric-ID FIFO baseline.
+func sortEligibleByFields(items []providers.WorkItem, priorityLabels []string, fieldOrder fieldpredicate.Order) error {
+	fieldSets := make([]fieldpredicate.Fields, len(items))
+	for i := range items {
+		fieldSets[i] = items[i].Fields
+	}
+	if err := fieldOrder.Validate(fieldSets); err != nil {
+		return err
+	}
+	var compareErr error
 	sort.SliceStable(items, func(i, j int) bool {
 		ri, rj := itemPriorityRank(items[i], priorityLabels), itemPriorityRank(items[j], priorityLabels)
 		if ri != rj {
 			return ri < rj
+		}
+		comparison, err := fieldOrder.Compare(items[i].Fields, items[j].Fields)
+		if err != nil {
+			compareErr = err
+			return false
+		}
+		if comparison != 0 {
+			return comparison < 0
 		}
 		ni, iOK := parseWorkItemID(items[i].ID)
 		nj, jOK := parseWorkItemID(items[j].ID)
@@ -879,6 +913,7 @@ func sortEligibleFIFO(items []providers.WorkItem, priorityLabels []string) {
 		}
 		return items[i].ID < items[j].ID
 	})
+	return compareErr
 }
 
 // itemPriorityRank reports item's priority tier: the index of the first
@@ -902,21 +937,23 @@ func parseWorkItemID(id string) (int64, bool) {
 func backlogScanCursorPath(
 	schedulerDir string,
 	repo providers.RepositoryRef,
-	trustLabel, expression string,
+	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
 ) string {
 	key, _ := json.Marshal(struct {
-		Repository    providers.RepositoryRef `json:"repository"`
-		TrustLabel    string                  `json:"trustLabel,omitempty"`
-		Expression    string                  `json:"expression,omitempty"`
-		RequireLabels []string                `json:"requireLabels,omitempty"`
-		ExcludeLabels []string                `json:"excludeLabels,omitempty"`
+		Repository      providers.RepositoryRef `json:"repository"`
+		TrustLabel      string                  `json:"trustLabel,omitempty"`
+		Expression      string                  `json:"expression,omitempty"`
+		FieldExpression string                  `json:"fieldExpression,omitempty"`
+		RequireLabels   []string                `json:"requireLabels,omitempty"`
+		ExcludeLabels   []string                `json:"excludeLabels,omitempty"`
 	}{
-		Repository:    repo,
-		TrustLabel:    trustLabel,
-		Expression:    expression,
-		RequireLabels: requireLabels,
-		ExcludeLabels: excludeLabels,
+		Repository:      repo,
+		TrustLabel:      trustLabel,
+		Expression:      labelExpression,
+		FieldExpression: fieldExpression,
+		RequireLabels:   requireLabels,
+		ExcludeLabels:   excludeLabels,
 	})
 	sum := sha256.Sum256(key)
 	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
@@ -975,25 +1012,31 @@ func listBacklogScanWindow(
 	provider providers.BacklogProvider,
 	repo providers.RepositoryRef,
 	labels []string,
+	fieldFilter *fieldpredicate.Predicate,
 	limit int,
 	cursor backlogScanCursor,
+	exhaustive bool,
 ) ([]providers.WorkItem, backlogScanCursor, error) {
-	if limit <= 0 {
+	if limit <= 0 && !exhaustive {
 		return nil, cursor, nil
 	}
 	items := make([]providers.WorkItem, 0, limit)
 	maxPages := (limit + backlogScanPageSize - 1) / backlogScanPageSize
-	for range maxPages {
-		pageLimit := min(backlogScanPageSize, limit)
+	for page := 0; exhaustive || page < maxPages; page++ {
+		pageLimit := backlogScanPageSize
+		if !exhaustive {
+			pageLimit = min(pageLimit, limit)
+		}
 		pageInfo := &providers.ListWorkItemsPageInfo{}
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-			Repository:  repo,
-			Labels:      labels,
-			State:       "open",
-			Limit:       pageLimit,
-			Cursor:      cursor.Cursor,
-			PageInfo:    pageInfo,
-			OldestFirst: true,
+			Repository:     repo,
+			Labels:         labels,
+			FieldPredicate: fieldFilter,
+			State:          "open",
+			Limit:          pageLimit,
+			Cursor:         cursor.Cursor,
+			PageInfo:       pageInfo,
+			OldestFirst:    true,
 		})
 		if err != nil {
 			return nil, cursor, err
@@ -1012,9 +1055,11 @@ func listBacklogScanWindow(
 			return nil, cursor, fmt.Errorf("provider returned a non-advancing work-item cursor")
 		}
 		cursor.Cursor = pageInfo.NextCursor
-		limit -= pageInfo.CandidateCount
-		if limit <= 0 {
-			break
+		if !exhaustive {
+			limit -= pageInfo.CandidateCount
+			if limit <= 0 {
+				break
+			}
 		}
 	}
 	return items, cursor, nil

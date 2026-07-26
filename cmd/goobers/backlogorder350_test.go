@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -17,7 +18,9 @@ func TestSortEligibleFIFOOrdersAscendingByID(t *testing.T) {
 	items := []providers.WorkItem{
 		{ID: "335"}, {ID: "334"}, {ID: "333"}, {ID: "332"}, {ID: "331"}, {ID: "330"}, {ID: "329"},
 	}
-	sortEligibleFIFO(items, nil)
+	if err := sortEligibleByFields(items, nil, fieldpredicate.Order{}); err != nil {
+		t.Fatal(err)
+	}
 
 	want := []string{"329", "330", "331", "332", "333", "334", "335"}
 	for i, id := range want {
@@ -27,16 +30,18 @@ func TestSortEligibleFIFOOrdersAscendingByID(t *testing.T) {
 	}
 }
 
-// TestSortEligibleFIFOIsStableAmongDuplicateNonNumericIDs confirms
-// sortEligibleFIFO doesn't panic or silently drop items when an ID isn't a
-// plain integer (a future/different provider), falling back to a stable
-// lexical compare rather than leaving a non-numeric item's position
-// undefined relative to the numeric ones.
+// TestSortEligibleFIFOIsStableAmongDuplicateNonNumericIDs confirms the default
+// sorter doesn't panic or silently drop items when an ID isn't a plain integer
+// (a future/different provider), falling back to a stable lexical compare
+// rather than leaving a non-numeric item's position undefined relative to the
+// numeric ones.
 func TestSortEligibleFIFOFallsBackToLexicalForNonNumericIDs(t *testing.T) {
 	items := []providers.WorkItem{
 		{ID: "10"}, {ID: "abc"}, {ID: "2"}, {ID: "abd"},
 	}
-	sortEligibleFIFO(items, nil)
+	if err := sortEligibleByFields(items, nil, fieldpredicate.Order{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Numeric IDs sort numerically among themselves; non-numeric IDs sort
 	// lexically among themselves — SliceStable's total order interleaves
@@ -73,7 +78,9 @@ func TestSortEligiblePrioritizesConfiguredLabelsBeforeFIFO(t *testing.T) {
 		{ID: "1", Labels: []string{"bug"}},
 		{ID: "15", Labels: []string{"security"}},
 	}
-	sortEligibleFIFO(items, []string{"security", "bug"})
+	if err := sortEligibleByFields(items, []string{"security", "bug"}, fieldpredicate.Order{}); err != nil {
+		t.Fatal(err)
+	}
 
 	want := []string{"15", "20", "1", "10", "5"}
 	got := idsOf(items)
@@ -91,7 +98,9 @@ func TestSortEligiblePrioritizedItemRanksByEarliestMatchingLabel(t *testing.T) {
 		{ID: "2", Labels: []string{"bug"}},
 		{ID: "1", Labels: []string{"bug", "security"}},
 	}
-	sortEligibleFIFO(items, []string{"security", "bug"})
+	if err := sortEligibleByFields(items, []string{"security", "bug"}, fieldpredicate.Order{}); err != nil {
+		t.Fatal(err)
+	}
 
 	if idsOf(items)[0] != "1" {
 		t.Fatalf("order = %v, want item 1 (matches earliest-listed \"security\") first", idsOf(items))
@@ -107,7 +116,9 @@ func TestSortEligibleUnconfiguredPriorityIsPlainFIFO(t *testing.T) {
 		{ID: "1", Labels: nil},
 		{ID: "2", Labels: []string{"bug"}},
 	}
-	sortEligibleFIFO(items, nil)
+	if err := sortEligibleByFields(items, nil, fieldpredicate.Order{}); err != nil {
+		t.Fatal(err)
+	}
 
 	want := []string{"1", "2", "3"}
 	if strings.Join(idsOf(items), ",") != strings.Join(want, ",") {

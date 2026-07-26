@@ -24,6 +24,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
@@ -129,6 +130,10 @@ const (
 	errorLabelPredicateTrigger    WarningCode = "LBL002"
 	errorLabelPredicateTaskBlank  WarningCode = "LBL003"
 	errorLabelPredicateTask       WarningCode = "LBL004"
+	errorFieldPredicateGaggle     WarningCode = "FLD001"
+	errorFieldPredicateTrigger    WarningCode = "FLD002"
+	errorFieldPredicateTask       WarningCode = "FLD003"
+	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 )
 
@@ -752,6 +757,7 @@ func (ix *index) crossCheck(r *Report) {
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
 	ix.checkLabelPredicates(r)
+	ix.checkFieldSelections(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -933,6 +939,54 @@ func (ix *index) checkLabelPredicates(r *Report) {
 			); err != nil {
 				r.add(errorLabelPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
 					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+func (ix *index) checkFieldSelections(r *Report) {
+	for name, gaggle := range ix.gaggles {
+		expression := gaggle.Spec.Backlog.FieldPredicate
+		if expression == "" {
+			continue
+		}
+		if _, err := fieldpredicate.Compile(expression); err != nil {
+			r.add(errorFieldPredicateGaggle, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.fieldPredicate is invalid: %v", err)
+		}
+	}
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, trigger := range workflow.Spec.Triggers {
+			if trigger.FieldPredicate == "" {
+				continue
+			}
+			if _, err := fieldpredicate.Compile(trigger.FieldPredicate); err != nil {
+				r.add(errorFieldPredicateTrigger, Error, indexed.file, "Workflow", workflow.Name,
+					"spec.triggers[%d].fieldPredicate is invalid: %v", i, err)
+			}
+		}
+		for i, task := range workflow.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			if expression, ok := task.Inputs["fieldPredicate"]; ok {
+				if strings.TrimSpace(expression) == "" {
+					r.add(errorFieldPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].inputs.fieldPredicate is invalid: CEL expression must not be blank", i)
+				} else if _, err := fieldpredicate.Compile(expression); err != nil {
+					r.add(errorFieldPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].inputs.fieldPredicate is invalid: %v", i, err)
+				}
+			}
+			if expression, ok := task.Inputs["fieldOrder"]; ok {
+				if strings.TrimSpace(expression) == "" {
+					r.add(errorFieldOrderTask, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].inputs.fieldOrder is invalid: field order must not be blank", i)
+				} else if _, err := fieldpredicate.ParseOrder(expression); err != nil {
+					r.add(errorFieldOrderTask, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].inputs.fieldOrder is invalid: %v", i, err)
+				}
 			}
 		}
 	}
