@@ -100,7 +100,10 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=(--check-harness --check-repos --source-tree)
+            flags+=(--json --check-harness --check-repos --source-tree --strict)
+            ;;
+        lint)
+            flags+=(--json --check-harness --check-repos --source-tree --strict)
             ;;
         config)
             case "${words[3]:-}" in
@@ -133,6 +136,9 @@ _goobers_completion()
             ;;
         stats)
             flags+=(--since --json)
+            ;;
+        features)
+            flags+=(--json --dsl-version --used)
             ;;
         blocked)
             case "${words[3]:-}" in

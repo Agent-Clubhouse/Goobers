@@ -1,0 +1,3 @@
+ERROR   gaggles/example/workflows/default-implement.yaml Workflow/default-implement: start state "missing" is not a defined task or gate
+
+config directory failed validation

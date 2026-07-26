@@ -39,6 +39,14 @@ candidates (never drops one — an all-contested cycle still claims FIFO)
 and falls back to FIFO on any provider error. Disable with input
 deprioritizeContestedFiles=false.
 
+selectionPriority (#1335) is an opt-in, ordered comma-separated label
+list (highest priority first, e.g. "security,bug") applied before FIFO:
+eligible items carrying an earlier-listed label claim ahead of items
+carrying only a later one or none at all; FIFO still breaks ties within
+a priority tier. An item carrying more than one listed label ranks by
+whichever appears earliest in selectionPriority. Unset (the default)
+preserves plain FIFO exactly.
+
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
 trustLabel with --claim, config/credential/provider error), 2 =

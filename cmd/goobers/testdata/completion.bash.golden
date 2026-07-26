@@ -30,7 +30,10 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --check-harness --check-repos --source-tree"
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            ;;
+        lint)
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
@@ -63,6 +66,9 @@ _goobers_completion()
             ;;
         stats)
             flags+=" --since --json"
+            ;;
+        features)
+            flags+=" --json --dsl-version --used"
             ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in

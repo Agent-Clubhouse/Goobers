@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "goobers.dev/diagnostics/v1",
+  "version": "dev",
+  "commit": "none",
+  "ok": false,
+  "counts": {
+    "errors": 2,
+    "warnings": 0
+  },
+  "findings": [
+    {
+      "file": "config/gaggles/example/workflows/default-implement.yaml",
+      "path": "/spec/start",
+      "code": "WF002",
+      "severity": "error",
+      "message": "start state \"missing\" is not a defined task or gate"
+    },
+    {
+      "file": "config/manifest.yaml",
+      "path": "/spec/gaggles",
+      "code": "REF001",
+      "severity": "error",
+      "message": "spec.gaggles references \"missing\", but no Gaggle/missing definition was found"
+    }
+  ]
+}

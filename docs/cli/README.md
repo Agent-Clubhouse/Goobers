@@ -304,6 +304,14 @@ candidates (never drops one — an all-contested cycle still claims FIFO)
 and falls back to FIFO on any provider error. Disable with input
 deprioritizeContestedFiles=false.
 
+selectionPriority (#1335) is an opt-in, ordered comma-separated label
+list (highest priority first, e.g. "security,bug") applied before FIFO:
+eligible items carrying an earlier-listed label claim ahead of items
+carrying only a later one or none at all; FIFO still breaks ties within
+a priority tier. An item carrying more than one listed label ranks by
+whichever appears earliest in selectionPriority. Unset (the default)
+preserves plain FIFO exactly.
+
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
 trustLabel with --claim, config/credential/provider error), 2 =
@@ -754,7 +762,7 @@ $ goobers escalations show <run-id>
 list the workflow-DSL features this build supports
 
 ~~~text
-Usage: goobers features [--dsl-version <version>] [--used] [path]
+Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
 
 List the workflow-DSL features this build understands by DSL version,
 including each feature's support level (preview/ga/deprecated/removed).
@@ -762,7 +770,8 @@ Use --dsl-version to scope the matrix to one declared version. This reads
 the same registry and SupportMatrix the committed
 docs/feature-matrix.md is generated from, so the two never disagree.
 
-With --used, list only the features the instance at path (default ".")
+With --json, emit a versioned feature-discovery envelope instead of the
+human-readable table. With --used, list only the features the instance at path (default ".")
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
@@ -772,7 +781,7 @@ config, 2 = usage/IO error.
 
 ~~~console
 $ goobers features
-$ goobers features --dsl-version 1.4
+$ goobers features --json --dsl-version 1.4
 $ goobers features --used
 ~~~
 
@@ -1100,7 +1109,7 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 lint config via the single authoritative validation engine (alias for validate)
 
 ~~~text
-Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+Usage: goobers lint [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
@@ -1108,7 +1117,8 @@ alias for `goobers validate`: identical flags, identical checks, and
 identical exit codes, so CI and local development share one validation
 path instead of drifting between ad-hoc checks. --source-tree lints a
 checked-in config source tree using instance.yaml.example and the path
-itself as config/. --check-harness additionally preflights every agent
+itself as config/. --json emits the same versioned findings envelope as
+`goobers validate --json`. --strict treats warnings as validation errors. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -1118,6 +1128,7 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 
 ~~~console
 $ goobers lint
+$ goobers lint --json
 $ goobers lint --check-harness --check-repos
 ~~~
 
@@ -2077,11 +2088,11 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --check-harness additionally preflights every agent harness
+using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
@@ -2093,6 +2104,7 @@ a repository is larger than the checkout-size threshold. Exit codes:
 
 ~~~console
 $ goobers validate
+$ goobers validate --json
 $ goobers validate --check-harness --check-repos
 ~~~
 
