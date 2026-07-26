@@ -8,10 +8,10 @@
 //
 // Windows (#655) is packaged as a .zip; unix targets as .tar.gz, both named
 // goobers_<version>_<os>_<arch>.<ext>. Each archive carries the target binary
-// plus the release-pinned onboarding docs. Build metadata (version/commit/date)
-// is injected via the same -ldflags path the Makefile uses (internal/version),
-// so release binaries report identical `goobers --version` output to a local
-// `make build`.
+// plus the release-pinned onboarding docs, templates, and sample. Build metadata
+// (version/commit/date) is injected via the same -ldflags path the Makefile uses
+// (internal/version), so release binaries report identical `goobers --version`
+// output to a local `make build`.
 package main
 
 import (
@@ -149,9 +149,13 @@ func collectArchiveEntries(root string) ([]archiveEntry, error) {
 		if err != nil {
 			return fmt.Errorf("read release archive entry %s: %w", path, err)
 		}
+		mode := int64(0o644)
+		if info.Mode().Perm()&0o111 != 0 {
+			mode = 0o755
+		}
 		entries = append(entries, archiveEntry{
 			name: filepath.ToSlash(rel),
-			mode: 0o644,
+			mode: mode,
 			data: data,
 		})
 		return nil
