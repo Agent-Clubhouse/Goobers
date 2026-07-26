@@ -81,6 +81,17 @@ function Overview({
         </p>
       </header>
 
+      {/* A section that failed to load must say so. Without this the page would
+          render an empty run list identically to a genuinely idle instance,
+          which is a worse failure than the blank page it replaced (#1709). */}
+      {overview.sectionErrors && (
+        <p className="inline-empty" role="alert">
+          {overview.sectionErrors.runs
+            ? "Run activity could not be read just now, so the run groups below may be incomplete or out of date. Everything else on this page is current."
+            : "The gaggle and workflow inventory could not be read just now, so names and counts may be out of date. Everything else on this page is current."}
+        </p>
+      )}
+
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
           <div className="section-heading">
