@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -90,6 +91,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
 		}
+		if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+			return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
+		}
+		runControls, err := r.resolveRunControls(id.RunControls)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
+		}
 		events, err := rd.Events()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
@@ -129,6 +137,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Trigger:      id.Trigger,
 			RepoRef:      in.RepoRef,
 			Item:         item,
+			RunControls:  runControls,
 		}
 		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
