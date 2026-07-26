@@ -52,6 +52,16 @@
           "description": "In-repo documentation roots this workflow keeps current (docs-updater, #472/#1016). Ordered repo-relative paths (files or directories); the run's writes are confined to these roots. Each must be non-empty and must not escape the repository.",
           "items": { "type": "string", "minLength": 1 }
         },
+        "tutorScope": {
+          "type": "object",
+          "description": "Declares this workflow as a Tutor-role definition and its topology tier (TUT-A4): per-workflow (confined to target's own subtree) or per-gaggle (the gaggle's shared config).",
+          "additionalProperties": false,
+          "required": ["tier"],
+          "properties": {
+            "tier": { "type": "string", "enum": ["per-workflow", "per-gaggle"] },
+            "target": { "type": "string", "minLength": 1 }
+          }
+        },
         "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } }
       }
@@ -80,8 +90,13 @@
         },
         "selector": {
           "type": "object",
-          "description": "For backlog-item triggers, selector keys are required labels and values are ignored; full k8s-style selector matching remains V1.",
+          "description": "For backlog-item triggers, selector keys are required labels and values are ignored.",
           "additionalProperties": { "type": "string" }
+        },
+        "labelPredicate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL label-set predicate using only string membership in `labels` and boolean &&, ||, and !. ANDed with selector."
         },
         "priority": {
           "type": "integer",

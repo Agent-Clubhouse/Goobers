@@ -31,10 +31,15 @@ type Trigger struct {
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
 	// Selector configures backlog-item filtering. Keys are required labels and
-	// values are ignored; full k8s-style selector matching remains V1
-	// (WF-040, SCH-010).
+	// values are ignored.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// LabelPredicate is a CEL expression over the item's label set. The only
+	// supported operations are string membership in `labels` and boolean
+	// composition with &&, ||, and !. It is ANDed with Selector.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
 	// Priority orders provider-backed polling when a quota window cannot cover
 	// every due poll. Higher values are preserved first; equal values use the
 	// scheduler's deterministic workflow ordering.
@@ -462,12 +467,52 @@ type WorkflowSpec struct {
 	// rejects a root that does not exist in the repository.
 	// +optional
 	DocsRoots []string `json:"docsRoots,omitempty" yaml:"docsRoots,omitempty"`
+	// TutorScope declares this workflow as a Tutor-role definition and names
+	// its topology tier (TUT-A4, Tutor v2 design doc §4.3): every tutor is
+	// already confined to one gaggle via Gaggle above (the hard silo — there
+	// is no cross-gaggle tutor), and TutorScope additionally states whether
+	// this particular tutor's config-write is further confined to one target
+	// workflow's own subtree (Tier=per-workflow, persona/gate/wiring) or
+	// spans the whole gaggle's shared config (Tier=per-gaggle, shared
+	// skills/validation/structure). Unset means this workflow is not a
+	// tutor.
+	// +optional
+	TutorScope *TutorScope `json:"tutorScope,omitempty" yaml:"tutorScope,omitempty"`
 	// Tasks are the work states of the machine.
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
 	// Gates are the validation/branching states of the machine.
 	// +optional
 	Gates []Gate `json:"gates,omitempty" yaml:"gates,omitempty"`
+}
+
+// TutorScopeTier is the topology tier of a Tutor-role workflow (TUT-A4).
+type TutorScopeTier string
+
+const (
+	// TutorScopePerWorkflow confines the tutor's config-write to one target
+	// workflow's own subtree (persona/gate/wiring) — local, cheap, frequent,
+	// low-blast.
+	TutorScopePerWorkflow TutorScopeTier = "per-workflow"
+	// TutorScopePerGaggle spans the whole gaggle's shared config (shared
+	// skills, workflow-level tests, workflow structure, capability
+	// declarations, shared gate calibration) — higher-blast, stronger
+	// governance.
+	TutorScopePerGaggle TutorScopeTier = "per-gaggle"
+)
+
+// TutorScope names a Tutor-role workflow's topology tier and, for a
+// per-workflow tutor, the single workflow it is scoped to.
+type TutorScope struct {
+	// Tier is per-workflow or per-gaggle.
+	// +kubebuilder:validation:Enum=per-workflow;per-gaggle
+	// +kubebuilder:validation:Required
+	Tier TutorScopeTier `json:"tier" yaml:"tier"`
+	// Target names the workflow this per-workflow tutor is scoped to. It
+	// must reference a workflow in the same gaggle. Required when Tier is
+	// per-workflow; must be empty when Tier is per-gaggle.
+	// +optional
+	Target string `json:"target,omitempty" yaml:"target,omitempty"`
 }
 
 // +kubebuilder:object:root=true

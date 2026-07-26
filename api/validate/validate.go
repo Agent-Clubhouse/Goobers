@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -632,6 +633,7 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleBranchNamespace(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
+	ix.checkLabelPredicates(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -764,6 +766,74 @@ func knownDSLVersions() []string {
 		names[i] = v.Version
 	}
 	return names
+}
+
+func (ix *index) checkLabelPredicates(r *Report) {
+	for name, gaggle := range ix.gaggles {
+		expression := gaggle.Spec.Backlog.LabelPredicate
+		if expression == "" {
+			continue
+		}
+		if _, err := labelpredicate.Compile(expression, gaggle.Spec.Backlog.Labels, nil); err != nil {
+			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.labelPredicate is invalid: %v", err)
+		}
+	}
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, trigger := range workflow.Spec.Triggers {
+			if trigger.LabelPredicate == "" {
+				continue
+			}
+			required := make([]string, 0, len(trigger.Selector))
+			for label := range trigger.Selector {
+				required = append(required, label)
+			}
+			if _, err := labelpredicate.Compile(trigger.LabelPredicate, required, nil); err != nil {
+				r.add(Error, indexed.file, "Workflow", workflow.Name,
+					"spec.triggers[%d].labelPredicate is invalid: %v", i, err)
+			}
+		}
+		for i, task := range workflow.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			expression, ok := task.Inputs["labelPredicate"]
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(expression) == "" {
+				r.add(Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: CEL expression must not be blank", i)
+				continue
+			}
+			if _, err := labelpredicate.Compile(
+				expression,
+				splitLabelInput(task.Inputs["requireLabels"]),
+				splitLabelInput(task.Inputs["excludeLabels"]),
+			); err != nil {
+				r.add(Error, indexed.file, "Workflow", workflow.Name,
+					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+func isBacklogQueryTask(task apiv1.Task) bool {
+	return task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		filepath.Base(task.Run.Command[0]) == "goobers" &&
+		task.Run.Command[1] == "backlog-query"
+}
+
+func splitLabelInput(value string) []string {
+	var labels []string
+	for _, label := range strings.Split(value, ",") {
+		if label = strings.TrimSpace(label); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
 }
 
 func (ix *index) allowPreviewFeatures(r *Report) bool {
@@ -964,6 +1034,35 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for i, dr := range w.Spec.DocsRoots {
 		if err := configboundary.ValidateDocsRoot(dr); err != nil {
 			r.add(Error, file, "Workflow", w.Name, "spec.docsRoots[%d]: %v", i, err)
+		}
+	}
+
+	// Tutor topology (TUT-A4, Tutor v2 design doc §4.3): a per-workflow
+	// tutor's target must be explicit and must name a real workflow in the
+	// SAME gaggle — a tutor confined to another gaggle's workflow would defeat
+	// the hard silo Gaggle already establishes for this definition itself. A
+	// per-gaggle tutor has no target (the whole gaggle is already its scope).
+	if ts := w.Spec.TutorScope; ts != nil {
+		switch ts.Tier {
+		case apiv1.TutorScopePerWorkflow:
+			switch ts.Target {
+			case "":
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target is required when spec.tutorScope.tier is %q", ts.Tier)
+			case w.Name:
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target %q must not name this workflow itself", ts.Target)
+			default:
+				if _, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: ts.Target}]; !ok {
+					r.add(Error, file, "Workflow", w.Name,
+						"spec.tutorScope.target names %q, but no Workflow/%s definition was found in gaggle %q",
+						ts.Target, ts.Target, w.Spec.Gaggle)
+				}
+			}
+		case apiv1.TutorScopePerGaggle:
+			if ts.Target != "" {
+				r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.target must be empty when spec.tutorScope.tier is %q, got %q", ts.Tier, ts.Target)
+			}
+		default:
+			r.add(Error, file, "Workflow", w.Name, "spec.tutorScope.tier %q is not one of per-workflow, per-gaggle", ts.Tier)
 		}
 	}
 
