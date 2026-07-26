@@ -50,6 +50,23 @@ describe("HttpDaemonClient", () => {
     );
   });
 
+  it("reports request status and endpoint to enabled portal diagnostics", async () => {
+    const finish = vi.fn();
+    const startRequest = vi.fn(() => ({ finish }));
+    const client = new HttpDaemonClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(health)),
+      diagnostics: { startRequest, recordSSE: vi.fn() },
+    });
+
+    await client.getHealth();
+
+    expect(startRequest).toHaveBeenCalledWith({
+      endpoint: "/api/v1/health",
+      method: "GET",
+    });
+    expect(finish).toHaveBeenCalledWith(200);
+  });
+
   it("maps every available daemon read route and preserves empty lists", async () => {
     const requests: string[] = [];
     const { baseUrl } = await startServer((request, response) => {

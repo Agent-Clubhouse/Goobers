@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
 const (
@@ -586,6 +588,13 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 			continue
 		}
 		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		matched, err = req.MatchesFieldPredicate(item.Fields)
 		if err != nil {
 			return nil, err
 		}
@@ -1441,6 +1450,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		URL:        item.URL,
 		CreatedAt:  timeField(item.Fields, "System.CreatedDate"),
 		UpdatedAt:  updated,
+		Fields:     adoWorkItemFields(item),
 		Raw:        item,
 	}
 }
@@ -1466,6 +1476,23 @@ func mapADOComment(comment adoComment) Comment {
 		CreatedAt:  createdAt,
 		URL:        comment.URL,
 	}
+}
+
+func adoWorkItemFields(item adoWorkItem) fieldpredicate.Fields {
+	fields := fieldpredicate.Fields{
+		"System.Id":  int64(item.ID),
+		"System.Rev": int64(item.Rev),
+	}
+	for name, value := range item.Fields {
+		switch value.(type) {
+		case string, bool,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64:
+			fields[name] = value
+		}
+	}
+	return fields
 }
 
 func adoLabels(tags string) []string {

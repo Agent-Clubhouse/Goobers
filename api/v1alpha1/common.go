@@ -96,6 +96,12 @@ type BacklogRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
+	// FieldPredicate is a CEL expression over the provider's typed native-field
+	// projection. It is ANDed with Labels and fails when a referenced field is
+	// unavailable.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
 	// +optional
 	Query string `json:"query,omitempty" yaml:"query,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.

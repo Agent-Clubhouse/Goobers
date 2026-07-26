@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
 // GitHubProvider implements repo, backlog, and trigger operations for GitHub.
@@ -2106,6 +2108,13 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			if !matched {
 				continue
 			}
+			matched, err = req.MatchesFieldPredicate(item.Fields)
+			if err != nil {
+				return err
+			}
+			if !matched {
+				continue
+			}
 			items = append(items, item)
 			if req.Limit > 0 && len(items) >= req.Limit {
 				return errStopPaging
@@ -2128,6 +2137,13 @@ func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkIt
 		}
 		item := mapGitHubIssue(issue)
 		matched, err := req.MatchesLabelPredicate(item.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		matched, err = req.MatchesFieldPredicate(item.Fields)
 		if err != nil {
 			return nil, err
 		}
@@ -2670,7 +2686,10 @@ type githubIssue struct {
 	Title                    string                          `json:"title"`
 	Body                     string                          `json:"body"`
 	State                    string                          `json:"state"`
+	Locked                   bool                            `json:"locked"`
+	Comments                 int                             `json:"comments"`
 	HTMLURL                  string                          `json:"html_url"`
+	User                     githubUser                      `json:"user"`
 	Labels                   []githubLabel                   `json:"labels"`
 	Assignees                []githubUser                    `json:"assignees"`
 	Milestone                *githubNode                     `json:"milestone"`
@@ -2930,7 +2949,38 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		URL:            issue.HTMLURL,
 		CreatedAt:      issue.CreatedAt,
 		UpdatedAt:      issue.UpdatedAt,
+		Fields:         githubIssueFields(issue),
 		BlockedByCount: blockedByCount,
 		Raw:            issue,
 	}
+}
+
+func githubIssueFields(issue githubIssue) fieldpredicate.Fields {
+	fields := fieldpredicate.Fields{
+		"id":       issue.ID,
+		"number":   int64(issue.Number),
+		"state":    issue.State,
+		"locked":   issue.Locked,
+		"comments": int64(issue.Comments),
+	}
+	if issue.User.Login != "" {
+		fields["user.login"] = issue.User.Login
+	}
+	if issue.CreatedAt != nil {
+		fields["created_at"] = issue.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if issue.UpdatedAt != nil {
+		fields["updated_at"] = issue.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if len(issue.Assignees) > 0 {
+		fields["assignee.login"] = issue.Assignees[0].Login
+	}
+	if issue.Milestone != nil {
+		fields["milestone.number"] = int64(issue.Milestone.Number)
+		fields["milestone.title"] = issue.Milestone.Title
+	}
+	if issue.IssueDependenciesSummary != nil {
+		fields["issue_dependencies_summary.total_blocked_by"] = int64(issue.IssueDependenciesSummary.TotalBlockedBy)
+	}
+	return fields
 }

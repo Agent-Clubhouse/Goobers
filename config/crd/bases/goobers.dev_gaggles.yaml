@@ -119,6 +119,13 @@ spec:
                     description: ConnectionRef names the connection (credentials)
                       used to reach the backlog.
                     type: string
+                  fieldPredicate:
+                    description: |-
+                      FieldPredicate is a CEL expression over the provider's typed native-field
+                      projection. It is ANDed with Labels and fails when a referenced field is
+                      unavailable.
+                    minLength: 1
+                    type: string
                   labelPredicate:
                     description: |-
                       LabelPredicate is a CEL expression over the item's label set. The only

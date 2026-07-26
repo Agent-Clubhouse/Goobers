@@ -6,6 +6,8 @@ import type {
   TelemetryErrorsOptions,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { dataCacheKey, type DataCacheDependency } from "../dataCache";
+import { useLiveData } from "../liveData";
 import { routeHash, type ErrorRouteFilters } from "../routing";
 import { formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
@@ -143,51 +145,79 @@ function ErrorHistoryRow({ item }: { item: TelemetryError }) {
 }
 
 function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
-  const [state, setState] = useState<QueryState<ErrorHistory>>({ status: "loading" });
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = errorHistoryCacheKey(filters);
+  const initialCached = useRef(cache.get<ErrorHistory>(cacheKey));
+  const [state, setState] = useState<QueryState<ErrorHistory>>(() => {
+    const cached = initialCached.current;
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
   const request = useRef<AbortController | undefined>(undefined);
-  const items = useRef<TelemetryError[]>([]);
-  const nextCursor = useRef<string | undefined>(undefined);
+  const items = useRef<TelemetryError[]>(initialCached.current?.items ?? []);
+  const nextCursor = useRef<string | undefined>(initialCached.current?.nextCursor);
   const loadingMore = useRef(false);
 
-  const publish = useCallback(() => {
-    setState({
-      status: "ready",
-      data: {
+  const publish = useCallback(
+    (fresh: boolean, cacheRevision?: number) => {
+      const data: ErrorHistory = {
         items: items.current,
         loadingMore: loadingMore.current,
         nextCursor: nextCursor.current,
-      },
-    });
-  }, []);
+      };
+      setState(fresh ? { status: "ready", data } : { status: "stale", data });
+      if (!loadingMore.current && cacheRevision !== undefined) {
+        cache.set(
+          cacheKey,
+          data,
+          errorHistoryDependencies(filters),
+          cacheRevision,
+        );
+      }
+    },
+    [cache, cacheKey, filters.gaggle, filters.workflow],
+  );
 
   const refresh = useCallback(() => {
     request.current?.abort();
+    const dependencies = errorHistoryDependencies(filters);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
     items.current = [];
     nextCursor.current = undefined;
     loadingMore.current = false;
-    setState({ status: "loading" });
+    setState((current) =>
+      current.status === "ready" || current.status === "stale"
+        ? { status: "stale", data: { ...current.data, loadingMore: false } }
+        : { status: "loading" },
+    );
 
-    void client.listTelemetryErrors(errorRequest(filters), { signal: controller.signal }).then(
+    return client.listTelemetryErrors(errorRequest(filters), { signal: controller.signal }).then(
       (page) => {
         if (controller.signal.aborted) {
-          return;
+          return true;
         }
         items.current = page.items;
         nextCursor.current = page.nextCursor;
-        publish();
+        publish(isFresh(), cacheRevision);
+        return true;
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
-          setState({
-            status: "error",
-            error: error instanceof Error ? error : new Error("Unable to read matching errors."),
-          });
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read matching errors.");
+          setState((current) =>
+            current.status === "ready" || current.status === "stale"
+              ? { status: "stale", data: current.data, error: queryError }
+              : { status: "error", error: queryError },
+          );
         }
+        return false;
       },
     );
   }, [
+    cache,
+    cacheKey,
     client,
     filters.code,
     filters.errorClass,
@@ -196,6 +226,7 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     filters.stage,
     filters.until,
     filters.workflow,
+    isFresh,
     publish,
   ]);
 
@@ -204,9 +235,11 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
       return;
     }
     const controller = new AbortController();
+    const dependencies = errorHistoryDependencies(filters);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     request.current = controller;
     loadingMore.current = true;
-    publish();
+    publish(isFresh());
     void client
       .listTelemetryErrors(
         { ...errorRequest(filters), cursor: nextCursor.current },
@@ -220,7 +253,7 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
           items.current = [...items.current, ...page.items];
           nextCursor.current = page.nextCursor;
           loadingMore.current = false;
-          publish();
+          publish(isFresh(), cacheRevision);
         },
         (error: unknown) => {
           if (!controller.signal.aborted) {
@@ -239,6 +272,8 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
         },
       );
   }, [
+    cache,
+    cacheKey,
     client,
     filters.code,
     filters.errorClass,
@@ -247,15 +282,74 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     filters.stage,
     filters.until,
     filters.workflow,
+    isFresh,
     publish,
   ]);
 
   useEffect(() => {
-    refresh();
-    return () => request.current?.abort();
-  }, [refresh]);
+    const unsubscribe = subscribe(["instance", "run"], (_models, reason) => {
+      const cached = reason === "initial" ? cache.get<ErrorHistory>(cacheKey) : undefined;
+      if (cached) {
+        items.current = cached.items;
+        nextCursor.current = cached.nextCursor;
+        loadingMore.current = false;
+        const data = { ...cached, loadingMore: false };
+        setState(
+          isFresh() ? { status: "ready", data } : { status: "stale", data },
+        );
+        return true;
+      }
+      return refresh();
+    });
+    return () => {
+      unsubscribe();
+      request.current?.abort();
+    };
+  }, [cache, cacheKey, isFresh, refresh, subscribe]);
 
-  return { loadMore, retry: refresh, state };
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    void refresh();
+  }, [cache, cacheKey, refresh]);
+  return { loadMore, retry, state };
+}
+
+function errorHistoryCacheKey(filters: ErrorRouteFilters): string {
+  return dataCacheKey(
+    "error-history",
+    filters.gaggle ?? "",
+    filters.workflow ?? "",
+    filters.stage ?? "",
+    optionalCachePart(filters.code),
+    optionalCachePart(filters.errorClass),
+    filters.since ?? "",
+    filters.until ?? "",
+  );
+}
+
+function optionalCachePart(value: string | undefined): string {
+  return JSON.stringify([value !== undefined, value ?? ""]);
+}
+
+function errorHistoryDependencies(
+  filters: ErrorRouteFilters,
+): readonly DataCacheDependency[] {
+  return [
+    { model: "instance" },
+    { model: "run", gaggle: filters.gaggle, workflow: filters.workflow },
+  ];
 }
 
 function errorRequest(filters: ErrorRouteFilters): TelemetryErrorsOptions {

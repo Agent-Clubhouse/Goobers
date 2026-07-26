@@ -648,13 +648,15 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 // ingest simply stays out of this pass rather than failing the whole list.
 //
 // The scan is incremental. A new or removed run directory bumps its parent's
-// mtime, so a parent whose mtime has not advanced past the last successful
-// reconcile's watermark cannot hold anything new and is skipped without a
-// ReadDir. Steady-state reconcile therefore costs one stat per run-parent
-// directory rather than one ReadDir over every run — bounded by newly-appeared
-// runs, not by history or by the orphan directories that accumulate alongside
-// it. The first reconcile (zero watermark) still full-scans so nothing on disk
-// is missed on startup. This bound is safe because a run that is actively
+// mtime, so a parent whose mtime has not advanced past its own recorded
+// watermark cannot hold anything new and is skipped without a ReadDir.
+// Steady-state reconcile therefore costs one stat per run-parent directory
+// rather than one ReadDir over every run — bounded by newly-appeared runs, not
+// by history or by the unpublished directories that accumulate alongside it.
+// A parent not yet watermarked still full-scans, so nothing on disk is missed on
+// startup. Watermarks are recorded per parent as each one finishes, so a scan
+// the caller cancels keeps the parents already walked instead of restarting from
+// nothing on the next pass. This bound is safe because a run that is actively
 // executing is ingested into the index at write time by the runner; reconcile
 // is only a backstop for imported/migrated/externally-added runs, whose
 // appearance necessarily bumps a parent mtime, so a bounded incremental scan
@@ -683,11 +685,12 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 
 	// Watermarks are compared against filesystem mtimes, so they are real wall
 	// clock and independent of the injectable s.now() used only for TTL
-	// throttling. newWatermark tracks the newest parent mtime across every parent
-	// (skipped ones included), and advances the stored watermark only on success.
-	previousWatermark := s.reconcileWatermark
-	fullScan := previousWatermark.IsZero()
-	newWatermark := previousWatermark
+	// throttling. Each parent's watermark is recorded as soon as that parent is
+	// walked to completion, so a scan cut short part-way keeps the parents it
+	// already finished.
+	if s.reconcileWatermarks == nil {
+		s.reconcileWatermarks = make(map[string]time.Time, len(runDirs))
+	}
 	for _, runsDir := range runDirs {
 		// Stat the parent before reading it: a run directory added concurrently
 		// with or after this stat lands on a strictly later mtime (on any
@@ -699,10 +702,11 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			}
 			return fmt.Errorf("inspect runs directory: %w", err)
 		}
-		if mtime := info.ModTime(); mtime.After(newWatermark) {
-			newWatermark = mtime
-		}
-		if !fullScan && !info.ModTime().After(previousWatermark) {
+		// Record the mtime seen before the walk, never a later one, so a run
+		// directory created during the walk still reads as newer next time.
+		mtime := info.ModTime()
+		previous, scanned := s.reconcileWatermarks[runsDir]
+		if scanned && !mtime.After(previous) {
 			continue
 		}
 		entries, err := os.ReadDir(runsDir)
@@ -725,10 +729,23 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if _, ok := indexed[entry.Name()]; ok {
 				continue
 			}
-			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
+			runDir := filepath.Join(runsDir, entry.Name())
+			// A directory with no run.yaml is not a journal and can never be
+			// ingested, so skip it on a stat rather than paying for the attempt.
+			// IngestRun would take the run's journal lock — creating a .lock file
+			// in the directory — before failing to read the identity, and because
+			// the failure leaves the directory un-indexed it recurred on every
+			// subsequent pass. On a long-lived instance these unpublished
+			// directories outnumber real runs' backlog by orders of magnitude
+			// (measured: 10,906 of 30,140), which made a pass unable to finish
+			// and so left ListRuns permanently blocked (#1708).
+			if !journal.Recorded(runDir) {
+				continue
+			}
+			_ = s.sources.Telemetry.IngestRun(runDir)
 		}
+		s.reconcileWatermarks[runsDir] = mtime
 	}
-	s.reconcileWatermark = newWatermark
 	s.lastReconcile = s.now()
 	return nil
 }

@@ -81,25 +81,45 @@ func TestWorkflowCRDValidatesDSLVersionShape(t *testing.T) {
 	}
 }
 
-func TestLabelPredicateCRDsRejectExplicitEmptyValues(t *testing.T) {
+func TestPredicateCRDsRejectExplicitEmptyValues(t *testing.T) {
 	tests := []struct {
 		name      string
 		path      string
+		field     string
 		predicate func(apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps
 	}{
 		{
-			name: "gaggle backlog",
-			path: "../../config/crd/bases/goobers.dev_gaggles.yaml",
+			name:  "gaggle backlog",
+			path:  "../../config/crd/bases/goobers.dev_gaggles.yaml",
+			field: "labelPredicate",
 			predicate: func(root apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps {
 				return root.Properties["spec"].Properties["backlog"].Properties["labelPredicate"]
 			},
 		},
 		{
-			name: "workflow trigger",
-			path: "../../config/crd/bases/goobers.dev_workflows.yaml",
+			name:  "gaggle backlog field",
+			path:  "../../config/crd/bases/goobers.dev_gaggles.yaml",
+			field: "fieldPredicate",
+			predicate: func(root apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps {
+				return root.Properties["spec"].Properties["backlog"].Properties["fieldPredicate"]
+			},
+		},
+		{
+			name:  "workflow trigger",
+			path:  "../../config/crd/bases/goobers.dev_workflows.yaml",
+			field: "labelPredicate",
 			predicate: func(root apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps {
 				trigger := root.Properties["spec"].Properties["triggers"].Items.Schema
 				return trigger.Properties["labelPredicate"]
+			},
+		},
+		{
+			name:  "workflow trigger field",
+			path:  "../../config/crd/bases/goobers.dev_workflows.yaml",
+			field: "fieldPredicate",
+			predicate: func(root apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps {
+				trigger := root.Properties["spec"].Properties["triggers"].Items.Schema
+				return trigger.Properties["fieldPredicate"]
 			},
 		},
 	}
@@ -118,7 +138,7 @@ func TestLabelPredicateCRDsRejectExplicitEmptyValues(t *testing.T) {
 			root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
 			schema := tt.predicate(*root)
 			if schema.MinLength == nil || *schema.MinLength != 1 {
-				t.Fatalf("labelPredicate minLength = %v, want 1", schema.MinLength)
+				t.Fatalf("%s minLength = %v, want 1", tt.field, schema.MinLength)
 			}
 		})
 	}

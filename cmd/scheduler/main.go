@@ -33,6 +33,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/scheduler"
@@ -150,6 +151,10 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 			return fmt.Errorf("gaggle %q backlog label predicate: %w", g.Name, predicateErr)
 		}
 		for _, wfName := range workflows {
+			fieldPredicate, fieldPredicateErr := backlogFieldPredicateForWorkflow(g, loaded.Workflows, wfName)
+			if fieldPredicateErr != nil {
+				return fieldPredicateErr
+			}
 			tk := time.NewTicker(cfg.pollInterval)
 			tr := scheduler.BacklogPollTrigger{
 				WorkflowName:   wfName,
@@ -157,6 +162,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 				Repo:           repo,
 				Labels:         predicate.RequiredLabels(),
 				LabelPredicate: predicate,
+				FieldPredicate: fieldPredicate,
 				Ticks:          tk.C,
 				Limit:          cfg.pollLimit,
 			}
@@ -173,6 +179,30 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+func backlogFieldPredicateForWorkflow(gaggle apiv1.Gaggle, workflows []apiv1.Workflow, workflowName string) (*fieldpredicate.Predicate, error) {
+	for i := range workflows {
+		workflow := &workflows[i]
+		if workflow.Name != workflowName || workflow.Spec.Gaggle != gaggle.Name {
+			continue
+		}
+		for _, trigger := range workflow.Spec.Triggers {
+			if trigger.Type != apiv1.TriggerBacklogItem {
+				continue
+			}
+			predicate, err := fieldpredicate.CompileConjunction(
+				gaggle.Spec.Backlog.FieldPredicate,
+				trigger.FieldPredicate,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("workflow %q backlog field predicate: %w", workflowName, err)
+			}
+			return predicate, nil
+		}
+		break
+	}
+	return nil, fmt.Errorf("workflow %q in gaggle %q has no backlog-item trigger", workflowName, gaggle.Name)
 }
 
 func schedulerADOCredentialSource(provider apiv1.Provider, cfg config) (providers.ADOCredentialSource, error) {

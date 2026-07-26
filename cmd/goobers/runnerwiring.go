@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -1182,6 +1183,7 @@ type backlogCounter struct {
 	repo           providers.RepositoryRef
 	labels         []string
 	labelPredicate *labelpredicate.Predicate
+	fieldPredicate *fieldpredicate.Predicate
 	resolver       credentials.Resolver
 	reg            runner.SecretRegistrar
 	schedulerDir   string
@@ -1223,7 +1225,13 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
 		}
 		if matched {
-			count++
+			matched, err = b.fieldPredicate.Matches(item.Fields)
+			if err != nil {
+				return 0, fmt.Errorf("evaluate backlog field predicate: %w", err)
+			}
+			if matched {
+				count++
+			}
 		}
 	}
 	return count, nil
@@ -1283,17 +1291,19 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
+func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
 	var selector map[string]string
 	var expression string
+	var fieldExpression string
 	found := false
 	for _, tr := range wf.Spec.Triggers {
 		if tr.Type == apiv1.TriggerBacklogItem {
 			selector = tr.Selector
 			expression = tr.LabelPredicate
+			fieldExpression = tr.FieldPredicate
 			found = true
 			break
 		}
@@ -1310,11 +1320,16 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
 	}
+	fieldPredicate, err := fieldpredicate.CompileConjunction(gaggle.Spec.Backlog.FieldPredicate, fieldExpression)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q backlog field predicate: %w", wf.Name, err)
+	}
 	counter := &backlogCounter{
 		ref:            cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
 		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
 		labels:         labels,
 		labelPredicate: predicate,
+		fieldPredicate: fieldPredicate,
 		resolver:       resolver,
 		reg:            reg,
 		schedulerDir:   schedulerDir,

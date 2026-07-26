@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
@@ -82,6 +83,7 @@ type WorkItem struct {
 	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
 	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
 	ReadyAt        *time.Time             `json:"readyAt,omitempty"`
+	Fields         fieldpredicate.Fields  `json:"fields,omitempty"`
 	BlockedByCount int                    `json:"-"`
 	Raw            interface{}            `json:"raw,omitempty"`
 }
@@ -786,6 +788,7 @@ type ListWorkItemsRequest struct {
 	Repository     RepositoryRef             `json:"repository"`
 	Labels         []string                  `json:"labels,omitempty"`
 	LabelPredicate *labelpredicate.Predicate `json:"-"`
+	FieldPredicate *fieldpredicate.Predicate `json:"-"`
 	State          string                    `json:"state,omitempty"`
 	Assignee       string                    `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
@@ -818,6 +821,11 @@ type ListWorkItemsPageInfo struct {
 // MatchesLabelPredicate applies the request's exact client-side label filter.
 func (r ListWorkItemsRequest) MatchesLabelPredicate(labels []string) (bool, error) {
 	return r.LabelPredicate.Matches(labels)
+}
+
+// MatchesFieldPredicate applies the request's exact client-side native-field filter.
+func (r ListWorkItemsRequest) MatchesFieldPredicate(fields fieldpredicate.Fields) (bool, error) {
+	return r.FieldPredicate.Matches(fields)
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label

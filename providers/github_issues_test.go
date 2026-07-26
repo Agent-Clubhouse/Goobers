@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
@@ -1044,6 +1045,61 @@ func TestGitHubListWorkItemsPageInfoCountsRawCandidatesBeforePredicate(t *testin
 	}
 	if len(items) != 1 || items[0].ID != "3" || requests != 2 || secondPage.HasNext {
 		t.Fatalf("items = %#v, requests = %d, page info = %+v; want issue 3 on final page", items, requests, secondPage)
+	}
+}
+
+func TestGitHubListWorkItemsProjectsAndFiltersNativeFields(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["number"] >= 2 && fields["locked"] == false`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 101, "number": 1, "title": "first", "state": "open"},
+			{
+				"id": 102, "number": 2, "title": "second", "state": "open",
+				"milestone": map[string]interface{}{"number": 7, "title": "V1"},
+			},
+		})
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = server.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		FieldPredicate: predicate,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("items = %#v, want issue 2", items)
+	}
+	if got := items[0].Fields["milestone.title"]; got != "V1" {
+		t.Fatalf("milestone.title = %#v, want V1", got)
+	}
+	if got := items[0].Fields["milestone.number"]; got != int64(7) {
+		t.Fatalf("milestone.number = %#v, want int64(7)", got)
+	}
+}
+
+func TestGitHubListWorkItemsUnavailableNativeFieldFails(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["project.priority"] == 1`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{{"id": 101, "number": 1, "title": "first", "state": "open"}})
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = server.URL })
+
+	_, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		FieldPredicate: predicate,
+	})
+	if err == nil || !strings.Contains(err.Error(), `field "project.priority" is unavailable`) {
+		t.Fatalf("ListWorkItems error = %v, want unavailable-field error", err)
 	}
 }
 

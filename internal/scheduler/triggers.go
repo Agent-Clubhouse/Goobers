@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
@@ -67,6 +68,7 @@ type BacklogPollTrigger struct {
 	Repo           providers.RepositoryRef
 	Labels         []string
 	LabelPredicate *labelpredicate.Predicate
+	FieldPredicate *fieldpredicate.Predicate
 	Ticks          <-chan time.Time
 	Limit          int
 }
@@ -112,6 +114,13 @@ func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
 				matched, err := b.LabelPredicate.Matches(item.Labels)
 				if err != nil {
 					return fmt.Errorf("evaluate backlog label predicate: %w", err)
+				}
+				if !matched {
+					continue
+				}
+				matched, err = b.FieldPredicate.Matches(item.Fields)
+				if err != nil {
+					return fmt.Errorf("evaluate backlog field predicate: %w", err)
 				}
 				if !matched {
 					continue

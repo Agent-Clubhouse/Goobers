@@ -40,6 +40,12 @@ type Trigger struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
+	// FieldPredicate is a CEL expression over the provider's typed native-field
+	// projection. It is ANDed with Selector and fails when a referenced field is
+	// unavailable.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
 	// Priority orders provider-backed polling when a quota window cannot cover
 	// every due poll. Higher values are preserved first; equal values use the
 	// scheduler's deterministic workflow ordering.
