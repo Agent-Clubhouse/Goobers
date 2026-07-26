@@ -314,7 +314,7 @@ func zshLabel(argKind string) string {
 func renderFishCompletion(m completionModel) string {
 	var b strings.Builder
 	b.WriteString("# fish completion for goobers\n")
-	for _, kind := range []string{"workflows", "runs", "escalations"} {
+	for _, kind := range dynamicCompletionKinds(m) {
 		fmt.Fprintf(&b, "function __goobers_completion_%s\n", kind)
 		fmt.Fprintf(&b, "    command goobers __complete %s 2>/dev/null\n", kind)
 		b.WriteString("end\n\n")
@@ -336,6 +336,31 @@ func renderFishCompletion(m completionModel) string {
 		b.WriteString(fishFlagRules(c))
 	}
 	return b.String()
+}
+
+func dynamicCompletionKinds(m completionModel) []string {
+	var kinds []string
+	seen := make(map[string]bool)
+	var addCommand func(completionCommand)
+	addCommand = func(c completionCommand) {
+		if c.argKind != "" && !seen[c.argKind] {
+			seen[c.argKind] = true
+			kinds = append(kinds, c.argKind)
+		}
+		for _, f := range c.flags {
+			if f.valueKind != "" && !seen[f.valueKind] {
+				seen[f.valueKind] = true
+				kinds = append(kinds, f.valueKind)
+			}
+		}
+		for _, sub := range c.subs {
+			addCommand(sub)
+		}
+	}
+	for _, c := range m.commands {
+		addCommand(c)
+	}
+	return kinds
 }
 
 func fishCandidateRules(c completionCommand) string {

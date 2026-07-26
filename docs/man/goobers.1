@@ -117,6 +117,15 @@ list escalated runs newest first
 \fBgoobers escalations show\fR
 show escalation cause + per-stage artifact timeline
 .TP
+\fBgoobers examples\fR
+browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers examples list\fR
+list canonical embedded workflow examples
+.TP
+\fBgoobers examples show\fR
+print a canonical embedded workflow example
+.TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
 .TP
@@ -207,8 +216,17 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
+\fBgoobers run approve\fR
+approve an escalated gate (not yet implemented, HITL-7/#469)
+.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
+.TP
+\fBgoobers run override\fR
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+.TP
+\fBgoobers run rerun\fR
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -342,6 +360,9 @@ show a workflow as a text DAG
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
+\fBgoobers-examples\fR(1),
+\fBgoobers-examples-list\fR(1),
+\fBgoobers-examples-show\fR(1),
 \fBgoobers-features\fR(1),
 \fBgoobers-fix\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
@@ -372,7 +393,10 @@ show a workflow as a text DAG
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
+\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
+\fBgoobers-run-override\fR(1),
+\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),

@@ -501,6 +501,48 @@ spec:
 	}
 }
 
+func TestWorkflowSchemaRequiresExactlyOneRunForm(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"dslVersion": "2.0",
+		"metadata": {"name": "inline-check"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "check",
+			"tasks": [{
+				"name": "check",
+				"type": "deterministic",
+				"goal": "Check policy.",
+				"run": RUN
+			}]
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		run     string
+		wantErr bool
+	}{
+		{name: "command", run: `{"command":["true"]}`},
+		{name: "script", run: `{"script":"printf 'ok\\n'"}`},
+		{name: "both", run: `{"command":["true"],"script":"printf 'ok\\n'"}`, wantErr: true},
+		{name: "neither", run: `{}`, wantErr: true},
+		{name: "empty script", run: `{"script":""}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "RUN", tc.run, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkflowSchemaValidatesContinueOnError(t *testing.T) {
 	v := newV(t)
 	workflow := `{

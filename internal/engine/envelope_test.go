@@ -30,13 +30,15 @@ const envelopeDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0
 type capturingDeterministic struct {
 	mu     sync.Mutex
 	envs   []apiv1.InvocationEnvelope
+	runs   []apiv1.DeterministicRun
 	result apiv1.ResultEnvelope
 }
 
-func (c *capturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (c *capturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.envs = append(c.envs, env)
+	c.runs = append(c.runs, run)
 	if c.result.Status == "" {
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 	}
@@ -47,6 +49,12 @@ func (c *capturingDeterministic) captured() []apiv1.InvocationEnvelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]apiv1.InvocationEnvelope(nil), c.envs...)
+}
+
+func (c *capturingDeterministic) capturedRuns() []apiv1.DeterministicRun {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]apiv1.DeterministicRun(nil), c.runs...)
 }
 
 // TestBuildInvocationCompleteEnvelope is #621's headline acceptance: the

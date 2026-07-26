@@ -159,6 +159,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		opt(o)
 	}
 
+	scriptProblems := runScriptProblems(def)
 	m, err := newMachine(def)
 	if err != nil {
 		return nil, fmt.Errorf("digest workflow %q: %w", def.Name, err)
@@ -170,6 +171,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		allowPreview = *o.allowPreviewFeatures
 	}
 	problems = append(problems, blockingFeatureProblems(CheckWorkflowFeatureSupport(def, allowPreview))...)
+	problems = append(problems, scriptProblems...)
 	if o.goobers != nil {
 		names := make([]string, 0, len(o.goobers))
 		for name := range o.goobers {
@@ -203,6 +205,19 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	}
 
 	return m, nil
+}
+
+func runScriptProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run != nil && task.Run.Command != nil && task.Run.Script != "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.command and run.script are mutually exclusive",
+				task.Name,
+			))
+		}
+	}
+	return problems
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.

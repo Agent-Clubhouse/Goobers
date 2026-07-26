@@ -196,12 +196,26 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
+	problems = append(problems, runScriptProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func runScriptProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run != nil && task.Run.Script != "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.script is not supported in DSL %s; use run.command or DSL %s",
+				task.Name, DSLVersion, "2.0",
+			))
+		}
+	}
+	return problems
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.

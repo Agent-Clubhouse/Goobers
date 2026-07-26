@@ -87,6 +87,19 @@ func init() {
 			withHelp("scaffold an instance root", initHelp).
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		groupCommand(
+			"examples",
+			runExamples,
+			subcommand("examples list", "list", apicontract.ActionReadOnlyNavigation, runExamplesList).
+				withHelp("list canonical embedded workflow examples", examplesListHelp).
+				withExamples("goobers examples list"),
+			subcommand("examples show", "show", apicontract.ActionReadOnlyNavigation, runExamplesShow).
+				withHelp("print a canonical embedded workflow example", examplesShowHelp).
+				withExamples("goobers examples show implementation"),
+		).
+			withSynopsis(synopsisByID["examples"]).
+			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
+			withExamples("goobers examples list", "goobers examples show implementation"),
+		groupCommand(
 			"scaffold",
 			runScaffold,
 			subcommand(
@@ -210,6 +223,18 @@ func init() {
 				withSynopsis(synopsisByID["run cancel"]).
 				withHelp("cancel a live in-flight run via the daemon", runCancelHelp).
 				withExamples("goobers run cancel <run-id>"),
+			runtimeSubcommand("run approve", "approve", "approve", runRunApprove).
+				withSynopsis(synopsisByID["run approve"]).
+				withHelp("approve an escalated gate (not yet implemented, HITL-7/#469)", runApproveHelp).
+				withExamples("goobers run approve <run-id> <stage>"),
+			runtimeSubcommand("run override", "override", "override", runRunOverride).
+				withSynopsis(synopsisByID["run override"]).
+				withHelp("force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)", runOverrideHelp).
+				withExamples("goobers run override <run-id> <stage>"),
+			runtimeSubcommand("run rerun", "rerun", "rerun", runRunRerun).
+				withSynopsis(synopsisByID["run rerun"]).
+				withHelp("rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)", runRerunHelp).
+				withExamples("goobers run rerun <run-id> <stage>"),
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
