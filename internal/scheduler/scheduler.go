@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/backlog"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -97,10 +98,13 @@ type Config struct {
 	// draws from, since AgenticGate carries no stage-level capabilities.
 	// bootstrap derives it from the loaded Goober definitions.
 	GateGooberCapabilities map[string][]string
-	// MaxRepasses overrides the shared gate repass budget when > 0
-	// (gate.DefaultMaxRepasses applies otherwise), pinned per run like the
-	// local runner's Config.MaxRepasses.
+	// MaxRepasses is the legacy instance repass override retained for callers
+	// that have not moved to InstanceRunControls.
 	MaxRepasses int
+	// InstanceRunControls and GaggleRunControls form the broader inheritance
+	// layers below each workflow definition.
+	InstanceRunControls apiv1.RunControls
+	GaggleRunControls   *apiv1.RunControls
 }
 
 // Scheduler decides when to start workflow runs for one gaggle.
@@ -179,6 +183,14 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("scheduler: compile pinned workflow %q: %w", ev.WorkflowName, err)
 	}
+	instanceControls := s.cfg.InstanceRunControls
+	if instanceControls.MaxRepasses == 0 && s.cfg.MaxRepasses > 0 {
+		instanceControls.MaxRepasses = int32(s.cfg.MaxRepasses)
+	}
+	controls, err := runcontrol.Resolve(instanceControls, s.cfg.GaggleRunControls, def.Spec.RunControls)
+	if err != nil {
+		return engine.RunInput{}, fmt.Errorf("scheduler: resolve workflow %q run controls: %w", ev.WorkflowName, err)
+	}
 	allowPreviewFeatures := s.cfg.Registry.PreviewFeaturesEnabled()
 	trigger := ev.trigger()
 	in := engine.RunInput{
@@ -195,7 +207,8 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		TriggerRef:             trigger.Ref,
 		BranchNamespace:        s.cfg.BranchNamespace,
 		GateGooberCapabilities: s.cfg.GateGooberCapabilities,
-		MaxRepasses:            s.cfg.MaxRepasses,
+		MaxRepasses:            controls.MaxRepasses,
+		RunControls:            controls.Overrides(),
 	}
 	if ev.Item != nil {
 		bi := backlog.FromWorkItem(*ev.Item)

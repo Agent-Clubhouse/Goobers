@@ -268,6 +268,24 @@ spec:
                 items:
                   type: string
                 type: array
+              runControls:
+                description: |-
+                  RunControls overrides instance run-control defaults for every workflow in
+                  this gaggle. A workflow may override either value again.
+                properties:
+                  maxRepasses:
+                    description: MaxRepasses bounds consecutive non-pass evaluations
+                      before escalation.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  stalledRunTimeout:
+                    description: |-
+                      StalledRunTimeout is the maximum period a running journal may remain
+                      silent before the watchdog escalates it. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
+                type: object
               sandbox:
                 description: |-
                   Sandbox overrides the instance-wide isolation posture for this gaggle's

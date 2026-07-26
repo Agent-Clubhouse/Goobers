@@ -60,6 +60,10 @@ type GaggleSpec struct {
 	// if it had one. Most gaggles omit it and share the default.
 	// +optional
 	BranchNamespace string `json:"branchNamespace,omitempty" yaml:"branchNamespace,omitempty"`
+	// RunControls overrides instance run-control defaults for every workflow in
+	// this gaggle. A workflow may override either value again.
+	// +optional
+	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Sandbox overrides the instance-wide isolation posture for this gaggle's
 	// agentic stages (#1305). Effective posture is gaggle override, else the
 	// instance.yaml sandbox block, else disabled — sandboxing is strictly

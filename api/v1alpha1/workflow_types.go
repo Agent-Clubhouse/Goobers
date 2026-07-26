@@ -264,6 +264,20 @@ type RetryPolicy struct {
 	BackoffSeconds int32 `json:"backoffSeconds,omitempty" yaml:"backoffSeconds,omitempty"`
 }
 
+// RunControls tunes runner-level safety budgets. An omitted field inherits from
+// the next broader scope: workflow, then gaggle, then instance defaults.
+type RunControls struct {
+	// MaxRepasses bounds consecutive non-pass evaluations before escalation.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// StalledRunTimeout is the maximum period a running journal may remain
+	// silent before the watchdog escalates it. It uses Go duration syntax.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+}
+
 // DeterministicRun describes the code a deterministic task runs.
 // +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
@@ -356,6 +370,7 @@ const (
 // Gate is a validation state that evaluates a condition and branches the flow. A
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
+// +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -379,6 +394,11 @@ type Gate struct {
 	// workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
+	// MaxRepasses overrides the inherited workflow repass budget for this gate.
+	// It is valid only for automated and agentic gates.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.
@@ -457,6 +477,11 @@ type WorkflowSpec struct {
 	// Readiness bounds when a run may start (WF-011).
 	// +optional
 	Readiness ReadinessConditions `json:"readiness,omitempty" yaml:"readiness,omitempty"`
+	// RunControls overrides this workflow's gaggle and instance run-control
+	// budgets. Individual automated or agentic gates may further override
+	// MaxRepasses.
+	// +optional
+	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`

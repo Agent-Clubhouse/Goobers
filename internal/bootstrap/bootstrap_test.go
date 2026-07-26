@@ -116,13 +116,20 @@ func TestSchedulerForPinsGaggleAndGooberPolicy(t *testing.T) {
 	// Overlay the policy surface the fixture leaves at its defaults so the
 	// derivation is visible end to end.
 	loaded.Gaggles[0].Spec.BranchNamespace = "bots/"
+	loaded.Gaggles[0].Spec.RunControls = &apiv1.RunControls{MaxRepasses: 5}
 	loaded.Goobers = append(loaded.Goobers, apiv1.Goober{
 		ObjectMeta: metav1.ObjectMeta{Name: "reviewer"},
 		Spec:       apiv1.GooberSpec{Capabilities: []string{"agent:model"}},
 	})
 
 	st := &fakeStarter{}
-	sched, err := loaded.SchedulerFor(loaded.Gaggles[0].Name, SchedulerDeps{Starter: st})
+	sched, err := loaded.SchedulerFor(loaded.Gaggles[0].Name, SchedulerDeps{
+		Starter: st,
+		InstanceRunControls: apiv1.RunControls{
+			MaxRepasses:       2,
+			StalledRunTimeout: "30m",
+		},
+	})
 	if err != nil {
 		t.Fatalf("SchedulerFor: %v", err)
 	}
@@ -142,6 +149,9 @@ func TestSchedulerForPinsGaggleAndGooberPolicy(t *testing.T) {
 	}
 	if want := map[string][]string{"reviewer": {"agent:model"}}; !reflect.DeepEqual(st.last.GateGooberCapabilities, want) {
 		t.Errorf("gateGooberCapabilities = %v, want %v", st.last.GateGooberCapabilities, want)
+	}
+	if got := st.last.RunControls; got.MaxRepasses != 5 || got.StalledRunTimeout != "30m0s" {
+		t.Errorf("runControls = %+v, want gaggle maxRepasses and instance stalledRunTimeout", got)
 	}
 }
 

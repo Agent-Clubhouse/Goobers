@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -478,6 +479,14 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		controls, err := runcontrol.Resolve(
+			cfg.RunConditions.RunControls(),
+			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
+			wf.Spec.RunControls,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
+		}
 		backlogCounter, err := buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota)
 		if err != nil {
 			return nil, err
@@ -500,7 +509,7 @@ func buildSchedulerDefinitions(
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
-			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
@@ -707,6 +716,7 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 type trackedStarter struct {
 	r            *runner.Runner
 	machine      *workflow.Machine
+	runControls  apiv1.RunControls
 	requiredCaps []string
 	wg           *sync.WaitGroup
 	l            instance.Layout
@@ -729,6 +739,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,
 		Item:                 req.Item,
+		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})
 	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)

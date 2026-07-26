@@ -1581,6 +1581,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	rc := runner.Config{
+		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			// Register resolved secrets into the run's own registrar AND the
 			// instance-global shared registry, so they are scrubbed from the run

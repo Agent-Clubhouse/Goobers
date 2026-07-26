@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -50,6 +52,38 @@ func (*capturingSuccessGoober) Review(context.Context, apiv1.InvocationEnvelope)
 
 type rerunGateReviewer struct {
 	addenda []string
+}
+
+type rerunBudgetReviewer struct {
+	calls int
+}
+
+func (*rerunBudgetReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *rerunBudgetReviewer) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.calls++
+	if r.calls == 1 && env.InstructionAddendum == "" {
+		return apiv1.Verdict{Decision: apiv1.VerdictFail}, nil
+	}
+	return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}, nil
+}
+
+type rerunChangingDeterministic struct {
+	t     *testing.T
+	calls int
+}
+
+func (d *rerunChangingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.t.Helper()
+	d.calls++
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte(fmt.Sprintf("attempt %d\n", d.calls)), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(d.t, env.Workspace, "add", "impl.txt")
+	runGit(d.t, env.Workspace, "commit", "-m", fmt.Sprintf("implementation attempt %d", d.calls))
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
 type rerunInfrastructureGoober struct {
@@ -193,6 +227,59 @@ func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	request := findRerunRequest(t, readRerunEvents(t, runsDir, runID), "review")
 	if request.Attempt != 2 || request.Actor != "release-manager" || request.InstructionAddendum != addendum {
 		t.Fatalf("review rerun request = %+v", request)
+	}
+}
+
+func TestRunnerRerunStageUsesPinnedRunControlBudget(t *testing.T) {
+	const runID = "run-rerun-pinned-budget"
+	machine := rerunBudgetMachine(t)
+	reviewer := &rerunBudgetReviewer{}
+	implementer := &rerunChangingDeterministic{t: t}
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return implementer, nil
+	})
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+
+	started, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+		RunControls: apiv1.RunControls{MaxRepasses: 1},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", started.Phase)
+	}
+
+	result, err := r.RerunStage(context.Background(), RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: repo, Stage: "review",
+		Actor: "release-manager", InstructionAddendum: "Address the remaining issue.",
+	})
+	if err != nil {
+		t.Fatalf("RerunStage: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("rerun phase = %s, want escalated", result.Phase)
+	}
+	if reviewer.calls != 3 {
+		t.Fatalf("reviewer calls = %d, want 3 (one initial and two under the pinned budget)", reviewer.calls)
+	}
+	if implementer.calls != 2 {
+		t.Fatalf("implementer calls = %d, want 2", implementer.calls)
+	}
+
+	events := readRerunEvents(t, runsDir, runID)
+	var lastEvaluation journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" {
+			lastEvaluation = event
+		}
+	}
+	if lastEvaluation.Runner["repassAttempt"] != float64(2) || lastEvaluation.Runner["escalated"] != true {
+		t.Fatalf("last gate evaluation = %+v, want pinned-budget escalation at attempt 2", lastEvaluation)
 	}
 }
 
@@ -660,6 +747,33 @@ func rerunGateMachine(t *testing.T) *workflow.Machine {
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile gate rerun machine: %v", err)
+	}
+	return machine
+}
+
+func rerunBudgetMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "rerun-budget", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review",
+			}},
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TerminalComplete,
+					string(apiv1.VerdictFail):         workflow.TargetEscalate,
+					string(apiv1.VerdictNeedsChanges): "implement",
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile budget rerun machine: %v", err)
 	}
 	return machine
 }

@@ -1,6 +1,10 @@
 package journal
 
-import "time"
+import (
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
 
 // PinnedWorkflowGraphInputName is the immutable input snapshot containing the
 // canonical graph a run started with.
@@ -59,6 +63,9 @@ type RunIdentity struct {
 	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
+	// RunControls pins the effective inherited safety budgets this run started
+	// with. Nil identifies a legacy run that predates run-control pinning.
+	RunControls *apiv1.RunControls `json:"runControls,omitempty"`
 	// Trigger is what started the run.
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.

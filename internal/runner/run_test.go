@@ -1525,6 +1525,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		Trigger:      journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Item:         &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+		RunControls:  apiv1.RunControls{MaxRepasses: 2, StalledRunTimeout: "2h"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1551,6 +1552,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.GooberDigest != gooberDigest {
 		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
+	}
+	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 || id.RunControls.StalledRunTimeout != "2h0m0s" {
+		t.Errorf("run.yaml runControls = %+v, want pinned effective controls", id.RunControls)
 	}
 	if len(id.Inputs) != 2 ||
 		id.Inputs[0].Name != "item" ||

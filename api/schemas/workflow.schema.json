@@ -46,6 +46,7 @@
             "maxOpenPRs": { "type": "integer", "minimum": 0 }
           }
         },
+        "runControls": { "$ref": "#/$defs/runControls" },
         "start": { "type": "string", "minLength": 1 },
         "docsRoots": {
           "type": "array",
@@ -108,6 +109,15 @@
         "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
         "labels": { "type": "object", "additionalProperties": { "type": "string" } },
         "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "runControls": {
+      "description": "Runner-level safety budgets. Omitted fields inherit from gaggle then instance defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRepasses": { "type": "integer", "minimum": 1 },
+        "stalledRunTimeout": { "type": "string", "minLength": 1 }
       }
     },
     "trigger": {
@@ -296,6 +306,11 @@
             "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"] }
           }
         },
+        "maxRepasses": {
+          "description": "Per-gate override of the inherited repass budget; valid for automated and agentic gates.",
+          "type": "integer",
+          "minimum": 1
+        },
         "branches": {
           "type": "object",
           "minProperties": 1,
@@ -313,7 +328,7 @@
         },
         {
           "if": { "properties": { "evaluator": { "const": "human" } } },
-          "then": { "required": ["human"], "not": { "anyOf": [{ "required": ["automated"] }, { "required": ["agentic"] }] } }
+          "then": { "required": ["human"], "not": { "anyOf": [{ "required": ["automated"] }, { "required": ["agentic"] }, { "required": ["maxRepasses"] }] } }
         }
       ]
     }

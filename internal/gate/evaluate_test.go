@@ -321,6 +321,7 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
 		Branches:  map[string]string{OutcomePass: "", OutcomeFail: "implement"},
 	}
+
 	auto := &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail, OutcomeFail}}
 	run := newTestJournal(t)
 	ev := &Evaluator{Automated: auto, MaxRepasses: 2, Journal: run}
@@ -351,6 +352,27 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 	}
 	if events[2].Target != wf.TargetEscalate {
 		t.Fatalf("last journaled target = %q, want %q", events[2].Target, wf.TargetEscalate)
+	}
+}
+
+func TestEvaluatorUsesPerGateRepassBudget(t *testing.T) {
+	g := apiv1.Gate{
+		Name:        "autogate",
+		Evaluator:   apiv1.EvaluatorAutomated,
+		Automated:   &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:    map[string]string{OutcomePass: "", OutcomeFail: "implement"},
+		MaxRepasses: 1,
+	}
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail}},
+		MaxRepasses: 5,
+	}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+	if first, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false); err != nil || first.Escalated {
+		t.Fatalf("first evaluation = %+v, %v; want ordinary repass", first, err)
+	}
+	if second, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false); err != nil || !second.Escalated {
+		t.Fatalf("second evaluation = %+v, %v; want gate-budget escalation", second, err)
 	}
 }
 

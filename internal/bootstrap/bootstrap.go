@@ -83,14 +83,15 @@ func (l *Loaded) Gaggle(name string) (apiv1.Gaggle, bool) {
 	return apiv1.Gaggle{}, false
 }
 
-// SchedulerDeps are the injected runtime dependencies for a scheduler: the run
-// Starter (real = engine.TemporalStarter; e2e = a fake), telemetry, the backlog
-// claimer, and readiness conditions.
+// SchedulerDeps are the injected runtime dependencies and instance policy for a
+// scheduler: the run Starter (real = engine.TemporalStarter; e2e = a fake),
+// telemetry, the backlog claimer, readiness conditions, and run-control defaults.
 type SchedulerDeps struct {
-	Starter   engine.Starter
-	Telemetry scheduler.SpanStarter
-	Claimer   scheduler.Claimer
-	Readiness []scheduler.ReadinessCondition
+	Starter             engine.Starter
+	Telemetry           scheduler.SpanStarter
+	Claimer             scheduler.Claimer
+	Readiness           []scheduler.ReadinessCondition
+	InstanceRunControls apiv1.RunControls
 }
 
 // SchedulerFor builds a scheduler scoped to one loaded gaggle, sharing the
@@ -119,5 +120,7 @@ func (l *Loaded) SchedulerFor(gaggleName string, deps SchedulerDeps) (*scheduler
 		Readiness:              deps.Readiness,
 		BranchNamespace:        g.Spec.BranchNamespace,
 		GateGooberCapabilities: gateGooberCaps,
+		InstanceRunControls:    deps.InstanceRunControls,
+		GaggleRunControls:      g.Spec.RunControls,
 	})
 }

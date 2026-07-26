@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -103,6 +104,15 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow graph: %w", err)
 	}
+	runControls := in.RunControls
+	if runControls.MaxRepasses == 0 && in.MaxRepasses > 0 {
+		runControls.MaxRepasses = int32(in.MaxRepasses)
+	}
+	effectiveControls, err := runcontrol.Resolve(runControls, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("engine: resolve run controls: %w", err)
+	}
+	runControls = effectiveControls.Overrides()
 	rec := &runJournal{
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
@@ -111,6 +121,7 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				WorkflowVersion: in.Version,
 				WorkflowDigest:  m.Digest(),
 				Gaggle:          in.Gaggle,
+				RunControls:     &runControls,
 				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
 			Item:  in.Item,
