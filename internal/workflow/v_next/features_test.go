@@ -132,7 +132,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 			featureParallelJoin,
 			featureParallelOnFailure,
 			featureParallelBranchTimeout,
-			featureParallelMaxConcurrentBranches:
+			featureParallelMaxConcurrentBranches,
 			featureTaskInputsFromQualified:
 			wantLevel = SupportPreview
 			previewSeen++
