@@ -430,6 +430,9 @@ jobs:
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
+      - name: Windows inline script runtime
+        run: go test ./internal/executor -run '^TestShellExecutor_RunScript$'
+
       - name: Windows credential files
         run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
 

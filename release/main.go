@@ -98,6 +98,17 @@ func run(args []string, stdout, stderr io.Writer) error {
 		checksumAssets = append(checksumAssets, toolkitPath)
 		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(toolkitPath))
 
+		onboardingPath, err := packageOnboardingArchive(
+			filepath.Join(releaseDocsDir, onboardingRoot),
+			opts.version,
+			opts.outDir,
+		)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, onboardingPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(onboardingPath))
+
 		notesPath, snapshotPaths, err := writeReleaseMetadata(
 			opts.version,
 			opts.previousFeatures,

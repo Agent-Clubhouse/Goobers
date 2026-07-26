@@ -98,6 +98,7 @@ tar -xzf "${tmp_dir}/${archive}" -C "$tmp_dir"
 [ -f "${tmp_dir}/goobers" ] || fail "${archive} does not contain goobers"
 [ -f "${tmp_dir}/README.md" ] || fail "${archive} does not contain README.md"
 [ -f "${tmp_dir}/docs/RELEASE.md" ] || fail "${archive} does not contain release documentation"
+[ -f "${tmp_dir}/onboarding/manifest.json" ] || fail "${archive} does not contain onboarding assets"
 
 if [ -n "${GOOBERS_INSTALL_DIR:-}" ]; then
 	install_dir=$GOOBERS_INSTALL_DIR
@@ -125,18 +126,23 @@ installed_version=$("${tmp_dir}/goobers" --version | awk '{ print $2 }')
 mkdir -p "$install_dir" "$docs_root"
 docs_stage="${docs_root}/.${version}.tmp.$$"
 rm -rf "$docs_stage"
-mkdir -p "${docs_stage}/docs"
+mkdir -p "${docs_stage}/docs" "${docs_stage}/onboarding"
 install -m 0644 "${tmp_dir}/README.md" "${docs_stage}/README.md"
 cp -R "${tmp_dir}/docs/." "${docs_stage}/docs/"
+cp -R "${tmp_dir}/onboarding/." "${docs_stage}/onboarding/"
 rm -rf "$docs_dir"
 mv "$docs_stage" "$docs_dir"
 docs_stage=
 
+versioned_binary="${install_dir}/goobers-${version}"
+install -m 0755 "${tmp_dir}/goobers" "$versioned_binary"
 install -m 0755 "${tmp_dir}/goobers" "${install_dir}/goobers"
-binary="${install_dir}/goobers"
+binary=$versioned_binary
 
-printf 'Installed %s to %s\n' "$version" "$binary"
+printf 'Installed %s to %s\n' "$version" "$versioned_binary"
+printf 'Updated current-version command at %s\n' "${install_dir}/goobers"
 printf 'Installed %s documentation to %s\n' "$version" "$docs_dir"
+printf 'Installed %s onboarding assets to %s\n' "$version" "${docs_dir}/onboarding"
 case ":${PATH:-}:" in
 	*":${install_dir}:"*) ;;
 	*) printf 'Add %s to PATH before opening a new shell.\n' "$install_dir" ;;

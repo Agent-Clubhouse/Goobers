@@ -285,6 +285,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "stage.run.script",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "stage.run.syncBase",
       "stability": "ga",
       "sinceVersion": "dev"

@@ -39,17 +39,18 @@ type customStageRegistrar struct{}
 
 func (customStageRegistrar) Register([]byte) {}
 
-func loadCustomStageWorkflow(t *testing.T) apiv1.WorkflowSpec {
+func loadCustomStageWorkflow(t *testing.T, name string) apiv1.Workflow {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(customStageConfigRoot, "workflows", "todo-check.yaml"))
+	filename := name + ".yaml"
+	raw, err := os.ReadFile(filepath.Join(customStageConfigRoot, "workflows", filename))
 	if err != nil {
-		t.Fatalf("read todo-check.yaml: %v", err)
+		t.Fatalf("read %s: %v", filename, err)
 	}
 	var workflow apiv1.Workflow
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
-		t.Fatalf("unmarshal todo-check.yaml: %v", err)
+		t.Fatalf("unmarshal %s: %v", filename, err)
 	}
-	return workflow.Spec
+	return workflow
 }
 
 func customStageWorkspace(t *testing.T, fixture string) string {
@@ -87,13 +88,32 @@ func customStageWorkspace(t *testing.T, fixture string) string {
 	return workspace
 }
 
+func newCustomStageShell(t *testing.T) (*executor.ShellExecutor, *customStageRecorder) {
+	t.Helper()
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("create credential resolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, nil, customStageRegistrar{})
+	if err != nil {
+		t.Fatalf("create credential injector: %v", err)
+	}
+	recorder := &customStageRecorder{recorded: map[string][]byte{}}
+	shell, err := executor.NewShellExecutor(injector, recorder)
+	if err != nil {
+		t.Fatalf("create shell executor: %v", err)
+	}
+	return shell, recorder
+}
+
 func TestCustomStageExampleDryRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("example task intentionally exercises a POSIX shell script")
 	}
-	spec := loadCustomStageWorkflow(t)
+	workflow := loadCustomStageWorkflow(t, "todo-check")
+	spec := workflow.Spec
 	machine, err := wf.Compile(
-		wf.Definition{Name: "todo-check", Version: 1, Spec: spec},
+		wf.Definition{Name: "todo-check", Version: 1, DSLVersion: workflow.DSLVersion, Spec: spec},
 		wf.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -133,19 +153,7 @@ func TestCustomStageExampleDryRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resolver, err := credentials.NewResolver(nil)
-			if err != nil {
-				t.Fatalf("create credential resolver: %v", err)
-			}
-			injector, err := credentials.NewInjector(resolver, nil, customStageRegistrar{})
-			if err != nil {
-				t.Fatalf("create credential injector: %v", err)
-			}
-			recorder := &customStageRecorder{recorded: map[string][]byte{}}
-			shell, err := executor.NewShellExecutor(injector, recorder)
-			if err != nil {
-				t.Fatalf("create shell executor: %v", err)
-			}
+			shell, recorder := newCustomStageShell(t)
 
 			inputs := make(map[string]interface{}, len(checkTask.Inputs))
 			for key, value := range checkTask.Inputs {
@@ -196,6 +204,126 @@ func TestCustomStageExampleDryRun(t *testing.T) {
 			}
 			if _, ok := machine.Task(target); !ok {
 				t.Fatalf("gate target %q is not a compiled task", target)
+			}
+		})
+	}
+}
+
+func TestInlineCustomStageExampleDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the shipped example declares os=linux and uses POSIX script syntax")
+	}
+	workflow := loadCustomStageWorkflow(t, "inline-policy-check")
+	machine, err := wf.Compile(
+		wf.Definition{
+			Name:       workflow.Name,
+			Version:    1,
+			DSLVersion: workflow.DSLVersion,
+			Spec:       workflow.Spec,
+		},
+		wf.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile inline-policy-check workflow: %v", err)
+	}
+	checkTask, ok := machine.Task("check-label")
+	if !ok || checkTask.Run == nil {
+		t.Fatal("compiled workflow is missing the check-label inline task")
+	}
+	policyGate, ok := machine.Gate("label-policy")
+	if !ok || policyGate.Automated == nil {
+		t.Fatal("compiled workflow is missing the label-policy automated gate")
+	}
+
+	tests := []struct {
+		name        string
+		labels      string
+		wantAllowed bool
+		wantOutcome string
+		wantTarget  string
+		wantReport  string
+	}{
+		{
+			name:        "required label present",
+			labels:      "ready,security-reviewed",
+			wantAllowed: true,
+			wantOutcome: gate.OutcomePass,
+			wantTarget:  "report-allowed",
+			wantReport:  "Required review label is present.",
+		},
+		{
+			name:        "required label missing",
+			labels:      "ready",
+			wantAllowed: false,
+			wantOutcome: gate.OutcomeFail,
+			wantTarget:  "report-blocked",
+			wantReport:  "Required review label is missing.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			shell, recorder := newCustomStageShell(t)
+			inputs := make(map[string]interface{}, len(checkTask.Inputs))
+			for key, value := range checkTask.Inputs {
+				inputs[key] = value
+			}
+			inputs["labels"] = tt.labels
+
+			const checkTaskID = "run-inline-policy-check:check-label"
+			result, err := shell.Run(context.Background(), apiv1.InvocationEnvelope{
+				TaskID:       checkTaskID,
+				Workspace:    t.TempDir(),
+				Inputs:       inputs,
+				Capabilities: checkTask.Capabilities,
+			}, *checkTask.Run)
+			if err != nil {
+				t.Fatalf("run check-label: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("check-label status = %q, want success", result.Status)
+			}
+			if got := result.Outputs["allowed"]; got != tt.wantAllowed {
+				t.Fatalf("allowed = %#v, want %v", got, tt.wantAllowed)
+			}
+
+			gateInputs := map[string]interface{}{gate.InputKeyStatus: string(result.Status)}
+			for key, value := range result.Outputs {
+				gateInputs[key] = value
+			}
+			outcome, err := gate.NewAutomatedEvaluator().Evaluate(
+				context.Background(),
+				*policyGate.Automated,
+				apiv1.InvocationEnvelope{Inputs: gateInputs},
+			)
+			if err != nil {
+				t.Fatalf("evaluate label-policy: %v", err)
+			}
+			if outcome != tt.wantOutcome {
+				t.Fatalf("gate outcome = %q, want %q", outcome, tt.wantOutcome)
+			}
+			target, ok := wf.BranchTarget(policyGate, outcome)
+			if !ok || target != tt.wantTarget {
+				t.Fatalf("gate target = %q, %v; want %q, true", target, ok, tt.wantTarget)
+			}
+
+			reportTask, ok := machine.Task(target)
+			if !ok || reportTask.Run == nil {
+				t.Fatalf("gate target %q is not a compiled deterministic task", target)
+			}
+			reportTaskID := "run-inline-policy-check:" + target
+			report, err := shell.Run(context.Background(), apiv1.InvocationEnvelope{
+				TaskID:    reportTaskID,
+				Workspace: t.TempDir(),
+			}, *reportTask.Run)
+			if err != nil {
+				t.Fatalf("run %s: %v", target, err)
+			}
+			if report.Status != apiv1.ResultSuccess {
+				t.Fatalf("%s status = %q, want success", target, report.Status)
+			}
+			if got := strings.TrimSpace(string(recorder.recorded[reportTaskID+"/stdout.log"])); got != tt.wantReport {
+				t.Fatalf("%s stdout = %q, want %q", target, got, tt.wantReport)
 			}
 		})
 	}

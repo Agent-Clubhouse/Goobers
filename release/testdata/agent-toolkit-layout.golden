@@ -38,6 +38,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlo
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/default-implement.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/docs-updater.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/implementation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/inline-policy-check.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/merge-review.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/todo-check.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/work-nomination.yaml

@@ -14,6 +14,7 @@ var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
 	"init":                   "  goobers init [--guided | --demo | --template=quickstart] [path]\n                                scaffold an instance root\n",
+	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"agent-kit":              "  goobers agent-kit install|check|update [flags] [path]\n                                install, inspect, or explicitly update the release-matched agent toolkit\n",
 	"validate":               "  goobers validate [--json] [flags] [path]  validate an instance or checked-in config source tree\n",

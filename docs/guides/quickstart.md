@@ -40,7 +40,12 @@ pieces are left untouched.
 ### Onboarding-only template
 
 For a first autonomous run against a disposable tutorial target, seed the
-versioned `quickstart@v1` template:
+versioned `quickstart@v1` template and copy its paired sample into a separate
+throwaway directory:
+
+```sh
+cp -R samples/getting-started-task-api ./getting-started-task-api
+```
 
 ```sh
 bin/goobers init --template=quickstart ./tutorial-instance

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 const (
@@ -33,7 +35,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 	}
 	// config-examples ships eight goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and eight workflows (acme-web's seven + the
+	// dotnet-reviewer) and nine workflows (acme-web's eight + the
 	// dotnet-service reference's dotnet-implementation, #1093); check
 	// membership, not order.
 	gotGoobers := map[string]bool{}
@@ -50,10 +52,15 @@ func TestLoadConfigDirValid(t *testing.T) {
 		}
 	}
 	gotWorkflows := map[string]bool{}
+	var inlineWorkflow *apiv1.Workflow
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
+		if w.Name == "inline-policy-check" {
+			workflow := w
+			inlineWorkflow = &workflow
+		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-curation", "docs-updater", "implementation", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
@@ -61,6 +68,13 @@ func TestLoadConfigDirValid(t *testing.T) {
 		if !gotWorkflows[name] {
 			t.Fatalf("missing workflow %q; got: %+v", name, set.Workflows)
 		}
+	}
+	if inlineWorkflow == nil || inlineWorkflow.DSLVersion != "2.0" {
+		t.Fatalf("inline workflow = %+v, want DSL 2.0 example", inlineWorkflow)
+	}
+	if len(inlineWorkflow.Spec.Tasks) == 0 || inlineWorkflow.Spec.Tasks[0].Run == nil ||
+		inlineWorkflow.Spec.Tasks[0].Run.Script == "" {
+		t.Fatalf("inline workflow does not exercise run.script: %+v", inlineWorkflow.Spec.Tasks)
 	}
 }
 
