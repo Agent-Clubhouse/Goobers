@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,7 +51,7 @@ func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) e
 		SELECT init_completed_at, first_pr_open_at
 		FROM first_success_milestones
 		WHERE id = 1`).Scan(&storedInit, &storedFirstPR)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("rollup: read first-success milestone for update: %w", err)
 	}
 	currentInit, err := parseFirstSuccessTime(storedInit)
