@@ -228,6 +228,96 @@ spec:
                   - name
                   type: object
                 type: array
+              parallels:
+                description: |-
+                  Parallels are the fan-out/fan-in states of the machine: a parallel forks
+                  the run into a statically-declared set of named branches and joins them at
+                  a single successor once every branch has settled
+                  (docs/design/static-fan-out-fan-in.md).
+                items:
+                  description: |-
+                    Parallel is a fan-out/fan-in state. Branch width is fixed at author time;
+                    dynamic (data-driven) width is deliberately not supported (#817).
+                  properties:
+                    branchTimeoutSeconds:
+                      description: |-
+                        BranchTimeoutSeconds bounds one branch. A branch exceeding it terminates
+                        at its next stage boundary, is recorded timed-out, and is then handled as
+                        a failure under the declared policy — so a branch that never settles is a
+                        defined outcome rather than a hang.
+                      format: int32
+                      type: integer
+                    branches:
+                      description: |-
+                        Branches are the statically-declared arms, at least two. Branch ids are
+                        assigned by declaration order (from 1; 0 is the run's root branch), so
+                        they are deterministic and reproducible across runs and runners.
+                      items:
+                        description: |-
+                          Branch is one statically-declared arm of a Parallel. Its body is ordinary
+                          tasks and gates declared in the same Tasks/Gates lists; a branch is not a
+                          nested scope but a named entry point into a subgraph the compiler proves is
+                          disjoint from every other branch's.
+                        properties:
+                          name:
+                            description: |-
+                              Name identifies the branch in journal events, the completeness record,
+                              and branch-qualified inputsFrom references. Unique within its parallel.
+                            type: string
+                          start:
+                            description: Start is the name of the branch's first state
+                              (task or gate).
+                            type: string
+                        required:
+                        - name
+                        - start
+                        type: object
+                      minItems: 2
+                      type: array
+                    failurePolicy:
+                      description: FailurePolicy declares what happens when a branch
+                        fails. Required.
+                      enum:
+                      - fail_fast
+                      - all_or_nothing
+                      - continue_on_error
+                      type: string
+                    join:
+                      description: |-
+                        Join is the state that runs exactly once, after every branch has settled.
+                        It may only be entered through this parallel.
+                      type: string
+                    maxConcurrentBranches:
+                      description: |-
+                        MaxConcurrentBranches bounds how many branches execute at once. Unset
+                        means 1 — deterministic sequential execution unless the author opts into
+                        concurrency. Concurrent repo-backed branches additionally require the
+                        read-only workspace mode, because every stage worktree is otherwise
+                        created on one run branch and git forbids two worktrees on one branch.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    name:
+                      description: |-
+                        Name identifies this state; it is a valid next/branches target like any
+                        other state name.
+                      type: string
+                    onFailure:
+                      description: |-
+                        OnFailure is the transition target when the policy is fail_fast or
+                        all_or_nothing and a branch failed — a state name or a reserved terminal
+                        target, so failure is always a defined branch and never a silent stop
+                        (mirroring GT-002). Required for those two policies and FORBIDDEN under
+                        continue_on_error, where the join always runs and owns the decision;
+                        declaring both would name two contradictory owners of the same failure.
+                      type: string
+                  required:
+                  - branches
+                  - failurePolicy
+                  - join
+                  - name
+                  type: object
+                type: array
               readiness:
                 description: Readiness bounds when a run may start (WF-011).
                 properties:
@@ -551,6 +641,13 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    labelPredicate:
+                      description: |-
+                        LabelPredicate is a CEL expression over the item's label set. The only
+                        supported operations are string membership in `labels` and boolean
+                        composition with &&, ||, and !. It is ANDed with Selector.
+                      minLength: 1
+                      type: string
                     priority:
                       description: |-
                         Priority orders provider-backed polling when a quota window cannot cover
@@ -562,13 +659,6 @@ spec:
                       description: |-
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
                         type=schedule.
-                      type: string
-                    labelPredicate:
-                      description: |-
-                        LabelPredicate is a CEL expression over the item's label set. The only
-                        supported operations are string membership in `labels` and boolean
-                        composition with &&, ||, and !. It is ANDed with Selector.
-                      minLength: 1
                       type: string
                     selector:
                       additionalProperties:
@@ -600,6 +690,33 @@ spec:
                 x-kubernetes-validations:
                 - message: type=manual must be the only trigger
                   rule: '!self.exists(t, t.type == ''manual'') || size(self) == 1'
+              tutorScope:
+                description: |-
+                  TutorScope declares this workflow as a Tutor-role definition and names
+                  its topology tier (TUT-A4, Tutor v2 design doc §4.3): every tutor is
+                  already confined to one gaggle via Gaggle above (the hard silo — there
+                  is no cross-gaggle tutor), and TutorScope additionally states whether
+                  this particular tutor's config-write is further confined to one target
+                  workflow's own subtree (Tier=per-workflow, persona/gate/wiring) or
+                  spans the whole gaggle's shared config (Tier=per-gaggle, shared
+                  skills/validation/structure). Unset means this workflow is not a
+                  tutor.
+                properties:
+                  target:
+                    description: |-
+                      Target names the workflow this per-workflow tutor is scoped to. It
+                      must reference a workflow in the same gaggle. Required when Tier is
+                      per-workflow; must be empty when Tier is per-gaggle.
+                    type: string
+                  tier:
+                    description: Tier is per-workflow or per-gaggle.
+                    enum:
+                    - per-workflow
+                    - per-gaggle
+                    type: string
+                required:
+                - tier
+                type: object
             required:
             - gaggle
             - start
