@@ -141,7 +141,6 @@ func TestContextPointerValidate(t *testing.T) {
 		{"branch-without-name", ContextPointer{Name: "f", Branch: 1, Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, false},
 		{"branch-name-without-id", ContextPointer{Name: "g", BranchName: "security", Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, false},
 		{"branch-external", ContextPointer{Name: "h", Branch: 1, BranchName: "security", External: &ExternalRef{Kind: "url", URI: "https://x"}}, false},
-		{"branch-external", ContextPointer{Name: "h", Branch: 1, BranchName: "security", External: &ExternalRef{Kind: "url", URI: "https://x"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

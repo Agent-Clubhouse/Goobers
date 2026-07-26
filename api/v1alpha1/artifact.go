@@ -190,9 +190,6 @@ func (c ContextPointer) Validate() error {
 	if c.Branch > 0 && c.Artifact == nil {
 		return fmt.Errorf("context pointer %q: branch attribution is only valid for artifacts", c.Name)
 	}
-	if c.Branch > 0 && c.Artifact == nil {
-		return fmt.Errorf("context pointer %q: branch attribution requires an artifact", c.Name)
-	}
 	switch {
 	case c.Artifact != nil && c.External != nil:
 		return fmt.Errorf("context pointer %q: artifact and external are mutually exclusive", c.Name)
