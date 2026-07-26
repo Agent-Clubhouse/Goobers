@@ -33,6 +33,7 @@ const HEALTH_REFRESH_INTERVAL_MS = 5_000;
 const ACTIVE_RUN_LIMIT = 50;
 const ATTENTION_RUN_LIMIT = 20;
 const RECENT_OUTCOME_LIMIT = 20;
+const WORKFLOW_RUN_LIMIT = 5;
 
 export interface GaggleInventory {
   gaggle: Gaggle;
@@ -206,11 +207,10 @@ export async function loadOperationalSnapshot(
   signal?: AbortSignal,
 ): Promise<OperationalSnapshot> {
   const options = { signal };
-  const [health, instance, gaggles, runs] = await Promise.all([
+  const [health, instance, gaggles] = await Promise.all([
     client.getHealth(options),
     client.getInstance(options),
     collectPages((cursor) => client.listGaggles({ cursor, limit: PAGE_LIMIT }, options)),
-    collectRuns(client, signal),
   ]);
 
   const inventories = await Promise.all(
@@ -226,6 +226,7 @@ export async function loadOperationalSnapshot(
       return { gaggle, goobers, workflows };
     }),
   );
+  const runs = await collectWorkflowOutcomes(client, inventories, signal);
 
   return { health, instance, inventories, runs: sortRuns(runs) };
 }
@@ -261,22 +262,24 @@ async function collectPages<T>(
   }
 }
 
-async function collectRuns(client: DaemonClient, signal?: AbortSignal): Promise<RunSummary[]> {
-  const runs: RunSummary[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-
-  for (;;) {
-    const response = await client.listRuns(
-      { cursor, limit: PAGE_LIMIT },
-      { signal },
-    );
-    runs.push(...response.runs);
-    if (!response.nextCursor) {
-      return runs;
-    }
-    cursor = nextCursor(response.nextCursor, seenCursors);
-  }
+async function collectWorkflowOutcomes(
+  client: DaemonClient,
+  inventories: GaggleInventory[],
+  signal?: AbortSignal,
+): Promise<RunSummary[]> {
+  const outcomes = await Promise.all(
+    inventories.flatMap((inventory) =>
+      inventory.workflows.map(async (workflow) => {
+        const { gaggle, name } = workflow.identity;
+        const response = await client.listRuns(
+          { gaggle, workflow: name, limit: WORKFLOW_RUN_LIMIT },
+          { signal },
+        );
+        return latestWorkflowOutcome(response.runs, gaggle, name);
+      }),
+    ),
+  );
+  return outcomes.filter((run): run is RunSummary => run !== undefined);
 }
 
 function nextCursor(value: string, seen: Set<string>): string {
@@ -300,8 +303,8 @@ function sortRuns(runs: RunSummary[]): RunSummary[] {
 //
 // The Overview reads only what it renders: pre-grouped, capped run lists plus
 // the small inventory it needs to label runs and detect an empty instance. It
-// deliberately does not reuse the full-history OperationalSnapshot above, which
-// remains the data source for the Workflows inventory page.
+// deliberately does not reuse the workflow-scoped OperationalSnapshot above,
+// which remains the data source for the Workflows inventory page.
 
 export interface OverviewInventory {
   gaggleCount: number;

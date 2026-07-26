@@ -156,24 +156,24 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       wrapper: wrapper(client),
     });
 
-    await waitFor(() => expect(client.signals).toHaveLength(1));
-    const firstSignal = client.signals[0];
+    await waitFor(() => expect(client.signals).toHaveLength(2));
+    const firstSignals = [...client.signals];
 
     act(() => {
       result.current.retry();
       result.current.retry();
     });
     await act(async () => Promise.resolve());
-    expect(client.signals).toHaveLength(1);
-    expect(firstSignal?.aborted).toBe(false);
+    expect(client.signals).toHaveLength(2);
+    expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
 
-    act(() => client.release(1));
-    await waitFor(() => expect(client.signals).toHaveLength(2));
-    const replaySignal = client.signals[1];
+    act(() => client.release(2));
+    await waitFor(() => expect(client.signals).toHaveLength(4));
+    const replaySignals = client.signals.slice(2);
     unmount();
-    expect(replaySignal?.aborted).toBe(true);
-    expect(firstSignal?.aborted).toBe(false);
-    client.release(1);
+    expect(replaySignals.every((signal) => signal?.aborted === true)).toBe(true);
+    expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
+    client.release(2);
   });
 
   it("keeps replacement-client work out of a detached operation", async () => {
@@ -187,25 +187,25 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       },
     );
 
-    await waitFor(() => expect(firstClient.signals).toHaveLength(1));
-    const detachedSignal = firstClient.signals[0];
+    await waitFor(() => expect(firstClient.signals).toHaveLength(2));
+    const detachedSignals = [...firstClient.signals];
 
     rerender({ client: replacementClient });
-    expect(detachedSignal?.aborted).toBe(true);
+    expect(detachedSignals.every((signal) => signal?.aborted === true)).toBe(true);
     act(() => {
       result.current.retry();
       result.current.retry();
     });
-    await waitFor(() => expect(replacementClient.signals).toHaveLength(1));
-
-    act(() => firstClient.release(1));
-    await settle();
-    expect(replacementClient.signals).toHaveLength(1);
-
-    act(() => replacementClient.release(1));
     await waitFor(() => expect(replacementClient.signals).toHaveLength(2));
+
+    act(() => firstClient.release(2));
+    await settle();
+    expect(replacementClient.signals).toHaveLength(2);
+
+    act(() => replacementClient.release(2));
+    await waitFor(() => expect(replacementClient.signals).toHaveLength(4));
     unmount();
-    replacementClient.release(1);
+    replacementClient.release(2);
   });
 });
 

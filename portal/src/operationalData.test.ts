@@ -1,7 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import { loadOperationalOverview } from "./operationalData";
+import { loadOperationalOverview, loadOperationalSnapshot } from "./operationalData";
 import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
+
+describe("loadOperationalSnapshot", () => {
+  it("fetches a bounded recent window for each workflow and keeps one terminal outcome (#1664)", async () => {
+    const client = new FixtureDaemonClient(
+      largeJournalFixtures({
+        completed: 80,
+        running: 2,
+        failed: 0,
+        escalated: 0,
+        aborted: 0,
+      }),
+    );
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    const snapshot = await loadOperationalSnapshot(client);
+
+    expect(listRuns.mock.calls.map(([request]) => request)).toEqual([
+      { gaggle: "core", workflow: "implementation", limit: 5 },
+      { gaggle: "tools", workflow: "implementation", limit: 5 },
+    ]);
+    expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
+    expect(snapshot.runs.map((run) => run.id)).toEqual(["01JZTEST000000079"]);
+  });
+});
 
 describe("loadOperationalOverview", () => {
   it("issues only bounded, phase-filtered run requests regardless of journal size (DASH-12)", async () => {
