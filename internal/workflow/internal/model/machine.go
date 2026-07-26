@@ -25,12 +25,33 @@ const (
 	// BranchEscalate optionally routes a runner-forced escalation through a
 	// workflow state before termination.
 	BranchEscalate = "escalate"
+	// TargetJoin ends a parallel BRANCH — it is reserved but NOT terminal: the
+	// run continues at the parallel's join state once every branch has settled.
+	// It is deliberately excluded from IsReservedTarget for that reason; see
+	// IsReservedBranchTarget.
+	TargetJoin = "@join"
 )
 
-// IsReservedTarget reports whether a transition target is a reserved terminal
-// action rather than a state name.
+// IsReservedTarget reports whether a transition target is a reserved TERMINAL
+// action rather than a state name. Callers rely on this meaning terminal:
+// reachability treats such a target as an exit, and dangling-reference checks
+// skip it. TargetJoin is therefore NOT included — it continues the run.
 func IsReservedTarget(target string) bool {
 	return target == TargetAbort || target == TargetEscalate
+}
+
+// IsReservedBranchTarget reports whether a transition target is a reserved
+// non-terminal branch action. Today that is only TargetJoin, which is legal
+// exclusively on a state reachable from a parallel branch's start.
+func IsReservedBranchTarget(target string) bool {
+	return target == TargetJoin
+}
+
+// IsReservedAnyTarget reports whether a target is reserved in any sense —
+// terminal or branch. Use it where the question is "is this a state name?"
+// rather than "does this end the run?".
+func IsReservedAnyTarget(target string) bool {
+	return IsReservedTarget(target) || IsReservedBranchTarget(target)
 }
 
 // Definition is a versioned snapshot of a workflow definition. A run pins one of
@@ -46,16 +67,19 @@ type Definition struct {
 // Machine is a compiled, validated view of a Definition with O(1) state lookup
 // and a stable content digest.
 type Machine struct {
-	Def    Definition
-	tasks  map[string]apiv1.Task
-	gates  map[string]apiv1.Gate
-	graph  Graph
-	digest string
+	Def       Definition
+	tasks     map[string]apiv1.Task
+	gates     map[string]apiv1.Gate
+	parallels map[string]apiv1.Parallel
+	graph     Graph
+	digest    string
 }
 
 // NewMachine stores interpreter-built runtime state and atomically pins its
 // definition digest.
-func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, graph Graph) (*Machine, error) {
+// A nil parallels map is valid and means the interpreter's DSL version has no
+// fan-out construct.
+func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, parallels map[string]apiv1.Parallel, graph Graph) (*Machine, error) {
 	digest, err := ComputeDigest(def)
 	if err != nil {
 		return nil, err
@@ -64,11 +88,12 @@ func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]ap
 	graph.Version = def.Version
 	graph.Digest = digest
 	return &Machine{
-		Def:    def,
-		tasks:  tasks,
-		gates:  gates,
-		graph:  cloneGraph(graph),
-		digest: digest,
+		Def:       def,
+		tasks:     tasks,
+		gates:     gates,
+		parallels: parallels,
+		graph:     cloneGraph(graph),
+		digest:    digest,
 	}, nil
 }
 
@@ -87,16 +112,24 @@ func ComputeDigest(def Definition) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// Has reports whether name identifies a task or gate.
+// Has reports whether name identifies a task, gate, or parallel.
 func (m *Machine) Has(name string) bool {
 	if _, ok := m.tasks[name]; ok {
 		return true
 	}
-	_, ok := m.gates[name]
+	if _, ok := m.gates[name]; ok {
+		return true
+	}
+	_, ok := m.parallels[name]
 	return ok
 }
 
 // Outgoing returns the transition targets of a state.
+//
+// For a parallel this is every branch's start plus the join and, when declared,
+// the failure target — i.e. every state the run can next occupy because of this
+// state. Reachability analysis depends on that being complete: a branch body is
+// reachable only through its parallel.
 func (m *Machine) Outgoing(state string) []string {
 	if task, ok := m.tasks[state]; ok {
 		return []string{task.Next}
@@ -113,8 +146,29 @@ func (m *Machine) Outgoing(state string) []string {
 		}
 		return targets
 	}
+	if parallel, ok := m.parallels[state]; ok {
+		targets := make([]string, 0, len(parallel.Branches)+2)
+		for _, branch := range parallel.Branches {
+			targets = append(targets, branch.Start)
+		}
+		targets = append(targets, parallel.Join)
+		if parallel.OnFailure != "" {
+			targets = append(targets, parallel.OnFailure)
+		}
+		return targets
+	}
 	return nil
 }
+
+// Parallel returns the parallel with the given name, if any.
+func (m *Machine) Parallel(name string) (apiv1.Parallel, bool) {
+	p, ok := m.parallels[name]
+	return p, ok
+}
+
+// Parallels returns every parallel state, keyed by name. The returned map is
+// the machine's own — callers must not mutate it.
+func (m *Machine) Parallels() map[string]apiv1.Parallel { return m.parallels }
 
 // Task returns the task with the given name, if any.
 func (m *Machine) Task(name string) (apiv1.Task, bool) {

@@ -376,3 +376,46 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 	}
 	t.Fatal("tutor workflow has no config-valid gate")
 }
+
+// TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites is TUT-A4's
+// contract guard: the tutor's topology tier must be explicit in the
+// workflow definition, and its write boundary must be scoped to this
+// gaggle's own config subtree, not the whole (potentially multi-gaggle)
+// selfhost instance config — the hard silo, applied to the one shipped
+// tutor definition.
+func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+
+	if tutor.Spec.TutorScope == nil {
+		t.Fatal("tutor workflow has no spec.tutorScope; per-workflow vs per-gaggle scope must be explicit (TUT-A4)")
+	}
+	if tutor.Spec.TutorScope.Tier != apiv1.TutorScopePerGaggle {
+		t.Fatalf("tutorScope.tier = %q, want %q", tutor.Spec.TutorScope.Tier, apiv1.TutorScopePerGaggle)
+	}
+	if tutor.Spec.TutorScope.Target != "" {
+		t.Fatalf("tutorScope.target = %q, want empty for tier %q", tutor.Spec.TutorScope.Target, apiv1.TutorScopePerGaggle)
+	}
+
+	for _, task := range tutor.Spec.Tasks {
+		if task.Name != "open-pr" {
+			continue
+		}
+		if task.Inputs["confineToConfigRoot"] != "true" {
+			t.Fatalf("open-pr confineToConfigRoot = %q, want %q", task.Inputs["confineToConfigRoot"], "true")
+		}
+		wantRoot := "selfhost/gaggles/" + tutor.Spec.Gaggle
+		if got := task.Inputs["configRoot"]; got != wantRoot {
+			t.Fatalf("open-pr configRoot = %q, want %q (gaggle-scoped, not the whole selfhost instance config)", got, wantRoot)
+		}
+		return
+	}
+	t.Fatal("tutor workflow has no open-pr task")
+}

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,14 +16,6 @@ const pullRequestClaimPrefix = "pr/"
 
 func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)
-}
-
-func claimEligiblePullRequest(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
-	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
-	if err != nil {
-		return nil, err
-	}
-	return claimPullRequest(root, eligible, runID, workflow, leaseDuration)
 }
 
 func claimEligiblePullRequestInOrder(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
@@ -113,19 +104,6 @@ func pullRequestClaimLease() (time.Duration, error) {
 		return 0, fmt.Errorf("invalid leaseDuration %q: must be positive", value)
 	}
 	return leaseDuration, nil
-}
-
-func claimPullRequest(
-	root string,
-	eligible []providers.PullRequestSummary,
-	runID, workflow string,
-	leaseDuration time.Duration,
-) (*providers.PullRequestSummary, error) {
-	candidates := append([]providers.PullRequestSummary(nil), eligible...)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Number < candidates[j].Number
-	})
-	return claimPullRequestInOrder(root, candidates, runID, workflow, leaseDuration)
 }
 
 func claimPullRequestInOrder(

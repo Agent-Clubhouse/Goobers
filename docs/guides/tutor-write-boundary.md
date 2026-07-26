@@ -61,9 +61,15 @@ change is *good*. That judgement is a human's, enforced by review:
 - **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns `/selfhost/`, so a
   Tutor PR to the config root requests a CODEOWNER and — once branch protection
   requires CODEOWNER review — cannot merge without a maintainer's approval.
+- **Change-type classification.** `open-pr` stamps Tutor PR bodies with a
+  deterministic classification. Persona/instruction and gate-calibration-only
+  changes may enter the ordinary merge-review path. Workflow topology, gate
+  removal/routing, skill-body, and validation-stage changes remain manual-only.
+  `pr-select` excludes those classes and `merge-pr` independently reclassifies
+  the live diff as a fail-closed backstop, so they are never auto-merged.
 - **Branch protection on `main`.** The instance never merges (there is no merge
-  stage in any workflow); the required `make ci` check plus a human review are
-  the only path to `main`. See `selfhost/README.md`.
+  stage in the Tutor workflow itself); the required checks plus the applicable
+  review path are the only route to `main`. See `selfhost/README.md`.
 
 ## Enablement checklist (before turning the Tutor on for the dogfood repo)
 

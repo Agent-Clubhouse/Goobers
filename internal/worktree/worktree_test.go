@@ -77,6 +77,7 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "prompt.md"), "the full prompt")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "result.json"), "{}")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "context", "blob"), "materialized context")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "mcp", "runtime-1", "copilot-home", "session-state", "events.jsonl"), "MCP session transcript")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goober-assets", "reference.md"), "goober reference")
 	mustWriteFile(t, filepath.Join(wt.Path, "src.txt"), "real implementation change")
 
