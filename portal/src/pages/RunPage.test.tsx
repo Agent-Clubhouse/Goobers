@@ -4,7 +4,13 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient, fixtureKey } from "../api/fixtureClient";
-import type { DaemonEventStream, DaemonUpdateEvent } from "../api/types";
+import type {
+  DaemonEventStream,
+  DaemonUpdateEvent,
+  EventList,
+  RequestOptions,
+  RunDetail,
+} from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const portalStyles = readFileSync("src/styles.css", "utf8");
@@ -413,6 +419,39 @@ describe("run detail", () => {
     );
   });
 
+  it("keeps run detail visible while a refresh is pending or fails", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const client = new LiveFixtureClient(populatedDaemonFixtures());
+    renderRun(runId, client);
+    await screen.findByRole("heading", { name: `Run ${runId}` });
+
+    client.holdRefresh();
+    act(() => client.invalidateRun("fixture:stale"));
+
+    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
+
+    act(() => client.failRefresh(new Error("Unable to refresh this run.")));
+
+    expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
+    expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+
+    client.holdRefresh();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
+
+    act(() => client.failRefresh(new Error("Still unable to refresh this run.")));
+
+    expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
+    expect(screen.getByText("Still unable to refresh this run.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+  });
+
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
     renderRun("01JZ402DASHBOARD");
 
@@ -508,9 +547,35 @@ function renderRun(
 
 class LiveFixtureClient extends FixtureDaemonClient {
   private readonly stream = new PushEventStream();
+  private refreshError: Error | undefined;
+  private refreshGate: Deferred | undefined;
 
   override connectEvents(): Promise<DaemonEventStream> {
     return Promise.resolve(this.stream);
+  }
+
+  override async getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
+    await this.waitForRefresh();
+    return super.getRun(runId, options);
+  }
+
+  override async listRunEvents(
+    runId: string,
+    options?: RequestOptions,
+  ): Promise<EventList> {
+    await this.waitForRefresh();
+    return super.listRunEvents(runId, options);
+  }
+
+  holdRefresh(): void {
+    this.refreshError = undefined;
+    this.refreshGate = deferred();
+  }
+
+  failRefresh(error: Error): void {
+    this.refreshError = error;
+    this.refreshGate?.resolve();
+    this.refreshGate = undefined;
   }
 
   invalidateRun(id: string): void {
@@ -519,6 +584,17 @@ class LiveFixtureClient extends FixtureDaemonClient {
       type: "invalidate",
       data: { cursor: id, models: ["run"] },
     });
+  }
+
+  private async waitForRefresh(): Promise<void> {
+    const gate = this.refreshGate;
+    if (!gate) {
+      return;
+    }
+    await gate.promise;
+    if (this.refreshError) {
+      throw this.refreshError;
+    }
   }
 }
 
@@ -560,4 +636,17 @@ class PushEventStream implements DaemonEventStream {
       },
     };
   }
+}
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
