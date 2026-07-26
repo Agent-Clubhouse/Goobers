@@ -76,7 +76,6 @@ export function msalConfiguration(config: ConfiguredAuth): Configuration {
     },
     cache: {
       cacheLocation: "sessionStorage",
-      storeAuthStateInCookie: false,
     },
   };
 }
