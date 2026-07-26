@@ -213,6 +213,67 @@ func TestBacklogQueryRejectsInvalidLabelPredicate(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryAppliesNativeFieldPredicate(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Old item", "trusted")
+	server.addIssue(8, "First selected item", "trusted")
+	server.addIssue(9, "Second selected item", "trusted")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_FIELDPREDICATE", `fields["number"] >= 8`)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "7\t") || !strings.Contains(stdout, "8\tFirst selected item") ||
+		!strings.Contains(stdout, "9\tSecond selected item") {
+		t.Fatalf("stdout = %q, want only issues 8 and 9", stdout)
+	}
+}
+
+func TestBacklogQueryOrdersByNativeField(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Old item", "trusted")
+	server.addIssue(8, "Middle item", "trusted")
+	server.addIssue(9, "New item", "trusted")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_FIELDORDER", "number:desc")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if lines := strings.Split(strings.TrimSpace(stdout), "\n"); len(lines) != 3 ||
+		!strings.HasPrefix(lines[0], "9\t") || !strings.HasPrefix(lines[1], "8\t") ||
+		!strings.HasPrefix(lines[2], "7\t") {
+		t.Fatalf("stdout = %q, want descending issue-number order", stdout)
+	}
+}
+
+func TestBacklogQueryUnavailableNativeFieldFails(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Candidate", "trusted")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_FIELDPREDICATE", `fields["project.priority"] == 1`)
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", root)
+	if code != 1 || !strings.Contains(stderr, `field "project.priority" is unavailable`) {
+		t.Fatalf("code = %d, stderr = %q, want unavailable-field error", code, stderr)
+	}
+}
+
 func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

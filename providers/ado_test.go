@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
 
@@ -171,6 +172,75 @@ func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
 		t.Fatalf("items = %#v, GET requests = %d; want matching second candidate", items, getRequests)
+	}
+}
+
+func TestADOListWorkItemsProjectsAndFiltersNativeFields(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["Microsoft.VSTS.Common.Priority"] <= 2`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		numericID := 1
+		priority := 3
+		if id == "2" {
+			numericID = 2
+			priority = 1
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.Title":                   "item " + id,
+				"Microsoft.VSTS.Common.Priority": priority,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Name: "repo", Project: "project"},
+		FieldPredicate: predicate,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("items = %#v, want work item 2", items)
+	}
+	if got := items[0].Fields["Microsoft.VSTS.Common.Priority"]; got != float64(1) {
+		t.Fatalf("priority = %#v, want float64(1)", got)
+	}
+}
+
+func TestADOListWorkItemsUnavailableNativeFieldFails(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["Custom.Risk"] == "high"`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/1", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"id": 1, "fields": map[string]interface{}{"System.Title": "item"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	_, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Name: "repo", Project: "project"},
+		FieldPredicate: predicate,
+	})
+	if err == nil || !strings.Contains(err.Error(), `field "Custom.Risk" is unavailable`) {
+		t.Fatalf("ListWorkItems error = %v, want unavailable-field error", err)
 	}
 }
 

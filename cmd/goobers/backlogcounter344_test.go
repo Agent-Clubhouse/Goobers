@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -72,6 +73,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 					"goobers:approved": "true",
 				},
 				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+				FieldPredicate: `fields["number"] >= 10`,
 			}},
 		}}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
@@ -105,6 +107,10 @@ func TestBuildBacklogCounter(t *testing.T) {
 		matched, err := bc.labelPredicate.Matches([]string{"goobers:ready", "goobers:approved", "size:m"})
 		if err != nil || !matched {
 			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
+		}
+		matched, err = bc.fieldPredicate.Matches(fieldpredicate.Fields{"number": int64(10)})
+		if err != nil || !matched {
+			t.Fatalf("compiled field predicate match = %v, err = %v, want true", matched, err)
 		}
 	})
 
@@ -149,6 +155,18 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}}
 		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
 			t.Fatal("buildBacklogCounter succeeded with an unsupported predicate")
+		}
+	})
+
+	t.Run("invalid field predicate fails closed", func(t *testing.T) {
+		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+			Triggers: []apiv1.Trigger{{
+				Type:           apiv1.TriggerBacklogItem,
+				FieldPredicate: `fields.number == 1`,
+			}},
+		}}
+		if _, err := buildBacklogCounter(cfg, wf, repoRef, nil, nil, "", nil); err == nil {
+			t.Fatal("buildBacklogCounter succeeded with an unsupported field predicate")
 		}
 	})
 }

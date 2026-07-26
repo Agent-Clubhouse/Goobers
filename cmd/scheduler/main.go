@@ -33,6 +33,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/scheduler"
@@ -149,6 +150,10 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 		if predicateErr != nil {
 			return fmt.Errorf("gaggle %q backlog label predicate: %w", g.Name, predicateErr)
 		}
+		fieldPredicate, fieldPredicateErr := fieldpredicate.Compile(g.Spec.Backlog.FieldPredicate)
+		if fieldPredicateErr != nil {
+			return fmt.Errorf("gaggle %q backlog field predicate: %w", g.Name, fieldPredicateErr)
+		}
 		for _, wfName := range workflows {
 			tk := time.NewTicker(cfg.pollInterval)
 			tr := scheduler.BacklogPollTrigger{
@@ -157,6 +162,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 				Repo:           repo,
 				Labels:         predicate.RequiredLabels(),
 				LabelPredicate: predicate,
+				FieldPredicate: fieldPredicate,
 				Ticks:          tk.C,
 				Limit:          cfg.pollLimit,
 			}

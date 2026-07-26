@@ -140,6 +140,11 @@
           "minLength": 1,
           "description": "CEL label-set predicate using only string membership in `labels` and boolean &&, ||, and !. ANDed with selector."
         },
+        "fieldPredicate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL predicate over the provider's typed native-field projection. ANDed with selector; unavailable fields are errors."
+        },
         "priority": {
           "type": "integer",
           "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
