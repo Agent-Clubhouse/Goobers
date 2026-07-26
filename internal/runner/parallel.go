@@ -103,20 +103,65 @@ func (p *parallelExec) completeness() []journal.BranchOutcome {
 	return out
 }
 
-// supportedFailurePolicy reports whether this slice can execute the declared
-// policy. FO-5 executes continue_on_error only; the cancelling policies need
-// the cooperative-cancellation machinery that lands in FO-6 (#1564), so they
-// fail CLOSED at runtime rather than silently behaving like continue_on_error
-// — which would let a workflow believe it had fail-fast semantics it does not.
+// supportedFailurePolicy reports whether the declared policy is one the runner
+// implements. Every policy in the DSL executes as of FO-6; an unrecognised one
+// still fails CLOSED rather than defaulting to permissive behaviour.
 func supportedFailurePolicy(policy apiv1.BranchFailurePolicy) error {
 	switch policy {
-	case apiv1.BranchContinueOnError:
+	case apiv1.BranchContinueOnError, apiv1.BranchFailFast, apiv1.BranchAllOrNothing:
 		return nil
-	case apiv1.BranchFailFast, apiv1.BranchAllOrNothing:
-		return fmt.Errorf("failurePolicy %q is declared but not yet implemented; only %q executes today",
-			policy, apiv1.BranchContinueOnError)
 	default:
 		return fmt.Errorf("unknown failurePolicy %q", policy)
+	}
+}
+
+// anyFailed reports whether any branch settled unsuccessfully. no-output is a
+// SUCCESSFUL settle: the branch ran and legitimately produced nothing, which is
+// exactly what a research lens finding no issues looks like.
+func (p *parallelExec) anyFailed() bool {
+	for _, b := range p.branches {
+		switch b.status {
+		case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
+			return true
+		}
+	}
+	return false
+}
+
+// cancelRemaining settles every branch that has not run yet as cancelled. Under
+// fail_fast this is what "cancel the siblings" means at maxConcurrentBranches=1:
+// the remaining branches have not started, so cancelling them is abandoning
+// them rather than interrupting anything mid-flight.
+func (p *parallelExec) cancelRemaining() []*branchState {
+	var cancelled []*branchState
+	for _, b := range p.branches {
+		if !b.settled {
+			b.settled = true
+			b.status = journal.BranchCancelled
+			b.machine = ""
+			cancelled = append(cancelled, b)
+		}
+	}
+	p.active = len(p.branches)
+	return cancelled
+}
+
+// route decides what happens once every branch has settled: whether the join
+// runs, and which state the run continues at.
+//
+// When no branch failed, all three policies behave identically — the join runs.
+// They differ only on failure, and fail_fast and all_or_nothing differ from
+// each other only in how much work happened first.
+func (p *parallelExec) route() (target string, runJoin bool) {
+	if !p.anyFailed() {
+		return p.spec.Join, true
+	}
+	switch p.spec.FailurePolicy {
+	case apiv1.BranchContinueOnError:
+		// The join owns the decision, via the completeness record.
+		return p.spec.Join, true
+	default:
+		return p.spec.OnFailure, false
 	}
 }
 
