@@ -122,6 +122,11 @@ func newADOBackend(t *testing.T) (backend, func()) {
 		}
 		writeJSON(t, w, item("route/backend; goobers/status:claimed"))
 	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "Active", "category": "InProgress"},
+		}})
+	})
 	srv := httptest.NewServer(mux)
 	p := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = srv.URL })
 	return backend{

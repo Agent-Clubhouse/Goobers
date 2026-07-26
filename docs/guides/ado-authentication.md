@@ -102,6 +102,23 @@ The superseded `goober-runtime` worker supports the same sources through:
 - Credential-source failures fail closed; Goobers never falls back to another
   configured identity.
 
-Azure DevOps provider parity is still incremental. Authentication does not make
-GitHub-specific workflow commands provider-neutral; use only ADO operations
-implemented by the provider and keep human branch policies authoritative.
+## Azure Boards work items
+
+The configured organization and project scope all work-item operations. Goobers
+generates bounded WIQL for assignee, updated-time, provider-native state, and tag
+filters. Common `open`/`closed` filtering uses each returned item's process state
+category so custom state names remain correct. Workflow definitions continue to
+use the provider-neutral work-item model. Azure Boards tags are exposed as
+labels, `System.AssignedTo` is mapped by display name, and comments use the
+work-item comments API.
+
+Close and reopen mutations select the target work-item state by the process
+state category instead of assuming one process template's state names. Numeric
+GitHub milestones have no Azure Boards equivalent and are rejected; existing
+iteration paths are left unchanged. Claims write `goobers:claimed` plus an
+internal run-owner tag in one revision-tested patch, so concurrent schedulers
+settle on one visible owner without overwriting unrelated tags.
+
+Repository and pull-request parity remains incremental. Keep human branch
+policies authoritative for ADO repo operations that the provider does not yet
+implement.
