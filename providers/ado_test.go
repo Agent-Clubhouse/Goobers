@@ -281,7 +281,11 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	if item.Status != WorkItemStatusInProgress {
 		t.Fatalf("updated item status = %q", item.Status)
 	}
-	if len(patchBody) == 0 || patchBody[0].Path != "/fields/System.Tags" || patchBody[0].Value != "route/backend; goobers/status:in-progress" {
+	if len(patchBody) != 2 ||
+		patchBody[0].Op != "test" ||
+		patchBody[0].Path != "/rev" ||
+		patchBody[1].Path != "/fields/System.Tags" ||
+		patchBody[1].Value != "route/backend; goobers/status:in-progress" {
 		t.Fatalf("patch body = %#v", patchBody)
 	}
 }
