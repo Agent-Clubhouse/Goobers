@@ -221,6 +221,12 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
+		if tutorHoldout != nil {
+			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
+				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
+				return 1
+			}
+		}
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
 	}
 

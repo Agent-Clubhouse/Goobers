@@ -317,7 +317,7 @@ func isWorkflowPath(filePath string) bool {
 }
 
 func localTutorChanges(base string) ([]tutorFileChange, error) {
-	diffRaw, err := tutorGitOutput("diff", "--find-renames", "--name-status", "-z", base+"...HEAD")
+	diffRaw, err := tutorGitOutput("diff", "--find-renames", "--find-copies-harder", "--name-status", "-z", base+"...HEAD")
 	if err != nil {
 		return nil, err
 	}
@@ -331,11 +331,17 @@ func localTutorChanges(base string) ([]tutorFileChange, error) {
 	}
 	mergeBase := strings.TrimSpace(string(mergeBaseRaw))
 	for i := range changes {
-		if isWorkflowPath(changes[i].Path) && changes[i].PreviousPath == "" {
-			changes[i].Before, _, err = tutorGitBlob(mergeBase, changes[i].Path)
+		beforePath := changes[i].Path
+		if changes[i].PreviousPath != "" {
+			beforePath = changes[i].PreviousPath
+		}
+		if isWorkflowPath(beforePath) {
+			changes[i].Before, _, err = tutorGitBlob(mergeBase, beforePath)
 			if err != nil {
 				return nil, err
 			}
+		}
+		if isWorkflowPath(changes[i].Path) {
 			changes[i].After, _, err = tutorGitBlob("HEAD", changes[i].Path)
 			if err != nil {
 				return nil, err

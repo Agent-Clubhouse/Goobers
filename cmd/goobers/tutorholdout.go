@@ -492,6 +492,11 @@ func refreshTutorHoldoutMergeState(
 			return fmt.Errorf("poll Tutor holdout pull request #%d: %w", record.PRNumber, err)
 		}
 		if !poll.Merged {
+			if strings.EqualFold(poll.State, "closed") {
+				if err := clearTutorHoldoutsForRun(root, record.Gaggle, record.AuthoringRunID); err != nil {
+					return fmt.Errorf("discard abandoned Tutor holdout for pull request #%d: %w", record.PRNumber, err)
+				}
+			}
 			continue
 		}
 		if poll.MergedAt == nil {
@@ -602,46 +607,54 @@ func assessTutorHoldout(
 	for i := range record.Targets {
 		target := &record.Targets[i]
 		resetTutorHoldoutAssessment(target)
-		var history []rollup.EffectiveVersionChange
-		var matched *rollup.EffectiveVersionChange
-		matchedIndex := -1
-		if db != nil {
-			var err error
-			history, err = db.DigestHistoryByEffectiveVersionForGaggle(record.Gaggle, target.Workflow)
-			if err != nil {
-				return fmt.Errorf("verify Tutor finding %s workflow %q: %w", record.ID, target.Workflow, err)
-			}
-			matched, matchedIndex = firstTutorConfigTransitionAfter(history, *record.MergedAt)
-		}
+		liveAxes, liveExists := liveVersions[target.Workflow]
 		lifecycle := target.Lifecycle
 		switch {
 		case target.OldAxes == (tutorVersionAxes{}):
 			lifecycle = tutorHoldoutAddition
-		case matched != nil:
-			lifecycle = tutorHoldoutTransition
-			target.OldAxes = effectiveVersionAxes(matched.FromVersion)
-			target.NewAxes = effectiveVersionAxes(matched.ToVersion)
-		case liveVersions[target.Workflow] == (tutorVersionAxes{}):
+		case lifecycle == tutorHoldoutRemoval:
+		case !liveExists:
 			lifecycle = tutorHoldoutRemoval
 			target.NewAxes = tutorVersionAxes{}
-		case lifecycle == "":
+		default:
 			lifecycle = tutorHoldoutTransition
 		}
 		target.Lifecycle = lifecycle
 		switch lifecycle {
 		case tutorHoldoutAddition:
+			if !liveExists {
+				target.Verdict = rollup.EfficacyInsufficientData
+				target.VerificationNote = "added workflow is not present in the live reconciled configuration"
+				anyPending = true
+				continue
+			}
+			target.NewAxes = liveAxes
 			if db == nil {
 				target.Verdict = rollup.EfficacyInsufficientData
 				target.VerificationNote = telemetryQueryNoRollupNote
 				anyPending = true
 				continue
 			}
+			history, err := db.DigestHistoryByEffectiveVersionForGaggle(record.Gaggle, target.Workflow)
+			if err != nil {
+				return fmt.Errorf("verify Tutor finding %s added workflow %q: %w", record.ID, target.Workflow, err)
+			}
+			cohortSince := *record.MergedAt
+			if final, _ := latestTutorConfigTransitionAfter(history, *record.MergedAt); final != nil {
+				if effectiveVersionAxes(final.ToVersion) != liveAxes {
+					target.Verdict = rollup.EfficacyInsufficientData
+					target.VerificationNote = "added workflow final observed configuration does not match the live reconciled configuration"
+					anyPending = true
+					continue
+				}
+				cohortSince = final.ChangedAt
+			}
 			cohort, err := db.FirstEffectiveVersionCohortForGaggle(
 				record.Gaggle,
 				target.Workflow,
-				"",
-				"",
-				*record.MergedAt,
+				liveAxes.WorkflowDigest,
+				liveAxes.GooberDigest,
+				cohortSince,
 			)
 			if err != nil {
 				return fmt.Errorf("verify Tutor finding %s added workflow %q: %w", record.ID, target.Workflow, err)
@@ -694,12 +707,19 @@ func assessTutorHoldout(
 			anyPending = true
 			continue
 		}
-		if matched == nil {
+		history, err := db.DigestHistoryByEffectiveVersionForGaggle(record.Gaggle, target.Workflow)
+		if err != nil {
+			return fmt.Errorf("verify Tutor finding %s workflow %q: %w", record.ID, target.Workflow, err)
+		}
+		matched, matchedIndex := latestTutorConfigTransitionAfter(history, *record.MergedAt)
+		if matched == nil || effectiveVersionAxes(matched.ToVersion) != liveAxes {
 			target.Verdict = rollup.EfficacyInsufficientData
-			target.VerificationNote = "post-promotion configuration transition has not been observed"
+			target.VerificationNote = "live reconciled post-promotion configuration transition has not been observed"
 			anyPending = true
 			continue
 		}
+		target.OldAxes = effectiveVersionAxes(matched.FromVersion)
+		target.NewAxes = effectiveVersionAxes(matched.ToVersion)
 
 		beforeSince := record.CreatedAt.Add(-window)
 		if matchedIndex > 0 {
@@ -759,16 +779,22 @@ func assessTutorHoldout(
 	return nil
 }
 
-func firstTutorConfigTransitionAfter(history []rollup.EffectiveVersionChange, mergedAt time.Time) (*rollup.EffectiveVersionChange, int) {
+func latestTutorConfigTransitionAfter(
+	history []rollup.EffectiveVersionChange,
+	mergedAt time.Time,
+) (*rollup.EffectiveVersionChange, int) {
+	var final *rollup.EffectiveVersionChange
+	finalIndex := -1
 	for i := range history {
 		change := &history[i]
 		if change.ChangedAt.Before(mergedAt) ||
 			effectiveVersionAxes(change.FromVersion) == effectiveVersionAxes(change.ToVersion) {
 			continue
 		}
-		return change, i
+		final = change
+		finalIndex = i
 	}
-	return nil, -1
+	return final, finalIndex
 }
 
 func resetTutorHoldoutAssessment(target *tutorHoldoutTarget) {
