@@ -89,7 +89,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "GOOBERS_GITHUB_ISSUES_TOKEN",
-		string(capability.GitHubPRWrite):     "GOOBERS_GITHUB_PR_TOKEN",
+		string(capability.ProviderPRWrite):   "GOOBERS_GITHUB_PR_TOKEN",
 		string(capability.RepoPush):          "GOOBERS_GITHUB_PUSH_TOKEN",
 	}
 	if len(cfg.Credentials) != len(wantCredentials) {

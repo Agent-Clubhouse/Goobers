@@ -1503,6 +1503,46 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 }
 
+func TestCIPollUsesLegacyDedicatedGitHubPRCredential(t *testing.T) {
+	t.Setenv("CI_POLL_REPO_TOKEN", "repo-token")
+	t.Setenv("CI_POLL_PR_TOKEN", "dedicated-pr-token")
+	cfg := repoConfig()
+	cfg.Repos[0].Token.Env = "CI_POLL_REPO_TOKEN"
+	cfg.Credentials = []instance.CredentialGrant{{
+		Capability: string(capability.GitHubPRWrite),
+		Token:      instance.TokenRef{Env: "CI_POLL_PR_TOKEN"},
+	}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{})
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+
+	var gotToken string
+	prev := newPRPoller
+	newPRPoller = func(token string) executor.PRPoller {
+		gotToken = token
+		return &ciPollFakePoller{}
+	}
+	t.Cleanup(func() { newPRPoller = prev })
+
+	env := ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)})
+	env.RepoRef.Provider = apiv1.ProviderGitHub
+	if _, err := deterministic.Run(context.Background(), env, apiv1.DeterministicRun{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gotToken != "dedicated-pr-token" {
+		t.Fatalf("poller token = %q, want legacy dedicated PR token", gotToken)
+	}
+}
+
 func TestCIPollRejectsGitHubCapabilityForADO(t *testing.T) {
 	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
 	called := false

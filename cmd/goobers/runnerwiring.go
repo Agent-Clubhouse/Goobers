@@ -390,8 +390,27 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		caps[i] = string(c)
 	}
 	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
+	providerPROverridden := false
+	legacyGitHubPRRef := ""
 	for _, cg := range cfg.Credentials {
-		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: credentialRefName(cg.Capability)})
+		ref := credentialRefName(cg.Capability)
+		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: ref})
+		switch capability.Capability(cg.Capability) {
+		case capability.ProviderPRWrite:
+			providerPROverridden = true
+		case capability.GitHubPRWrite:
+			legacyGitHubPRRef = ref
+		}
+	}
+	// Existing GitHub instances source their dedicated PR token through
+	// github:pr:write; keep that override authoritative for provider-neutral PR
+	// stages unless the instance explicitly configures the new capability.
+	if selectedRepoProvider(cfg, gaggleOwner, gaggleName) == string(apiv1.ProviderGitHub) &&
+		!providerPROverridden && legacyGitHubPRRef != "" {
+		overrides = append(overrides, credentials.Grant{
+			Capability: string(capability.ProviderPRWrite),
+			Ref:        legacyGitHubPRRef,
+		})
 	}
 	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
@@ -410,6 +429,24 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	}
 	grants = append(grants, credentials.AdditionalReadGrants(bindings, additionalBindings, string(capability.ContentsRead))...)
 	return resolver, grants, nil
+}
+
+func selectedRepoProvider(cfg *instance.Config, owner, name string) string {
+	if len(cfg.Repos) == 0 {
+		return ""
+	}
+	if owner != "" && name != "" {
+		for _, repo := range cfg.Repos {
+			repoOwner := repo.Owner
+			if repo.Provider == string(apiv1.ProviderADO) && repo.Project != "" {
+				repoOwner += "/" + repo.Project
+			}
+			if repoOwner == owner && repo.Name == name {
+				return repo.Provider
+			}
+		}
+	}
+	return cfg.Repos[0].Provider
 }
 
 // buildGooberCredentialGrants binds the configured credential sources to one

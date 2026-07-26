@@ -37,8 +37,9 @@ to verify the two-token boundary against disposable repositories.
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:milestones:write` | Issues: Read and write | Assign an existing milestone to an issue. Keep roadmap mutation out of stages that only perform ordinary issue writes. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. The canonical implementation workflow also uses this capability for `ci-poll`, which requires Checks: Read-only and Commit statuses: Read-only. |
-| `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
+| `provider:pr:write` | Pull requests: Read and write, Contents: Read and write | Provider-neutral PR open/update and `ci-poll`. On GitHub, polling also requires Checks: Read-only and Commit statuses: Read-only. |
+| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific PR lifecycle operations. Existing GitHub credential overrides also back `provider:pr:write` for compatibility when no explicit provider override is configured. |
+| `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `provider:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
@@ -109,7 +110,7 @@ credentials:
   - capability: github:issues:write
     token:
       env: GOOBERS_GITHUB_ISSUES_TOKEN # Issues: read and write
-  - capability: github:pr:write
+  - capability: provider:pr:write
     token:
       env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; CI Checks/statuses: read-only
   - capability: repo:push
@@ -126,6 +127,10 @@ an issues-only stage never receives a token carrying code or PR authority).
 Omit overrides for capabilities no selected workflow declares. Values are never
 inline — use a supported token reference such as `token.env`, `token.file`,
 `token.keychain`, or `token.store` (`CFG-009`/`SEC-010`).
+
+For GitHub instances, a legacy `github:pr:write` entry also overrides
+`provider:pr:write` when the latter is absent. New configurations should use
+`provider:pr:write` for provider-neutral open/update and polling stages.
 
 Omitting only the `agent:model` entry opts into stored Copilot CLI
 authentication. Missing grants for repository capabilities remain errors.

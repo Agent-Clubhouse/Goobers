@@ -534,7 +534,7 @@ func guidedConfig(opts GuidedOptions) *Config {
 	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
 		slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
 		credentials = append(credentials, CredentialGrant{
-			Capability: string(capability.GitHubPRWrite),
+			Capability: string(capability.ProviderPRWrite),
 			Token:      TokenRef{Env: opts.PullRequestTokenEnv},
 		})
 	}
