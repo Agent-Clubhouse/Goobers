@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/capability"
 )
 
 func TestPolicyActionSchemaEnumsMatchCompilerVocabulary(t *testing.T) {
@@ -37,6 +38,51 @@ func TestPolicyActionSchemaEnumsMatchCompilerVocabulary(t *testing.T) {
 			got := schemaStringArray(t, tc.schemaName, tc.path...)
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("enum = %v, want canonical compiler vocabulary %v", got, want)
+			}
+		})
+	}
+}
+
+func TestCapabilitySchemaEnumsMatchStageDeclarableRegistry(t *testing.T) {
+	var want []string
+	for _, candidate := range capability.All() {
+		value := string(candidate)
+		if capability.StageDeclarable(value) {
+			want = append(want, value)
+		}
+	}
+	tests := []struct {
+		name       string
+		schemaName string
+		path       []string
+	}{
+		{
+			name:       "goober capabilities",
+			schemaName: "goober.schema.json",
+			path:       []string{"properties", "spec", "properties", "capabilities", "items", "enum"},
+		},
+		{
+			name:       "workflow task capabilities",
+			schemaName: "workflow.schema.json",
+			path:       []string{"$defs", "task", "properties", "capabilities", "items", "enum"},
+		},
+		{
+			name:       "invocation capabilities",
+			schemaName: "invocation.schema.json",
+			path:       []string{"properties", "capabilities", "items", "enum"},
+		},
+		{
+			name:       "MCP credential capability",
+			schemaName: "goober.schema.json",
+			path:       []string{"$defs", "mcpCredentialRef", "properties", "capability", "enum"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := schemaStringArray(t, tc.schemaName, tc.path...)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("enum = %v, want stage-declarable capability registry %v", got, want)
 			}
 		})
 	}

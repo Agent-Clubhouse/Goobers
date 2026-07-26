@@ -46,7 +46,27 @@
     "capabilities": {
       "type": "array",
       "description": "Declared capability grants (e.g. 'github:issues:write'). Undeclared use fails closed (§5).",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "enum": [
+          "repo:read",
+          "repo:push",
+          "github:issues:write",
+          "github:milestones:write",
+          "github:issues:approve",
+          "github:pr:write",
+          "github:pr:review",
+          "github:branch:delete",
+          "github:pr:merge",
+          "contents:read",
+          "ado:code:read",
+          "ado:pr:comment",
+          "ado:work-items:write",
+          "telemetry:read",
+          "journal:read",
+          "agent:model"
+        ]
+      }
     },
     "limits": { "$ref": "#/$defs/limits", "description": "Execution and agent-usage limits applied to this stage." },
     "inputs": {

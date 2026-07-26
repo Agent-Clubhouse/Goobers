@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ var authorFacingSchemaRoots = map[string]bool{
 	"gaggle.schema.json":     true,
 	"goober.schema.json":     true,
 	"invocation.schema.json": true,
+	"manifest.schema.json":   true,
 	"workflow.schema.json":   true,
 }
 
@@ -39,7 +41,6 @@ var legacyUndocumentedSchemas = map[string]legacyUndocumented{
 	"features.schema.json":               {9, "5a63e854710cf8efb3add20719ff1900bd99cf314d05e6abc17fa6fb0552a391"},
 	"journal-event.schema.json":          {11, "9db2f2e2a6a2686ddd5a06a4e3e3f32b538a4af4afac21b57d988eefeae10511"},
 	"journal-run.schema.json":            {17, "c092e8176ef9f8ff56862fb8743991f3e2e74eb0f67064fe2885439381173db3"},
-	"manifest.schema.json":               {20, "d7dc7d59b173f9de8e56efc93034723c5420ee583a93713dbb7d9b54f99b2832"},
 	"remediation-brief-v1.schema.json":   {53, "68b9a4dd55e1be7fca8b1093698a07791e47914e1dd5c3f02c81f15f07101529"},
 	"remediation-brief-v2.schema.json":   {68, "489a2a169f844fc77bc359b75627839a7b43520cabe2c068c0d9e9cdbf52996c"},
 	"result.schema.json":                 {8, "1a5331ef336ceae49591b15e92f0bbd7a7a2c7aec005de93077d9d54d3d68f40"},
@@ -101,6 +102,70 @@ func TestDescriptionCoverage(t *testing.T) {
 	fmt.Print(report.String())
 }
 
+func TestDescriptionCoverageIncludesConditionalOnlyFields(t *testing.T) {
+	for _, keyword := range []string{"if", "then", "else", "not"} {
+		t.Run(keyword, func(t *testing.T) {
+			schema := map[string]any{
+				"allOf": []any{
+					map[string]any{
+						keyword: map[string]any{
+							"properties": map[string]any{
+								"conditionalField": map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			}
+
+			coverage := measureDescriptionCoverage(schema)
+			if coverage.total != 1 {
+				t.Fatalf("total = %d, want 1", coverage.total)
+			}
+			want := []string{"/allOf/0/" + keyword + "/properties/conditionalField"}
+			if !reflect.DeepEqual(coverage.undocumented, want) {
+				t.Fatalf("undocumented = %v, want %v", coverage.undocumented, want)
+			}
+		})
+	}
+}
+
+func TestDescriptionCoverageDeduplicatesReferencedConditionalConstraints(t *testing.T) {
+	schema := map[string]any{
+		"properties": map[string]any{
+			"triggers": map[string]any{
+				"description": "Workflow triggers.",
+				"items":       map[string]any{"$ref": "#/$defs/trigger"},
+				"allOf": []any{
+					map[string]any{
+						"if": map[string]any{
+							"contains": map[string]any{
+								"properties": map[string]any{
+									"type": map[string]any{"const": "manual"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"$defs": map[string]any{
+			"trigger": map[string]any{
+				"properties": map[string]any{
+					"type": map[string]any{"description": "Trigger type."},
+				},
+			},
+		},
+	}
+
+	coverage := measureDescriptionCoverage(schema)
+	if coverage.total != 2 {
+		t.Fatalf("total = %d, want 2", coverage.total)
+	}
+	if len(coverage.undocumented) != 0 {
+		t.Fatalf("undocumented = %v, want none", coverage.undocumented)
+	}
+}
+
 func expandAuthorFacingSchemas(t *testing.T, decoded map[string]map[string]any) map[string]bool {
 	t.Helper()
 
@@ -155,13 +220,41 @@ func collectExternalSchemaRefs(node any, refs map[string]bool) {
 
 func measureDescriptionCoverage(schema map[string]any) descriptionCoverage {
 	var fields []schemaField
-	collectSchemaFields(schema, "", &fields)
+	collectSchemaFields(schema, "", "", false, &fields)
 	sort.Slice(fields, func(i, j int) bool {
 		return fields[i].path < fields[j].path
 	})
 
-	coverage := descriptionCoverage{total: len(fields)}
+	unconditionalPaths := make(map[string]bool)
 	for _, field := range fields {
+		if !field.conditional {
+			unconditionalPaths[field.instancePath] = true
+		}
+	}
+	collectReferencedUnconditionalPaths(schema, schema, "", false, make(map[string]bool), unconditionalPaths)
+
+	measured := make([]schemaField, 0, len(fields))
+	conditionalPaths := make(map[string]int)
+	for _, field := range fields {
+		if !field.conditional {
+			measured = append(measured, field)
+			continue
+		}
+		if unconditionalPaths[field.instancePath] {
+			continue
+		}
+		if index, ok := conditionalPaths[field.instancePath]; ok {
+			if measured[index].description == "" {
+				measured[index].description = field.description
+			}
+			continue
+		}
+		conditionalPaths[field.instancePath] = len(measured)
+		measured = append(measured, field)
+	}
+
+	coverage := descriptionCoverage{total: len(measured)}
+	for _, field := range measured {
 		if strings.TrimSpace(field.description) == "" {
 			coverage.undocumented = append(coverage.undocumented, field.path)
 		}
@@ -172,38 +265,146 @@ func measureDescriptionCoverage(schema map[string]any) descriptionCoverage {
 }
 
 type schemaField struct {
-	path        string
-	description string
+	path         string
+	instancePath string
+	description  string
+	conditional  bool
 }
 
-func collectSchemaFields(node any, path string, fields *[]schemaField) {
+func collectSchemaFields(node any, path, instancePath string, conditional bool, fields *[]schemaField) {
 	switch value := node.(type) {
 	case map[string]any:
 		if properties, ok := value["properties"].(map[string]any); ok {
 			names := sortedKeys(properties)
 			for _, name := range names {
 				fieldPath := pointerJoin(path, "properties", name)
+				fieldInstancePath := pointerJoin(instancePath, name)
 				field, _ := properties[name].(map[string]any)
 				description, _ := field["description"].(string)
-				*fields = append(*fields, schemaField{path: fieldPath, description: description})
-				collectSchemaFields(properties[name], fieldPath, fields)
+				*fields = append(*fields, schemaField{
+					path:         fieldPath,
+					instancePath: fieldInstancePath,
+					description:  description,
+					conditional:  conditional,
+				})
+				collectSchemaFields(properties[name], fieldPath, fieldInstancePath, conditional, fields)
 			}
 		}
 
 		for _, key := range sortedKeys(value) {
-			// Conditional clauses constrain fields declared elsewhere; they do
-			// not introduce additional author-visible fields.
-			switch key {
-			case "properties", "if", "then", "else", "not":
+			if key == "properties" {
 				continue
 			}
-			collectSchemaFields(value[key], pointerJoin(path, key), fields)
+			childPath := pointerJoin(path, key)
+			childInstancePath := instancePath
+			childConditional := conditional
+			switch key {
+			case "$defs":
+				definitions, _ := value[key].(map[string]any)
+				for _, name := range sortedKeys(definitions) {
+					collectSchemaFields(
+						definitions[name],
+						pointerJoin(childPath, name),
+						pointerJoin("#/$defs", name),
+						conditional,
+						fields,
+					)
+				}
+				continue
+			case "items", "contains":
+				childInstancePath = pointerJoin(instancePath, "[]")
+			case "if", "then", "else", "not":
+				childConditional = true
+			}
+			collectSchemaFields(value[key], childPath, childInstancePath, childConditional, fields)
 		}
 	case []any:
 		for i, item := range value {
-			collectSchemaFields(item, pointerJoin(path, strconv.Itoa(i)), fields)
+			collectSchemaFields(item, pointerJoin(path, strconv.Itoa(i)), instancePath, conditional, fields)
 		}
 	}
+}
+
+func collectReferencedUnconditionalPaths(
+	root map[string]any,
+	node any,
+	instancePath string,
+	conditional bool,
+	resolving map[string]bool,
+	paths map[string]bool,
+) {
+	switch value := node.(type) {
+	case map[string]any:
+		// Resolve definitions at their use-site instance path so a conditional
+		// constraint can match the author-facing declaration behind a local ref.
+		if ref, ok := value["$ref"].(string); ok && strings.HasPrefix(ref, "#/") && !resolving[ref] {
+			if target, ok := resolveLocalRef(root, ref); ok {
+				resolving[ref] = true
+				collectReferencedUnconditionalPaths(root, target, instancePath, conditional, resolving, paths)
+				delete(resolving, ref)
+			}
+		}
+
+		if properties, ok := value["properties"].(map[string]any); ok {
+			for _, name := range sortedKeys(properties) {
+				fieldInstancePath := pointerJoin(instancePath, name)
+				if !conditional {
+					paths[fieldInstancePath] = true
+				}
+				collectReferencedUnconditionalPaths(
+					root,
+					properties[name],
+					fieldInstancePath,
+					conditional,
+					resolving,
+					paths,
+				)
+			}
+		}
+
+		for _, key := range sortedKeys(value) {
+			if key == "properties" || key == "$defs" || key == "$ref" {
+				continue
+			}
+			childInstancePath := instancePath
+			childConditional := conditional
+			switch key {
+			case "items", "contains":
+				childInstancePath = pointerJoin(instancePath, "[]")
+			case "if", "then", "else", "not":
+				childConditional = true
+			}
+			collectReferencedUnconditionalPaths(
+				root,
+				value[key],
+				childInstancePath,
+				childConditional,
+				resolving,
+				paths,
+			)
+		}
+	case []any:
+		for _, item := range value {
+			collectReferencedUnconditionalPaths(root, item, instancePath, conditional, resolving, paths)
+		}
+	}
+}
+
+func resolveLocalRef(root map[string]any, ref string) (any, bool) {
+	var current any = root
+	for _, component := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		component = strings.ReplaceAll(component, "~1", "/")
+		component = strings.ReplaceAll(component, "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[component]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 func sortedKeys[V any](values map[string]V) []string {

@@ -202,7 +202,31 @@
         "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
-        "capabilities": { "type": "array", "description": "Credential capability grants available to this task. Agentic grants must be a subset of the referenced goober's grants.", "items": { "type": "string", "minLength": 1 } },
+        "capabilities": {
+          "type": "array",
+          "description": "Credential capability grants available to this task. Agentic grants must be a subset of the referenced goober's grants.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "repo:read",
+              "repo:push",
+              "github:issues:write",
+              "github:milestones:write",
+              "github:issues:approve",
+              "github:pr:write",
+              "github:pr:review",
+              "github:branch:delete",
+              "github:pr:merge",
+              "contents:read",
+              "ado:code:read",
+              "ado:pr:comment",
+              "ado:work-items:write",
+              "telemetry:read",
+              "journal:read",
+              "agent:model"
+            ]
+          }
+        },
         "policyActions": {
           "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Agentic tasks must include every unconditional action declared by their referenced goober, and compiler admission requires each action's canonical capability.",
           "type": "array",

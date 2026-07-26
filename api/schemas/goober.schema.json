@@ -24,7 +24,31 @@
         "model": { "type": "string", "description": "Harness-specific model name, validated by the selected adapter before a run starts." },
         "harnessOptions": { "type": "object", "description": "Opaque harness-specific settings validated by the selected adapter.", "additionalProperties": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Default per-attempt wall-clock limit for this goober's agentic stages. A task timeout takes precedence." },
-        "capabilities": { "type": "array", "description": "Credential capability grants this goober may use. Invoking tasks may grant only a subset.", "items": { "type": "string", "minLength": 1 } },
+        "capabilities": {
+          "type": "array",
+          "description": "Credential capability grants this goober may use. Invoking tasks may grant only a subset.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "repo:read",
+              "repo:push",
+              "github:issues:write",
+              "github:milestones:write",
+              "github:issues:approve",
+              "github:pr:write",
+              "github:pr:review",
+              "github:branch:delete",
+              "github:pr:merge",
+              "contents:read",
+              "ado:code:read",
+              "ado:pr:comment",
+              "ado:work-items:write",
+              "telemetry:read",
+              "journal:read",
+              "agent:model"
+            ]
+          }
+        },
         "policyActions": {
           "description": "Closed vocabulary of externally mutating actions this persona unconditionally prescribes. Invoking tasks must redeclare every action and grant its canonical capability.",
           "type": "array",
@@ -199,7 +223,28 @@
       "additionalProperties": false,
       "required": ["capability"],
       "properties": {
-        "capability": { "type": "string", "minLength": 1, "description": "Goober capability whose scoped credential is resolved." },
+        "capability": {
+          "type": "string",
+          "description": "Goober capability whose scoped credential is resolved.",
+          "enum": [
+            "repo:read",
+            "repo:push",
+            "github:issues:write",
+            "github:milestones:write",
+            "github:issues:approve",
+            "github:pr:write",
+            "github:pr:review",
+            "github:branch:delete",
+            "github:pr:merge",
+            "contents:read",
+            "ado:code:read",
+            "ado:pr:comment",
+            "ado:work-items:write",
+            "telemetry:read",
+            "journal:read",
+            "agent:model"
+          ]
+        },
         "env": { "type": "string", "minLength": 1, "description": "Environment variable name exposed to a local stdio server. Mutually exclusive with header." },
         "header": { "type": "string", "minLength": 1, "description": "HTTP header name sent to a remote server. Mutually exclusive with env." },
         "scheme": { "type": "string", "enum": ["bearer", "basic"], "description": "Optional authorization scheme prefix for a remote header credential." }
