@@ -31,6 +31,7 @@ type Run struct {
 	seq          uint64
 	phase        RunPhase
 	machineState string
+	branch       int
 	branches     []BranchCursor
 	reason       string
 	lastActivity time.Time
@@ -274,6 +275,10 @@ func (r *Run) append(ev Event) error {
 	if r.appendErr != nil {
 		return fmt.Errorf("journal: append blocked after prior write failure: %w", r.appendErr)
 	}
+	// Attribute the event to the active branch unless the caller set one.
+	if ev.Branch == 0 {
+		ev.Branch = r.branch
+	}
 	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
 	if err != nil {
 		r.appendErr = err
@@ -344,6 +349,18 @@ func (r *Run) RepairAppendBoundary() error {
 func (r *Run) SetMachineState(state string) {
 	r.mu.Lock()
 	r.machineState = state
+	r.mu.Unlock()
+}
+
+// SetBranch stamps every subsequent append with a parallel branch id, so an
+// event is attributable to the branch that produced it without every call site
+// having to thread the id. 0 restores the run's root branch, which is what
+// every run that never forks stays on.
+//
+// An event that sets Branch explicitly keeps its own value.
+func (r *Run) SetBranch(branch int) {
+	r.mu.Lock()
+	r.branch = branch
 	r.mu.Unlock()
 }
 
