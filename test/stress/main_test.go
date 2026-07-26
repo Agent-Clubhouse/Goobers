@@ -326,7 +326,7 @@ func TestRepositoryStressWiring(t *testing.T) {
 		"types: [labeled]",
 		"github.event.label.name == '/stress'",
 		"make stress",
-		"actions/upload-artifact@v5",
+		"actions/upload-artifact@v7",
 	)
 }
 
