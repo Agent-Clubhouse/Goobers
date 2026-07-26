@@ -185,10 +185,19 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 }
 
 func TestInitQuickstartConfigSourceFlagValidation(t *testing.T) {
+	t.Chdir(t.TempDir())
 	tests := []struct {
 		args []string
 		want string
 	}{
+		{
+			args: []string{"init", "--template=quickstart", "--source-tree="},
+			want: "--source-tree destination must not be empty",
+		},
+		{
+			args: []string{"init", "--template=quickstart", "--source-tree", ""},
+			want: "--source-tree destination must not be empty",
+		},
 		{
 			args: []string{"init", "--source-tree", "source"},
 			want: "--source-tree requires --template=quickstart",
