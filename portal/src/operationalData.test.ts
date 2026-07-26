@@ -1,7 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
+import type { RequestOptions, RunList, RunListOptions } from "./api/types";
 import { loadOperationalOverview, loadOperationalSnapshot } from "./operationalData";
 import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
+
+class ConcurrencyTrackingClient extends FixtureDaemonClient {
+  readonly requests: (RunListOptions | undefined)[] = [];
+  maxConcurrentRuns = 0;
+  private activeRuns = 0;
+
+  override async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
+    this.requests.push(request);
+    this.activeRuns += 1;
+    this.maxConcurrentRuns = Math.max(this.maxConcurrentRuns, this.activeRuns);
+    await Promise.resolve();
+    try {
+      return await super.listRuns(request, options);
+    } finally {
+      this.activeRuns -= 1;
+    }
+  }
+}
 
 describe("loadOperationalSnapshot", () => {
   it("fetches a bounded recent window for each workflow and keeps one terminal outcome (#1664)", async () => {
@@ -24,6 +43,45 @@ describe("loadOperationalSnapshot", () => {
     ]);
     expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
     expect(snapshot.runs.map((run) => run.id)).toEqual(["01JZTEST000000079"]);
+  });
+
+  it("caps concurrent outcome requests with a large workflow inventory (#1679)", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const coreGaggle = fixtures.gaggles.items.find((gaggle) => gaggle.name === "core");
+    const coreGoobers = fixtures.goobers?.core;
+    const coreWorkflows = fixtures.workflows?.core;
+    const workflowTemplate = coreWorkflows?.items[0];
+    if (!coreGaggle || !coreGoobers || !coreWorkflows || !workflowTemplate) {
+      throw new Error("Populated fixtures must include the core gaggle inventory.");
+    }
+
+    const workflowCount = 20;
+    const workflows = Array.from({ length: workflowCount }, (_, index) => ({
+      ...workflowTemplate,
+      identity: { gaggle: "core", name: `workflow-${index}` },
+    }));
+    fixtures.gaggles = {
+      items: [{ ...coreGaggle, workflowCount }],
+      page: { ...fixtures.gaggles.page, total: 1 },
+    };
+    fixtures.goobers = { core: coreGoobers };
+    fixtures.workflows = {
+      core: {
+        items: workflows,
+        page: { ...coreWorkflows.page, total: workflowCount },
+      },
+    };
+    const client = new ConcurrencyTrackingClient(fixtures);
+
+    await loadOperationalSnapshot(client);
+
+    expect(client.requests).toHaveLength(workflowCount);
+    expect(client.maxConcurrentRuns).toBe(4);
+    expect(
+      client.requests.every(
+        (request) => request?.limit === 5 && request.cursor === undefined,
+      ),
+    ).toBe(true);
   });
 });
 
