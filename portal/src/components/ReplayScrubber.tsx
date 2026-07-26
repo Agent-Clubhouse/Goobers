@@ -13,23 +13,14 @@ import {
 import { eventHeading, eventSummary } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
-const chapterLabels: Record<ReplayChapterKind, string> = {
-  transition: "Workflow transition",
-  decision: "Gate decision",
-  failure: "Failure",
-  escalation: "Escalation",
-  external: "External result",
-  terminal: "Terminal outcome",
-};
-
-const chapterGlyphs: Record<ReplayChapterKind, string> = {
-  transition: "●",
-  decision: "◆",
-  failure: "!",
-  escalation: "↑",
-  external: "↗",
-  terminal: "■",
-};
+const chapterPresentation = {
+  transition: { label: "Workflow transition", glyph: "●" },
+  decision: { label: "Gate decision", glyph: "◆" },
+  failure: { label: "Failure", glyph: "!" },
+  escalation: { label: "Escalation", glyph: "↑" },
+  external: { label: "External result", glyph: "↗" },
+  terminal: { label: "Terminal outcome", glyph: "■" },
+} satisfies Record<ReplayChapterKind, { label: string; glyph: string }>;
 
 // ReplayScrubber plays every durable event while adding semantic chapter
 // navigation over the same deterministic sequence.
@@ -149,7 +140,7 @@ export function ReplayScrubber({
           aria-hidden="true"
           className={`event-mark event-mark-${selectedChapter?.kind ?? "raw"}`}
         >
-          {selectedChapter ? chapterGlyphs[selectedChapter.kind] : "·"}
+          {selectedChapter ? chapterPresentation[selectedChapter.kind].glyph : "·"}
         </span>
         <div className="playback-now">
           <span>
@@ -222,7 +213,7 @@ export function ReplayScrubber({
         {timeline.chapters.map((chapter) => {
           const chapterHeading = eventHeading(chapter.event);
           const chapterSummary = eventSummary(chapter.event);
-          const label = `Go to ${chapterLabels[chapter.kind]} chapter at event ${chapter.index + 1}: ${chapterHeading}. ${chapterSummary}`;
+          const label = `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${chapterHeading}. ${chapterSummary}`;
           return (
             <button
               aria-current={chapter.index === index ? "step" : undefined}
@@ -237,7 +228,7 @@ export function ReplayScrubber({
               type="button"
             >
               <span aria-hidden="true" className="replay-chapter-shape">
-                {chapterGlyphs[chapter.kind]}
+                {chapterPresentation[chapter.kind].glyph}
               </span>
             </button>
           );
@@ -301,23 +292,38 @@ export function ReplayScrubber({
             <Icon name="next" size={15} />
           </button>
         </div>
-        <div aria-label="Playback speed" className="speed-control" role="group">
-          {replaySpeeds.map((option) => (
-            <button
-              aria-label={`Set playback speed to ${option}×`}
-              aria-pressed={speed === option}
-              className={
-                speed === option
-                  ? "speed-button speed-button-active"
-                  : "speed-button"
-              }
-              key={option}
-              onClick={() => setSpeed(option)}
-              type="button"
-            >
-              {option}×
-            </button>
-          ))}
+        <div className="playback-options">
+          <details className="chapter-legend">
+            <summary>Chapter key</summary>
+            <ul aria-label="Chapter marker key" className="chapter-legend-list">
+              {Object.entries(chapterPresentation).map(([kind, presentation]) => (
+                <li className={`replay-chapter-${kind}`} key={kind}>
+                  <span aria-hidden="true" className="replay-chapter-shape">
+                    {presentation.glyph}
+                  </span>
+                  <span>{presentation.label}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+          <div aria-label="Playback speed" className="speed-control" role="group">
+            {replaySpeeds.map((option) => (
+              <button
+                aria-label={`Set playback speed to ${option}×`}
+                aria-pressed={speed === option}
+                className={
+                  speed === option
+                    ? "speed-button speed-button-active"
+                    : "speed-button"
+                }
+                key={option}
+                onClick={() => setSpeed(option)}
+                type="button"
+              >
+                {option}×
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

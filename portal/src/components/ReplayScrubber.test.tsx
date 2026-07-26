@@ -1,7 +1,9 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunEvent } from "../api/types";
+import styles from "../styles.css?inline";
+import tokens from "../tokens.css?inline";
 import { ReplayScrubber } from "./ReplayScrubber";
 
 function ev(
@@ -52,6 +54,17 @@ afterEach(() => {
 });
 
 describe("replay scrubber", () => {
+  const portalStyles = document.createElement("style");
+
+  beforeAll(() => {
+    portalStyles.textContent = `${tokens}\n${styles}`;
+    document.head.append(portalStyles);
+  });
+
+  afterAll(() => {
+    portalStyles.remove();
+  });
+
   it("plays every durable event forward on the compressed timeline", () => {
     vi.useFakeTimers();
     const onSeek = vi.fn();
@@ -158,6 +171,40 @@ describe("replay scrubber", () => {
     chapter.focus();
     expect(chapter).toHaveFocus();
     expect(chapter).toHaveAttribute("aria-current", "step");
+  });
+
+  it("provides a collapsed, accessible key for every chapter marker", () => {
+    render(
+      <Harness
+        events={[ev(1, "2026-01-01T00:00:00Z")]}
+        initial={1}
+        terminal
+      />,
+    );
+
+    const summary = screen.getByText("Chapter key");
+    const disclosure = summary.closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+
+    const key = screen.getByRole("list", { name: "Chapter marker key" });
+    for (const [glyph, label, color] of [
+      ["●", "Workflow transition", "--active"],
+      ["◆", "Gate decision", "--accent"],
+      ["!", "Failure", "--danger"],
+      ["↑", "Escalation", "--warning"],
+      ["↗", "External result", "--success"],
+      ["■", "Terminal outcome", "--ink"],
+    ]) {
+      const item = within(key).getByText(label).closest("li");
+      if (!item) {
+        throw new Error(`Missing legend item for ${label}`);
+      }
+      expect(within(item).getByText(glyph)).toHaveAttribute("aria-hidden", "true");
+      expect(window.getComputedStyle(item).color).toBe(`var(${color})`);
+    }
   });
 
   it("discloses and exposes each compressed idle period for inspection", () => {
