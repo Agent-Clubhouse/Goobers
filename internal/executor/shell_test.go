@@ -202,6 +202,36 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
+func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_PROJECT\" \"$GOOBERS_REPO_NAME\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	env := baseEnvelope(t)
+	env.RepoRef = apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "organization",
+		Project:  "project",
+		Name:     "repository",
+	}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "env-check"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "ado|organization|project|repository" {
+		t.Fatalf("stdout = %q, want routed ADO repository context", got)
+	}
+}
+
 func TestShellExecutor_ProviderStageUsesImplicitResultFile(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
 	resultEnv := InputEnvVar(InputResultFile)

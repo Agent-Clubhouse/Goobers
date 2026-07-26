@@ -214,8 +214,8 @@ var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness
 // PRPoller when non-nil. Test seam mirroring repoCloneURL/newAgenticAdapter
 // above, so a CLI-level test can point ci-poll at a fake PR provider (an
 // httptest.Server, or a bespoke fake) instead of a real GitHub token/network
-// (#132). Production leaves it nil and buildRunnerConfig constructs a real
-// providers.GitHubProvider over the resolved repo token.
+// (#132). Production leaves it nil and buildRunnerConfig constructs the
+// provider selected by the invocation's repository reference.
 var newPRPoller func(token string) executor.PRPoller
 
 // credentialGrantEnv is the environment variable the Copilot CLI reads most
@@ -564,7 +564,14 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	if newPRPoller != nil {
 		poller = newPRPoller(token)
 	} else {
-		poller = providers.NewGitHubProvider(token)
+		switch env.RepoRef.Provider {
+		case "", apiv1.ProviderGitHub:
+			poller = providers.NewGitHubProvider(token)
+		case apiv1.ProviderADO:
+			poller = newADOProvider(env.RepoRef.Owner, env.RepoRef.Project, token)
+		default:
+			return apiv1.ResultEnvelope{}, fmt.Errorf("configure ci-poll provider: unsupported repository provider %q", env.RepoRef.Provider)
+		}
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {

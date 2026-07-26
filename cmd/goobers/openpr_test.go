@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestOpenPRCreatesThenUpdatesOnRepass is #132's core CLI-level acceptance:
@@ -268,7 +269,48 @@ func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1 (fail closed on missing run context), stderr = %q", code, stderr)
 	}
+
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+func TestProviderWorkItemClosedMapsADOStates(t *testing.T) {
+	for _, test := range []struct {
+		state  string
+		closed bool
+	}{
+		{state: "New"},
+		{state: "Active"},
+		{state: "In Progress"},
+		{state: "Resolved", closed: true},
+		{state: "Closed", closed: true},
+		{state: "Removed", closed: true},
+	} {
+		t.Run(test.state, func(t *testing.T) {
+			item := providers.WorkItem{Provider: providers.ProviderADO, State: test.state}
+			if got := providerWorkItemClosed(item); got != test.closed {
+				t.Fatalf("providerWorkItemClosed(%q) = %t, want %t", test.state, got, test.closed)
+			}
+		})
+	}
+}
+
+func TestNewOpenPRProviderSelectsADO(t *testing.T) {
+	provider, err := newOpenPRProviderForRepo(providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "organization",
+		Project:  "project",
+		Name:     "repository",
+	}, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ado, ok := provider.(*providers.ADOProvider)
+	if !ok {
+		t.Fatalf("provider = %T, want *providers.ADOProvider", provider)
+	}
+	if ado.Organization != "organization" || ado.Project != "project" {
+		t.Fatalf("ADO provider = %+v", ado)
 	}
 }

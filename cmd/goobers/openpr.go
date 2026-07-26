@@ -38,7 +38,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 	root := providerStageRoot(pathArg)
 
-	repo, err := providerRepo(root)
+	repo, err := pullRequestProviderRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -48,7 +48,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	provider, err := newOpenPRProviderForRepo(repo, token)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {
@@ -186,7 +190,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case checkErr != nil:
 			pf(stderr, "warning: could not re-check issue #%s state before opening PR (%v) — proceeding\n", issueID, checkErr)
-		case item.State != "" && !strings.EqualFold(item.State, "open"):
+		case providerWorkItemClosed(item):
 			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
 			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {
 				pf(stderr, "error: %v\n", err)
@@ -252,13 +256,40 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// tuning gets the lighter one. Best-effort — labeling failures never fail
 	// an already-opened PR, same posture as flagScopeDrift.
 	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
-		if lerr := labelGateEdit(ctx, provider, repo, result.Number, kind, subject); lerr != nil {
-			pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+		if githubProvider, ok := provider.(*providers.GitHubProvider); ok {
+			if lerr := labelGateEdit(ctx, githubProvider, repo, result.Number, kind, subject); lerr != nil {
+				pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+			}
 		}
 	}
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
+}
+
+func newOpenPRProviderForRepo(repo providers.RepositoryRef, token string) (providers.Provider, error) {
+	switch repo.Provider {
+	case providers.ProviderGitHub:
+		return newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"})), nil
+	case providers.ProviderADO:
+		return newADOProvider(repo.Owner, repo.Project, token), nil
+	default:
+		return nil, fmt.Errorf("unsupported repository provider %q", repo.Provider)
+	}
+}
+
+func providerWorkItemClosed(item providers.WorkItem) bool {
+	switch item.Provider {
+	case providers.ProviderADO:
+		switch strings.ToLower(strings.TrimSpace(item.State)) {
+		case "closed", "completed", "done", "removed", "resolved":
+			return true
+		default:
+			return false
+		}
+	default:
+		return item.State != "" && !strings.EqualFold(item.State, "open")
+	}
 }
 
 // writeOpenPRResult writes open-pr's declared result file. It always emits the

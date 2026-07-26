@@ -46,6 +46,15 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
 }
 
+var newADOProvider = newTelemetryADOProvider
+
+func newTelemetryADOProvider(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
+	telemetryOpt := providers.WithADORateLimitObserver(
+		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+	)
+	return providers.NewADOProvider(organization, project, token, append([]func(*providers.ADOProvider){telemetryOpt}, opts...)...)
+}
+
 // claimLedgerFileName/claimLockFileName are the well-known files under an
 // instance's scheduler dir the claim ledger and its cross-process lock
 // (withClaimLock) live at — shared by backlog-query (the claimant) and
@@ -142,14 +151,38 @@ func providerStageRoot(pathArg string) string {
 // commands without run context retain the original first-configured-repo
 // fallback.
 func providerRepo(root string) (providers.RepositoryRef, error) {
+	return providerRepoFor(root, false)
+}
+
+func pullRequestProviderRepo(root string) (providers.RepositoryRef, error) {
+	return providerRepoFor(root, true)
+}
+
+func providerRepoFor(root string, allowADO bool) (providers.RepositoryRef, error) {
 	routed := providers.RepositoryRef{
 		Provider: providers.ProviderKind(os.Getenv(executor.RepoProviderEnvVar)),
 		Owner:    os.Getenv(executor.RepoOwnerEnvVar),
+		Project:  os.Getenv(executor.RepoProjectEnvVar),
 		Name:     os.Getenv(executor.RepoNameEnvVar),
 	}
-	if routed.Provider != "" || routed.Owner != "" || routed.Name != "" {
-		if routed.Provider != providers.ProviderGitHub || routed.Owner == "" || routed.Name == "" {
-			return providers.RepositoryRef{}, fmt.Errorf("invalid routed repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
+	if routed.Provider != "" || routed.Owner != "" || routed.Project != "" || routed.Name != "" {
+		valid := routed.Owner != "" && routed.Name != ""
+		switch routed.Provider {
+		case providers.ProviderGitHub:
+			valid = valid && routed.Project == ""
+		case providers.ProviderADO:
+			valid = valid && routed.Project != "" && allowADO
+		default:
+			valid = false
+		}
+		if !valid {
+			return providers.RepositoryRef{}, fmt.Errorf(
+				"invalid routed repository in %s/%s/%s/%s",
+				executor.RepoProviderEnvVar,
+				executor.RepoOwnerEnvVar,
+				executor.RepoProjectEnvVar,
+				executor.RepoNameEnvVar,
+			)
 		}
 		return routed, nil
 	}
@@ -162,10 +195,17 @@ func providerRepo(root string) (providers.RepositoryRef, error) {
 		return providers.RepositoryRef{}, fmt.Errorf("no repo configured in %s", l.ConfigFile())
 	}
 	repo := cfg.Repos[0]
-	if repo.Provider != "github" {
-		return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not yet support repository provider %q", repo.Provider)
+	switch repo.Provider {
+	case "github":
+		return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
+	case "ado":
+		if !allowADO {
+			return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not yet support repository provider %q", repo.Provider)
+		}
+		return providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}, nil
+	default:
+		return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not support repository provider %q", repo.Provider)
 	}
-	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
 }
 
 // providerToken reads the capability-scoped credential the runner already

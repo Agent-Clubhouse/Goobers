@@ -309,7 +309,11 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
-	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: out.URL}, nil
+	prURL := out.URL
+	if out.Links.Web.Href != "" {
+		prURL = out.Links.Web.Href
+	}
+	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: prURL}, nil
 }
 
 // RequestReview requests Azure DevOps reviewers for a pull request.
@@ -332,15 +336,140 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// PollPullRequest is not yet implemented for Azure DevOps: PR poll/repass parity
-// is scoped to V1 (BL-033); the GitHub provider is the V0 workload (#13).
+// PollPullRequest reports Azure DevOps review votes and pull-request builds in
+// the provider-neutral poll result.
 func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
-	return PullRequestPollResult{}, fmt.Errorf("ado: pull request polling lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return PullRequestPollResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+	var pr adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PullRequestPollResult{}, err
+	}
+
+	repositoryID := pr.Repository.ID
+	if repositoryID == "" {
+		repositoryID = req.Repository.ID
+	}
+	if repositoryID == "" {
+		repositoryID = req.Repository.Name
+	}
+	checkState, checks, err := p.pullRequestBuildState(
+		ctx,
+		req.Repository,
+		req.PullID,
+		repositoryID,
+		pr.LastMergeSourceCommit.CommitID,
+	)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+	reviewDecision, requestedChanges := adoReviewDecision(pr.Reviewers)
+	state, merged := adoPullRequestPollState(pr.Status)
+	prURL := pr.URL
+	if pr.Links.Web.Href != "" {
+		prURL = pr.Links.Web.Href
+	}
+	headRepository := req.Repository
+	headRepository.Provider = ProviderADO
+	if headRepository.Owner == "" {
+		headRepository.Owner = p.Organization
+	}
+	if headRepository.Project == "" {
+		headRepository.Project = p.project(req.Repository)
+	}
+
+	var mergedAt *time.Time
+	if merged {
+		mergedAt = pr.ClosedDate
+	}
+	return PullRequestPollResult{
+		Number:           pr.PullRequestID,
+		Title:            pr.Title,
+		State:            state,
+		Merged:           merged,
+		MergedAt:         mergedAt,
+		Mergeable:        adoMergeable(pr.MergeStatus),
+		MergeableState:   strings.ToLower(pr.MergeStatus),
+		Draft:            pr.IsDraft,
+		HeadBranch:       strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
+		HeadRepository:   &headRepository,
+		HeadSHA:          pr.LastMergeSourceCommit.CommitID,
+		BaseSHA:          pr.LastMergeTargetCommit.CommitID,
+		BaseBranch:       strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+		Body:             pr.Description,
+		ReviewDecision:   reviewDecision,
+		RequestedChanges: requestedChanges,
+		CheckState:       checkState,
+		Checks:           checks,
+		URL:              prURL,
+	}, nil
 }
 
-// ClosePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
+// ClosePullRequest abandons an active Azure DevOps pull request. Completed pull
+// requests are reported as merged without attempting an invalid abandon update.
 func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
-	return ClosePullRequestResult{}, fmt.Errorf("ado: pull request close lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	var pr adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+
+	state, merged := adoPullRequestState(pr.Status)
+	switch strings.ToLower(pr.Status) {
+	case "completed", "abandoned":
+	case "active":
+		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"status": "abandoned"}, &pr); err != nil {
+			return ClosePullRequestResult{}, err
+		}
+		state, merged = adoPullRequestState(pr.Status)
+		if state != "closed" && state != "merged" {
+			return ClosePullRequestResult{}, fmt.Errorf("ado pull request %s abandon returned status %q", req.PullID, pr.Status)
+		}
+	default:
+		return ClosePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, pr.Status)
+	}
+	if req.Comment != "" {
+		commentsEndpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "threads")
+		if err != nil {
+			return ClosePullRequestResult{}, err
+		}
+		body := adoPullRequestThreadRequest{
+			Comments: []adoPullRequestThreadComment{{
+				ParentCommentID: 0,
+				Content:         req.Comment,
+				CommentType:     1,
+			}},
+			Status: 1,
+		}
+		if err := p.do(ctx, http.MethodPost, commentsEndpoint, body, nil); err != nil {
+			return ClosePullRequestResult{}, err
+		}
+	}
+	number := pr.PullRequestID
+	if number == 0 {
+		number, err = strconv.Atoi(req.PullID)
+		if err != nil {
+			return ClosePullRequestResult{}, fmt.Errorf("ado pull request returned no id and pull id %q is not numeric", req.PullID)
+		}
+	}
+	return ClosePullRequestResult{Number: number, Merged: merged, State: state}, nil
 }
 
 // MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
@@ -1127,6 +1256,168 @@ func (p *ADOProvider) workURLVersion(project, version string, elems ...string) (
 	return addQuery(endpoint, url.Values{"api-version": []string{version}})
 }
 
+func (p *ADOProvider) buildURL(repo RepositoryRef, elems ...string) (string, error) {
+	parts := []string{p.Organization, p.project(repo), "_apis", "build"}
+	parts = append(parts, elems...)
+	endpoint, err := joinURL(p.BaseURL, parts...)
+	if err != nil {
+		return "", err
+	}
+	return addQuery(endpoint, url.Values{"api-version": []string{"7.1"}})
+}
+
+func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo RepositoryRef, pullID, repositoryID, headSHA string) (CheckState, []CheckDetail, error) {
+	endpoint, err := p.buildURL(repo, "builds")
+	if err != nil {
+		return "", nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"$top":           []string{"100"},
+		"branchName":     []string{"refs/pull/" + pullID + "/merge"},
+		"queryOrder":     []string{"queueTimeDescending"},
+		"reasonFilter":   []string{"pullRequest"},
+		"repositoryId":   []string{repositoryID},
+		"repositoryType": []string{"TfsGit"},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	var out adoBuildsResponse
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return "", nil, err
+	}
+
+	checks := make([]CheckDetail, 0, len(out.Value))
+	seenDefinitions := make(map[string]bool, len(out.Value))
+	for _, build := range out.Value {
+		if sourceSHA := build.TriggerInfo["pr.sourceSha"]; sourceSHA != "" && headSHA != "" && !strings.EqualFold(sourceSHA, headSHA) {
+			continue
+		}
+		key := strconv.Itoa(build.Definition.ID)
+		if build.Definition.ID == 0 {
+			key = build.Definition.Name
+		}
+		if key != "" && seenDefinitions[key] {
+			continue
+		}
+		if key != "" {
+			seenDefinitions[key] = true
+		}
+		name := build.Definition.Name
+		if name == "" {
+			name = build.BuildNumber
+		}
+		if name == "" {
+			name = fmt.Sprintf("build %d", build.ID)
+		}
+		buildURL := build.URL
+		if build.Links.Web.Href != "" {
+			buildURL = build.Links.Web.Href
+		}
+		conclusion := build.Result
+		if conclusion == "" {
+			conclusion = build.Status
+		}
+		checks = append(checks, CheckDetail{
+			Name:       name,
+			State:      adoBuildState(build.Status, build.Result),
+			Conclusion: conclusion,
+			URL:        buildURL,
+			Summary:    build.BuildNumber,
+		})
+	}
+	return combinedCheckState(checks), checks, nil
+}
+
+func adoReviewDecision(reviewers []adoReviewer) (ReviewDecision, int) {
+	requestedChanges := 0
+	approved := false
+	for _, reviewer := range reviewers {
+		switch {
+		case reviewer.Vote < 0:
+			requestedChanges++
+		case reviewer.Vote > 0:
+			approved = true
+		}
+	}
+	switch {
+	case requestedChanges > 0:
+		return ReviewDecisionChangesRequested, requestedChanges
+	case approved:
+		return ReviewDecisionApproved, 0
+	default:
+		return ReviewDecisionPending, 0
+	}
+}
+
+func adoBuildState(status, result string) CheckState {
+	if !strings.EqualFold(status, "completed") {
+		return CheckStatePending
+	}
+	switch strings.ToLower(result) {
+	case "succeeded", "partiallysucceeded":
+		return CheckStatePassing
+	case "failed", "canceled":
+		return CheckStateFailing
+	default:
+		return CheckStatePending
+	}
+}
+
+func combinedCheckState(checks []CheckDetail) CheckState {
+	pending := false
+	for _, check := range checks {
+		switch check.State {
+		case CheckStateFailing:
+			return CheckStateFailing
+		case CheckStatePending:
+			pending = true
+		}
+	}
+	if pending || len(checks) == 0 {
+		return CheckStatePending
+	}
+	return CheckStatePassing
+}
+
+func adoPullRequestState(status string) (string, bool) {
+	switch strings.ToLower(status) {
+	case "active":
+		return "open", false
+	case "abandoned":
+		return "closed", false
+	case "completed":
+		return "merged", true
+	default:
+		return strings.ToLower(status), false
+	}
+}
+
+func adoPullRequestPollState(status string) (string, bool) {
+	switch strings.ToLower(status) {
+	case "completed":
+		return "closed", true
+	case "abandoned":
+		return "closed", false
+	case "active":
+		return "open", false
+	default:
+		return strings.ToLower(status), false
+	}
+}
+
+func adoMergeable(status string) *bool {
+	var mergeable bool
+	switch strings.ToLower(status) {
+	case "succeeded":
+		mergeable = true
+	case "conflicts", "failure", "rejectedbypolicy":
+	default:
+		return nil
+	}
+	return &mergeable
+}
+
 func (p *ADOProvider) project(repo RepositoryRef) string {
 	if repo.Project != "" {
 		return repo.Project
@@ -1342,19 +1633,24 @@ type adoPushResponse struct {
 }
 
 type adoPullRequest struct {
-	PullRequestID         int          `json:"pullRequestId"`
-	URL                   string       `json:"url"`
-	Status                string       `json:"status"`
-	Title                 string       `json:"title"`
-	CreatedBy             adoIdentity  `json:"createdBy"`
-	CreationDate          time.Time    `json:"creationDate"`
-	SourceRefName         string       `json:"sourceRefName"`
-	TargetRefName         string       `json:"targetRefName"`
-	IsDraft               bool         `json:"isDraft"`
-	Labels                []adoLabel   `json:"labels"`
-	LastMergeSourceCommit adoCommitRef `json:"lastMergeSourceCommit"`
-	LastMergeTargetCommit adoCommitRef `json:"lastMergeTargetCommit"`
-	Links                 adoPRLinks   `json:"_links"`
+	PullRequestID         int           `json:"pullRequestId"`
+	URL                   string        `json:"url"`
+	Status                string        `json:"status"`
+	Title                 string        `json:"title"`
+	Description           string        `json:"description"`
+	CreatedBy             adoIdentity   `json:"createdBy"`
+	CreationDate          time.Time     `json:"creationDate"`
+	ClosedDate            *time.Time    `json:"closedDate"`
+	SourceRefName         string        `json:"sourceRefName"`
+	TargetRefName         string        `json:"targetRefName"`
+	IsDraft               bool          `json:"isDraft"`
+	MergeStatus           string        `json:"mergeStatus"`
+	Reviewers             []adoReviewer `json:"reviewers"`
+	Repository            adoRepository `json:"repository"`
+	Labels                []adoLabel    `json:"labels"`
+	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
+	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
+	Links                 adoPRLinks    `json:"_links"`
 }
 
 type adoPullRequestsResponse struct {
@@ -1365,6 +1661,14 @@ type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
+}
+
+type adoReviewer struct {
+	Vote int `json:"vote"`
+}
+
+type adoRepository struct {
+	ID string `json:"id"`
 }
 
 type adoLabel struct {
@@ -1379,6 +1683,35 @@ type adoPRLinks struct {
 	Web struct {
 		Href string `json:"href"`
 	} `json:"web"`
+}
+
+type adoBuildsResponse struct {
+	Value []adoBuild `json:"value"`
+}
+
+type adoBuild struct {
+	ID          int    `json:"id"`
+	BuildNumber string `json:"buildNumber"`
+	Status      string `json:"status"`
+	Result      string `json:"result"`
+	URL         string `json:"url"`
+	Definition  struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"definition"`
+	TriggerInfo map[string]string `json:"triggerInfo"`
+	Links       adoPRLinks        `json:"_links"`
+}
+
+type adoPullRequestThreadRequest struct {
+	Comments []adoPullRequestThreadComment `json:"comments"`
+	Status   int                           `json:"status"`
+}
+
+type adoPullRequestThreadComment struct {
+	ParentCommentID int    `json:"parentCommentId"`
+	Content         string `json:"content"`
+	CommentType     int    `json:"commentType"`
 }
 
 type adoPullRequestIterationsResponse struct {

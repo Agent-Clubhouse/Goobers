@@ -329,6 +329,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		stageEnv = append(stageEnv,
 			RepoProviderEnvVar+"="+string(env.RepoRef.Provider),
 			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
+			RepoProjectEnvVar+"="+env.RepoRef.Project,
 			RepoNameEnvVar+"="+env.RepoRef.Name,
 		)
 	}

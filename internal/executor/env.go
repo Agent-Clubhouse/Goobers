@@ -65,6 +65,9 @@ const (
 	// RepoOwnerEnvVar carries the scheduler-routed repository owner to goobers
 	// CLI stages.
 	RepoOwnerEnvVar = "GOOBERS_REPO_OWNER"
+	// RepoProjectEnvVar carries the scheduler-routed Azure DevOps project to
+	// goobers CLI stages. It is empty for GitHub repositories.
+	RepoProjectEnvVar = "GOOBERS_REPO_PROJECT"
 	// RepoNameEnvVar carries the scheduler-routed repository name to goobers
 	// CLI stages.
 	RepoNameEnvVar = "GOOBERS_REPO_NAME"

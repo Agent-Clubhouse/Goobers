@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1494,6 +1497,53 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	if len(reg.registered) != 1 || string(reg.registered[0]) != "ci-poll-token-value" {
 		t.Fatalf("registered secrets = %q, want the ci-poll token", reg.registered)
+	}
+}
+
+func TestCIPollSelectsADOFromInvocationRepository(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests/401", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"pullRequestId": 401,
+			"status":        "active",
+			"mergeStatus":   "succeeded",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	mux.HandleFunc("/organization/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []map[string]interface{}{{
+			"id": 1, "status": "completed", "result": "succeeded",
+			"definition": map[string]interface{}{"id": 1, "name": "ci"},
+		}}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	previousADOProvider := newADOProvider
+	newADOProvider = func(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
+		return providers.NewADOProvider(organization, project, token, append(opts, func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		})...)
+	}
+	t.Cleanup(func() { newADOProvider = previousADOProvider })
+
+	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
+	env := ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)})
+	env.RepoRef = apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "organization",
+		Project:  "project",
+		Name:     "repository",
+	}
+	result, err := deterministic.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Outputs[executor.OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs = %+v", result.Outputs)
 	}
 }
 
