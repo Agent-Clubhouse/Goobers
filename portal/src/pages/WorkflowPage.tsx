@@ -119,6 +119,13 @@ function WorkflowDetailWorkspace({
           Workflows
         </button>
         <Icon name="chevron" size={14} />
+        <button
+          onClick={() => navigate({ page: "gaggle", id: workflow.identity.gaggle })}
+          type="button"
+        >
+          {workflow.identity.gaggle}
+        </button>
+        <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
       <header className="detail-heading">

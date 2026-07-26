@@ -337,6 +337,16 @@ export interface RunDetail extends RunSummary {
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   escalation?: EscalationCause;
+  /** The business decision a completed run reached, distinct from phase (the execution axis). */
+  outcome?: RunOutcome;
+}
+
+/** Present only when phase is "completed"; all-empty when no gate decided the completion. */
+export interface RunOutcome {
+  gate?: string;
+  verdict?: string;
+  target?: string;
+  causalEventSeq?: number;
 }
 
 export interface EscalationCause {
@@ -485,6 +495,8 @@ export interface StageAttempt {
   outputs?: Record<string, JsonValue>;
   artifacts: ArtifactMetadata[];
   error?: ErrorDetail;
+  /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
+  model?: string;
 }
 
 export interface ArtifactContent {

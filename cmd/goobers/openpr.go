@@ -118,6 +118,15 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if isTutorWorkflow(workflow) {
+		classification, err := classifyLocalTutorChanges(base)
+		if err != nil {
+			pf(stderr, "error: classify Tutor change: %v\n", err)
+			return 1
+		}
+		body = strings.TrimRight(body, "\n") + "\n\n" + tutorClassificationPRSection(classification)
+	}
+
 	resultFile := providerInput("resultFile", "pr-result.json")
 
 	// Mid-flight staleness re-check (#947). The claimed issue was validated
