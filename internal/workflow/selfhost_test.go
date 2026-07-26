@@ -362,19 +362,70 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 		t.Fatalf("validate-config next = %q, want config-valid", validateTask.Next)
 	}
 
+	gates := make(map[string]apiv1.Gate, len(tutor.Spec.Gates))
 	for _, gate := range tutor.Spec.Gates {
-		if gate.Name != "config-valid" {
-			continue
-		}
-		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
-			t.Fatalf("config-valid evaluator = %+v, want automated status-equals", gate)
-		}
-		if gate.Branches["pass"] != "push-branch" || gate.Branches["fail"] != "@abort" {
-			t.Fatalf("config-valid branches = %v, want pass->push-branch and fail->@abort", gate.Branches)
-		}
-		return
+		gates[gate.Name] = gate
 	}
-	t.Fatal("tutor workflow has no config-valid gate")
+	configValid, ok := gates["config-valid"]
+	if !ok {
+		t.Fatal("tutor workflow has no config-valid gate")
+	}
+	if configValid.Evaluator != apiv1.EvaluatorAutomated || configValid.Automated == nil || configValid.Automated.Check != "status-equals" {
+		t.Fatalf("config-valid evaluator = %+v, want automated status-equals", configValid)
+	}
+	if configValid.Branches["pass"] != "check-fail-first" || configValid.Branches["fail"] != "@abort" {
+		t.Fatalf("config-valid branches = %v, want pass->check-fail-first and fail->@abort", configValid.Branches)
+	}
+}
+
+// TestSelfhostTutorEnforcesFailFirst is TUT-A2's (#1214) config-side
+// counterpart to TestSelfhostTutorValidatesBeforePush: the tutor workflow must
+// mechanically gate on `goobers check-fail-first` between config-valid and
+// push-branch, not merely document the fail-first contract in prose.
+func TestSelfhostTutorEnforcesFailFirst(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(tutor.Spec.Tasks))
+	for _, task := range tutor.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	checkTask, ok := tasks["check-fail-first"]
+	if !ok {
+		t.Fatal("tutor workflow has no check-fail-first task")
+	}
+	if checkTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("check-fail-first type = %q, want deterministic", checkTask.Type)
+	}
+	if checkTask.Run == nil || len(checkTask.Run.Command) != 2 ||
+		checkTask.Run.Command[0] != "goobers" || checkTask.Run.Command[1] != "check-fail-first" {
+		t.Fatalf("check-fail-first run = %+v, want [\"goobers\", \"check-fail-first\"]", checkTask.Run)
+	}
+	if checkTask.Next != "fail-first-valid" {
+		t.Fatalf("check-fail-first next = %q, want fail-first-valid", checkTask.Next)
+	}
+
+	gates := make(map[string]apiv1.Gate, len(tutor.Spec.Gates))
+	for _, gate := range tutor.Spec.Gates {
+		gates[gate.Name] = gate
+	}
+	failFirstValid, ok := gates["fail-first-valid"]
+	if !ok {
+		t.Fatal("tutor workflow has no fail-first-valid gate")
+	}
+	if failFirstValid.Evaluator != apiv1.EvaluatorAutomated || failFirstValid.Automated == nil || failFirstValid.Automated.Check != "status-equals" {
+		t.Fatalf("fail-first-valid evaluator = %+v, want automated status-equals", failFirstValid)
+	}
+	if failFirstValid.Branches["pass"] != "push-branch" || failFirstValid.Branches["fail"] != "@abort" {
+		t.Fatalf("fail-first-valid branches = %v, want pass->push-branch and fail->@abort", failFirstValid.Branches)
+	}
 }
 
 // TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites is TUT-A4's
