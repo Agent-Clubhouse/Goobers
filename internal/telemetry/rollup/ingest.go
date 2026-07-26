@@ -61,6 +61,9 @@ func (db *DB) ingestRun(runDir string) error {
 	if err := insertSpans(tx, runID, spans); err != nil {
 		return err
 	}
+	if err := upsertTimeToFirstPR(tx, time.Time{}, runFirstPROpenAt(events)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -683,7 +686,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 			maxSeq = ev.Seq
 		}
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
+		case eventInitCompleted, eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -699,6 +702,11 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
 					nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
+				}
+			}
+			if ev.Type == eventInitCompleted {
+				if err := upsertTimeToFirstPR(tx, ev.Time, time.Time{}); err != nil {
+					return err
 				}
 			}
 		case eventWorkflowStarved:

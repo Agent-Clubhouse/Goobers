@@ -37,6 +37,9 @@ implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
 gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
 pieces are left untouched.
 
+A fresh successful initialization records
+`init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+
 ### Onboarding-only template
 
 For a first autonomous run against a disposable tutorial target, seed the
@@ -143,11 +146,16 @@ the run id up front and the final phase/state once it returns.
 bin/goobers status ./my-instance
 ```
 
-`status` revalidates the active configuration before listing runs. Non-fatal
+`status` revalidates the active configuration before listing runs. On a new
+instance its first-run success indicator waits for the first PR; after the
+workflow journals its first PR open, it celebrates
+`First-run success: first PR in <duration>`. The duration is read from the
+successful-init `init.completed` event and the first PR-open `ref.touched`
+event, not from command timing. Non-fatal
 configuration warnings use the same `WARNING <code> <scope>: <explanation>`
 lines printed during `up` startup. `status --json` returns an object with
-`warnings` and `runs` arrays; warning objects contain `code`, `severity`,
-`scope`, and `explanation`.
+`warnings` and `runs` arrays plus the structured `timeToFirstPR` metric; warning
+objects contain `code`, `severity`, `scope`, and `explanation`.
 
 ```
 RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED

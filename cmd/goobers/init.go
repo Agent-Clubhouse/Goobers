@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -133,7 +134,13 @@ func runInitWithInputForOSAndGitHub(
 			pln(stdout, demoInsecureWarning)
 		}
 		if *guided {
-			return finishGuidedInit(root, abs, guidedResult, stdout, stderr)
+			if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
+				return code
+			}
+		}
+		if err := ensureInitCompleted(root); err != nil {
+			pf(stderr, "error: record successful init completion: %v\n", err)
+			return 2
 		}
 		return 0
 	}
@@ -159,9 +166,37 @@ func runInitWithInputForOSAndGitHub(
 		pf(stdout, demoTourBanner, abs)
 	}
 	if *guided {
-		return finishGuidedInit(root, abs, guidedResult, stdout, stderr)
+		if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
+			return code
+		}
+	}
+	if err := ensureInitCompleted(root); err != nil {
+		pf(stderr, "error: record successful init completion: %v\n", err)
+		return 2
 	}
 	return 0
+}
+
+func ensureInitCompleted(root string) error {
+	instanceLog, _, err := journal.OpenInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		return err
+	}
+	events, err := journal.ReadInstanceLog(instanceLog.Dir())
+	if err != nil {
+		_ = instanceLog.Close()
+		return err
+	}
+	for _, event := range events {
+		if event.Type == journal.EventInitCompleted {
+			return instanceLog.Close()
+		}
+	}
+	if err := instanceLog.Append(journal.Event{Type: journal.EventInitCompleted}); err != nil {
+		_ = instanceLog.Close()
+		return err
+	}
+	return instanceLog.Close()
 }
 
 func finishGuidedInit(root, abs string, result guidedInitResult, stdout, stderr io.Writer) int {

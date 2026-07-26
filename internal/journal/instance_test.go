@@ -257,6 +257,7 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, ev := range []Event{
+		{Type: EventInitCompleted},
 		{Type: EventTriggerFired, Workflow: "nominate", Reason: "scheduled"},
 		{Type: EventTriggerFired, Workflow: "nominate", Reason: "catch-up (missed 3)"},
 		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: max-parallel"},

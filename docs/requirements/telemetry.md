@@ -112,6 +112,25 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
   telemetry as input (e.g. the nomination workflow's configured sources); this MUST stay
   distinct from the goober-run store.
 
+### Metrics reference
+
+| JSON field | Unit | Journal source | Definition |
+|---|---|---|---|
+| `timeToFirstPR.milliseconds` | milliseconds | Earliest `scheduler/events.jsonl` `init.completed` event; earliest run-journal `ref.touched` event at or after that anchor with `externalRef.kind: pr` and `runner.operation: open` | Lifetime first-run success interval from successful `goobers init` completion to the instance's first autonomously opened pull request. The field is absent until both chronologically valid endpoints exist. Scheduler ticks and completed no-work runs do not satisfy the PR endpoint. |
+
+`timeToFirstPR.anchor` is the stable value `initCompletedAt`;
+`timeToFirstPR.initCompletedAt` and `timeToFirstPR.firstPROpenAt` carry the two
+source timestamps for manual journal comparison. Read the first from
+`scheduler/events.jsonl` and the second from the earliest matching post-init run
+`events.jsonl`; subtracting them must equal `timeToFirstPR.milliseconds`. The
+structured object appears in `goobers status --json` and `goobers stats --json`;
+the SQLite rollup derives the same values from `scheduler_events` and
+`provider_mutations`, then preserves the earliest observed endpoints in a
+non-prunable singleton milestone. Status merges that milestone with every
+retained journal, while stats reflects the milestone after its next incremental
+ingest. Run retention and explicit rollup rebuilds do not reset or move a
+captured lifetime value.
+
 ## Relationships
 
 - Provisioned by → the **Instance** (`goobers init` creates `telemetry.db`; Bicep

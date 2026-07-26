@@ -62,8 +62,10 @@ func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt 
 
 func TestStatsJSONAndSinceWindow(t *testing.T) {
 	root := initDemo(t)
-	writeStatsCommandRun(t, root, "old-run", "implement", time.Now().Add(-48*time.Hour), journal.PhaseCompleted)
-	writeStatsCommandRun(t, root, "recent-run", "nominate", time.Now().Add(-time.Hour), journal.PhaseFailed)
+	now := time.Now()
+	writeStatusInitCompleted(t, root, now.Add(-72*time.Hour))
+	writeStatsCommandRun(t, root, "old-run", "implement", now.Add(-48*time.Hour), journal.PhaseCompleted)
+	writeStatsCommandRun(t, root, "recent-run", "nominate", now.Add(-time.Hour), journal.PhaseFailed)
 	l := instance.NewLayout(root)
 	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
@@ -91,6 +93,12 @@ func TestStatsJSONAndSinceWindow(t *testing.T) {
 	}
 	if got.AgenticStageDuration == nil || got.AgenticStageDuration.Attempts != 1 || got.AgenticStageDuration.LongestStage != "implement" {
 		t.Fatalf("agentic duration = %#v", got.AgenticStageDuration)
+	}
+	if got.TimeToFirstPR.InitCompletedAt == nil ||
+		got.TimeToFirstPR.FirstPROpenAt == nil ||
+		got.TimeToFirstPR.Milliseconds == nil ||
+		*got.TimeToFirstPR.Milliseconds != got.TimeToFirstPR.FirstPROpenAt.Sub(*got.TimeToFirstPR.InitCompletedAt).Milliseconds() {
+		t.Fatalf("timeToFirstPR = %#v, want source timestamps and their millisecond interval", got.TimeToFirstPR)
 	}
 }
 
@@ -139,7 +147,9 @@ func TestStatsEmptyInstance(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode empty stats JSON: %v", err)
 	}
-	if got.Runs.Total != 0 || got.BusiestWorkflow != nil || got.AgenticStageDuration != nil {
+	if got.Runs.Total != 0 || got.BusiestWorkflow != nil || got.AgenticStageDuration != nil ||
+		got.TimeToFirstPR.InitCompletedAt != nil || got.TimeToFirstPR.FirstPROpenAt != nil ||
+		got.TimeToFirstPR.Milliseconds != nil {
 		t.Fatalf("empty stats JSON = %#v", got)
 	}
 
