@@ -117,7 +117,24 @@ spec:
         command: ["goobers", "validate", "--source-tree", "selfhost"]
       next: config-valid
 
-    # Deterministic branch push (#237), reached only after config validation.
+    # TUT-A2 (#1214, docs/design/tutor-redesign.md §5.1): fail-first
+    # validation-authorship contract. A Workflow's `gates:` ARE its
+    # validation/branching states, so a new gate on any changed
+    # workflows/*.yaml file is this run's structural signal that it authored a
+    # workflow-level test/validation stage. Reached only after config-valid
+    # passes, so this never runs against a draft that doesn't even validate.
+    - name: check-fail-first
+      type: deterministic
+      goal: >-
+        Refuse to publish a new workflow-level validation stage unless this
+        run's branch also committed evidence it fails against the pre-change
+        config and passes against the fix.
+      run:
+        command: ["goobers", "check-fail-first"]
+      next: fail-first-valid
+
+    # Deterministic branch push (#237), reached only after config validation
+    # and the fail-first check.
     - name: push-branch
       type: deterministic
       goal: Push the run's branch to origin.
@@ -164,6 +181,18 @@ spec:
     # A non-zero validate exit becomes a failure ResultEnvelope. Abort rather
     # than publishing an invalid branch; the runner journals this verdict.
     - name: config-valid
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: check-fail-first
+        fail: "@abort"
+
+    # TUT-A2 (#1214): a non-zero check-fail-first exit means this branch added
+    # a new validation stage (gate) without committed red-then-green evidence
+    # (or with evidence that doesn't actually show fail-then-pass). Abort
+    # rather than publish it — same fail-closed shape as config-valid.
+    - name: fail-first-valid
       evaluator: automated
       automated:
         check: status-equals
