@@ -121,33 +121,50 @@ sink.
   may change only when listed.
 - An owned page may be created or updated. Page deletion and rename are not
   part of additive docs drift and are rejected.
-- Unlisted pages and every non-Markdown file are preserved byte-for-byte.
+- Every unowned file is preserved byte-for-byte. Unlisted pages may use other
+  GitHub-supported markup or live in nested directories; they remain outside
+  the write boundary but participate in the page-identity inventory below.
   Images, attachments, nested page directories, and generated navigation are
-  outside the first implementation.
+  outside the first implementation's mutation surface.
 
 The filename is the page mapping. For example, `Getting-Started.md` owns the
 wiki page GitHub renders from that file; no second title, slug, source path, or
 position-based mapping exists. This keeps links and ownership stable when the
 source documentation layout changes.
 
-For collision validation, the canonical Gollum page key is computed by
-removing the terminal `.md`, applying Unicode case folding, and replacing each
-maximal run of ASCII spaces and hyphens with one `-`. Thus
-`Getting Started.md`, `getting-started.md`, and `GETTING--STARTED.md` have one
-page identity. Other characters, including the leading underscores in
-`_Sidebar.md` and `_Footer.md`, remain significant.
+Collision validation inventories every renderable page source, not only
+`.md` files. A renderable page source is any regular file anywhere in the tree
+whose case-insensitive terminal suffix is accepted by the target GitHub wiki's
+Markup/Gollum registry. The provider adapter owns an exhaustive, versioned
+registry for that deployment; it must include Markdown aliases such as `.md`
+and `.markdown`, and the Textile, RDoc, Org, Creole, MediaWiki, AsciiDoc,
+reStructuredText, and Pod suffixes accepted by GitHub. Compound suffixes such
+as `.rst.txt` and `.rest.txt` are one markup suffix. If the adapter cannot
+establish the complete supported suffix set for the target deployment,
+admission fails rather than classifying an unknown page as an attachment.
 
-Admission computes that key for every declared `pageFile` and every root
-Markdown file in the pinned wiki tree. A key may map to only one physical
-filename across the whole tree, including preserved unlisted pages. The one
-allowed match is an owned `pageFile` whose spelling exactly equals the existing
-filename it updates. A differently spelled existing file is not silently
-claimed or renamed: for example, declaring `Getting-Started.md` when the
-unlisted `Getting Started.md` exists is a collision and fails admission.
-Existing unlisted-to-unlisted collisions also fail closed because the remote
-wiki does not have an unambiguous page identity. The same inventory check runs
-again on the proposed tree before review or publication, so an agent cannot
-create an alias of a preserved page.
+For every renderable page source, the canonical Gollum page key is computed by
+removing the longest matching markup suffix, taking the final path component,
+applying Unicode case folding, and replacing each maximal run of ASCII spaces
+and hyphens with one `-`. Directory components are deliberately excluded:
+Gollum's extensionless page resolution may find a nested page by basename.
+Thus `Getting Started.md`, `getting-started.markdown`, and
+`guides/GETTING--STARTED.textile` have one page identity. Other characters,
+including the leading underscores in `_Sidebar.md` and `_Footer.md`, remain
+significant.
+
+Admission recursively computes that key for every declared `pageFile` and
+every renderable page source in the pinned wiki tree. A key may map to only one
+physical repository-relative path across the whole tree, including preserved
+unlisted pages. The one allowed match is an owned `pageFile` whose root path
+and spelling exactly equal the existing file it updates. A differently
+spelled, differently formatted, or nested existing file is not silently
+claimed or renamed: declaring `Home.md` collides with either `Home.markdown`
+or `archive/Home.textile`, and declaring `Getting-Started.md` collides with an
+unlisted `Getting Started.md`. Existing unlisted-to-unlisted collisions also
+fail closed because the remote wiki does not have an unambiguous page identity.
+The same recursive inventory check runs again on the proposed tree before
+review or publication, so an agent cannot create an alias of a preserved page.
 
 ## Ownership and overlap
 
@@ -276,9 +293,9 @@ Admission finishes before either checkout and before any commit or push:
    at `write`.
 4. Probe the controlling repository and require that its wiki is enabled.
 5. Probe the exact derived `.wiki.git` URL with command-scoped authentication.
-   Resolve a non-empty symbolic `HEAD`, pin its commit SHA, read the root tree
-   at that SHA, and validate canonical page keys against owned and preserved
-   pages.
+   Resolve a non-empty symbolic `HEAD`, pin its commit SHA, recursively read
+   the complete tree at that SHA, and validate canonical page keys against
+   owned and preserved pages in every supported markup format.
 6. Pin the source revision, wiki endpoint/identity, wiki branch and head SHA,
    page files, publication policy, and credential-route identities in the run
    input, without credential material.
@@ -298,9 +315,9 @@ After preflight, the runtime transaction is fixed:
    writable repository workspace.
 3. Apply the docs update. Validate that every changed path exactly matches an
    admitted `pageFile`, that no page was deleted or renamed, that unowned files
-   are unchanged, and that the resulting root Markdown inventory remains
-   unique by canonical Gollum page key. An empty diff follows the existing
-   `no-work` path.
+   are unchanged, and that the resulting recursive page-source inventory
+   remains unique by canonical Gollum page key. An empty diff follows the
+   existing `no-work` path.
 4. Run the workflow's deterministic wiki validation in that same proposed
    tree. The source project's CI command is not implicitly reused because a
    wiki companion need not contain the source build.
