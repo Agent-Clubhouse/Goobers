@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/samples"
 )
@@ -250,6 +251,8 @@ func materializeOnboardingSample(
 	}
 
 	write := make([]bool, len(files))
+	replace := make([]bool, len(files))
+	previousMode := make([]fs.FileMode, len(files))
 	for i, file := range files {
 		if file.path == "." || file.path == "" || strings.HasPrefix(file.path, "../") {
 			return onboardingActionResult{}, fmt.Errorf("embedded sample path %q is unsafe", file.path)
@@ -280,6 +283,8 @@ func materializeOnboardingSample(
 				return onboardingActionResult{}, fmt.Errorf("refusing to replace user-owned file %s without --force", target)
 			} else {
 				write[i] = true
+				replace[i] = true
+				previousMode[i] = info.Mode().Perm()
 				result.Created = append(result.Created, file.path)
 			}
 		}
@@ -296,14 +301,50 @@ func materializeOnboardingSample(
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return onboardingActionResult{}, fmt.Errorf("create parent for %s: %w", target, err)
 		}
-		if err := os.WriteFile(target, file.data, 0o644); err != nil {
+		if err := writeOnboardingSampleFile(target, file.data, replace[i], previousMode[i]); err != nil {
 			return onboardingActionResult{}, fmt.Errorf("write %s: %w", target, err)
-		}
-		if err := os.Chmod(target, 0o644); err != nil {
-			return onboardingActionResult{}, fmt.Errorf("set mode on %s: %w", target, err)
 		}
 	}
 	return result, nil
+}
+
+func writeOnboardingSampleFile(target string, data []byte, replace bool, previousMode fs.FileMode) error {
+	staged, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+"-*")
+	if err != nil {
+		return fmt.Errorf("create staged file: %w", err)
+	}
+	stagedPath := staged.Name()
+	defer func() { _ = os.Remove(stagedPath) }()
+	if err := staged.Chmod(0o644); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("set staged file mode: %w", err)
+	}
+	if _, err := staged.Write(data); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("write staged file: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("close staged file: %w", err)
+	}
+
+	restoreMode := false
+	if replace && previousMode.Perm()&0o200 == 0 {
+		// Windows cannot replace a destination carrying the read-only attribute.
+		if err := os.Chmod(target, previousMode.Perm()|0o200); err != nil {
+			return fmt.Errorf("make existing file replaceable: %w", err)
+		}
+		restoreMode = true
+	}
+	if err := durability.ReplaceFile(stagedPath, target); err != nil {
+		replaceErr := fmt.Errorf("replace with staged file: %w", err)
+		if restoreMode {
+			if restoreErr := os.Chmod(target, previousMode.Perm()); restoreErr != nil {
+				return errors.Join(replaceErr, fmt.Errorf("restore existing file mode: %w", restoreErr))
+			}
+		}
+		return replaceErr
+	}
+	return nil
 }
 
 func validateOnboardingDestination(destination string) error {

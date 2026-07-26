@@ -126,6 +126,39 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestOnboardingStubSampleForceReplacesReadOnlyConflict(t *testing.T) {
+	files, _, err := loadOnboardingSample()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "sample")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(destination, "package.json")
+	if err := os.WriteFile(conflict, []byte("user-owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(conflict, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(conflict, 0o600) })
+
+	code, _, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination, "--force")
+	if code != 0 {
+		t.Fatalf("with force: code=%d stderr=%q", code, stderr)
+	}
+	for _, file := range files {
+		got, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(file.path)))
+		if err != nil {
+			t.Fatalf("read materialized %s: %v", file.path, err)
+		}
+		if string(got) != string(file.data) {
+			t.Errorf("materialized %s differs from embedded source", file.path)
+		}
+	}
+}
+
 func TestOnboardingStubSampleReportsPendingWithoutCredentials(t *testing.T) {
 	const tokenEnv = "GOOBERS_ONBOARDING_TEST_MISSING_TOKEN"
 	original, hadOriginal := os.LookupEnv(tokenEnv)
