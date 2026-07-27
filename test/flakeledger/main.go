@@ -159,12 +159,14 @@ func parseRepository(value string) (providers.RepositoryRef, error) {
 	}, nil
 }
 
-func loadFailures(path string) (failuresReport, error) {
+func loadFailures(path string) (_ failuresReport, returnErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return failuresReport{}, err
 	}
-	defer file.Close()
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
 	var report failuresReport
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(&report); err != nil {

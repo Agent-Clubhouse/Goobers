@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -136,12 +137,14 @@ func checkGoFile(path, relative string) ([]violation, error) {
 	return violations, nil
 }
 
-func checkWorkflow(path, relative string) ([]violation, error) {
+func checkWorkflow(path, relative string) (_ []violation, returnErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
 	var violations []violation
 	scanner := bufio.NewScanner(file)
 	for line := 1; scanner.Scan(); line++ {
