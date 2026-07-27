@@ -5,6 +5,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func TestResolveInputsFrom(t *testing.T) {
@@ -109,7 +110,7 @@ func TestReconstructStageOutputsFromJournal(t *testing.T) {
 		{Type: journal.EventStageFinished, Stage: "pr-select", Outputs: map[string]any{"selectedNumber": 7}},
 		{Type: journal.EventStageFinished, Stage: "gather", Outputs: map[string]any{"files": 3}},
 	}
-	got := reconstructStageOutputs(events)
+	got := reconstructStageOutputs(events, nil)
 	if got["pr-select"]["selectedNumber"] != 7 {
 		t.Errorf("pr-select outputs = %#v, want selectedNumber 7", got["pr-select"])
 	}
@@ -125,14 +126,67 @@ func TestReconstructStageOutputsLastAttemptWins(t *testing.T) {
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Outputs: map[string]any{"digest": "old"}},
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, Outputs: map[string]any{"digest": "new"}},
 	}
-	if got := reconstructStageOutputs(events)["implement"]["digest"]; got != "new" {
+	if got := reconstructStageOutputs(events, nil)["implement"]["digest"]; got != "new" {
 		t.Errorf("digest = %v, want the later attempt's value", got)
 	}
 }
 
+func TestReconstructStageOutputsEmptyLastAttemptWins(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Outputs: map[string]any{"digest": "old"}},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2},
+	}
+	outputs, seen := reconstructStageOutputs(events, nil)["implement"]
+	if !seen {
+		t.Fatal("implement outputs are absent, want the completed empty attempt recorded")
+	}
+	if len(outputs) != 0 {
+		t.Fatalf("implement outputs = %#v, want empty latest attempt", outputs)
+	}
+}
+
 func TestReconstructStageOutputsIsNilWhenNothingFinished(t *testing.T) {
-	if got := reconstructStageOutputs([]journal.Event{{Type: journal.EventRunStarted}}); got != nil {
+	if got := reconstructStageOutputs([]journal.Event{{Type: journal.EventRunStarted}}, nil); got != nil {
 		t.Errorf("stage outputs = %#v, want nil", got)
+	}
+}
+
+func TestReconstructStageOutputsClearsContinueOnErrorFailure(t *testing.T) {
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "continue-on-error-outputs", Version: 1, DSLVersion: "1.4",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "tolerated",
+			Tasks: []apiv1.Task{
+				{
+					Name: "tolerated", Type: apiv1.TaskDeterministic, Goal: "tolerated",
+					Run:             &apiv1.DeterministicRun{Command: []string{"true"}},
+					ContinueOnError: true, Next: "strict",
+				},
+				{
+					Name: "strict", Type: apiv1.TaskDeterministic, Goal: "strict",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+					Next: workflow.TerminalComplete,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile machine: %v", err)
+	}
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "tolerated", Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"value": "old"}},
+		{Type: journal.EventStageFinished, Stage: "tolerated", Status: string(apiv1.ResultFailure), Outputs: map[string]any{"value": "must-not-resume"}},
+		{Type: journal.EventStageFinished, Stage: "strict", Status: string(apiv1.ResultFailure), Outputs: map[string]any{"value": "kept"}},
+	}
+
+	got := reconstructStageOutputs(events, machine)
+	if _, ok := got["tolerated"]; ok {
+		t.Fatalf("tolerated failure outputs = %#v, want absent", got["tolerated"])
+	}
+	if got["strict"]["value"] != "kept" {
+		t.Fatalf("strict failure outputs = %#v, want preserved", got["strict"])
 	}
 }
 

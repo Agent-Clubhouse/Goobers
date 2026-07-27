@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // stageOutputs is every completed stage's journaled Outputs, keyed by stage
@@ -13,7 +14,7 @@ import (
 type stageOutputs map[string]map[string]any
 
 func (s stageOutputs) record(stage string, outputs map[string]any) {
-	if stage == "" || len(outputs) == 0 {
+	if stage == "" {
 		return
 	}
 	if s == nil {
@@ -24,6 +25,12 @@ func (s stageOutputs) record(stage string, outputs map[string]any) {
 		copied[k] = v
 	}
 	s[stage] = copied
+}
+
+func (s stageOutputs) clear(stage string) {
+	if s != nil {
+		delete(s, stage)
+	}
 }
 
 // resolveInputsFrom resolves one inputsFrom value against the run's completed
@@ -67,6 +74,83 @@ func splitQualified(value string) (stage, key string, ok bool) {
 	return stage, key, true
 }
 
+type branchInputRef struct {
+	parallel string
+	branch   string
+	stage    string
+	key      string
+}
+
+func splitBranchInput(value string) (branchInputRef, bool) {
+	parts := strings.SplitN(value, ".", 4)
+	switch len(parts) {
+	case 3:
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return branchInputRef{}, false
+		}
+		return branchInputRef{parallel: parts[0], branch: parts[1], key: parts[2]}, true
+	case 4:
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+			return branchInputRef{}, false
+		}
+		return branchInputRef{parallel: parts[0], branch: parts[1], stage: parts[2], key: parts[3]}, true
+	default:
+		return branchInputRef{}, false
+	}
+}
+
+func resolveBranchInput(value string, machine *workflow.Machine, completed stageOutputs, fanIn *parallelExec) (any, bool, bool, bool) {
+	ref, ok := splitBranchInput(value)
+	if !ok || fanIn == nil || ref.parallel != fanIn.spec.Name {
+		return nil, false, false, false
+	}
+	branch := fanIn.branch(ref.branch)
+	if branch == nil {
+		return nil, false, true, false
+	}
+	switch branch.status {
+	case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
+		return nil, false, true, true
+	case journal.BranchNoOutput:
+		return nil, false, true, true
+	}
+	if ref.stage == "" {
+		ref.stage = singleJoinTerminalTask(machine, branch.start)
+	}
+	outputs, seen := completed[ref.stage]
+	if !seen {
+		return nil, false, true, false
+	}
+	valueOut, found := outputs[ref.key]
+	return valueOut, found, true, false
+}
+
+func singleJoinTerminalTask(machine *workflow.Machine, start string) string {
+	seen := map[string]bool{}
+	stack := []string{start}
+	var terminal string
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == workflow.TerminalComplete || workflow.IsReservedAnyTarget(state) || seen[state] || !machine.Has(state) {
+			continue
+		}
+		seen[state] = true
+		if task, ok := machine.Task(state); ok && task.Next == workflow.TargetJoin {
+			if terminal != "" {
+				return ""
+			}
+			terminal = state
+		}
+		stack = append(stack, machine.Outgoing(state)...)
+	}
+	return terminal
+}
+
+func branchInputsFromError(taskName, inputKey, value string) error {
+	return fmt.Errorf("task %q: inputsFrom %q: branch output %q not found", taskName, inputKey, value)
+}
+
 // inputsFromError builds the stage-closed failure for an unresolvable
 // reference. InputsFrom is a contract, not a hint, so a miss fails the stage
 // rather than silently omitting the input.
@@ -100,6 +184,16 @@ func sortStrings(v []string) {
 	}
 }
 
+func discardToleratedFailureOutputs(machine *workflow.Machine, stage string, result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	if machine == nil || result.Status != apiv1.ResultFailure {
+		return result
+	}
+	if task, ok := machine.Task(stage); ok && task.ContinueOnError {
+		result.Outputs = nil
+	}
+	return result
+}
+
 // reconstructStageOutputs rebuilds every completed stage's Outputs from the
 // journal, so a resumed run can resolve a stage-qualified inputsFrom reference
 // to a stage that finished before the crash.
@@ -109,11 +203,18 @@ func sortStrings(v []string) {
 // is deliberately a FORWARD scan with last-write-wins per stage, so a repassed
 // stage's later attempt supersedes its earlier one, matching what the live walk
 // does when it re-records the stage.
-func reconstructStageOutputs(events []journal.Event) stageOutputs {
+func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) stageOutputs {
 	out := stageOutputs{}
 	for _, e := range events {
-		if e.Type != journal.EventStageFinished || e.Stage == "" || len(e.Outputs) == 0 {
+		if e.Type != journal.EventStageFinished || e.Stage == "" {
 			continue
+		}
+		if machine != nil {
+			if task, ok := machine.Task(e.Stage); ok &&
+				e.Status == string(apiv1.ResultFailure) && task.ContinueOnError {
+				out.clear(e.Stage)
+				continue
+			}
 		}
 		out.record(e.Stage, e.Outputs)
 	}
