@@ -20,8 +20,8 @@ Validation diagnostics:
 - target validation: clean (0 warnings, 0 errors)
 - target canonical comparison: no structural or tuning differences
 
-Target canonical state graph: unchanged: `query -> implement; implement -> review; review(pass -> done, fail -> abort, needs-changes -> implement)`
-Proposed state graph: unchanged: `query -> implement; implement -> review; review(pass -> done, fail -> abort, needs-changes -> implement)`
+Target canonical state graph: unchanged: `start: query; query[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, needs-changes -> implement)`
+Proposed state graph: unchanged: `start: query; query[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, needs-changes -> implement)`
 
 Recommendations:
 - none; this workflow is already current.

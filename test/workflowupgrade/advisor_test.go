@@ -78,7 +78,6 @@ type recommendation struct {
 func TestAdvisorFixtures(t *testing.T) {
 	document := loadFixtures(t)
 	seen := map[string]bool{}
-	featureCoverage := map[string]bool{}
 	for _, scenario := range document.Scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
 			seen[scenario.Name] = true
@@ -102,12 +101,17 @@ func TestAdvisorFixtures(t *testing.T) {
 			}
 			for _, workflowFixture := range scenario.Workflows {
 				for _, feature := range workflowFixture.Features {
-					featureCoverage[feature.TargetLevel] = true
-					if feature.Change != "" {
-						featureCoverage["changed"] = true
-					}
-					if _, ok := workflow.LookupFeature(workflow.FeatureID(feature.Name)); !ok {
+					registered, ok := workflow.LookupFeature(workflow.FeatureID(feature.Name))
+					if !ok {
 						t.Errorf("feature %q does not exist in the release registry", feature.Name)
+						continue
+					}
+					level, ok := featureLevelAtDSLVersion(registered, workflowFixture.TargetDSL)
+					if !ok {
+						t.Errorf("feature %q has no support entry for target DSL %s", feature.Name, workflowFixture.TargetDSL)
+					} else if level != feature.TargetLevel {
+						t.Errorf("feature %q target level = %q, target DSL %s registry says %q",
+							feature.Name, feature.TargetLevel, workflowFixture.TargetDSL, level)
 					}
 				}
 				for _, item := range recommendationsFor(workflowFixture, scenario.Drift, scenario.Target) {
@@ -145,10 +149,54 @@ func TestAdvisorFixtures(t *testing.T) {
 			t.Errorf("fixture suite is missing %q", name)
 		}
 	}
-	for _, featureCase := range []string{"removed", "deprecated", "changed"} {
-		if !featureCoverage[featureCase] {
-			t.Errorf("fixture suite does not cover a %s feature", featureCase)
-		}
+}
+
+func TestRecommendationsClassifyFeatureLifecycleEvidence(t *testing.T) {
+	target := fixtureRelease{
+		Ref:        "refs/tags/v2.0.0",
+		Commit:     "2222222222222222222222222222222222222222",
+		Source:     "fixture target registry",
+		Confidence: "high",
+	}
+	for _, test := range []struct {
+		name, level, change, wantClass string
+		breaking                       bool
+	}{
+		{
+			name:      "removed",
+			level:     string(workflow.SupportRemoved),
+			change:    "replace it",
+			wantClass: "required compatibility change",
+		},
+		{
+			name:      "deprecated",
+			level:     string(workflow.SupportDeprecated),
+			change:    "use its replacement",
+			wantClass: "recommended canonical workflow improvement",
+		},
+		{
+			name:      "changed",
+			level:     string(workflow.SupportGA),
+			change:    "preserve the old default explicitly",
+			breaking:  true,
+			wantClass: "required compatibility change",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			items := recommendationsFor(fixtureWorkflow{
+				Features: []fixtureFeature{{
+					Name:        "fixture.feature",
+					TargetLevel: test.level,
+					Change:      test.change,
+					Source:      "fixture lifecycle evidence",
+					Confidence:  "high",
+					Breaking:    test.breaking,
+				}},
+			}, nil, target)
+			if len(items) != 1 || items[0].Class != test.wantClass {
+				t.Fatalf("recommendations = %+v, want one %q item", items, test.wantClass)
+			}
+		})
 	}
 }
 
@@ -251,6 +299,39 @@ func TestFixturePlansDecomposeVersionJumpsAndPreserveCustomDrift(t *testing.T) {
 	}
 	if !strings.Contains(report, "no same-name canonical workflow exists") {
 		t.Fatal("custom workflow report does not preserve the unmatched workflow")
+	}
+}
+
+func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
+	data := readFixture(t, "parallel-state-graph.yaml")
+	var document apiv1.Workflow
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	definition := workflow.Definition{
+		Name:       document.Name,
+		Version:    1,
+		DSLVersion: document.DSLVersion,
+		Spec:       document.Spec,
+	}
+	machine, err := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"start: query",
+		"query[deterministic] -> analyze",
+		"security[deterministic] -> @join",
+		"performance[deterministic] -> @join",
+		"implement[agentic] -> review",
+		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
+		"analyze[parallel](branch security -> security, branch performance -> performance, join -> implement, branch-failed -> abort)",
+	}
+	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, want) {
+		t.Errorf("compiled graph = %v, want %v", got, want)
+	}
+	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, want) {
+		t.Errorf("document graph = %v, want %v", got, want)
 	}
 }
 
@@ -623,6 +704,15 @@ func targetDSLFor(scenario fixtureScenario, name string) string {
 	return ""
 }
 
+func featureLevelAtDSLVersion(feature workflow.Feature, version string) (string, bool) {
+	for _, support := range feature.DSLVersions {
+		if support.Version == version {
+			return string(support.Level), true
+		}
+	}
+	return "", false
+}
+
 func scenarioAllowsInvalidCurrent(scenario fixtureScenario) bool {
 	for _, candidate := range scenario.Workflows {
 		if candidate.TargetVersionLevel == "unsupported" {
@@ -633,7 +723,7 @@ func scenarioAllowsInvalidCurrent(scenario fixtureScenario) bool {
 }
 
 func graphLines(graph workflow.Graph) []string {
-	var lines []string
+	lines := []string{"start: " + graph.Start}
 	for _, node := range graph.Nodes {
 		var edges []workflow.GraphEdge
 		for _, edge := range graph.Edges {
@@ -641,27 +731,39 @@ func graphLines(graph workflow.Graph) []string {
 				edges = append(edges, edge)
 			}
 		}
-		if node.Kind != workflow.GraphNodeGate {
+		switch string(node.Kind) {
+		case string(workflow.GraphNodeGate):
+			branches := make([]string, 0, len(edges))
+			for _, edge := range edges {
+				branches = append(branches, fmt.Sprintf("%s -> %s", edge.Outcome, graphTarget(edge)))
+			}
+			lines = append(lines, fmt.Sprintf("%s[%s](%s)", node.ID, node.Kind, strings.Join(branches, ", ")))
+		case "parallel":
+			branches := make([]string, 0, len(edges))
+			for _, edge := range edges {
+				if edge.Branch != "" {
+					branches = append(branches, fmt.Sprintf("branch %s -> %s", edge.Branch, graphTarget(edge)))
+				} else {
+					branches = append(branches, fmt.Sprintf("%s -> %s", edge.Outcome, graphTarget(edge)))
+				}
+			}
+			lines = append(lines, fmt.Sprintf("%s[%s](%s)", node.ID, node.Kind, strings.Join(branches, ", ")))
+		default:
 			if len(edges) != 1 {
-				lines = append(lines, fmt.Sprintf("%s -> <invalid>", node.ID))
+				lines = append(lines, fmt.Sprintf("%s[%s] -> <invalid>", node.ID, node.Kind))
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s -> %s", node.ID, graphTarget(edges[0])))
-			continue
+			lines = append(lines, fmt.Sprintf("%s[%s] -> %s", node.ID, node.Kind, graphTarget(edges[0])))
 		}
-		branches := make([]string, 0, len(edges))
-		for _, edge := range edges {
-			branches = append(branches, fmt.Sprintf("%s -> %s", edge.Outcome, graphTarget(edge)))
-		}
-		lines = append(lines, fmt.Sprintf("%s(%s)", node.ID, strings.Join(branches, ", ")))
 	}
 	return lines
 }
 
 func graphLinesFromDocument(document apiv1.Workflow) []string {
-	lines := make([]string, 0, len(document.Spec.Tasks)+len(document.Spec.Gates))
+	lines := make([]string, 0, 1+len(document.Spec.Tasks)+len(document.Spec.Gates)+len(document.Spec.Parallels))
+	lines = append(lines, "start: "+document.Spec.Start)
 	for _, task := range document.Spec.Tasks {
-		lines = append(lines, fmt.Sprintf("%s -> %s", task.Name, rawGraphTarget(task.Next)))
+		lines = append(lines, fmt.Sprintf("%s[%s] -> %s", task.Name, task.Type, rawGraphTarget(task.Next)))
 	}
 	for _, gate := range document.Spec.Gates {
 		outcomes := make([]string, 0, len(gate.Branches))
@@ -675,7 +777,18 @@ func graphLinesFromDocument(document apiv1.Workflow) []string {
 		for _, outcome := range outcomes {
 			branches = append(branches, fmt.Sprintf("%s -> %s", outcome, rawGraphTarget(gate.Branches[outcome])))
 		}
-		lines = append(lines, fmt.Sprintf("%s(%s)", gate.Name, strings.Join(branches, ", ")))
+		lines = append(lines, fmt.Sprintf("%s[gate](%s)", gate.Name, strings.Join(branches, ", ")))
+	}
+	for _, parallel := range document.Spec.Parallels {
+		edges := make([]string, 0, len(parallel.Branches)+2)
+		for _, branch := range parallel.Branches {
+			edges = append(edges, fmt.Sprintf("branch %s -> %s", branch.Name, branch.Start))
+		}
+		edges = append(edges, fmt.Sprintf("join -> %s", rawGraphTarget(parallel.Join)))
+		if parallel.OnFailure != "" {
+			edges = append(edges, fmt.Sprintf("branch-failed -> %s", rawGraphTarget(parallel.OnFailure)))
+		}
+		lines = append(lines, fmt.Sprintf("%s[parallel](%s)", parallel.Name, strings.Join(edges, ", ")))
 	}
 	return lines
 }

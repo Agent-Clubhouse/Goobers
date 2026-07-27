@@ -15,21 +15,20 @@
 
 Feature inventory:
 - `workflow.spec.triggers`: `ga` - unchanged at the target. (source: v2.0.0 features --used and --dsl-version 2.0 at commit 2222222222222222222222222222222222222222; confidence: high)
-- `task.inputs`: `deprecated` - prefer content-digested context pointers before the next removal edge. (source: v2.0.0 feature registry at commit 2222222222222222222222222222222222222222; confidence: high)
+- `task.inputs`: `ga` - unchanged at the target. (source: v2.0.0 feature registry at commit 2222222222222222222222222222222222222222; confidence: high)
 
 Validation diagnostics:
 - target validation: clean; canonical comparison reports only tuning, structural, and user-owned differences
 - proposed target validation: clean (0 warnings, 0 errors)
 
 Target canonical state-graph diff:
-- current: `query -> implement; implement -> review; review(pass -> done, fail -> abort, timeout -> escalate)`
-- target: `query -> gather-context; gather-context -> implement; implement -> review; review(pass -> done, fail -> abort, timeout -> escalate)`
+- current: `start: query; query[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, timeout -> escalate)`
+- target: `start: query; query[deterministic] -> gather-context; gather-context[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, timeout -> escalate)`
 Proposed state-graph diff:
-- current: `query -> implement; implement -> review; review(pass -> done, fail -> abort, timeout -> escalate)`
-- proposed: `query -> gather-context; gather-context -> implement; implement -> review; review(pass -> done, fail -> abort, timeout -> escalate)`
+- current: `start: query; query[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, timeout -> escalate)`
+- proposed: `start: query; query[deterministic] -> gather-context; gather-context[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, timeout -> escalate)`
 
 Recommendations:
-- **recommended canonical workflow improvement**: feature `task.inputs` is deprecated; prefer content-digested context pointers before the next removal edge. (source: v2.0.0 feature registry at commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)
 - **local operational tuning**: `spec.triggers[0].schedule`: config diff reports INFO; preserve the local 17-minute cadence. (source: v2.0.0 config diff INFO at commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)
 - **local operational tuning**: `spec.readiness.maxConcurrentRuns`: config diff reports INFO; preserve the local concurrency limit. (source: v2.0.0 config diff INFO at commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)
 - **recommended canonical workflow improvement**: `spec.tasks[gather-context]`: the same-name canonical workflow adds context before implementation. (source: v2.0.0 canonical implementation workflow at commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)
@@ -43,9 +42,9 @@ Validation diagnostics:
 - target validation: clean; no same-name canonical workflow exists
 - proposed target validation: clean (0 warnings, 0 errors)
 
-Current state graph: `build -> deploy; deploy -> done`
+Current state graph: `start: build; build[deterministic] -> deploy; deploy[deterministic] -> done`
 Target canonical state graph: no same-name canonical workflow exists.
-Proposed state graph: unchanged: `build -> deploy; deploy -> done`
+Proposed state graph: unchanged: `start: build; build[deterministic] -> deploy; deploy[deterministic] -> done`
 
 Recommendations:
 - **user customization requiring human judgment**: `spec.tasks[deploy].run.command`: no same-name canonical workflow exists; retain the command until its owner decides. (source: v2.0.0 canonical workflow inventory at commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)

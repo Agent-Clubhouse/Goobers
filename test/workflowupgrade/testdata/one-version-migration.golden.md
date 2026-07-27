@@ -20,8 +20,8 @@ Validation diagnostics:
 - target baseline: dslVersion 1.4 remains loadable but requires the migration default-preservation patch
 - proposed target validation: clean (0 warnings, 0 errors)
 
-Target canonical state graph: unchanged: `poll -> ci; ci(pass -> done, fail -> abort, timeout -> escalate)`
-Proposed state graph: unchanged: `poll -> ci; ci(pass -> done, fail -> abort, timeout -> escalate)`
+Target canonical state graph: unchanged: `start: poll; poll[deterministic] -> ci; ci[gate](pass -> done, fail -> abort, timeout -> escalate)`
+Proposed state graph: unchanged: `start: poll; poll[deterministic] -> ci; ci[gate](pass -> done, fail -> abort, timeout -> escalate)`
 
 Recommendations:
 - **required compatibility change**: feature `gate.evaluator.automated.pollIntervalSeconds` changed; DSL 2.0 injects a 10-second ci-poll default, so pin 10 to preserve DSL 1.4 behavior. (source: v2.0.0 goobers fix --to 2.0 dry-run from commit 2222222222222222222222222222222222222222; target refs/tags/v2.0.0 at commit 2222222222222222222222222222222222222222; confidence: high)

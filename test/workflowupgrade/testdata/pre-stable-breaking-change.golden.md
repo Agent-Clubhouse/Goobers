@@ -14,23 +14,23 @@
 ## Workflow `implementation` (`0.7` -> `1.4`)
 
 Feature inventory:
-- `task.inputs`: `removed` - replace the legacy claim input with a backlog-query task and a resultFile artifact. (source: v0.9.0-beta.3 feature registry at commit 1111111111111111111111111111111111111111; confidence: low)
+- `task.inputs`: `ga` - replace the incompatible legacy claim input shape with a backlog-query task and a resultFile artifact. (source: v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111; confidence: low)
 - `gate.branches`: `ga` - the needs-changes outcome now requires an explicit branch. (source: v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111; confidence: low)
 
 Validation diagnostics:
-- target baseline: dslVersion 0.7 is unsupported and the legacy claim input is removed
+- target baseline: dslVersion 0.7 is unsupported and the legacy claim input shape is incompatible
 - proposed target validation: clean (0 warnings, 0 errors)
 
 Target canonical state-graph diff:
-- current: `claim -> implement; implement -> review; review(pass -> done, fail -> abort)`
-- target: `query-backlog -> implement; implement -> review; review(pass -> done, fail -> abort, needs-changes -> implement)`
+- current: `start: claim; claim[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort)`
+- target: `start: query-backlog; query-backlog[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, needs-changes -> implement)`
 Proposed state-graph diff:
-- current: `claim -> implement; implement -> review; review(pass -> done, fail -> abort)`
-- proposed: `query-backlog -> implement; implement -> review; review(pass -> done, fail -> abort, needs-changes -> implement)`
+- current: `start: claim; claim[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort)`
+- proposed: `start: query-backlog; query-backlog[deterministic] -> implement; implement[deterministic] -> review; review[gate](pass -> done, fail -> abort, needs-changes -> implement)`
 
 Recommendations:
 - **required compatibility change**: dslVersion `0.7` is unsupported; move to `1.4`. (source: github:Agent-Clubhouse/Goobers@1111111111111111111111111111111111111111 release notes and feature registry; target refs/tags/v0.9.0-beta.3 at commit 1111111111111111111111111111111111111111; confidence: low)
-- **required compatibility change**: feature `task.inputs` is removed; replace the legacy claim input with a backlog-query task and a resultFile artifact. (source: v0.9.0-beta.3 feature registry at commit 1111111111111111111111111111111111111111; target refs/tags/v0.9.0-beta.3 at commit 1111111111111111111111111111111111111111; confidence: low)
+- **required compatibility change**: feature `task.inputs` changed; replace the incompatible legacy claim input shape with a backlog-query task and a resultFile artifact. (source: v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111; target refs/tags/v0.9.0-beta.3 at commit 1111111111111111111111111111111111111111; confidence: low)
 - **required compatibility change**: feature `gate.branches` changed; the needs-changes outcome now requires an explicit branch. (source: v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111; target refs/tags/v0.9.0-beta.3 at commit 1111111111111111111111111111111111111111; confidence: low)
 
 ## Ordered upgrade plan

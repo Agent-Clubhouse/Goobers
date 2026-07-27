@@ -31,9 +31,9 @@
           "Features": [
             {
               "Name": "task.inputs",
-              "TargetLevel": "removed",
-              "Change": "replace the legacy claim input with a backlog-query task and a resultFile artifact",
-              "Source": "v0.9.0-beta.3 feature registry at commit 1111111111111111111111111111111111111111",
+              "TargetLevel": "ga",
+              "Change": "replace the incompatible legacy claim input shape with a backlog-query task and a resultFile artifact",
+              "Source": "v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111",
               "Confidence": "low",
               "Breaking": true
             },
@@ -47,22 +47,25 @@
             }
           ],
           "CurrentGraph": [
-            "claim -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort)"
+            "start: claim",
+            "claim[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort)"
           ],
           "TargetGraph": [
-            "query-backlog -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, needs-changes -> implement)"
+            "start: query-backlog",
+            "query-backlog[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, needs-changes -> implement)"
           ],
           "ProposedGraph": [
-            "query-backlog -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, needs-changes -> implement)"
+            "start: query-backlog",
+            "query-backlog[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, needs-changes -> implement)"
           ],
           "Diagnostics": [
-            "target baseline: dslVersion 0.7 is unsupported and the legacy claim input is removed",
+            "target baseline: dslVersion 0.7 is unsupported and the legacy claim input shape is incompatible",
             "proposed target validation: clean (0 warnings, 0 errors)"
           ]
         }
@@ -133,16 +136,19 @@
             }
           ],
           "CurrentGraph": [
-            "poll -> ci",
-            "ci(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: poll",
+            "poll[deterministic] -> ci",
+            "ci[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "TargetGraph": [
-            "poll -> ci",
-            "ci(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: poll",
+            "poll[deterministic] -> ci",
+            "ci[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "ProposedGraph": [
-            "poll -> ci",
-            "ci(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: poll",
+            "poll[deterministic] -> ci",
+            "ci[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "Diagnostics": [
             "target baseline: dslVersion 1.4 remains loadable but requires the migration default-preservation patch",
@@ -203,28 +209,30 @@
             },
             {
               "Name": "task.inputs",
-              "TargetLevel": "deprecated",
-              "Change": "prefer content-digested context pointers before the next removal edge",
+              "TargetLevel": "ga",
               "Source": "v2.0.0 feature registry at commit 2222222222222222222222222222222222222222",
               "Confidence": "high"
             }
           ],
           "CurrentGraph": [
-            "query -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: query",
+            "query[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "TargetGraph": [
-            "query -> gather-context",
-            "gather-context -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: query",
+            "query[deterministic] -> gather-context",
+            "gather-context[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "ProposedGraph": [
-            "query -> gather-context",
-            "gather-context -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, timeout -> escalate)"
+            "start: query",
+            "query[deterministic] -> gather-context",
+            "gather-context[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, timeout -> escalate)"
           ],
           "Diagnostics": [
             "target validation: clean; canonical comparison reports only tuning, structural, and user-owned differences",
@@ -245,13 +253,15 @@
             }
           ],
           "CurrentGraph": [
-            "build -> deploy",
-            "deploy -> done"
+            "start: build",
+            "build[deterministic] -> deploy",
+            "deploy[deterministic] -> done"
           ],
           "TargetGraph": null,
           "ProposedGraph": [
-            "build -> deploy",
-            "deploy -> done"
+            "start: build",
+            "build[deterministic] -> deploy",
+            "deploy[deterministic] -> done"
           ],
           "Diagnostics": [
             "target validation: clean; no same-name canonical workflow exists",
@@ -338,19 +348,22 @@
             }
           ],
           "CurrentGraph": [
-            "query -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, needs-changes -> implement)"
+            "start: query",
+            "query[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, needs-changes -> implement)"
           ],
           "TargetGraph": [
-            "query -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, needs-changes -> implement)"
+            "start: query",
+            "query[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, needs-changes -> implement)"
           ],
           "ProposedGraph": [
-            "query -> implement",
-            "implement -> review",
-            "review(pass -> done, fail -> abort, needs-changes -> implement)"
+            "start: query",
+            "query[deterministic] -> implement",
+            "implement[deterministic] -> review",
+            "review[gate](pass -> done, fail -> abort, needs-changes -> implement)"
           ],
           "Diagnostics": [
             "target validation: clean (0 warnings, 0 errors)",
