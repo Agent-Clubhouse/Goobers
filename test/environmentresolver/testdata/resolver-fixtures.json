@@ -27,7 +27,7 @@
         },
         {
           "root": "targets/web",
-          "remoteUrls": ["git@github.com:acme/web.git"],
+          "remoteUrls": ["https://oauth2:REMOTE_SECRET_MUST_NOT_APPEAR@github.com/acme/web.git"],
           "head": "2222222222222222222222222222222222222222"
         },
         {
@@ -471,6 +471,124 @@
             "diagnosticsContain": [
               "source binary provenance unresolved",
               "known release v4.2.0 has no exact verified contract source"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "local Git config source",
+      "files": {
+        "workflow-config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "workflow-config/gaggles/.keep": "",
+        "instance/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instance/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instance/config/gaggles/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "workflow-config",
+          "remoteUrls": ["https://github.com/acme/workflows.git"],
+          "head": "6666666666666666666666666666666666666666",
+          "refs": {
+            "release/v2": {
+              "sha": "6666666666666666666666666666666666666666",
+              "type": "commit"
+            }
+          }
+        }
+      ],
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"dev\",\"commit\":\"unknown\"}\n",
+        "versions --json": "{\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]}]}\n",
+        "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"workflowSource\":{\"kind\":\"git\",\"path\":\"$ROOT/workflow-config\",\"ref\":\"release/v2\"},\"repos\":[]}\n"
+      },
+      "runs": [
+        {
+          "name": "local Git config source",
+          "start": "workflow-config",
+          "instance": "instance",
+          "want": {
+            "currentRole": "config-source",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/workflow-config",
+            "configSourceKind": "git",
+            "configSourceRef": "release/v2",
+            "configSourceCommit": "6666666666666666666666666666666666666666"
+          }
+        }
+      ]
+    },
+    {
+      "name": "remote Git config source",
+      "files": {
+        "instance/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instance/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instance/config/gaggles/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"dev\",\"commit\":\"unknown\"}\n",
+        "versions --json": "{\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]}]}\n",
+        "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"workflowSource\":{\"kind\":\"git\",\"url\":\"https://gitlab.example.com/platform/workflows.git\",\"ref\":\"release/v3\",\"token\":{\"env\":\"REMOTE_CONFIG_TOKEN\"}},\"repos\":[]}\n"
+      },
+      "providerOutputs": {
+        "configRefs": {
+          "git/gitlab.example.com/platform/workflows@release/v3": "{\"ref\":\"refs/heads/release/v3\",\"object\":{\"sha\":\"7777777777777777777777777777777777777777\",\"type\":\"commit\"}}\n"
+        }
+      },
+      "runs": [
+        {
+          "name": "remote Git config source",
+          "start": "instance",
+          "instance": "instance",
+          "want": {
+            "currentRole": "instance",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "instance": "$ROOT/instance",
+            "configSource": "git/gitlab.example.com/platform/workflows",
+            "configSourceKind": "git",
+            "configSourceRef": "release/v3",
+            "configSourceCommit": "7777777777777777777777777777777777777777"
+          }
+        }
+      ]
+    },
+    {
+      "name": "remote Git config source without provider access",
+      "files": {
+        "instance/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instance/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instance/config/gaggles/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"dev\",\"commit\":\"unknown\"}\n",
+        "versions --json": "{\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]}]}\n",
+        "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"workflowSource\":{\"kind\":\"git\",\"url\":\"https://github.com/acme/workflows.git\",\"ref\":\"release/missing\",\"token\":{\"env\":\"REMOTE_CONFIG_TOKEN\"}},\"repos\":[]}\n"
+      },
+      "runs": [
+        {
+          "name": "remote Git config source without provider access",
+          "start": "instance",
+          "instance": "instance",
+          "want": {
+            "currentRole": "instance",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "instance": "$ROOT/instance",
+            "configSource": "github/acme/workflows",
+            "configSourceKind": "git",
+            "configSourceRef": "release/missing",
+            "diagnosticsContain": [
+              "remote Git workflowSource ref is inaccessible"
             ]
           }
         }

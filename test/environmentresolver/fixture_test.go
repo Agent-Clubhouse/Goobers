@@ -3,6 +3,7 @@ package environmentresolver
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,13 +39,19 @@ type fixtureScenario struct {
 }
 
 type fixtureGitRepository struct {
-	Root            string   `json:"root"`
-	RemoteURLs      []string `json:"remoteUrls"`
-	Head            string   `json:"head"`
-	Objects         []string `json:"objects"`
-	Tags            []string `json:"tags"`
-	TrackedSymlinks []string `json:"trackedSymlinks"`
-	Identity        string   `json:"-"`
+	Root            string                   `json:"root"`
+	RemoteURLs      []string                 `json:"remoteUrls"`
+	Head            string                   `json:"head"`
+	Objects         []string                 `json:"objects"`
+	Tags            []string                 `json:"tags"`
+	Refs            map[string]fixtureGitRef `json:"refs"`
+	TrackedSymlinks []string                 `json:"trackedSymlinks"`
+	Identity        string                   `json:"-"`
+}
+
+type fixtureGitRef struct {
+	SHA  string `json:"sha"`
+	Type string `json:"type"`
 }
 
 type fixtureToolkit struct {
@@ -60,6 +67,7 @@ type fixtureProviderOutputs struct {
 	ReleaseTree     string            `json:"releaseTree"`
 	ReleaseContents map[string]string `json:"releaseContents"`
 	CommitObjects   []string          `json:"commitObjects"`
+	ConfigRefs      map[string]string `json:"configRefs"`
 	Targets         map[string]string `json:"targets"`
 }
 
@@ -80,6 +88,9 @@ type fixtureWant struct {
 	ContractKind       string   `json:"contractKind"`
 	Instance           string   `json:"instance"`
 	ConfigSource       string   `json:"configSource"`
+	ConfigSourceKind   string   `json:"configSourceKind"`
+	ConfigSourceRef    string   `json:"configSourceRef"`
+	ConfigSourceCommit string   `json:"configSourceCommit"`
 	Targets            []string `json:"targets"`
 	DiagnosticsContain []string `json:"diagnosticsContain"`
 }
@@ -119,7 +130,10 @@ func materializeScenario(t *testing.T, scenario fixtureScenario) *testEnvironmen
 		repositories[i] = repository
 		repositories[i].Root = fixturePath(root, repository.Root)
 		if len(repository.RemoteURLs) > 0 {
-			identity, ok := repositoryIdentityFromRemoteURLs(repository.RemoteURLs)
+			identity, ok := repositoryIdentityFromCapturedRemotes(
+				fixtureGitCommandRunner{urls: repository.RemoteURLs},
+				repositories[i].Root,
+			)
 			if !ok {
 				t.Fatalf("derive fixture repository identity for %s", repository.Root)
 			}
@@ -154,6 +168,7 @@ func materializeScenario(t *testing.T, scenario fixtureScenario) *testEnvironmen
 	providerOutputs.ReleaseTree = strings.ReplaceAll(providerOutputs.ReleaseTree, "$ROOT", filepath.ToSlash(root))
 	providerOutputs.ReleaseContents = cloneExpandedMap(providerOutputs.ReleaseContents, root)
 	providerOutputs.CommitObjects = append([]string(nil), providerOutputs.CommitObjects...)
+	providerOutputs.ConfigRefs = cloneExpandedMap(providerOutputs.ConfigRefs, root)
 	providerOutputs.Targets = cloneExpandedMap(providerOutputs.Targets, root)
 
 	return &testEnvironment{
@@ -350,6 +365,15 @@ func (f *fakeProvider) releaseContent(path, commit string) ([]byte, error) {
 	return []byte(output), nil
 }
 
+func (f *fakeProvider) configRef(identity, ref string) ([]byte, error) {
+	f.calls = append(f.calls, "config-ref "+identity+" "+ref)
+	output, ok := f.outputs.ConfigRefs[identity+"@"+ref]
+	if !ok {
+		return nil, fmt.Errorf("fake provider has no config ref output")
+	}
+	return []byte(output), nil
+}
+
 func (f *fakeProvider) target(identity string) ([]byte, error) {
 	f.calls = append(f.calls, "target "+identity)
 	output, ok := f.outputs.Targets[identity]
@@ -357,6 +381,61 @@ func (f *fakeProvider) target(identity string) ([]byte, error) {
 		return nil, fmt.Errorf("fake provider has no target output for %s", identity)
 	}
 	return []byte(output), nil
+}
+
+type gitCommandRunner interface {
+	runGit(root string, arguments ...string) (stdout, stderr []byte, err error)
+}
+
+type fixtureGitCommandRunner struct {
+	urls   []string
+	stderr []byte
+}
+
+func (r fixtureGitCommandRunner) runGit(_ string, arguments ...string) ([]byte, []byte, error) {
+	switch strings.Join(arguments, " ") {
+	case "remote":
+		return []byte("origin\n"), r.stderr, nil
+	case "remote get-url --all origin":
+		return []byte(strings.Join(r.urls, "\n") + "\n"), r.stderr, nil
+	default:
+		return nil, r.stderr, fmt.Errorf("unsupported fixture Git command")
+	}
+}
+
+func repositoryIdentityFromCapturedRemotes(runner gitCommandRunner, root string) (string, bool) {
+	namesOutput, _, err := runner.runGit(root, "remote")
+	if err != nil {
+		return "", false
+	}
+	identities := make(map[string]bool)
+	for _, name := range strings.Fields(string(namesOutput)) {
+		urlsOutput, _, err := runner.runGit(root, "remote", "get-url", "--all", name)
+		if err != nil {
+			return "", false
+		}
+		for _, remoteURL := range strings.Split(strings.TrimSpace(string(urlsOutput)), "\n") {
+			if identity, ok := repositoryIdentityFromRemoteURL(remoteURL); ok {
+				identities[identity] = true
+			}
+		}
+	}
+	if len(identities) != 1 {
+		return "", false
+	}
+	for identity := range identities {
+		return identity, true
+	}
+	return "", false
+}
+
+func writeRepositoryIdentity(runner gitCommandRunner, root string, output io.Writer) bool {
+	identity, ok := repositoryIdentityFromCapturedRemotes(runner, root)
+	if !ok {
+		return false
+	}
+	_, err := fmt.Fprintln(output, identity)
+	return err == nil
 }
 
 type toolkitProducer = agentkit.Producer

@@ -20,18 +20,21 @@ import (
 )
 
 type resolverReport struct {
-	CurrentRepository string           `json:"currentRepository"`
-	CurrentRole       string           `json:"currentRole"`
-	Executable        executableReport `json:"executable"`
-	BinaryVersion     string           `json:"binaryVersion,omitempty"`
-	BinaryCommit      string           `json:"binaryCommit,omitempty"`
-	DSLVersions       []dslVersion     `json:"dslVersions,omitempty"`
-	ConfigSource      string           `json:"configSource,omitempty"`
-	Instance          string           `json:"instance,omitempty"`
-	ActiveConfig      string           `json:"activeConfig,omitempty"`
-	Contract          contractReport   `json:"contract"`
-	Targets           []targetReport   `json:"targets,omitempty"`
-	Diagnostics       []string         `json:"diagnostics,omitempty"`
+	CurrentRepository  string           `json:"currentRepository"`
+	CurrentRole        string           `json:"currentRole"`
+	Executable         executableReport `json:"executable"`
+	BinaryVersion      string           `json:"binaryVersion,omitempty"`
+	BinaryCommit       string           `json:"binaryCommit,omitempty"`
+	DSLVersions        []dslVersion     `json:"dslVersions,omitempty"`
+	ConfigSource       string           `json:"configSource,omitempty"`
+	ConfigSourceKind   string           `json:"configSourceKind,omitempty"`
+	ConfigSourceRef    string           `json:"configSourceRef,omitempty"`
+	ConfigSourceCommit string           `json:"configSourceCommit,omitempty"`
+	Instance           string           `json:"instance,omitempty"`
+	ActiveConfig       string           `json:"activeConfig,omitempty"`
+	Contract           contractReport   `json:"contract"`
+	Targets            []targetReport   `json:"targets,omitempty"`
+	Diagnostics        []string         `json:"diagnostics,omitempty"`
 }
 
 type executableReport struct {
@@ -85,6 +88,8 @@ type configOutput struct {
 type workflowSource struct {
 	Kind string `json:"kind"`
 	Path string `json:"path"`
+	URL  string `json:"url"`
+	Ref  string `json:"ref"`
 }
 
 type configRepo struct {
@@ -188,9 +193,15 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 		report.ActiveConfig = filepath.Join(instanceRoot, "config")
 	}
 
+	configSourceExplicit := inputs.configSource != ""
 	configSource := inputs.configSource
+	configSourceKind := ""
+	configSourceRef := ""
 	if configSource == "" && currentRepository != nil && isConfigSource(currentRepository.Root) {
 		configSource = currentRepository.Root
+	}
+	if configSource != "" {
+		configSourceKind = "local-dir"
 	}
 
 	binaryPath, binarySelection := selectBinary(inputs.binary, sourceRoot, environment)
@@ -229,17 +240,24 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 			report.Diagnostics = append(report.Diagnostics, "instance config unresolved: "+err.Error())
 		} else if err := json.Unmarshal(configJSON, &effectiveConfig); err != nil {
 			report.Diagnostics = append(report.Diagnostics, "instance config unresolved: invalid config JSON")
-		} else if configSource == "" && effectiveConfig.WorkflowSource != nil {
-			if filepath.IsAbs(effectiveConfig.WorkflowSource.Path) {
-				configSource = filepath.Clean(effectiveConfig.WorkflowSource.Path)
-			} else {
-				report.Diagnostics = append(report.Diagnostics, "config source unresolved: relative workflowSource requires daemon working directory")
+		} else if !configSourceExplicit && effectiveConfig.WorkflowSource != nil {
+			var diagnostic string
+			configSource, configSourceKind, configSourceRef, report.ConfigSourceCommit, diagnostic =
+				resolveConfiguredWorkflowSource(environment, *effectiveConfig.WorkflowSource)
+			if diagnostic != "" {
+				report.Diagnostics = append(report.Diagnostics, diagnostic)
 			}
 		}
 	}
 	report.ConfigSource = configSource
+	report.ConfigSourceKind = configSourceKind
+	report.ConfigSourceRef = configSourceRef
 
-	report.Contract = selectContract(environment, sourceRoot, configSource, binaryPath, identity, &report.Diagnostics)
+	localConfigSource := ""
+	if configSourceKind == "local-dir" || (configSourceKind == "git" && filepath.IsAbs(configSource)) {
+		localConfigSource = configSource
+	}
+	report.Contract = selectContract(environment, sourceRoot, localConfigSource, binaryPath, identity, &report.Diagnostics)
 	switch {
 	case binaryPath == "":
 		report.Executable.Provenance = "unresolved"
@@ -257,10 +275,111 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 		report.Diagnostics = append(report.Diagnostics, "source binary provenance unresolved: checkout identity mismatch")
 	}
 
-	report.Targets = resolveTargets(environment, effectiveConfig.Repos, configSource, &report.Diagnostics)
-	report.CurrentRole = classifyCurrentRole(inputs.start, currentRepository, instanceRoot, configSource, sourceRoot, report.Targets)
+	structuredConfigRoot := localConfigSource
+	if report.ActiveConfig != "" && isConfigSource(report.ActiveConfig) {
+		structuredConfigRoot = report.ActiveConfig
+	}
+	report.Targets = resolveTargets(environment, effectiveConfig.Repos, structuredConfigRoot, &report.Diagnostics)
+	report.CurrentRole = classifyCurrentRole(inputs.start, currentRepository, instanceRoot, localConfigSource, sourceRoot, report.Targets)
 	sort.Strings(report.Diagnostics)
 	return report
+}
+
+func resolveConfiguredWorkflowSource(
+	environment *testEnvironment,
+	source workflowSource,
+) (location, kind, ref, commit, diagnostic string) {
+	switch source.Kind {
+	case "local-dir":
+		if source.Path == "" || source.URL != "" || source.Ref != "" {
+			return "", "", "", "", "config source unresolved: invalid local-dir workflowSource"
+		}
+		if !filepath.IsAbs(source.Path) {
+			return "", "", "", "", "config source unresolved: relative workflowSource requires daemon working directory"
+		}
+		return filepath.Clean(source.Path), source.Kind, "", "", ""
+	case "git":
+		if (source.Path == "") == (source.URL == "") {
+			return "", "", "", "", "config source unresolved: git workflowSource requires exactly one path or URL"
+		}
+		ref = source.Ref
+		if ref == "" {
+			ref = "main"
+		}
+		if source.Path != "" {
+			if !filepath.IsAbs(source.Path) {
+				return "", "", "", "", "config source unresolved: relative workflowSource requires daemon working directory"
+			}
+			path := filepath.Clean(source.Path)
+			repository := environment.gitRepositoryAt(path)
+			if repository == nil {
+				return "", "", "", "", "config source unresolved: local Git workflowSource is not a repository"
+			}
+			resolved, ok := repository.Refs[ref]
+			if !ok || resolved.Type != "commit" || !isFullGitObjectID(resolved.SHA) {
+				return "", "", "", "", "config source unresolved: local Git workflowSource ref is not a commit"
+			}
+			return path, source.Kind, ref, strings.ToLower(resolved.SHA), ""
+		}
+		identity, ok := remoteConfigSourceIdentity(source.URL)
+		if !ok {
+			return "", "", "", "", "config source unresolved: remote workflowSource identity is invalid"
+		}
+		commit, ok = resolveRemoteConfigSourceRef(environment.provider, identity, ref)
+		if !ok {
+			return identity, source.Kind, ref, "", "config source commit unresolved: remote Git workflowSource ref is inaccessible"
+		}
+		return identity, source.Kind, ref, commit, ""
+	default:
+		return "", "", "", "", "config source unresolved: unsupported workflowSource kind"
+	}
+}
+
+func resolveRemoteConfigSourceRef(provider *fakeProvider, identity, ref string) (string, bool) {
+	if provider == nil {
+		return "", false
+	}
+	output, err := provider.configRef(identity, ref)
+	if err != nil {
+		return "", false
+	}
+	var resolved remoteReleaseRef
+	if err := json.Unmarshal(output, &resolved); err != nil {
+		return "", false
+	}
+	branchRef := ref
+	if !strings.HasPrefix(branchRef, "refs/heads/") {
+		if strings.HasPrefix(branchRef, "refs/") {
+			return "", false
+		}
+		branchRef = "refs/heads/" + branchRef
+	}
+	if resolved.Ref != branchRef || resolved.Object.Type != "commit" ||
+		!isFullGitObjectID(resolved.Object.SHA) {
+		return "", false
+	}
+	return strings.ToLower(resolved.Object.SHA), true
+}
+
+func remoteConfigSourceIdentity(remoteURL string) (string, bool) {
+	parsed, err := url.Parse(remoteURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Opaque != "" ||
+		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	if identity, ok := repositoryIdentityFromRemoteURL(remoteURL); ok {
+		return identity, true
+	}
+	repositoryPath := strings.Trim(strings.TrimSuffix(parsed.EscapedPath(), ".git"), "/")
+	if repositoryPath == "" {
+		return "", false
+	}
+	for _, segment := range strings.Split(repositoryPath, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	return "git/" + strings.ToLower(parsed.Host) + "/" + repositoryPath, true
 }
 
 func selectInstance(inputs resolverInputs) (string, string) {

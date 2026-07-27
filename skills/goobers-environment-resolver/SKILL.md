@@ -37,24 +37,24 @@ Find the current Git root without reading remotes:
 git -C <start> rev-parse --show-toplevel
 ```
 
-To determine whether that root is a configured target, enumerate remote names
-and obtain their fetch URLs without displaying or recording the raw values:
+To determine whether that root is a configured target, use an in-process
+repository-identity helper. The helper must capture both stdout and stderr when
+invoking Git rather than inherit them: first enumerate remote names, then
+capture the fetch URLs for each name. Do not run the URL-producing Git command
+directly through a terminal or tool invocation that displays, records, or
+returns raw command output.
 
-```sh
-git -C <git-root> remote
-git -C <git-root> remote get-url --all <remote-name>
-```
-
-Parse each URL locally into a credential-free provider key. Accept GitHub URL
-forms only as `github/<owner>/<name>` and Azure DevOps URL forms only as
+While the captured bytes remain private to the helper, parse each URL into a
+credential-free provider key. Accept GitHub URL forms only as
+`github/<owner>/<name>` and Azure DevOps URL forms only as
 `ado/<organization>/<project>/<name>`; discard scheme, user information, port,
 query, fragment, and a terminal `.git`. Normalize provider host and
-provider-defined case-insensitive identity components. Never include a raw URL
-in commands, diagnostics, or the report. If recognized remotes produce zero or
-multiple distinct identities, report the current repository identity
-unresolved. Match a target only when the entire sanitized provider key equals
-the key from structured config; a repository name or owner/name suffix alone is
-not evidence.
+provider-defined case-insensitive identity components. The helper may return or
+print only normalized provider keys, never raw URLs or parse errors containing
+them. If recognized remotes produce zero or multiple distinct identities,
+report the current repository identity unresolved. Match a target only when the
+entire sanitized provider key equals the key from structured config; a
+repository name or owner/name suffix alone is not evidence.
 
 Classify locations by these markers:
 
@@ -72,11 +72,35 @@ exactly one candidate. Record `<instance>/config` as the active runtime copy and
 the instance's `workflowSource` as the config source; do not substitute one for
 the other.
 
-An absolute local `workflowSource.path` identifies exactly that path. A relative
-path is resolved by Goobers from the daemon process working directory, not from
-the instance root. Resolve it only when that working directory is supplied by
-the caller or authoritative process/supervisor metadata; otherwise preserve the
-configured value as evidence and report the config source unresolved.
+Resolve `workflowSource` according to its structured kind:
+
+- For `kind: local-dir`, an absolute `path` identifies exactly that directory.
+- For `kind: git` with `path`, report the absolute local repository path and the
+  configured `ref` (default `main`). Normalize it to a local branch ref and use
+  read-only Git plumbing to require that it resolves to exactly one commit;
+  report that full commit. Treat the committed ref, not its working tree, as
+  the source:
+
+  ```sh
+  git -C <workflowSource.path> rev-parse --verify refs/heads/<ref>^{commit}
+  ```
+
+- For `kind: git` with `url`, keep the URL inside the same capture-and-sanitize
+  boundary used for repository identity. Report its normalized provider key
+  when recognized; otherwise use the credential-free identity
+  `git/<lowercase-host[:port]>/<repository-path>`. Also report the configured
+  `ref` (default `main`) and its full commit when existing read-only provider
+  access can resolve it. Do not read or report its `token` locator or value. The
+  materialized active copy remains `<instance>/config`; do not invent a local
+  source path for the remote. Failure to inspect a private remote leaves its
+  access and commit unresolved without discarding the configured identity/ref.
+
+A relative local `workflowSource.path` is resolved by Goobers from the daemon
+process working directory, not from the instance root. Resolve it only when
+that working directory is supplied by the caller or authoritative
+process/supervisor metadata; otherwise preserve the configured value as
+evidence and report the config source unresolved. A missing, malformed, or
+unsupported kind, path, URL, or ref is likewise unresolved rather than guessed.
 
 Resolve the executable in this order:
 
@@ -103,8 +127,11 @@ Record the binary version and commit and every entry from
 `dslVersions[]`, including `version`, `level`, `unsupportedAfter`,
 `replacement`, and the complete `history[]`. Do not expect a `versions[]` array
 or a `lifecycle` field. Also record the config source, instance root, and
-configured target repositories. `config show` does not resolve credential
-locators; omit those locator fields from the report anyway.
+configured target repositories. Read effective Gaggle target definitions from
+the active `<instance>/config` tree, including when the source is Git-backed;
+the source location and active materialization are separate evidence.
+`config show` does not resolve credential locators; omit those locator fields
+from the report anyway.
 
 ### 2. Establish an exact release identity
 
@@ -308,7 +335,7 @@ Return the report before invoking another Goobers skill:
 | Executable | Canonical path, selection rule, and provenance (`source-built`, `installed-release`, `PATH-only`, or unresolved) |
 | Binary identity | Version and commit from `version --json` |
 | DSL support | Version, level, optional transition fields, and full history from `versions --json` |
-| Config source | Absolute local path or exact remote identity/ref |
+| Config source | Kind, absolute local path or exact remote identity, configured ref, and full commit when resolvable |
 | Instance | Absolute root and active config path, independently from config source |
 | Contract source | Kind, root/provider repository, version, commit, exact tag/ref, and integrity result |
 | Contract locations | Separate docs, schemas, examples, capability, and skills locations |
