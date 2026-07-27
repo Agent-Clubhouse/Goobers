@@ -1,0 +1,12 @@
+{
+  "action": "stub-agent-instructions",
+  "version": 1,
+  "created": [
+    ".github/copilot-instructions.md"
+  ],
+  "skipped": [
+    ".goobers/agent-toolkit"
+  ],
+  "path": "\u003csource-tree\u003e",
+  "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'"
+}

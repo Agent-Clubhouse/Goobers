@@ -6,7 +6,32 @@ authoring, read-only run inspection, and workflow upgrades. It runs in the
 user's agent harness and is distinct from skills configured on workflow
 goobers.
 
-## Copy the release bundle
+## Install the release bundle
+
+From a release-matched `goobers` binary, install the toolkit and the selected
+harness reference into a checked-in config source repository non-interactively:
+
+```sh
+goobers onboarding stub-agent-instructions \
+  --source-tree ./my-config \
+  --harness copilot \
+  --json
+```
+
+The versioned JSON envelope reports the `.goobers/agent-toolkit` root and
+instruction file under `created` or `skipped`, the absolute config source path,
+and the `agent-kit check` command to run next. Re-running is a no-op. The action
+delegates to `goobers agent-kit install`, so it preserves existing instructions,
+refuses user-owned toolkit collisions or drift, and never replaces toolkit
+content implicitly. The config source path must be a Git repository root.
+
+To install without the onboarding envelope, run the equivalent command:
+
+```sh
+goobers agent-kit install --harness copilot ./my-config
+```
+
+### Manual archive installation
 
 Download `goobers-agent-toolkit_<version>.zip` from the same release as the
 installed Goobers binary and verify it with that release's `SHA256SUMS`. The

@@ -12,6 +12,134 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
+	for _, fixture := range []string{"empty", "partial", "populated"} {
+		t.Run(fixture, func(t *testing.T) {
+			root := cliAgentKitRepository(t)
+			switch fixture {
+			case "partial":
+				code, _, stderr := runArgs(t, "agent-kit", "install", root)
+				if code != 0 {
+					t.Fatalf("seed toolkit: code=%d stderr=%q", code, stderr)
+				}
+				instruction := filepath.Join(root, ".github", "copilot-instructions.md")
+				if err := os.MkdirAll(filepath.Dir(instruction), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(instruction, []byte("# User-owned instructions\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "populated":
+				code, _, stderr := runArgs(t, "agent-kit", "install", "--harness", "copilot", root)
+				if code != 0 {
+					t.Fatalf("seed populated fixture: code=%d stderr=%q", code, stderr)
+				}
+			}
+
+			code, stdout, stderr := runArgs(
+				t,
+				"onboarding", "stub-agent-instructions",
+				"--source-tree", root,
+				"--harness", "copilot",
+				"--json",
+			)
+			if code != 0 || stderr != "" {
+				t.Fatalf("stub agent instructions: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			var result onboardingActionResult
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("decode result: %v\n%s", err, stdout)
+			}
+			result.Path = "<source-tree>"
+			result.NextCommand = "goobers agent-kit check '<source-tree>'"
+			normalized, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGoldenFile(
+				t,
+				filepath.Join("testdata", "onboarding", "stub-agent-instructions."+fixture+".golden.json"),
+				string(normalized)+"\n",
+			)
+
+			instruction, err := os.ReadFile(filepath.Join(root, ".github", "copilot-instructions.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture == "partial" && !strings.HasPrefix(string(instruction), "# User-owned instructions\n") {
+				t.Fatalf("user instructions were not preserved: %q", instruction)
+			}
+			if !strings.Contains(string(instruction), ".goobers/agent-toolkit/adapters/copilot.md") {
+				t.Fatalf("managed reference missing from instructions: %q", instruction)
+			}
+		})
+	}
+}
+
+func TestOnboardingStubAgentInstructionsRefusesToolkitCollision(t *testing.T) {
+	root := cliAgentKitRepository(t)
+	toolkit := filepath.Join(root, ".goobers", "agent-toolkit")
+	if err := os.MkdirAll(toolkit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(toolkit, "user-owned.txt")
+	if err := os.WriteFile(sentinel, []byte("preserve me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(
+		t,
+		"onboarding", "stub-agent-instructions",
+		"--source-tree", root,
+		"--json",
+	)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "exists without an installed manifest") {
+		t.Fatalf("collision: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve me\n" {
+		t.Fatalf("user-owned toolkit collision changed: data=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("instruction file written after collision: %v", err)
+	}
+}
+
+func TestOnboardingStubAgentInstructionsFlagValidation(t *testing.T) {
+	root := cliAgentKitRepository(t)
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing source", args: []string{"onboarding", "stub-agent-instructions"}, want: "Usage:"},
+		{
+			name: "unsupported harness",
+			args: []string{
+				"onboarding", "stub-agent-instructions",
+				"--source-tree", root,
+				"--harness", "other",
+			},
+			want: "unsupported harness",
+		},
+		{
+			name: "positional argument",
+			args: []string{
+				"onboarding", "stub-agent-instructions",
+				"--source-tree", root,
+				"extra",
+			},
+			want: "Usage:",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			code, stdout, stderr := runArgs(t, test.args...)
+			if code != 2 || stdout != "" || !strings.Contains(stderr, test.want) {
+				t.Fatalf("code=%d stdout=%q stderr=%q, want %q", code, stdout, stderr, test.want)
+			}
+		})
+	}
+}
+
 func TestOnboardingStubSampleDestinationGoldens(t *testing.T) {
 	files, _, err := loadOnboardingSample()
 	if err != nil {
