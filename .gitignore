@@ -40,6 +40,7 @@ coverage.html
 *.out
 
 # Portal build artifacts
+/node_modules/
 /portal/node_modules/
 /portal/dist/
 /portal/coverage/
