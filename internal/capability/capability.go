@@ -75,6 +75,15 @@ const (
 	// ADOPRComment grants posting Azure Repos pull-request threads without vote,
 	// branch-write, or completion authority.
 	ADOPRComment Capability = "ado:pr:comment"
+	// ADOPRWrite grants opening and updating Azure Repos pull requests
+	// (the ADO counterpart to GitHubPRWrite). It does not grant completion/
+	// merge authority — the validation loop stops before a human completes.
+	ADOPRWrite Capability = "ado:pr:write"
+	// ADOPRStatus grants publishing Azure Repos pull-request statuses so
+	// goobers can post reviewer-verdict and local-CI evidence a status-check
+	// branch policy gates on (#772). Separate from ADOPRWrite so status-
+	// publish authority can be granted to a distinct identity from the author.
+	ADOPRStatus Capability = "ado:pr:status"
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
@@ -108,7 +117,7 @@ func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
 		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge,
-		ADOCodeRead, ADOPRComment, ADOWorkItemsWrite,
+		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }

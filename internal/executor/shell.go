@@ -311,6 +311,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
 			RepoNameEnvVar+"="+env.RepoRef.Name,
 		)
+		if env.RepoRef.Project != "" {
+			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
+		}
 	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)

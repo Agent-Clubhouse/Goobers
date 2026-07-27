@@ -34,6 +34,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'reconcile-branches'
         'push-branch'
         'open-pr'
+        'report-pr-status'
         'issue-close-out'
         'set-milestone'
         'merge-pr'

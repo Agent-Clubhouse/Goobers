@@ -80,6 +80,15 @@ type BranchReconciliationProvider interface {
 	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 }
 
+// PullRequestStatusPublisher publishes a provider-native pull-request status a
+// status-check branch policy can gate on (#772). It is separate from
+// RepoProvider because publishing PR statuses as evidence for a policy-based
+// validation loop is currently an Azure DevOps parity capability and must not
+// widen every backend.
+type PullRequestStatusPublisher interface {
+	PublishPullRequestStatus(context.Context, PullRequestStatusRequest) (PullRequestStatusResult, error)
+}
+
 // PullRequestReviewSubmitter publishes provider-native review verdicts. It is
 // separate from RepoProvider because V1's native-review protocol is currently
 // implemented only for GitHub.

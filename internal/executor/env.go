@@ -68,6 +68,11 @@ const (
 	// RepoNameEnvVar carries the scheduler-routed repository name to goobers
 	// CLI stages.
 	RepoNameEnvVar = "GOOBERS_REPO_NAME"
+	// RepoProjectEnvVar carries the scheduler-routed repository project to
+	// goobers CLI stages. It is empty for GitHub (which has no project tier)
+	// and set to the Azure DevOps project for ADO-routed repositories, which
+	// need organization/project/repo to address a repo.
+	RepoProjectEnvVar = "GOOBERS_REPO_PROJECT"
 )
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)

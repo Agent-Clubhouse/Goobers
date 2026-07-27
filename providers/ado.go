@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -287,13 +288,26 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
 	}
+	head := strings.TrimPrefix(req.Head, "refs/heads/")
+	base := strings.TrimPrefix(req.Base, "refs/heads/")
+	// Idempotency: a resumed or repassed open-pr stage — or any second call for
+	// the same run branch — must converge on the PR it already opened rather
+	// than POSTing a duplicate. ADO rejects a second active PR for the same
+	// source→target ref anyway, so find-or-create is both correct and the shape
+	// the provider-neutral open-pr stage expects (mirroring the GitHub
+	// provider's find-or-create).
+	if existing, found, err := p.FindPullRequestByBranch(ctx, req.Repository, head, base); err != nil {
+		return PullRequestResult{}, err
+	} else if found {
+		return existing, nil
+	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
 		return PullRequestResult{}, err
 	}
 	body := map[string]interface{}{
-		"sourceRefName": "refs/heads/" + strings.TrimPrefix(req.Head, "refs/heads/"),
-		"targetRefName": "refs/heads/" + strings.TrimPrefix(req.Base, "refs/heads/"),
+		"sourceRefName": "refs/heads/" + head,
+		"targetRefName": "refs/heads/" + base,
 		"title":         req.Title,
 		"description":   withRunIDFooter(req.Body, req.RunID),
 		"isDraft":       req.Draft,
@@ -303,6 +317,32 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		return PullRequestResult{}, err
 	}
 	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: out.URL}, nil
+}
+
+// FindPullRequestByBranch resolves the open Azure DevOps pull request whose
+// source branch is head (and, when base is set, whose target is base), so
+// issue-close-out can link the run's PR and open-pr can stay idempotent. Reports
+// found=false (not an error) when no active PR matches.
+func (p *ADOProvider) FindPullRequestByBranch(ctx context.Context, repo RepositoryRef, head, base string) (PullRequestResult, bool, error) {
+	if err := requireRepo(repo); err != nil {
+		return PullRequestResult{}, false, err
+	}
+	head = strings.TrimPrefix(head, "refs/heads/")
+	if head == "" {
+		return PullRequestResult{}, false, fmt.Errorf("head branch is required")
+	}
+	summaries, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: head})
+	if err != nil {
+		return PullRequestResult{}, false, err
+	}
+	for _, pr := range summaries {
+		// ListPullRequests filters HeadPrefix as a prefix; require an exact
+		// source-branch match so "run-1" never resolves "run-10".
+		if pr.Head == head {
+			return PullRequestResult{ID: pr.ID, Number: pr.Number, URL: pr.URL}, true, nil
+		}
+	}
+	return PullRequestResult{}, false, nil
 }
 
 // RequestReview requests Azure DevOps reviewers for a pull request.
@@ -325,15 +365,214 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// PollPullRequest is not yet implemented for Azure DevOps: PR poll/repass parity
-// is scoped to V1 (BL-033); the GitHub provider is the V0 workload (#13).
+// PollPullRequest reports an Azure DevOps pull request's review decision and
+// combined check state. The check state is derived from the repository's
+// blocking branch-policy evaluations (build validation, status checks, required
+// reviewers) so a gate can drive the CI-poll/repass loop against ADO's own
+// policy engine — the source of truth for whether a PR is correct (#772).
 func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
-	return PullRequestPollResult{}, fmt.Errorf("ado: pull request polling lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return PullRequestPollResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+	var pr adoPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PullRequestPollResult{}, err
+	}
+	prURL := pr.URL
+	if pr.Links.Web.Href != "" {
+		prURL = pr.Links.Web.Href
+	}
+	result := PullRequestPollResult{
+		Number:         pr.PullRequestID,
+		Title:          pr.Title,
+		State:          adoPullRequestState(pr.Status),
+		Merged:         strings.EqualFold(pr.Status, "completed"),
+		Draft:          pr.IsDraft,
+		HeadBranch:     strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
+		BaseBranch:     strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+		HeadSHA:        pr.LastMergeSourceCommit.CommitID,
+		BaseSHA:        pr.LastMergeTargetCommit.CommitID,
+		Body:           pr.Description,
+		ReviewDecision: adoReviewDecision(pr.Reviewers),
+		URL:            prURL,
+	}
+	projectName := pr.Repository.Project.Name
+	if projectName == "" {
+		projectName = p.project(req.Repository)
+	}
+	checkState, checks, err := p.pollPullRequestPolicies(ctx, projectName, pr.Repository.Project.ID, req.PullID, stringSet(req.HumanPolicyConfigurationIDs))
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+	result.CheckState = checkState
+	result.Checks = checks
+	return result, nil
 }
 
-// ClosePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
+// policyEvaluations fetches the branch-policy evaluations for a pull request via
+// the ADO Policy Evaluations API.
+func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projectID, pullID string) ([]adoPolicyEvaluation, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("ado pull request %s: policy evaluation requires the project id", pullID)
+	}
+	endpoint, err := joinURL(p.BaseURL, p.Organization, projectName, "_apis", "policy", "evaluations")
+	if err != nil {
+		return nil, err
+	}
+	artifactID := fmt.Sprintf("vstfs:///CodeReview/CodeReviewId/%s/%s", projectID, pullID)
+	endpoint, err = addQuery(endpoint, url.Values{
+		"scopeId":    []string{projectID},
+		"artifactId": []string{artifactID},
+		// The Policy Evaluations API is still published under preview: ADO
+		// rejects a plain "7.1" with VssInvalidPreviewVersionException and
+		// requires the -preview suffix. (git/pullrequests and wit use "7.1".)
+		"api-version": []string{"7.1-preview.1"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp adoPolicyEvaluationsResponse
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Value, nil
+}
+
+// pollPullRequestPolicies reads the blocking branch-policy evaluations for a
+// pull request and reduces them to a single provider-neutral check state plus
+// per-policy detail.
+//
+// The returned CheckState gates on the set of policies the agent loop can act
+// on — every required blocking policy EXCEPT those whose configuration id is in
+// humanOnly. Human/merge-time policies (merge strategy, proof-of-presence,
+// required/minimum reviewers, comment resolution) can never be satisfied by
+// re-implementing; reducing on them would peg the state to failing forever and
+// starve the fix loop, so a loop declares their configuration ids as human-only
+// and they are recorded in the detail list for transparency but never drive the
+// gate. When no gating policy has concluded green yet (none applies, or one is
+// still queued/running) the state is pending — fail-closed: correctness is
+// unproven until a gating policy passes.
+func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
+	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
+	if err != nil {
+		return "", nil, err
+	}
+	checks := make([]CheckDetail, 0, len(evals))
+	gateFailing, gatePending, gatePassing, sawGate := false, false, false, false
+	for _, ev := range evals {
+		if !ev.Configuration.IsEnabled || !ev.Configuration.IsBlocking {
+			continue
+		}
+		state := adoPolicyCheckState(ev.Status)
+		if state == "" {
+			continue
+		}
+		checks = append(checks, CheckDetail{
+			Name:       adoPolicyName(ev),
+			State:      state,
+			Conclusion: ev.Status,
+		})
+		if humanOnly[ev.Configuration.ID.String()] {
+			continue
+		}
+		sawGate = true
+		switch state {
+		case CheckStateFailing:
+			gateFailing = true
+		case CheckStatePending:
+			gatePending = true
+		case CheckStatePassing:
+			gatePassing = true
+		}
+	}
+	switch {
+	case gateFailing:
+		return CheckStateFailing, checks, nil
+	case sawGate && gatePassing && !gatePending:
+		return CheckStatePassing, checks, nil
+	default:
+		return CheckStatePending, checks, nil
+	}
+}
+
+
+// ClosePullRequest abandons an Azure DevOps pull request — the ADO equivalent of
+// closing a pull request unmerged. A completed pull request is reported as
+// merged (#772). Only used for terminal-failure cleanup; the happy path leaves
+// completion to a human.
 func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
-	return ClosePullRequestResult{}, fmt.Errorf("ado: pull request close lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	var out adoPullRequest
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	number := out.PullRequestID
+	if number == 0 {
+		number, _ = strconv.Atoi(req.PullID)
+	}
+	return ClosePullRequestResult{
+		Number: number,
+		Merged: strings.EqualFold(out.Status, "completed"),
+		State:  adoPullRequestState(out.Status),
+	}, nil
+}
+
+// PublishPullRequestStatus posts an Azure DevOps pull-request status so a
+// status-check branch policy can gate on goobers-supplied evidence — a reviewer
+// verdict or local-CI result — making ADO's policy engine the source of truth
+// for PR correctness (#772).
+func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestStatusResult{}, fmt.Errorf("pull id is required")
+	}
+	if req.Name == "" {
+		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "statuses")
+	if err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	genre := req.Genre
+	if genre == "" {
+		genre = adoDefaultStatusGenre
+	}
+	body := map[string]interface{}{
+		"state":       adoStatusState(req.State),
+		"description": req.Description,
+		"context": map[string]string{
+			"genre": genre,
+			"name":  req.Name,
+		},
+	}
+	if req.TargetURL != "" {
+		body["targetUrl"] = req.TargetURL
+	}
+	var out struct {
+		ID int `json:"id"`
+	}
+	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	return PullRequestStatusResult{ID: out.ID}, nil
 }
 
 // MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
@@ -500,13 +739,90 @@ func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, ba
 	return CompareResult{}, fmt.Errorf("ado: commit comparison lands in V1 parity (BL-033)")
 }
 
+// adoClosedStates are the ADO work-item states that map onto the unified
+// "closed" category the provider-neutral backlog logic reasons in (GitHub's
+// open/closed model). Everything else — New, Active, Approved, Committed,
+// Proposed, "To Do", Doing, … across the Agile/Scrum/CMMI/Basic processes — is
+// "open". Kept deliberately static (no per-process meta-state lookup) so a
+// backlog query needs no extra round-trip; the set covers the terminal
+// completed/removed states every stock process uses.
+var adoClosedStates = map[string]bool{
+	"closed":    true,
+	"done":      true,
+	"removed":   true,
+	"completed": true,
+	"cut":       true,
+	"resolved":  true,
+}
+
+// adoStateIsClosed reports whether a raw ADO System.State is a terminal
+// (completed or removed) state.
+func adoStateIsClosed(state string) bool {
+	return adoClosedStates[strings.ToLower(strings.TrimSpace(state))]
+}
+
+// adoUnifiedState projects a raw ADO System.State onto the provider-neutral
+// open/closed model WorkItem.State carries for GitHub, so CLI logic that
+// compares State against "open"/"closed" (backlog-query eligibility, blocked
+// re-verify) behaves identically across providers. An empty raw state stays
+// empty so callers can distinguish "provider didn't report state".
+func adoUnifiedState(state string) string {
+	if strings.TrimSpace(state) == "" {
+		return ""
+	}
+	if adoStateIsClosed(state) {
+		return "closed"
+	}
+	return "open"
+}
+
+// adoWorkItemStateClause renders the WIQL [System.State] predicate for a
+// ListWorkItemsRequest.State. The provider-neutral values "open"/"closed" —
+// which have no literal ADO equivalent — expand to the not-in/in terminal-state
+// set (so State:"open" actually matches New/Active/… instead of the literal
+// state 'open', which never exists); any other value (e.g. a subscription's
+// "New") stays an exact-match filter.
+func adoWorkItemStateClause(state string) string {
+	closedList := "'Closed','Done','Removed','Completed','Cut','Resolved'"
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "open":
+		return " AND [System.State] NOT IN (" + closedList + ")"
+	case "closed":
+		return " AND [System.State] IN (" + closedList + ")"
+	default:
+		return fmt.Sprintf(" AND [System.State] = '%s'", strings.ReplaceAll(state, "'", "''"))
+	}
+}
+
+// adoWorkItemTagsClause renders WIQL [System.Tags] predicates that filter the
+// query server-side to items carrying every requested label. Without it a
+// backlog query on a large project returns the whole project (ADO caps WIQL
+// results at 20000 rows and 400s past that) and would need a GetWorkItem
+// round-trip per row just to discard non-matching items. ADO's CONTAINS is
+// case-insensitive and matches a whole tag; hasAllLabels still re-checks the
+// fetched items so the exact-match semantics stay identical to GitHub.
+func adoWorkItemTagsClause(labels []string) string {
+	var b strings.Builder
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		b.WriteString(" AND [System.Tags] CONTAINS '")
+		b.WriteString(strings.ReplaceAll(label, "'", "''"))
+		b.WriteString("'")
+	}
+	return b.String()
+}
+
 // ListWorkItems lists Azure Boards work items as unified work items.
 func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
 	project := p.project(req.Repository)
 	query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
 	if req.State != "" {
-		query += fmt.Sprintf(" AND [System.State] = '%s'", strings.ReplaceAll(req.State, "'", "''"))
+		query += adoWorkItemStateClause(req.State)
 	}
+	query += adoWorkItemTagsClause(req.Labels)
 	if req.OldestFirst {
 		// WIQL without ORDER BY leaves result order unspecified — the same
 		// Limit-truncation starvation hazard as GitHub's newest-first default
@@ -589,7 +905,13 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 		return WorkItem{}, err
 	}
 	labels := replaceStatusLabel(current.Labels, req.Status)
-	patch := []adoPatchOperation{{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")}}
+	// "replace", not "add": Azure DevOps treats an "add" on System.Tags as a
+	// UNION with the item's existing tags, so it can only ever grow the set —
+	// a status swap that drops the old goobers/status:* tag (or any label
+	// removal) silently no-ops under "add". We always compute the complete
+	// desired tag set from the current labels, so replacing the whole field is
+	// both correct and the only way removals actually take effect.
+	patch := []adoPatchOperation{{Op: "replace", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")}}
 	if req.Status == WorkItemStatusDone {
 		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: "Done"})
 	}
@@ -613,14 +935,124 @@ func (p *ADOProvider) ListComments(context.Context, RepositoryRef, string) ([]Co
 	return nil, errADOBacklogV1
 }
 
-// UpdateWorkItem reaches parity in V1 (BL-033), including milestone assignment.
-func (p *ADOProvider) UpdateWorkItem(context.Context, UpdateWorkItemRequest) (WorkItem, error) {
-	return WorkItem{}, errADOBacklogV1
+// UpdateWorkItem applies a general edit to an Azure Boards work item: label
+// add/remove (System.Tags), a discussion comment (System.History), title/body,
+// and a close transition. Milestone assignment reaches parity in V1 (BL-033)
+// and is rejected rather than silently dropped.
+func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if req.ID == "" {
+		return WorkItem{}, fmt.Errorf("work item id is required")
+	}
+	if req.Milestone != nil {
+		return WorkItem{}, errADOBacklogV1
+	}
+	var patch []adoPatchOperation
+	if len(req.AddLabels) > 0 || len(req.RemoveLabels) > 0 {
+		current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		labels := mergeLabels(current.Labels, req.AddLabels, req.RemoveLabels)
+		// "replace", not "add": ADO's System.Tags "add" unions with existing
+		// tags and cannot remove, so RemoveLabels (e.g. releasing the
+		// goobers/status:claimed marker at close-out) would silently no-op.
+		// mergeLabels already produced the complete desired set, so replace it.
+		patch = append(patch, adoPatchOperation{Op: "replace", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")})
+	}
+	if req.Title != nil {
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
+	}
+	if req.Body != nil {
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
+	}
+	// A "closed" transition maps to the stock terminal state; reopening to a
+	// specific ADO state is ambiguous across processes and reaches parity in V1,
+	// so "open" is left untouched here.
+	if strings.EqualFold(strings.TrimSpace(req.State), "closed") {
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: "Done"})
+	}
+	if req.Comment != "" {
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.History", Value: req.Comment})
+	}
+	if len(patch) == 0 {
+		return p.GetWorkItem(ctx, req.Repository, req.ID)
+	}
+	endpoint, err := p.workURL(p.project(req.Repository), "workitems", req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	var out adoWorkItem
+	if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
+		return WorkItem{}, err
+	}
+	return mapADOWorkItem(out), nil
 }
 
-// ClaimWorkItem reaches parity in V1 (BL-033).
-func (p *ADOProvider) ClaimWorkItem(context.Context, ClaimWorkItemRequest) (ClaimResult, error) {
-	return ClaimResult{}, errADOBacklogV1
+// mergeLabels applies add/remove label edits to a current label set, dropping
+// removed labels, appending added ones, and de-duplicating while preserving
+// order.
+func mergeLabels(current, add, remove []string) []string {
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, r := range remove {
+		removeSet[strings.TrimSpace(r)] = struct{}{}
+	}
+	next := make([]string, 0, len(current)+len(add))
+	for _, l := range current {
+		if _, drop := removeSet[strings.TrimSpace(l)]; drop {
+			continue
+		}
+		next = append(next, l)
+	}
+	next = append(next, add...)
+	return uniqueStrings(next)
+}
+
+// ClaimWorkItem writes a human-visible claim marker (the goobers/status:claimed
+// tag) to an Azure Boards item. The local claim ledger — not this tag — is the
+// authoritative owner of a claim (backlogquery.go), so this is a best-effort
+// mirror for humans watching the board; the RunID is not persisted
+// provider-side in V0.
+func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
+	item, err := p.UpdateWorkItemStatus(ctx, UpdateWorkItemStatusRequest{
+		Repository: req.Repository,
+		ID:         req.ID,
+		Status:     WorkItemStatusClaimed,
+	})
+	if err != nil {
+		return ClaimResult{}, err
+	}
+	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
+}
+
+// ReleaseWorkItemClaim clears the goobers/status:claimed marker ClaimWorkItem
+// set. Best-effort like the claim marker: the ledger release is authoritative,
+// so a residual tag here never blocks re-eligibility.
+func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
+	return p.UpdateWorkItem(ctx, UpdateWorkItemRequest{
+		Repository:   req.Repository,
+		ID:           req.ID,
+		RemoveLabels: []string{statusLabel(WorkItemStatusClaimed)},
+	})
+}
+
+// ListWorkItemLabelTransitionsForItem reaches parity in V1 (BL-033): ADO's
+// work-item update history maps to label-transition events differently than
+// GitHub's timeline. Only reached when a workflow gates claiming on a ready
+// label's age (requireLabels contains goobers:ready), which the ADO V0 backlog
+// workload does not use.
+func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(context.Context, RepositoryRef, string, string) ([]WorkItemLabelTransition, error) {
+	return nil, errADOBacklogV1
+}
+
+// HasOpenWorkItemBlocker reports whether an item has an unresolved native
+// dependency. ADO dependency-link modeling reaches parity in V1 (BL-033); until
+// then the unified WorkItem carries no native blocked-by count for ADO, so this
+// is only reached defensively and answers "no known blocker".
+func (p *ADOProvider) HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error) {
+	return false, nil
 }
 
 // Subscribe emits Azure Boards backlog item availability events.
@@ -953,6 +1385,139 @@ type adoPullRequestsResponse struct {
 	Value []adoPullRequest `json:"value"`
 }
 
+// adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
+// returns that a list does not: description, reviewers (for review-decision
+// mapping), and the repository/project identity needed to key policy
+// evaluations.
+type adoPullRequestDetail struct {
+	adoPullRequest
+	Description string        `json:"description"`
+	Reviewers  []adoReviewer `json:"reviewers"`
+	Repository adoRepository `json:"repository"`
+}
+
+type adoReviewer struct {
+	Vote        int    `json:"vote"`
+	UniqueName  string `json:"uniqueName"`
+	DisplayName string `json:"displayName"`
+	IsRequired  bool   `json:"isRequired"`
+}
+
+type adoRepository struct {
+	ID      string     `json:"id"`
+	Name    string     `json:"name"`
+	Project adoProject `json:"project"`
+}
+
+type adoProject struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type adoPolicyEvaluationsResponse struct {
+	Value []adoPolicyEvaluation `json:"value"`
+}
+
+type adoPolicyEvaluation struct {
+	Status        string `json:"status"`
+	Configuration struct {
+		// ID is the branch-policy configuration id — the stable, generic
+		// identity a loop uses to declare a policy human-only (see
+		// PullRequestPollRequest.HumanPolicyConfigurationIDs). It is provider
+		// identity, not policy detail.
+		ID         json.Number `json:"id"`
+		IsEnabled  bool        `json:"isEnabled"`
+		IsBlocking bool        `json:"isBlocking"`
+		Type       struct {
+			DisplayName string `json:"displayName"`
+		} `json:"type"`
+	} `json:"configuration"`
+}
+
+// stringSet builds a lookup set from a slice, ignoring empty entries.
+func stringSet(values []string) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			set[v] = true
+		}
+	}
+	return set
+}
+
+const adoDefaultStatusGenre = "goobers"
+
+// adoPullRequestState maps an Azure DevOps pull-request status to the
+// provider-neutral open/merged/closed vocabulary the PR-lifecycle gates read.
+func adoPullRequestState(status string) string {
+	switch strings.ToLower(status) {
+	case "completed":
+		return "merged"
+	case "abandoned":
+		return "closed"
+	default:
+		return "open"
+	}
+}
+
+// adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
+// provider-neutral check state. An empty return means the evaluation is not
+// applicable and should be ignored.
+func adoPolicyCheckState(status string) CheckState {
+	switch strings.ToLower(status) {
+	case "approved":
+		return CheckStatePassing
+	case "rejected":
+		return CheckStateFailing
+	case "queued", "running":
+		return CheckStatePending
+	default:
+		return ""
+	}
+}
+
+func adoPolicyName(ev adoPolicyEvaluation) string {
+	if ev.Configuration.Type.DisplayName != "" {
+		return ev.Configuration.Type.DisplayName
+	}
+	return "branch policy"
+}
+
+// adoReviewDecision reduces Azure DevOps reviewer votes to a provider-neutral
+// review decision. A negative vote (waiting/reject) requests changes; a vote of
+// approved-with/approved (>= 5) approves; otherwise the review is pending.
+func adoReviewDecision(reviewers []adoReviewer) ReviewDecision {
+	approved := false
+	for _, r := range reviewers {
+		switch {
+		case r.Vote < 0:
+			return ReviewDecisionChangesRequested
+		case r.Vote >= 5:
+			approved = true
+		}
+	}
+	if approved {
+		return ReviewDecisionApproved
+	}
+	return ReviewDecisionPending
+}
+
+// adoStatusState maps a provider-neutral check state to an Azure DevOps
+// pull-request status state string.
+func adoStatusState(state CheckState) string {
+	switch state {
+	case CheckStatePassing:
+		return "succeeded"
+	case CheckStateFailing:
+		return "failed"
+	default:
+		return "pending"
+	}
+}
+
 type adoIdentity struct {
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
@@ -1015,7 +1580,10 @@ func mapADOWorkItem(item adoWorkItem) WorkItem {
 		Title:      stringField(item.Fields, "System.Title"),
 		Body:       stringField(item.Fields, "System.Description"),
 		Labels:     labels,
-		State:      state,
+		// State carries the provider-neutral open/closed model the CLI backlog
+		// logic reasons in; Status still derives from the raw ADO state so its
+		// finer distinctions (in-progress vs done) survive.
+		State:      adoUnifiedState(state),
 		Status:     statusFromLabels(labels, state),
 		Assignee:   stringField(item.Fields, "System.AssignedTo"),
 		Links:      links,

@@ -81,6 +81,14 @@ const (
 	InputPollIntervalSec    = "pollIntervalSeconds"
 	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
 	InputPollTimeoutSec     = boundedwait.InputPollTimeout
+	// InputHumanPolicyIDs declares the branch/required-check policy identities
+	// the agent loop cannot fix (human/merge-time policies: merge strategy,
+	// required reviewers, comment resolution, proof-of-presence). A rejection
+	// on one of these does NOT drive the fail branch — only a policy the agent
+	// can fix does. Accepts a YAML list or a comma-separated string; the values
+	// are provider-interpreted (the ADO provider matches branch-policy
+	// configuration ids). Unset means every required policy gates.
+	InputHumanPolicyIDs = "humanPolicyConfigurationIds"
 )
 
 // Default poll cadence for CIPollExecutor: capped exponential backoff and an
@@ -120,6 +128,7 @@ func (e *ciPollProviderError) Unwrap() error { return e.cause }
 type CIPollConfig struct {
 	Owner, Repo, PullID            string
 	Interval, MaxInterval, Timeout time.Duration
+	HumanPolicyIDs                 []string
 }
 
 // CIPollConfigFromEnvelope builds a CIPollConfig from the well-known Input*
@@ -130,9 +139,10 @@ type CIPollConfig struct {
 // is outside this package's concern.
 func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error) {
 	cfg := CIPollConfig{
-		Owner:  stringInput(env, InputPROwner),
-		Repo:   stringInput(env, InputPRRepo),
-		PullID: stringInput(env, InputPRNumber),
+		Owner:          stringInput(env, InputPROwner),
+		Repo:           stringInput(env, InputPRRepo),
+		PullID:         stringInput(env, InputPRNumber),
+		HumanPolicyIDs: stringSliceInput(env, InputHumanPolicyIDs),
 	}
 	if cfg.Owner == "" {
 		cfg.Owner = env.RepoRef.Owner
@@ -161,6 +171,40 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 		}
 	}
 	return cfg, nil
+}
+
+// stringSliceInput reads key as a list of strings, accepting either a YAML list
+// (preserved as []interface{}/[]string on the in-process envelope) or a single
+// comma-separated string. Empty/blank entries are dropped.
+func stringSliceInput(env apiv1.InvocationEnvelope, key string) []string {
+	v, ok := env.Inputs[key]
+	if !ok || v == nil {
+		return nil
+	}
+	appendNonEmpty := func(dst []string, s string) []string {
+		if s = strings.TrimSpace(s); s != "" {
+			dst = append(dst, s)
+		}
+		return dst
+	}
+	var out []string
+	switch t := v.(type) {
+	case []string:
+		for _, s := range t {
+			out = appendNonEmpty(out, s)
+		}
+	case []interface{}:
+		for _, e := range t {
+			out = appendNonEmpty(out, fmt.Sprint(e))
+		}
+	case string:
+		for _, s := range strings.Split(t, ",") {
+			out = appendNonEmpty(out, s)
+		}
+	default:
+		out = appendNonEmpty(out, fmt.Sprint(t))
+	}
+	return out
 }
 
 // durationInput parses key's declared value as a time.ParseDuration string
@@ -269,8 +313,9 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 
 	deadline := now().Add(timeout)
 	req := providers.PullRequestPollRequest{
-		Repository: providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo},
-		PullID:     cfg.PullID,
+		Repository:                  providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo},
+		PullID:                      cfg.PullID,
+		HumanPolicyConfigurationIDs: cfg.HumanPolicyIDs,
 	}
 
 	consecutiveErrors := 0

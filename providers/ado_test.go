@@ -97,8 +97,15 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "url": "pr-url"})
+		switch r.Method {
+		case http.MethodGet:
+			// Idempotent OpenPullRequest lists active PRs first; no PR exists yet.
+			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+		case http.MethodPost:
+			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "url": "pr-url"})
+		default:
+			t.Fatalf("unexpected pullrequests method %s", r.Method)
+		}
 	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/qa-1", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPut)
