@@ -1,0 +1,37 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "17 * * * *"
+  readiness:
+    maxConcurrentRuns: 3
+    maxRunsPerHour: 5
+    maxRunsPerDay: 20
+    maxOpenPRs: 4
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: Poll CI.
+      run:
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+        prNumber: "1"
+      capabilities:
+        - github:pr:write
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+        fail: "@abort"
+        timeout: "@escalate"

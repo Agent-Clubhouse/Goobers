@@ -1,0 +1,254 @@
+{
+  "scenarios": [
+    {
+      "name": "pre-stable-breaking-change",
+      "golden": "pre-stable-breaking-change.golden.md",
+      "target": {
+        "Version": "v0.9.0-beta.3",
+        "Commit": "1111111111111111111111111111111111111111",
+        "Source": "github:Agent-Clubhouse/Goobers@1111111111111111111111111111111111111111 release notes and feature registry",
+        "Confidence": "low"
+      },
+      "workflows": [
+        {
+          "Name": "implementation",
+          "CurrentDSL": "0.7",
+          "TargetDSL": "1.4",
+          "TargetVersionLevel": "unsupported",
+          "Features": [
+            {
+              "Name": "task.inputs.claimQuery",
+              "TargetLevel": "removed",
+              "Change": "replace the legacy claim input with a backlog-query task and a resultFile artifact",
+              "Source": "v0.9.0-beta.3 feature registry at commit 1111111111111111111111111111111111111111",
+              "Confidence": "low",
+              "Breaking": true
+            },
+            {
+              "Name": "gate.evaluator.agent",
+              "TargetLevel": "ga",
+              "Change": "the needs-changes outcome now requires an explicit branch",
+              "Source": "v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111",
+              "Confidence": "low",
+              "Breaking": true
+            }
+          ],
+          "CurrentGraph": [
+            "claim -> implement",
+            "implement -> review",
+            "review(pass -> done, fail -> abort)"
+          ],
+          "TargetGraph": [
+            "query-backlog -> implement",
+            "implement -> review",
+            "review(pass -> done, needs-changes -> implement, fail -> abort)"
+          ]
+        }
+      ],
+      "migrations": [
+        {
+          "Workflow": "implementation",
+          "From": "0.7",
+          "To": "1.0",
+          "Tool": "manual compatibility patch from the pinned 1.0 contract",
+          "Dependency": "pre-stable release provenance approved",
+          "Review": "legacy claim replacement and graph edge changes",
+          "Available": false
+        },
+        {
+          "Workflow": "implementation",
+          "From": "1.0",
+          "To": "1.4",
+          "Tool": "goobers fix --to 1.4",
+          "Dependency": "the 0.7 -> 1.0 result validates",
+          "Review": "mechanical diff and explicit needs-changes branch",
+          "Available": true
+        }
+      ]
+    },
+    {
+      "name": "one-version-migration",
+      "golden": "one-version-migration.golden.md",
+      "target": {
+        "Version": "v2.0.0",
+        "Commit": "2222222222222222222222222222222222222222",
+        "Source": "target binary v2.0.0 (2222222222222222222222222222222222222222) fix dry-run and feature output",
+        "Confidence": "high"
+      },
+      "workflows": [
+        {
+          "Name": "default-implement",
+          "CurrentDSL": "1.4",
+          "TargetDSL": "2.0",
+          "TargetVersionLevel": "supported",
+          "Features": [
+            {
+              "Name": "gate.automated.pollIntervalSeconds",
+              "TargetLevel": "ga",
+              "Change": "DSL 2.0 injects a 10-second ci-poll default, so pin 10 to preserve DSL 1.4 behavior",
+              "Source": "v2.0.0 goobers fix --to 2.0 dry-run from commit 2222222222222222222222222222222222222222",
+              "Confidence": "high",
+              "Breaking": true
+            }
+          ],
+          "CurrentGraph": [
+            "poll -> ci",
+            "ci(pass -> done, fail -> abort, timeout -> escalate)"
+          ],
+          "TargetGraph": [
+            "poll -> ci",
+            "ci(pass -> done, fail -> abort, timeout -> escalate)"
+          ]
+        }
+      ],
+      "migrations": [
+        {
+          "Workflow": "default-implement",
+          "From": "1.4",
+          "To": "2.0",
+          "Tool": "goobers fix --to 2.0",
+          "Dependency": "baseline and target provenance approved",
+          "Review": "generated dslVersion bump and poll interval pin",
+          "Available": true
+        }
+      ]
+    },
+    {
+      "name": "custom-drift",
+      "golden": "custom-drift.golden.md",
+      "target": {
+        "Version": "v2.0.0",
+        "Commit": "2222222222222222222222222222222222222222",
+        "Source": "verified v2.0.0 config examples and target config diff at commit 2222222222222222222222222222222222222222",
+        "Confidence": "high"
+      },
+      "workflows": [
+        {
+          "Name": "implementation",
+          "CurrentDSL": "2.0",
+          "TargetDSL": "2.0",
+          "TargetVersionLevel": "supported",
+          "Features": [
+            {
+              "Name": "workflow.spec.triggers",
+              "TargetLevel": "ga",
+              "Source": "v2.0.0 features --used and --dsl-version 2.0 at commit 2222222222222222222222222222222222222222",
+              "Confidence": "high"
+            },
+            {
+              "Name": "task.inputs.legacyContext",
+              "TargetLevel": "deprecated",
+              "Change": "prefer content-digested context pointers before the next removal edge",
+              "Source": "v2.0.0 feature registry at commit 2222222222222222222222222222222222222222",
+              "Confidence": "high"
+            }
+          ],
+          "CurrentGraph": [
+            "query -> implement",
+            "implement -> review"
+          ],
+          "TargetGraph": [
+            "query -> gather-context",
+            "gather-context -> implement",
+            "implement -> review"
+          ]
+        },
+        {
+          "Name": "nightly-release",
+          "CurrentDSL": "2.0",
+          "TargetDSL": "2.0",
+          "TargetVersionLevel": "supported",
+          "Features": [
+            {
+              "Name": "task.run.command",
+              "TargetLevel": "ga",
+              "Source": "v2.0.0 features --used at commit 2222222222222222222222222222222222222222",
+              "Confidence": "high"
+            }
+          ],
+          "CurrentGraph": [
+            "build -> deploy",
+            "deploy -> done"
+          ],
+          "TargetGraph": [
+            "build -> deploy",
+            "deploy -> done"
+          ]
+        }
+      ],
+      "drift": [
+        {
+          "Workflow": "implementation",
+          "Kind": "tuning",
+          "Path": "spec.triggers[0].schedule",
+          "Detail": "config diff reports INFO; preserve the local 17-minute cadence",
+          "Source": "v2.0.0 config diff INFO at commit 2222222222222222222222222222222222222222",
+          "Confidence": "high"
+        },
+        {
+          "Workflow": "implementation",
+          "Kind": "tuning",
+          "Path": "spec.readiness.maxConcurrentRuns",
+          "Detail": "config diff reports INFO; preserve the local concurrency limit",
+          "Source": "v2.0.0 config diff INFO at commit 2222222222222222222222222222222222222222",
+          "Confidence": "high"
+        },
+        {
+          "Workflow": "implementation",
+          "Kind": "structural",
+          "Path": "spec.tasks[gather-context]",
+          "Detail": "the same-name canonical workflow adds context before implementation",
+          "Source": "v2.0.0 canonical implementation workflow at commit 2222222222222222222222222222222222222222",
+          "Confidence": "high",
+          "Plan": "add only the gather-context task and its two adjacent edges",
+          "Dependency": "owner accepts the optional canonical improvement",
+          "Review": "task inputs, capabilities, and state-graph edges"
+        },
+        {
+          "Workflow": "nightly-release",
+          "Kind": "custom",
+          "Path": "spec.tasks[deploy].run.command",
+          "Detail": "no same-name canonical workflow exists; retain the command until its owner decides",
+          "Source": "v2.0.0 canonical workflow inventory at commit 2222222222222222222222222222222222222222",
+          "Confidence": "high"
+        }
+      ]
+    },
+    {
+      "name": "already-current",
+      "golden": "already-current.golden.md",
+      "target": {
+        "Version": "v2.0.0",
+        "Commit": "2222222222222222222222222222222222222222",
+        "Source": "v2.0.0 target validation, feature output, and canonical comparison at commit 2222222222222222222222222222222222222222",
+        "Confidence": "high"
+      },
+      "workflows": [
+        {
+          "Name": "implementation",
+          "CurrentDSL": "2.0",
+          "TargetDSL": "2.0",
+          "TargetVersionLevel": "supported",
+          "Features": [
+            {
+              "Name": "workflow.spec.start",
+              "TargetLevel": "ga",
+              "Source": "v2.0.0 features --used at commit 2222222222222222222222222222222222222222",
+              "Confidence": "high"
+            }
+          ],
+          "CurrentGraph": [
+            "query -> implement",
+            "implement -> review",
+            "review(pass -> done, needs-changes -> implement)"
+          ],
+          "TargetGraph": [
+            "query -> implement",
+            "implement -> review",
+            "review(pass -> done, needs-changes -> implement)"
+          ]
+        }
+      ]
+    }
+  ]
+}
