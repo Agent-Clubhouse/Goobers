@@ -179,6 +179,11 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
+## flake-policy: Reject anonymous flake skips and workflow retries.
+.PHONY: flake-policy
+flake-policy:
+	$(GO) run ./test/flakepolicy
+
 ## build: Build all cmd/* binaries into bin/.
 .PHONY: build
 build: $(addprefix build-,$(CMDS))

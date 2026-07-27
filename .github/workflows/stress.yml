@@ -40,7 +40,42 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: stress-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: stress-results-${{ github.run_id }}
           path: stress-results/
           if-no-files-found: warn
+          overwrite: true
           retention-days: 30
+
+  flake-ledger:
+    name: publish flake ledger
+    needs: stress
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Download stress results
+        uses: actions/download-artifact@v8
+        with:
+          name: stress-results-${{ github.run_id }}
+          path: stress-results
+
+      - name: Publish flake issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./test/flakeledger -input stress-results/failures.json
