@@ -3,6 +3,8 @@ package providers
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -89,5 +91,44 @@ func TestProviderHTTPClientBoundsStalledEndpointRetries(t *testing.T) {
 	}
 	if got, want := len(requests), retries+1; got != want {
 		t.Fatalf("request attempts = %d, want %d", got, want)
+	}
+}
+
+// TestIsMergeConflictError pins issue #1751's classification constraint: only
+// a confirmed merge-conflict response may be reclassified from an
+// infrastructure failure into a business refusal. GitHub answers the merge
+// endpoint with 405 for several unrelated policy refusals, so the status code
+// alone must never be sufficient — misclassifying one of those would let
+// record-merge-refusal demote a lander for a reason that has nothing to do
+// with conflicts.
+func TestIsMergeConflictError(t *testing.T) {
+	respErr := func(status int, body string) error {
+		return &providerResponseError{
+			method:     http.MethodPut,
+			endpoint:   "https://api.github.com/repos/o/r/pulls/9/merge",
+			statusCode: status,
+			body:       body,
+		}
+	}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"github not-mergeable 405", respErr(http.StatusMethodNotAllowed, `{"message":"Pull Request is not mergeable"}`), true},
+		{"explicit merge conflict wording", respErr(http.StatusMethodNotAllowed, `{"message":"merge conflict between base and head"}`), true},
+		{"wrapped still detected", fmt.Errorf("merge pull request: %w", respErr(http.StatusMethodNotAllowed, `{"message":"Pull Request is not mergeable"}`)), true},
+		{"ruleset violation 405 is not a conflict", respErr(http.StatusMethodNotAllowed, `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue"}`), false},
+		{"required check 405 is not a conflict", respErr(http.StatusMethodNotAllowed, `{"message":"Required status check \"lint\" is expected."}`), false},
+		{"conflict wording on a non-405 status", respErr(http.StatusConflict, `{"message":"Pull Request is not mergeable"}`), false},
+		{"plain error", errors.New("dial tcp: connection refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsMergeConflictError(tc.err); got != tc.want {
+				t.Fatalf("IsMergeConflictError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
