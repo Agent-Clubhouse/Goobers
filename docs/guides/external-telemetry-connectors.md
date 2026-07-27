@@ -43,7 +43,8 @@ externalTelemetry:
 
 `name`, `kind`, `version`, and `config` are required. Connector names match
 `[a-z][a-z0-9-]{0,62}`. `timeout`, `maxAttempts`, `retryBackoff`, `maxRows`, and
-`maxBytes` are host maxima; a workflow may only tighten them. A workflow may
+`maxBytes` are host maxima; a workflow may only tighten them. `maxBytes` must
+be at least 1024 bytes so explicit failure evidence always fits. A workflow may
 lengthen, but not shorten, `retryBackoff` to avoid increasing source load.
 Retries use fixed backoff with no jitter, and the result artifact records
 attempts, truncation, rows dropped, sampling, and effective row/byte bounds.

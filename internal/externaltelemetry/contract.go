@@ -32,6 +32,8 @@ const (
 	DefaultMaxRows = 1000
 	// DefaultMaxBytes bounds the normalized artifact.
 	DefaultMaxBytes = 1 << 20
+	// MinimumMaxBytes is the smallest limit that can hold a versioned failure artifact.
+	MinimumMaxBytes = 1 << 10
 )
 
 const (
@@ -394,8 +396,8 @@ func (p PolicyConfig) Limits() (QueryLimits, error) {
 	if limits.MaxRows < 1 {
 		return QueryLimits{}, errors.New("maxRows must be positive")
 	}
-	if limits.MaxBytes < 256 {
-		return QueryLimits{}, errors.New("maxBytes must be at least 256")
+	if limits.MaxBytes < MinimumMaxBytes {
+		return QueryLimits{}, fmt.Errorf("maxBytes must be at least %d", MinimumMaxBytes)
 	}
 	return limits, nil
 }

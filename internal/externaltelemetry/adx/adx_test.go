@@ -294,7 +294,7 @@ func TestADXFailuresAreExplicit(t *testing.T) {
 					strings.Repeat("x", 70_000),
 				)
 			},
-			policy:   externaltelemetry.PolicyConfig{MaxAttempts: 1, MaxBytes: 300},
+			policy:   externaltelemetry.PolicyConfig{MaxAttempts: 1, MaxBytes: externaltelemetry.MinimumMaxBytes},
 			wantCode: "response_too_large",
 		},
 		{

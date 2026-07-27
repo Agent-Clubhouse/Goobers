@@ -195,6 +195,119 @@ func TestHostRetriesOnlyRetryableFailures(t *testing.T) {
 	}
 }
 
+func TestHostRejectsConnectorSuccessAfterTimeout(t *testing.T) {
+	finished := make(chan struct{})
+	connector := connectorFunc(func(context.Context, QueryRequest) (SourceResult, error) {
+		defer close(finished)
+		time.Sleep(100 * time.Millisecond)
+		return SourceResult{
+			Columns: []Column{{Name: "value", Type: TypeInteger}},
+			Rows:    [][]any{{1}},
+		}, nil
+	})
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: 10 * time.Millisecond, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: 4096,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "q", Shape: ShapePoint,
+	})
+	if err == nil || artifact.State != DataFailed || artifact.Failure == nil ||
+		artifact.Failure.Code != "timeout" || artifact.Metadata.Attempts != 1 {
+		t.Fatalf("late success = state %q failure %+v attempts %d err %v", artifact.State, artifact.Failure, artifact.Metadata.Attempts, err)
+	}
+	<-finished
+}
+
+func TestHostCancellationDoesNotWaitForIgnoringConnector(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connector := connectorFunc(func(context.Context, QueryRequest) (SourceResult, error) {
+		close(started)
+		<-release
+		return SourceResult{}, nil
+	})
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: 4096,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	type queryResult struct {
+		artifact ResultArtifact
+		err      error
+	}
+	completed := make(chan queryResult, 1)
+	go func() {
+		artifact, err := (&Host{Registry: registry}).Query(ctx, "sequence", QueryRequest{Query: "q", Shape: ShapeTable})
+		completed <- queryResult{artifact: artifact, err: err}
+	}()
+	<-started
+	cancel()
+
+	select {
+	case result := <-completed:
+		if result.err == nil || result.artifact.Failure == nil || result.artifact.Failure.Code != "canceled" {
+			t.Fatalf("canceled query = failure %+v err %v", result.artifact.Failure, result.err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("host waited for connector that ignored cancellation")
+	}
+	close(release)
+}
+
+func TestHostBoundsFailureArtifacts(t *testing.T) {
+	connector := &sequenceConnector{
+		errors: []error{NewQueryError("bad_query", "query", false, errors.New("bad query"))},
+	}
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: MinimumMaxBytes,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query:    "q",
+		QueryRef: strings.Repeat("queries/failure.kql", 100),
+		Shape:    ShapeTable,
+	})
+	if err == nil || artifact.Failure == nil || artifact.Failure.Code != "bad_query" {
+		t.Fatalf("failed query = failure %+v err %v", artifact.Failure, err)
+	}
+	data, marshalErr := json.Marshal(artifact)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if len(data) > MinimumMaxBytes {
+		t.Fatalf("failed artifact size = %d, limit %d", len(data), MinimumMaxBytes)
+	}
+	if !artifact.Metadata.Truncated || artifact.Query.Digest == "" {
+		t.Fatalf("bounded failure metadata/provenance = %+v / %+v", artifact.Metadata, artifact.Query)
+	}
+}
+
+func TestHostRejectsUndersizedRequestByteLimit(t *testing.T) {
+	connector := &sequenceConnector{}
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: 4096,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "q",
+		Shape: ShapeTable,
+		Limits: QueryLimits{
+			MaxBytes: MinimumMaxBytes - 1,
+		},
+	})
+	if err == nil || artifact.Failure == nil || artifact.Failure.Code != "invalid_limits" {
+		t.Fatalf("undersized request limit = failure %+v err %v", artifact.Failure, err)
+	}
+	if connector.calls != 0 {
+		t.Fatalf("undersized request reached connector %d time(s)", connector.calls)
+	}
+}
+
 func TestConfigurationRejectsInlineOrMalformedCredentialReferences(t *testing.T) {
 	tests := []struct {
 		name string
@@ -362,14 +475,17 @@ func TestHostRequiresRegistry(t *testing.T) {
 
 func TestHostPolicyAndNetworkBoundary(t *testing.T) {
 	limits, err := (PolicyConfig{
-		Timeout: "2s", MaxAttempts: 2, RetryBackoff: "3s", MaxRows: 4, MaxBytes: 512,
+		Timeout: "2s", MaxAttempts: 2, RetryBackoff: "3s", MaxRows: 4, MaxBytes: MinimumMaxBytes,
 	}).Limits()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if limits.Timeout != 2*time.Second || limits.MaxAttempts != 2 ||
-		limits.RetryBackoff != 3*time.Second || limits.MaxRows != 4 || limits.MaxBytes != 512 {
+		limits.RetryBackoff != 3*time.Second || limits.MaxRows != 4 || limits.MaxBytes != MinimumMaxBytes {
 		t.Fatalf("limits = %+v", limits)
+	}
+	if _, err := (PolicyConfig{MaxBytes: MinimumMaxBytes - 1}).Limits(); err == nil {
+		t.Fatal("undersized failure artifact limit unexpectedly accepted")
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -419,6 +535,27 @@ func TestRegistryNamesAreSorted(t *testing.T) {
 	if len(names) != 2 || names[0] != "alpha" || names[1] != "zeta" {
 		t.Fatalf("Names = %v", names)
 	}
+}
+
+type connectorFunc func(context.Context, QueryRequest) (SourceResult, error)
+
+func (connectorFunc) Descriptor() Descriptor {
+	return Descriptor{Kind: "sequence", Version: "v1", SourceID: "fixture"}
+}
+
+func (f connectorFunc) Query(ctx context.Context, request QueryRequest) (SourceResult, error) {
+	return f(ctx, request)
+}
+
+func registryForHostTest(connector Connector, limits QueryLimits) *Registry {
+	registry := NewRegistry()
+	registry.connectors["sequence"] = configuredConnector{
+		config:    ConnectorConfig{Name: "sequence", Kind: "sequence", Version: "v1"},
+		connector: connector,
+		shapes:    []ResultShape{ShapePoint, ShapeTable, ShapeTimeSeries},
+		limits:    limits,
+	}
+	return registry
 }
 
 func ExampleResultArtifact() {

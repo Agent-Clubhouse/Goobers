@@ -16,6 +16,8 @@ const (
 	ConnectorContractVersion = externaltelemetry.ConnectorContractVersion
 	// ResultSchemaVersion identifies normalized query artifacts.
 	ResultSchemaVersion = externaltelemetry.ResultSchemaVersion
+	// MinimumMaxBytes is the smallest supported normalized artifact limit.
+	MinimumMaxBytes = externaltelemetry.MinimumMaxBytes
 )
 
 type (

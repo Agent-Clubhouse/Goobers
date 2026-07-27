@@ -28,23 +28,40 @@ type Host struct {
 func (h *Host) Query(ctx context.Context, connectorName string, request QueryRequest) (ResultArtifact, error) {
 	started := h.now()()
 	provenance, provenanceErr := queryProvenance(request)
-	if provenanceErr != nil {
-		queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
-		return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
-	}
 	if h.Registry == nil {
+		if provenanceErr != nil {
+			queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
+			return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+		}
 		queryErr := classifyError(NewQueryError("host_not_configured", "configuration", false, errors.New("external telemetry registry is nil")))
 		return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
 	}
 	entry, err := h.Registry.connector(connectorName)
 	if err != nil {
+		if provenanceErr != nil {
+			queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
+			return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+		}
 		queryErr := classifyError(err)
 		return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
 	}
+	if request.Limits.MaxBytes > 0 && request.Limits.MaxBytes < MinimumMaxBytes {
+		queryErr := classifyError(NewQueryError(
+			"invalid_limits",
+			"configuration",
+			false,
+			fmt.Errorf("maxBytes must be at least %d", MinimumMaxBytes),
+		))
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, QueryProvenance{}, started, h.now()(), 0, entry.limits, queryErr), queryErr
+	}
 	limits := effectiveLimits(entry.limits, request.Limits)
+	if provenanceErr != nil {
+		queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, h.now()(), 0, limits, queryErr), queryErr
+	}
 	if err := validateRequest(request, entry.shapes); err != nil {
 		queryErr := classifyError(err)
-		return failedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, h.now()(), 0, limits, queryErr), queryErr
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, h.now()(), 0, limits, queryErr), queryErr
 	}
 
 	queryCtx, cancel := context.WithTimeout(ctx, limits.Timeout)
@@ -58,7 +75,7 @@ func (h *Host) Query(ctx context.Context, connectorName string, request QueryReq
 	attempts := 0
 	for attempts < limits.MaxAttempts {
 		attempts++
-		source, err = entry.connector.Query(queryCtx, requestWithLimits(request, limits))
+		source, err = executeConnector(queryCtx, entry.connector, requestWithLimits(request, limits))
 		if h.Progress != nil {
 			h.Progress()
 		}
@@ -66,24 +83,59 @@ func (h *Host) Query(ctx context.Context, connectorName string, request QueryReq
 			break
 		}
 		queryErr := classifyError(err)
+		if ctxErr := queryCtx.Err(); ctxErr != nil {
+			queryErr = classifyError(ctxErr)
+			ended := h.now()()
+			return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
+		}
 		if !queryErr.Retryable || attempts == limits.MaxAttempts {
 			ended := h.now()()
-			return failedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
+			return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
 		}
 		if sleepErr := sleep(queryCtx, limits.RetryBackoff); sleepErr != nil {
 			queryErr = classifyError(sleepErr)
 			ended := h.now()()
-			return failedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
+			return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
 		}
 	}
 
+	if err := queryCtx.Err(); err != nil {
+		queryErr := classifyError(err)
+		ended := h.now()()
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
+	}
 	ended := h.now()()
 	artifact, normalizeErr := normalize(connectorName, entry.connector.Descriptor(), request, provenance, source, started, ended, attempts, limits)
 	if normalizeErr != nil {
 		queryErr := classifyError(normalizeErr)
-		return failedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, ended, attempts, limits, queryErr), queryErr
 	}
 	return artifact, nil
+}
+
+type connectorResult struct {
+	source SourceResult
+	err    error
+}
+
+func executeConnector(ctx context.Context, connector Connector, request QueryRequest) (SourceResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SourceResult{}, err
+	}
+	completed := make(chan connectorResult, 1)
+	go func() {
+		source, err := connector.Query(ctx, request)
+		completed <- connectorResult{source: source, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return SourceResult{}, ctx.Err()
+	case result := <-completed:
+		if err := ctx.Err(); err != nil {
+			return SourceResult{}, err
+		}
+		return result.source, result.err
+	}
 }
 
 func normalize(
@@ -181,6 +233,63 @@ func failedArtifact(
 		},
 		Failure: &FailureInfo{Code: queryErr.Code, Kind: queryErr.Kind, Retryable: queryErr.Retryable},
 	}
+}
+
+func boundedFailedArtifact(
+	name string,
+	descriptor Descriptor,
+	request QueryRequest,
+	provenance QueryProvenance,
+	started, ended time.Time,
+	attempts int,
+	limits QueryLimits,
+	queryErr *QueryError,
+) ResultArtifact {
+	artifact := failedArtifact(name, descriptor, request, provenance, started, ended, attempts, limits, queryErr)
+	if artifactFits(artifact, limits.MaxBytes) {
+		return artifact
+	}
+
+	artifact.Metadata.Truncated = true
+	artifact.Query.Reference = ""
+	artifact.Query.ParameterNames = nil
+	artifact.Query.ParameterDigest = ""
+	artifact.Connector.Kind = compactArtifactString(artifact.Connector.Kind)
+	artifact.Connector.Version = compactArtifactString(artifact.Connector.Version)
+	artifact.Source.ID = compactArtifactString(artifact.Source.ID)
+	artifact.Failure.Code = compactArtifactString(artifact.Failure.Code)
+	artifact.Failure.Kind = compactArtifactString(artifact.Failure.Kind)
+	if artifactFits(artifact, limits.MaxBytes) {
+		return artifact
+	}
+
+	artifact.Window = Window{}
+	if artifactFits(artifact, limits.MaxBytes) {
+		return artifact
+	}
+
+	artifact.Connector.Kind = ""
+	artifact.Connector.Version = ""
+	artifact.Source.ID = ""
+	artifact.Failure = &FailureInfo{Code: "failure_artifact_too_large", Kind: "limit"}
+	return artifact
+}
+
+func compactArtifactString(value string) string {
+	encoded, err := json.Marshal(value)
+	if err == nil && len(encoded) <= 96 {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func artifactFits(artifact ResultArtifact, maxBytes int) bool {
+	if maxBytes < MinimumMaxBytes {
+		return false
+	}
+	data, err := json.Marshal(artifact)
+	return err == nil && len(data) <= maxBytes
 }
 
 func validateRequest(request QueryRequest, supportedShapes []ResultShape) error {
