@@ -1,7 +1,8 @@
 # Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels
 
 > Status: **TBH-1 phase-0 RFC complete; human design gate pending — prescriptive** ·
-> Area prefix: `TBH` · Milestone: **V1 — arbitrary repos, teams, hardening**
+> Area prefix: `TBH` · Milestone: **Trust & Isolation**
+> ([#25](https://github.com/Agent-Clubhouse/Goobers/milestone/25))
 > Origin: the comparative-security review of GitHub Agentic Workflows
 > (`~/source/Goobers-Review/GH-AW-VS-GOOBERS.md`), whose central finding names our gap
 > precisely: *capability-scoped credential injection is not enough when the same
@@ -181,9 +182,18 @@ before it exists.
 | 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on selfhost |
 | 3 | TBH-2 full staged mode; TBH-4 integrity labels | Stranger-repo pilot onboards in staged mode |
 
-The phase-0 sign-offs belong on the RFC change review so they identify the exact
-revision approved. Filing or approving an implementation issue is not a substitute.
-Until both are present, this document authorizes design review only.
+The phase-0 sign-offs are recorded on this sign-off PR, which pins the RFC revision
+presented for approval to merge commit
+[`b741345aa6de32cff59a9f848d209845d27c6984`](https://github.com/Agent-Clubhouse/Goobers/commit/b741345aa6de32cff59a9f848d209845d27c6984)
+(PR #1613). Filing or approving an implementation issue is not a substitute.
+
+| Phase-0 sign-off role | Name | Date |
+|---|---|---|
+| Product owner (PO) | | |
+| Second reviewer | | |
+
+Until both sign-off rows contain a human name and date, this document authorizes
+design review only.
 
 ## 4. Resolved and open questions
 

@@ -10,7 +10,6 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -138,12 +137,8 @@ func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationB
 	if err != nil {
 		return apiv1.RemediationBrief{}, err
 	}
-	validator, err := apivalidate.New()
-	if err != nil {
-		return apiv1.RemediationBrief{}, fmt.Errorf("create remediation brief validator: %w", err)
-	}
-	if err := validator.ValidateJSON(schemas.RemediationBrief, data); err != nil {
-		return apiv1.RemediationBrief{}, fmt.Errorf("validate remediation brief: %w", err)
+	if err := validateRemediationBriefJSON(data); err != nil {
+		return apiv1.RemediationBrief{}, err
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {
@@ -157,18 +152,21 @@ func writeRemediationBrief(path string, brief apiv1.RemediationBrief) error {
 	if err != nil {
 		return fmt.Errorf("marshal remediation brief: %w", err)
 	}
-	validator, err := apivalidate.New()
-	if err != nil {
-		return fmt.Errorf("create remediation brief validator: %w", err)
-	}
-	if err := validator.ValidateJSON(schemas.RemediationBrief, data); err != nil {
-		return fmt.Errorf("validate remediation brief: %w", err)
+	if err := validateRemediationBriefJSON(data); err != nil {
+		return err
 	}
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("result file is required")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func validateRemediationBriefJSON(data []byte) error {
+	if err := validateSchemaJSON(schemas.RemediationBrief, data); err != nil {
+		return fmt.Errorf("validate remediation brief: %w", err)
 	}
 	return nil
 }

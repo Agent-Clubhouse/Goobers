@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
@@ -356,6 +357,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: no %s gate.evaluated event with a verdict found in this run's journal\n", *gateName)
 		return 1
 	}
+	if err := validateVerdictForPublish(*verdict); err != nil {
+		pf(stderr, "error: validate %s verdict from journal: %v\n", *gateName, err)
+		return 1
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -536,6 +541,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if err := validateVerdictForPublish(posted); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
+	}
 	comment := renderVerdictComment(posted)
 	historyPayload, err := findingSetHistoryComment(history)
 	if err != nil {
@@ -1190,6 +1198,21 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 		return "", fmt.Errorf("marshal verdict payload: %w", err)
 	}
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
+}
+
+func validateVerdictForPublish(v apiv1.Verdict) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal verdict payload: %w", err)
+	}
+	return validateVerdictJSON(data)
+}
+
+func validateVerdictJSON(data []byte) error {
+	if err := validateSchemaJSON(schemas.Envelope["verdict"], data); err != nil {
+		return fmt.Errorf("validate verdict payload: %w", err)
+	}
+	return nil
 }
 
 // parseVerdictComment recovers the Verdict a merge-review apply-verdict run
