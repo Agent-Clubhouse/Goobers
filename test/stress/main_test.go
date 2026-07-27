@@ -75,12 +75,72 @@ func TestFailureCollectorAggregatesFingerprintOccurrences(t *testing.T) {
 		failure.FailureText != "scheduler timed out after 10ms" || failure.Occurrences != 2 {
 		t.Fatalf("failure = %+v", failure)
 	}
+	if failure.FailureSignature != "scheduler timed out after <duration>" {
+		t.Fatalf("failure signature = %q", failure.FailureSignature)
+	}
 	if failure.FirstSeenRun != "12345" || failure.LastSeenRun != "12345" ||
 		!failure.FirstSeenAt.Equal(first) || !failure.LastSeenAt.Equal(last) {
 		t.Fatalf("failure sightings = %+v", failure)
 	}
 	if len(failure.Fingerprint) != 64 {
 		t.Fatalf("fingerprint = %q, want a SHA-256 hex digest", failure.Fingerprint)
+	}
+}
+
+func TestFailureFingerprintIncludesNormalizedSignature(t *testing.T) {
+	t.Parallel()
+	first := "runner_test.go:41: timed out after 1m2.5s at 0xc000012340"
+	second := "runner_test.go:99: timed out after 3m4s at 0xDEADBEEF"
+	different := "runner_test.go:41: got stopped, want ready"
+
+	firstSignature := normalizeFailureSignature(first)
+	secondSignature := normalizeFailureSignature(second)
+	if firstSignature != secondSignature {
+		t.Fatalf("volatile signatures differ: %q != %q", firstSignature, secondSignature)
+	}
+	firstFingerprint := failureFingerprint("./internal/runner", "TestResume", firstSignature)
+	if got := failureFingerprint("./internal/runner", "TestResume", secondSignature); got != firstFingerprint {
+		t.Fatalf("volatile fingerprints differ: %q != %q", got, firstFingerprint)
+	}
+	if got := failureFingerprint("./internal/runner", "TestResume", normalizeFailureSignature(different)); got == firstFingerprint {
+		t.Fatalf("distinct assertion reused fingerprint %q", got)
+	}
+}
+
+func TestNormalizePanicSignatureIncludesStableSite(t *testing.T) {
+	t.Parallel()
+	text := `panic: close of closed channel [recovered, repanicked]
+goroutine 87 [running]:
+testing.tRunner.func1.2({0x123, 0x456})
+	/usr/local/go/src/testing/testing.go:1872 +0x123
+github.com/goobers/goobers/internal/runner.resume()
+	/tmp/work/internal/runner/resume.go:47 +0xabc`
+	got := normalizeFailureSignature(text)
+	want := "panic: close of closed channel [recovered, repanicked] | resume.go:47"
+	if got != want {
+		t.Fatalf("normalizeFailureSignature() = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeRaceSignatureIncludesApplicationSite(t *testing.T) {
+	t.Parallel()
+	first := `==================
+WARNING: DATA RACE
+Write at 0x00c000012340 by goroutine 41:
+  github.com/goobers/goobers/internal/runner.(*Runner).resume()
+      /tmp/work-a/internal/runner/resume.go:47 +0xabc
+==================`
+	same := strings.ReplaceAll(strings.ReplaceAll(first, "0x00c000012340", "0xDEADBEEF"), "goroutine 41", "goroutine 99")
+	different := strings.ReplaceAll(first, "resume.go:47", "resume.go:83")
+	firstSignature := normalizeFailureSignature(first)
+	if got := normalizeFailureSignature(same); got != firstSignature {
+		t.Fatalf("volatile race signature = %q, want %q", got, firstSignature)
+	}
+	if got := normalizeFailureSignature(different); got == firstSignature {
+		t.Fatalf("distinct race site reused signature %q", got)
+	}
+	if !strings.Contains(firstSignature, "resume.go:47") {
+		t.Fatalf("race signature lacks application site: %q", firstSignature)
 	}
 }
 
@@ -193,7 +253,8 @@ func TestProcessRunnerWritesStructuredFailureArtifacts(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	if len(failures) != 1 || failures[0].Test != "TestTick" ||
-		!strings.Contains(failures[0].FailureText, "timed out") {
+		!strings.Contains(failures[0].FailureText, "timed out") ||
+		failures[0].FailureSignature != "scheduler timed out" {
 		t.Fatalf("failures = %+v", failures)
 	}
 	raw, err := os.ReadFile(filepath.Join(outputDir, filepath.FromSlash(result.EventLog)))
@@ -327,6 +388,11 @@ func TestRepositoryStressWiring(t *testing.T) {
 		"github.event.label.name == '/stress'",
 		"make stress",
 		"actions/upload-artifact@v7",
+		"flake-ledger:",
+		"github.event_name != 'pull_request'",
+		"issues: write",
+		"actions/download-artifact@v8",
+		"go run ./test/flakeledger",
 	)
 }
 

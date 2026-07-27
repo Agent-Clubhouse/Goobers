@@ -121,6 +121,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/deadcode",
 		"run ./test/integration",
 		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
+		"run ./test/flakepolicy",
 		"run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)",
 		"run ./test/stress", // stress: -> the Go repeated-test orchestrator
 	} {

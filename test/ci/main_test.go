@@ -53,6 +53,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"tidy-check",
 		"no-phone-home",
 		"vet",
+		"flake-policy",
 		"build-config-sync",
 		"portal-install",
 		"portal-build",

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -86,6 +87,7 @@ type testFailure struct {
 	Fingerprint          string    `json:"fingerprint"`
 	Package              string    `json:"package"`
 	Test                 string    `json:"test"`
+	FailureSignature     string    `json:"failure_signature"`
 	FailureText          string    `json:"failure_text"`
 	FailureTextTruncated bool      `json:"failure_text_truncated"`
 	FirstSeenRun         string    `json:"first_seen_run"`
@@ -442,8 +444,9 @@ func (c *failureCollector) add(test, text string, observed time.Time) {
 	if text == "" {
 		text = "test reported failure without output"
 	}
+	signature := normalizeFailureSignature(text)
 	text, truncated := truncateFailureText(text)
-	fingerprint := failureFingerprint(c.pkg, test)
+	fingerprint := failureFingerprint(c.pkg, test, signature)
 	if index, ok := c.failureIndex[fingerprint]; ok {
 		c.failures[index].LastSeenAt = observed
 		c.failures[index].LastSeenRun = c.runID
@@ -455,6 +458,7 @@ func (c *failureCollector) add(test, text string, observed time.Time) {
 		Fingerprint:          fingerprint,
 		Package:              c.pkg,
 		Test:                 test,
+		FailureSignature:     signature,
 		FailureText:          text,
 		FailureTextTruncated: truncated,
 		FirstSeenRun:         c.runID,
@@ -474,11 +478,13 @@ func syntheticFailure(pkg, runID, text string, observed time.Time) testFailure {
 	if text == "" {
 		text = "package failed without output"
 	}
+	signature := normalizeFailureSignature(text)
 	text, truncated := truncateFailureText(text)
 	return testFailure{
-		Fingerprint:          failureFingerprint(pkg, "(package)"),
+		Fingerprint:          failureFingerprint(pkg, "(package)", signature),
 		Package:              pkg,
 		Test:                 "(package)",
+		FailureSignature:     signature,
 		FailureText:          text,
 		FailureTextTruncated: truncated,
 		FirstSeenRun:         runID,
@@ -496,10 +502,135 @@ func truncateFailureText(text string) (string, bool) {
 	return text[:failureTextLimit], true
 }
 
-// Test output contains volatile durations, addresses, and goroutine IDs; keep
-// the ledger key stable while retaining the complete failure text separately.
-func failureFingerprint(pkg, test string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(pkg+"\x00"+test)))
+var (
+	leadingSourceLocation = regexp.MustCompile(`^.*?\.go:\d+:\s*`)
+	sourceLocation        = regexp.MustCompile(`(?:[A-Za-z]:)?(?:[^\s:()]+[\\/])*([^\s:()\\/]+\.go):(\d+)`)
+	volatileAddress       = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+	volatileDuration      = regexp.MustCompile(`\b(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+(?:\b|$)`)
+	volatileGoroutine     = regexp.MustCompile(`\bgoroutine\s+\d+\b`)
+	volatileTimestamp     = regexp.MustCompile(`\b20\d\d-\d\d-\d\d[T ][0-9:.+-]+Z?\b`)
+	volatileUUID          = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
+)
+
+func normalizeFailureSignature(text string) string {
+	lines := strings.Split(text, "\n")
+	if signature, ok := normalizeRaceSignature(lines); ok {
+		return signature
+	}
+	for index, line := range lines {
+		if !strings.Contains(strings.TrimSpace(line), "panic:") {
+			continue
+		}
+		signature := []string{normalizeFailureLine(line)}
+		for _, stackLine := range lines[index+1:] {
+			if strings.Contains(stackLine, "/runtime/") || strings.Contains(stackLine, "/testing/") {
+				continue
+			}
+			match := sourceLocation.FindStringSubmatch(stackLine)
+			if len(match) == 3 {
+				signature = append(signature, match[1]+":"+match[2])
+				break
+			}
+		}
+		return strings.Join(signature, " | ")
+	}
+
+	signature := make([]string, 0, 3)
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if failureBoilerplate(line) {
+			continue
+		}
+		line = normalizeFailureLine(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		signature = append(signature, line)
+		if len(signature) == 3 {
+			break
+		}
+	}
+	if len(signature) == 0 {
+		return "test failed without stable signature"
+	}
+	return strings.Join(signature, " | ")
+}
+
+func normalizeRaceSignature(lines []string) (string, bool) {
+	warning := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == "WARNING: DATA RACE" {
+			warning = index
+			break
+		}
+	}
+	if warning == -1 {
+		return "", false
+	}
+	signature := []string{"WARNING: DATA RACE"}
+	function := ""
+	for _, line := range lines[warning+1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.Trim(trimmed, "=") == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Read at ") ||
+			strings.HasPrefix(trimmed, "Write at ") ||
+			strings.HasPrefix(trimmed, "Previous read at ") ||
+			strings.HasPrefix(trimmed, "Previous write at ") {
+			signature = append(signature, normalizeFailureLine(trimmed))
+			function = ""
+			continue
+		}
+		match := sourceLocation.FindStringSubmatch(trimmed)
+		if len(match) == 3 {
+			if strings.Contains(trimmed, "/runtime/") || strings.Contains(trimmed, "/testing/") {
+				continue
+			}
+			if function != "" {
+				signature = append(signature, normalizeFailureLine(function))
+			}
+			signature = append(signature, match[1]+":"+match[2])
+			return strings.Join(signature, " | "), true
+		}
+		if len(signature) > 1 {
+			function = trimmed
+		}
+	}
+	return strings.Join(signature, " | "), true
+}
+
+func failureBoilerplate(line string) bool {
+	if line == "" {
+		return true
+	}
+	for _, prefix := range []string{
+		"=== RUN", "=== PAUSE", "=== CONT", "--- FAIL:", "--- PASS:",
+		"FAIL", "PASS", "exit status ",
+	} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return strings.HasPrefix(line, "goroutine ") && strings.HasSuffix(line, "[running]:")
+}
+
+func normalizeFailureLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = leadingSourceLocation.ReplaceAllString(line, "")
+	line = sourceLocation.ReplaceAllString(line, "$1:$2")
+	line = volatileTimestamp.ReplaceAllString(line, "<time>")
+	line = volatileUUID.ReplaceAllString(line, "<uuid>")
+	line = volatileAddress.ReplaceAllString(line, "<addr>")
+	line = volatileGoroutine.ReplaceAllString(line, "goroutine <id>")
+	line = volatileDuration.ReplaceAllString(line, "<duration>")
+	return strings.Join(strings.Fields(line), " ")
+}
+
+func failureFingerprint(pkg, test, signature string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(pkg+"\x00"+test+"\x00"+signature)))
 }
 
 func artifactBase(pkg string) string {
