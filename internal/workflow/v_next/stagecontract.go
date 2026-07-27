@@ -75,12 +75,20 @@ func CheckStageContractWarnings(def Definition) []string {
 func consumedOutputKeys(def Definition) map[string]bool {
 	consumed := map[string]bool{}
 	declared := map[string]bool{}
+	parallels := map[string]bool{}
 	for _, task := range def.Spec.Tasks {
 		declared[task.Name] = true
+	}
+	for _, parallel := range def.Spec.Parallels {
+		parallels[parallel.Name] = true
 	}
 	for _, task := range def.Spec.Tasks {
 		for _, outputKey := range task.InputsFrom {
 			consumed[outputKey] = true
+			if ref, ok := splitBranchInputReference(outputKey); ok && parallels[ref.parallel] {
+				consumed[ref.key] = true
+				continue
+			}
 			// A stage-qualified reference ("<stage>.<key>", #562) consumes the
 			// KEY, not the literal qualified string. Without this the
 			// undeclaredResultFile check silently stops firing the moment an
@@ -178,6 +186,13 @@ func unsatisfiableInputsFromProblems(m *Machine) []string {
 		preceding := precedingTasks(m, name)
 		for _, inputKey := range sortedKeys(task.InputsFrom) {
 			outputKey := task.InputsFrom[inputKey]
+			if ref, ok := splitBranchInputReference(outputKey); ok {
+				if _, isParallel := m.Parallel(ref.parallel); isParallel {
+					// parallelProblems validates this reference against the
+					// branch graph and producer contract.
+					continue
+				}
+			}
 
 			// A stage-QUALIFIED reference ("<stage>.<key>", #562) is checked
 			// against its named stage instead of the immediate predecessors.
@@ -368,6 +383,19 @@ func dottedStateNameProblems(def Definition) []string {
 		if strings.Contains(gate.Name, ".") {
 			problems = append(problems, fmt.Sprintf(
 				"gate name %q contains a dot; state names must not, so a qualified inputsFrom reference stays unambiguous", gate.Name))
+		}
+	}
+	for _, parallel := range def.Spec.Parallels {
+		if strings.Contains(parallel.Name, ".") {
+			problems = append(problems, fmt.Sprintf(
+				"parallel name %q contains a dot; parallel names must not, so a branch-qualified inputsFrom reference stays unambiguous", parallel.Name))
+		}
+		for _, branch := range parallel.Branches {
+			if strings.Contains(branch.Name, ".") {
+				problems = append(problems, fmt.Sprintf(
+					"parallel %q branch name %q contains a dot; branch names must not, so a branch-qualified inputsFrom reference stays unambiguous",
+					parallel.Name, branch.Name))
+			}
 		}
 	}
 	return problems

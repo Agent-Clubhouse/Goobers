@@ -789,10 +789,13 @@ type walkSeed struct {
 	// stageOutputs is every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	stageOutputs    stageOutputs
-	workspaceBranch string
-	branchRecorded  bool
-	humanDecision   *HumanGateDecision
+	stageOutputs         stageOutputs
+	parallel             *parallelExec
+	parallelRootPointers []apiv1.ContextPointer
+	fanIn                *parallelExec
+	workspaceBranch      string
+	branchRecorded       bool
+	humanDecision        *HumanGateDecision
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -954,8 +957,25 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	humanDecision := seed.humanDecision
 	// Live parallel state. nil whenever the run is single-cursor, which is
 	// every run that never forks — so the sequential path is untouched.
-	var par *parallelExec
+	par := seed.parallel
+	fanIn := seed.fanIn
+	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
 	steps := 0
+	if par != nil {
+		jr.SetBranchCursors(par.cursors())
+		if current := par.current(); current != nil {
+			if !current.started {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: current.id,
+					Parallel: par.spec.Name, BranchName: current.name, Stage: current.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, startState, steps, err)
+				}
+				current.started = true
+			}
+			jr.SetBranch(current.id)
+		}
+	}
 
 	for {
 		steps++
@@ -970,13 +990,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					fmt.Errorf("runner: reached %q outside a parallel branch", workflow.TargetJoin))
 			}
 			settling := par.current()
-			status := branchStatusFor(lastResult, settling.artifacts)
-			if err := jr.Append(journal.Event{
-				Type: journal.EventBranchFinished, Branch: settling.id,
-				Parallel: par.spec.Name, BranchName: settling.name,
-				BranchStatus: status,
-			}); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			status := par.currentStatus()
+			if !settling.settled {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchFinished, Branch: settling.id,
+					Parallel: par.spec.Name, BranchName: settling.name,
+					BranchStatus: status,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
 			}
 			next, more := par.advance(status)
 			// fail_fast abandons the branches that have not started. At
@@ -1003,6 +1025,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}); err != nil {
 					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 				}
+				next.started = true
 				jr.SetBranch(next.id)
 				state = next.start
 				continue
@@ -1031,6 +1054,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					res, ferr := r.finish(in.RunID, jr, journal.PhaseEscalated, joined.spec.Name, steps)
 					return res, ferr
 				}
+				fanIn = nil
+			} else {
+				pointers = joined.joinPointers(parallelRootPointers)
+				fanIn = joined
 			}
 			state = target
 			continue
@@ -1048,6 +1075,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 						p.Name, p.MaxConcurrentBranches))
 			}
 			par = newParallelExec(p)
+			fanIn = nil
+			parallelRootPointers = append([]apiv1.ContextPointer(nil), pointers...)
 			jr.SetMachineState(state)
 			if err := jr.Append(journal.Event{
 				Type: journal.EventParallelStarted, Parallel: p.Name,
@@ -1063,6 +1092,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}); err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 			}
+			first.started = true
 			jr.SetBranch(first.id)
 			state = first.start
 			continue
@@ -1167,7 +1197,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if par != nil && par.current() != nil {
 					branch = par.current().id
 				}
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, pointers, lastResult, completed, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				upstreamPointers := pointers
+				if par != nil {
+					upstreamPointers = par.currentPointers(parallelRootPointers)
+				}
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -1178,9 +1212,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
 			}
-			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
-			completed.record(t.Name, result.Outputs)
+			outputs := result.Outputs
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				outputs = nil
+			}
+			if par != nil {
+				par.recordCurrent(outputs, produced)
+			} else {
+				pointers = append(pointers, produced...)
+			}
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				completed.clear(t.Name)
+			} else {
+				completed.record(t.Name, outputs)
+			}
 			// Sticky for the rest of the run, and only ever set by a stage
 			// that actually emitted the key — see WorkspaceBranchOutput. This
 			// runs AFTER the stage that emits it, so that stage itself still
@@ -1190,6 +1236,24 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
 				if b := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(in.Gaggle)); b != "" {
 					workspaceBranch = b
+				}
+			}
+
+			if par != nil {
+				switch result.Status {
+				case apiv1.ResultFailure:
+					if !t.ContinueOnError {
+						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
+							par.markCurrentFailed()
+							lastResult.Outputs = nil
+							state = workflow.TargetJoin
+							continue
+						}
+					}
+				case apiv1.ResultNoWork:
+					par.markCurrentNoOutput()
+					state = workflow.TargetJoin
+					continue
 				}
 			}
 
@@ -1207,6 +1271,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			if !advance {
 				return res, nil
+			}
+			if fanIn != nil && t.Name == fanIn.spec.Join {
+				fanIn = nil
 			}
 			state = next
 			continue
@@ -1251,7 +1318,18 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision, humanDecision.Actor)
 				humanDecision = nil
 			} else {
-				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch, knownOutcome)
+				gatePointers := pointers
+				if par != nil {
+					gatePointers = par.currentPointers(parallelRootPointers)
+				}
+				gateSubject := lastResult
+				if fanIn != nil && g.Name == fanIn.spec.Join {
+					// gatePointers already contains the declaration-ordered,
+					// branch-qualified artifact union. ReviewerInvocation must
+					// not append the final branch's artifacts a second time.
+					gateSubject.Artifacts = nil
+				}
+				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, gateSubject, gatePointers, fanIn, instructionAddendum, workspaceBranch, knownOutcome)
 			}
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
 				return stalledResult, stalledErr
@@ -1281,7 +1359,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
 			} else if retry {
 				if gr.VerdictArtifact != nil {
-					pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+					pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+					if par != nil {
+						par.recordCurrentPointer(pointer)
+					} else {
+						pointers = append(pointers, pointer)
+					}
 				}
 				state = retryTarget
 				continue
@@ -1303,7 +1386,18 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// this, that promise was never kept, so a repass regenerated
 				// the same diff and tripped the #316 identical-diff guard
 				// for lack of anything new to act on.
-				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+				pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+				if par != nil {
+					par.recordCurrentPointer(pointer)
+				} else {
+					pointers = append(pointers, pointer)
+				}
+			}
+			if par != nil && next == workflow.TargetJoin && lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
+				par.markCurrentFailed()
+			}
+			if fanIn != nil && g.Name == fanIn.spec.Join {
+				fanIn = nil
 			}
 			state = next
 			continue
@@ -1346,8 +1440,7 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 		// cleared that same result.
 		subject, _ := machine.Task(lastStage)
 		gateDef, _ := machine.Gate(gr.Gate)
-		clearedFailure := gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
-		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !clearedFailure {
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !gateClearsFailure(gr, gateDef) {
 			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
 			return "", res, false, err
 		}
@@ -1356,6 +1449,10 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 	default:
 		return gr.Target, Result{}, true, nil
 	}
+}
+
+func gateClearsFailure(gr gate.Result, gateDef apiv1.Gate) bool {
+	return gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
 }
 
 func terminalGateNotificationReason(gr gate.Result) (string, bool) {
@@ -2167,7 +2264,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -2251,7 +2348,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2499,7 +2596,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -2581,12 +2678,25 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	}
 
 	for inputKey, outputKey := range t.InputsFrom {
+		if v, ok, branchRef, absent := resolveBranchInput(outputKey, in.Machine, completed, fanIn); branchRef {
+			if ok {
+				env.Inputs[inputKey] = v
+			} else if absent {
+				delete(env.Inputs, inputKey)
+			} else {
+				return apiv1.ResultEnvelope{}, nil, branchInputsFromError(t.Name, inputKey, outputKey), nil
+			}
+			continue
+		}
 		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
 		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
 		if !ok {
 			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
 		}
 		env.Inputs[inputKey] = v
+	}
+	if fanIn != nil && t.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
 	}
 
 	switch t.Type {
@@ -2833,7 +2943,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
@@ -3019,6 +3129,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 				attempt: gateEval.Attempts[g.Name] + 1,
 			}}
 		}
+	}
+	if fanIn != nil && g.Name == fanIn.spec.Join {
+		if env.Inputs == nil {
+			env.Inputs = map[string]interface{}{}
+		}
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
 	}
 
 	if knownOutcome != "" {

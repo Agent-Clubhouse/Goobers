@@ -163,6 +163,29 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	validateCandidateFindings(t, firstJSON)
 }
 
+func TestCandidateFindingsValidationPrecedesWrite(t *testing.T) {
+	result := newCandidateFindingsArtifact(
+		time.Hour,
+		time.Date(2026, time.July, 26, 0, 0, 0, 0, time.UTC),
+		nil,
+		telemetryQueryNoFindingsNote,
+	)
+	result.Schema = "goobers.dev/candidate-findings/future"
+	resultFile := filepath.Join(t.TempDir(), "candidate-findings.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	var stdout, stderr strings.Builder
+	if code := writeCandidateFindingsArtifact(result, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if _, err := os.Stat(resultFile); !os.IsNotExist(err) {
+		t.Fatalf("schema-invalid artifact was written: stat error = %v", err)
+	}
+}
+
 func TestTelemetryQueryMissingRollupIsNoWork(t *testing.T) {
 	root := initDemo(t)
 	if err := os.Remove(instance.NewLayout(root).TelemetryDB()); err != nil {

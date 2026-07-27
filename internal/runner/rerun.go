@@ -106,6 +106,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, err
 		}
+		activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+		if activeParallel != nil {
+			jr.SetBranchCursors(activeParallel.cursors())
+			if current := activeParallel.current(); current != nil {
+				jr.SetBranch(current.id)
+			}
+		}
 		item, err := resumeItem(rd, id)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: rerun item snapshot for run %q: %w", in.RunID, err)
@@ -139,8 +146,21 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Item:         item,
 			RunControls:  runControls,
 		}
-		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+		pointerEvents := seedEvents
+		if activeParallel != nil {
+			pointerEvents = seedEvents[:parallelStart]
+		}
+		seed := walkSeed{
+			pointers:     reconstructPointers(pointerEvents, in.Machine),
+			stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
+			parallel:     activeParallel,
+			fanIn:        rerunFanIn(seedEvents, in.Machine, in.Stage),
+		}
+		if activeParallel != nil {
+			seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+		}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
+		seed.lastResult = discardToleratedFailureOutputs(in.Machine, seed.lastStage, seed.lastResult)
 		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		seed.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)

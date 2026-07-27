@@ -19,9 +19,9 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-// v1alpha4 admits ResultNoWork through the closed result schema so deterministic
-// and agentic stage producers share the same status vocabulary.
-const StageContractVersion = "v1alpha4"
+// v1alpha5 adds branch attribution to artifact context pointers used at
+// parallel joins.
+const StageContractVersion = "v1alpha5"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.

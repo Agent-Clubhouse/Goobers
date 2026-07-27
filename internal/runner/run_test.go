@@ -3936,7 +3936,7 @@ func TestReconstructPointersIncludesVerdictOnRepassRoute(t *testing.T) {
 		// artifact) must be a no-op too, same as the live path's nil check.
 		{Type: journal.EventGateEvaluated, Gate: "autogate", Verdict: "fail", Target: "implement"},
 	}
-	got := reconstructPointers(events)
+	got := reconstructPointers(events, fixtureMachine(t))
 
 	var stagePtr, verdictPtr *apiv1.ContextPointer
 	for i := range got {

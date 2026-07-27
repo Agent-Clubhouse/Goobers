@@ -113,7 +113,14 @@ func (c *diagnosticCollector) envelope(ok bool) diagnosticsEnvelope {
 	return envelope
 }
 
-func encodeIndentedJSON(w io.Writer, value any) error {
+func encodeSchemaJSON(w io.Writer, schemaFile string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := validateSchemaJSON(schemaFile, data); err != nil {
+		return err
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(value)
