@@ -197,6 +197,46 @@ func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderEnsureWorkItemLabelsCreatesOnlyMissing(t *testing.T) {
+	var created map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/labels", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, []map[string]string{{"name": "existing"}})
+		case http.MethodPost:
+			decodeJSON(t, r, &created)
+			writeJSON(t, w, created)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.EnsureWorkItemLabels(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		[]WorkItemLabel{
+			{Name: "Existing", Color: "ffffff", Description: "leave unchanged"},
+			{Name: "goobers:ready", Color: "#1D76DB", Description: "ready for work"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Created, []string{"goobers:ready"}) ||
+		!reflect.DeepEqual(result.Skipped, []string{"Existing"}) {
+		t.Fatalf("result = %+v", result)
+	}
+	if created["name"] != "goobers:ready" ||
+		created["color"] != "1D76DB" ||
+		created["description"] != "ready for work" {
+		t.Fatalf("created label = %#v", created)
+	}
+}
+
 func TestGitHubProviderDeleteBranch(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -58,6 +58,8 @@
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged or evicted (a workflow stage) |
+| [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
+| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one eligible open PR for merge-review (a workflow stage) |
@@ -1290,6 +1292,63 @@ provider failure), 2 = usage/IO error.
 
 ~~~console
 $ goobers merge-queue-poll
+~~~
+
+## `goobers onboarding`
+
+run non-interactive onboarding actions
+
+~~~text
+Usage: goobers onboarding <stub-sample> [flags]
+
+Run non-interactive, machine-readable onboarding actions. Actions never
+prompt, write secrets, create a remote, or touch a repository that was not
+explicitly named.
+
+Commands:
+  stub-sample  materialize the disposable Getting Started target
+
+Run `goobers onboarding stub-sample -h` for action flags.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
+~~~
+
+## `goobers onboarding stub-sample`
+
+materialize and optionally seed the disposable Getting Started target
+
+~~~text
+Usage: goobers onboarding stub-sample --destination <path> [flags]
+
+Materialize the embedded getting-started-task-api sample at an explicitly
+named destination. Existing matching files are skipped. A conflicting file
+fails the complete preflight without changing the destination unless --force
+is set; symbolic links are always refused.
+
+With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
+issues using the token named by --token-env. If the token is unset, report
+the issues pending and complete the local materialization without network
+access. No remote repository is created or pushed.
+
+Flags:
+  --destination <path>      required sample destination
+  --work-tracking <repo>    optional GitHub owner/repo to seed
+  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
+  --force                   replace conflicting regular files
+  --json                    emit the versioned action envelope
+
+Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
+$ goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial
 ~~~
 
 ## `goobers open-pr`

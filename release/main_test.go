@@ -189,10 +189,12 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
-		"GOOBERS_RELEASE_ROOT=\"${GOOBERS_RELEASE_ROOT:-${GOOBERS_DATA_ROOT}/v1.2.3}\"",
-		"onboarding/samples/getting-started-task-api@1.0.0",
-		"onboarding/templates/quickstart@v1",
-		"neither\npath reads the development repository's moving `main`",
+		"goobers-v1.2.3 onboarding stub-sample",
+		"--destination ./getting-started-task-api",
+		"--json",
+		"embeds the release-matched sample",
+		"--work-tracking owner/repo",
+		"GOOBERS_GITHUB_ISSUES_TOKEN",
 		"requested instance path",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
@@ -205,7 +207,13 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("docs/guides/quickstart.md missing installed onboarding command %q:\n%s", want, quickstart)
 		}
 	}
-	for _, stale := range []string{"go build -o bin/goobers", "bin/goobers init", "goobers init ./my-instance", "default-implement"} {
+	for _, stale := range []string{
+		"go build -o bin/goobers",
+		"bin/goobers init",
+		"goobers init ./my-instance",
+		"cp -R samples/getting-started-task-api",
+		"default-implement",
+	} {
 		if strings.Contains(string(quickstart), stale) {
 			t.Errorf("docs/guides/quickstart.md retains source-checkout command %q:\n%s", stale, quickstart)
 		}
@@ -222,6 +230,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
 		"goobers-v1.2.3 init --guided ./my-instance",
+		"goobers-v1.2.3 onboarding stub-sample",
 		"goobers-v1.2.3 validate ./my-instance",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)

@@ -88,6 +88,19 @@ type WorkItem struct {
 	Raw            interface{}            `json:"raw,omitempty"`
 }
 
+// WorkItemLabel describes a provider-native issue label.
+type WorkItemLabel struct {
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description,omitempty"`
+}
+
+// EnsureWorkItemLabelsResult reports which labels were created or already present.
+type EnsureWorkItemLabelsResult struct {
+	Created []string `json:"created"`
+	Skipped []string `json:"skipped"`
+}
+
 // HasLabel reports whether the work item has a scheduler routing label.
 func (w WorkItem) HasLabel(label string) bool {
 	for _, itemLabel := range w.Labels {

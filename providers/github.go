@@ -2289,6 +2289,63 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	return item, nil
 }
 
+// EnsureWorkItemLabels creates missing GitHub issue labels without modifying existing labels.
+func (p *GitHubProvider) EnsureWorkItemLabels(
+	ctx context.Context,
+	repo RepositoryRef,
+	labels []WorkItemLabel,
+) (EnsureWorkItemLabelsResult, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return EnsureWorkItemLabelsResult{}, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
+	if err != nil {
+		return EnsureWorkItemLabelsResult{}, err
+	}
+
+	existing := make(map[string]bool)
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageLabels []githubLabel
+		if err := json.Unmarshal(page, &pageLabels); err != nil {
+			return fmt.Errorf("decode labels page: %w", err)
+		}
+		for _, label := range pageLabels {
+			existing[strings.ToLower(label.Name)] = true
+		}
+		return nil
+	}); err != nil {
+		return EnsureWorkItemLabelsResult{}, err
+	}
+
+	result := EnsureWorkItemLabelsResult{
+		Created: []string{},
+		Skipped: []string{},
+	}
+	for _, label := range labels {
+		label.Name = strings.TrimSpace(label.Name)
+		label.Color = strings.TrimPrefix(strings.TrimSpace(label.Color), "#")
+		if label.Name == "" || label.Color == "" {
+			return EnsureWorkItemLabelsResult{}, fmt.Errorf("label name and color are required")
+		}
+		key := strings.ToLower(label.Name)
+		if existing[key] {
+			result.Skipped = append(result.Skipped, label.Name)
+			continue
+		}
+		var created githubLabel
+		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{
+			"name":        label.Name,
+			"color":       label.Color,
+			"description": label.Description,
+		}, &created); err != nil {
+			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
+		}
+		existing[key] = true
+		result.Created = append(result.Created, label.Name)
+	}
+	return result, nil
+}
+
 // findRunItem searches the repo for an issue whose body carries the run-id
 // footer for runID, used by CreateWorkItem for idempotency (#140). The search
 // term is fuzzy, so the match is confirmed against the exact footer before
@@ -2710,7 +2767,9 @@ type githubPullRequestLink struct {
 }
 
 type githubLabel struct {
-	Name string `json:"name"`
+	Name        string `json:"name"`
+	Color       string `json:"color,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type githubUser struct {
