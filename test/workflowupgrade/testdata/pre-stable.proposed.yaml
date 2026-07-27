@@ -1,0 +1,38 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: implementation
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "7 * * * *"
+  readiness:
+    maxConcurrentRuns: 2
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Query the ready backlog.
+      run:
+        command: ["query-backlog"]
+      inputs:
+        query: "label:ready"
+        resultFile: "claimed-item.json"
+      next: implement
+    - name: implement
+      type: deterministic
+      goal: Implement the issue.
+      run:
+        command: ["implement"]
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: coder
+      branches:
+        pass: ""
+        needs-changes: implement
+        fail: "@abort"

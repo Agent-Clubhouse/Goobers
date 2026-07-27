@@ -28,9 +28,16 @@ Record these locations and identities from the resolver report:
 - whether the config source is a local directory, a local Git ref, or remote;
 - every workflow file, its explicit `dslVersion`, and its owning gaggle.
 
-The config source is the write target. The active runtime copy is evidence only
-unless the resolver proves that it is also the source. If the source is remote,
-unavailable, or not writable, return an analysis-only plan.
+Keep the effective config source, active runtime copy, and write target as
+separate identities. A writable `kind: local-dir` source may be the write
+target. A `kind: git` source is the committed configured ref, not whichever
+branch or working tree is present at its local path, so it is analysis-only by
+default. It may have a write target only when the user explicitly selects and
+approves an authoring worktree whose clean `HEAD` equals the resolver's full
+source commit and whose checked-out branch is exactly the configured ref.
+Remote, unavailable, unresolved, or otherwise unwritable sources remain
+analysis-only. The active runtime copy is evidence only unless the resolver
+proves it is also the effective source.
 
 Use a disposable scratch instance when a command requires an instance root but
 the selected source is a checked-in source tree. Copy `manifest.yaml` and
@@ -190,7 +197,10 @@ Enter this section only after the user approves a specific plan and write scope.
 
 1. Recheck that the local config source still matches the analyzed baseline.
    Preserve unrelated local changes and stop if an approved workflow changed
-   after analysis.
+   after analysis. For a Git-ref source, recheck the separately approved
+   authoring worktree, its exact checked-out branch, clean status, and `HEAD`
+   commit; never edit another worktree merely because it points at the same
+   repository.
 2. Materialize the complete approved result in a scratch copy first. For every
    adjacent edge, run the target `goobers fix` dry-run, review its diff, apply it
    in scratch with `--write`, and validate before the next edge.
@@ -205,16 +215,20 @@ Enter this section only after the user approves a specific plan and write scope.
 
    ```sh
    # Initialized instance whose config/ is the source
-   <target> validate <instance-root>
+   <target> validate --strict <instance-root>
 
    # Checked-in config source tree
-   <target> validate --source-tree <config-source>
+   <target> validate --strict --source-tree <config-source>
    ```
 
 6. Re-run the target feature inventory, targeted canonical comparison, and
    state-graph comparison. The write is complete only when validation exits
-   successfully, no upgrade-related warning remains, every approved change is
+   successfully with no target validation warning, every approved change is
    present, and operational tuning plus unapproved customizations are unchanged.
+7. For a Git-ref source, present the cleanly validated authoring-worktree diff
+   and require a human to commit it to the configured ref. Until that commit
+   exists, report the worktree as prepared for handoff, not the effective source
+   as upgraded.
 
 Do not commit, push, deploy, run `config materialize`, or restart the daemon as
 part of this skill.

@@ -6,14 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/pmezard/go-difflib/difflib"
 	"gopkg.in/yaml.v3"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/dslmigrate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 type fixtureDocument struct {
@@ -21,22 +25,35 @@ type fixtureDocument struct {
 }
 
 type fixtureScenario struct {
-	Name       string             `json:"name"`
-	Golden     string             `json:"golden"`
-	Target     fixtureRelease     `json:"target"`
-	Workflows  []fixtureWorkflow  `json:"workflows"`
-	Drift      []fixtureDrift     `json:"drift"`
-	Migrations []fixtureMigration `json:"migrations"`
+	Name            string             `json:"name"`
+	Golden          string             `json:"golden"`
+	Scope           fixtureScope       `json:"scope"`
+	Target          fixtureRelease     `json:"target"`
+	Configs         fixtureConfigs     `json:"configs"`
+	Workflows       []fixtureWorkflow  `json:"workflows"`
+	Drift           []fixtureDrift     `json:"drift"`
+	Migrations      []fixtureMigration `json:"migrations"`
+	WriteReadiness  string             `json:"writeReadiness"`
+	ReadinessReason string             `json:"readinessReason"`
+}
+
+type fixtureScope struct {
+	CurrentBinary, TargetBinary, ContractSource, ConfigSource, CanonicalRoot string
+}
+
+type fixtureConfigs struct {
+	Current, Canonical, Proposed []string
 }
 
 type fixtureRelease struct {
-	Version, Commit, Source, Confidence string
+	Version, Ref, Commit, Source, Confidence string
 }
 
 type fixtureWorkflow struct {
 	Name, CurrentDSL, TargetDSL, TargetVersionLevel string
 	Features                                        []fixtureFeature
-	CurrentGraph, TargetGraph                       []string
+	CurrentGraph, TargetGraph, ProposedGraph        []string
+	Diagnostics                                     []string
 }
 
 type fixtureFeature struct {
@@ -45,13 +62,13 @@ type fixtureFeature struct {
 }
 
 type fixtureDrift struct {
-	Workflow, Kind, Path, Detail, Source, Confidence string
-	Plan, Dependency, Review                         string
+	Workflow, Kind, Path, Detail, Source, Confidence   string
+	Plan, ExpectedDiff, Validation, Dependency, Review string
 }
 
 type fixtureMigration struct {
-	Workflow, From, To, Tool, Dependency, Review string
-	Available                                    bool
+	Workflow, From, To, Tool, ExpectedDiff, Validation, Dependency, Review string
+	Available                                                              bool
 }
 
 type recommendation struct {
@@ -73,22 +90,47 @@ func TestAdvisorFixtures(t *testing.T) {
 			if got != string(want) {
 				t.Fatalf("advisory mismatch\n%s", unifiedDiff("golden", "actual", string(want), got))
 			}
-			for _, workflow := range scenario.Workflows {
-				for _, feature := range workflow.Features {
+			for _, field := range []string{
+				"Current binary:", "Target binary:", "Exact target ref:",
+				"Contract source:", "Config source:", "Canonical root:",
+				"Validation diagnostics:", "## Write readiness",
+				"`" + scenario.WriteReadiness + "`",
+			} {
+				if !strings.Contains(got, field) {
+					t.Errorf("advisory is missing required report field %q", field)
+				}
+			}
+			for _, workflowFixture := range scenario.Workflows {
+				for _, feature := range workflowFixture.Features {
 					featureCoverage[feature.TargetLevel] = true
 					if feature.Change != "" {
 						featureCoverage["changed"] = true
 					}
+					if _, ok := workflow.LookupFeature(workflow.FeatureID(feature.Name)); !ok {
+						t.Errorf("feature %q does not exist in the release registry", feature.Name)
+					}
 				}
-				for _, item := range recommendationsFor(workflow, scenario.Drift, scenario.Target) {
+				for _, item := range recommendationsFor(workflowFixture, scenario.Drift, scenario.Target) {
 					if item.Source == "" || item.Confidence == "" {
 						t.Errorf("recommendation lacks provenance: %+v", item)
+					}
+					if !strings.Contains(item.Source, scenario.Target.Ref) ||
+						!strings.Contains(item.Source, scenario.Target.Commit) {
+						t.Errorf("recommendation lacks exact target ref provenance: %+v", item)
 					}
 				}
 			}
 			for _, migration := range scenario.Migrations {
 				if migration.Available && !strings.Contains(migration.Tool, "goobers fix --to") {
 					t.Errorf("available migration %s -> %s does not delegate to goobers fix", migration.From, migration.To)
+				}
+				if migration.ExpectedDiff == "" || migration.Validation == "" {
+					t.Errorf("migration %s -> %s lacks an expected diff or validation command", migration.From, migration.To)
+				}
+			}
+			for _, difference := range scenario.Drift {
+				if difference.Plan != "" && (difference.ExpectedDiff == "" || difference.Validation == "") {
+					t.Errorf("planned drift %s lacks an expected diff or validation command", difference.Path)
 				}
 			}
 		})
@@ -107,6 +149,74 @@ func TestAdvisorFixtures(t *testing.T) {
 		if !featureCoverage[featureCase] {
 			t.Errorf("fixture suite does not cover a %s feature", featureCase)
 		}
+	}
+}
+
+func TestFixtureConfigsExerciseAdvisorBehavior(t *testing.T) {
+	document := loadFixtures(t)
+	for _, scenario := range document.Scenarios {
+		t.Run(scenario.Name, func(t *testing.T) {
+			current := loadFixtureConfig(t, scenario, scenario.Configs.Current, true)
+			canonical := loadFixtureConfig(t, scenario, scenario.Configs.Canonical, false)
+			proposed := loadFixtureConfig(t, scenario, scenario.Configs.Proposed, false)
+
+			for _, expected := range scenario.Workflows {
+				currentWorkflow, ok := current[expected.Name]
+				if !ok {
+					t.Fatalf("current config is missing workflow %q", expected.Name)
+				}
+				if currentWorkflow.document.DSLVersion != expected.CurrentDSL {
+					t.Errorf("%s current dslVersion = %q, want %q",
+						expected.Name, currentWorkflow.document.DSLVersion, expected.CurrentDSL)
+				}
+				if !reflect.DeepEqual(currentWorkflow.graph, expected.CurrentGraph) {
+					t.Errorf("%s current graph = %v, want %v",
+						expected.Name, currentWorkflow.graph, expected.CurrentGraph)
+				}
+
+				proposedWorkflow, ok := proposed[expected.Name]
+				if !ok {
+					t.Fatalf("proposed config is missing workflow %q", expected.Name)
+				}
+				if proposedWorkflow.document.DSLVersion != expected.TargetDSL {
+					t.Errorf("%s proposed dslVersion = %q, want %q",
+						expected.Name, proposedWorkflow.document.DSLVersion, expected.TargetDSL)
+				}
+				if !reflect.DeepEqual(proposedWorkflow.graph, expected.ProposedGraph) {
+					t.Errorf("%s proposed graph = %v, want %v",
+						expected.Name, proposedWorkflow.graph, expected.ProposedGraph)
+				}
+
+				canonicalWorkflow, hasCanonical := canonical[expected.Name]
+				if expected.TargetGraph == nil {
+					if hasCanonical {
+						t.Errorf("custom workflow %q unexpectedly has a canonical peer", expected.Name)
+					}
+				} else if !hasCanonical {
+					t.Errorf("canonical config is missing workflow %q", expected.Name)
+				} else if !reflect.DeepEqual(canonicalWorkflow.graph, expected.TargetGraph) {
+					t.Errorf("%s canonical graph = %v, want %v",
+						expected.Name, canonicalWorkflow.graph, expected.TargetGraph)
+				}
+
+				for _, feature := range expected.Features {
+					if !currentWorkflow.features[feature.Name] && !proposedWorkflow.features[feature.Name] {
+						t.Errorf("workflow %q fixtures do not exercise reported feature %q", expected.Name, feature.Name)
+					}
+				}
+				if got, want := tuningFromWorkflow(proposedWorkflow.document), tuningFromWorkflow(currentWorkflow.document); !reflect.DeepEqual(got, want) {
+					t.Errorf("%s operational tuning changed: got %+v, want %+v", expected.Name, got, want)
+				}
+			}
+
+			assertDriftBehavior(t, scenario, current, canonical, proposed)
+			if scenario.Name == "already-current" {
+				if !reflect.DeepEqual(configDocuments(current), configDocuments(canonical)) ||
+					!reflect.DeepEqual(configDocuments(current), configDocuments(proposed)) {
+					t.Fatal("already-current fixtures differ")
+				}
+			}
+		})
 	}
 }
 
@@ -202,13 +312,17 @@ func TestUpgradeSkillMatchesFixtureContract(t *testing.T) {
 		"## 6. Explicit write path",
 	)
 	for _, directive := range []string{
+		"`kind: git` source is the committed configured ref",
+		"authoring worktree",
 		"`features --used` returns an instance-wide union",
 		"`config diff` classifies these paths as",
 		"delegate the mechanical transform to",
 		"one adjacent compatibility edge",
 		"Every recommendation must carry source provenance",
 		"Never copy an entire canonical",
-		"no upgrade-related warning remains",
+		"validate --strict",
+		"no target validation warning",
+		"require a human to commit it to the configured ref",
 		"Do not commit, push, deploy",
 	} {
 		if !strings.Contains(skill, directive) {
@@ -239,9 +353,15 @@ func readFixture(t *testing.T, name string) []byte {
 func renderAdvisory(scenario fixtureScenario) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# Upgrade advisory: %s\n\n", scenario.Name)
-	fmt.Fprintf(&out, "Target release: `%s` (`%s`)\n\n", scenario.Target.Version, scenario.Target.Commit)
-	fmt.Fprintf(&out, "Source provenance: %s\n\n", scenario.Target.Source)
-	fmt.Fprintf(&out, "Compatibility confidence: `%s`\n", scenario.Target.Confidence)
+	out.WriteString("## Scope and provenance\n\n")
+	fmt.Fprintf(&out, "- Current binary: %s\n", scenario.Scope.CurrentBinary)
+	fmt.Fprintf(&out, "- Target binary: %s\n", scenario.Scope.TargetBinary)
+	fmt.Fprintf(&out, "- Exact target ref: `%s` at commit `%s`\n", scenario.Target.Ref, scenario.Target.Commit)
+	fmt.Fprintf(&out, "- Contract source: %s\n", scenario.Scope.ContractSource)
+	fmt.Fprintf(&out, "- Config source: %s\n", scenario.Scope.ConfigSource)
+	fmt.Fprintf(&out, "- Canonical root: %s\n", scenario.Scope.CanonicalRoot)
+	fmt.Fprintf(&out, "- Source provenance: %s\n", scenario.Target.Source)
+	fmt.Fprintf(&out, "- Compatibility confidence: `%s`\n", scenario.Target.Confidence)
 
 	changeCount := len(scenario.Migrations)
 	for _, workflow := range scenario.Workflows {
@@ -258,11 +378,24 @@ func renderAdvisory(scenario fixtureScenario) string {
 			fmt.Fprintf(&out, "- `%s`: `%s` - %s. (source: %s; confidence: %s)\n",
 				feature.Name, feature.TargetLevel, sentence(detail), feature.Source, feature.Confidence)
 		}
-		if reflect.DeepEqual(workflow.CurrentGraph, workflow.TargetGraph) {
-			fmt.Fprintf(&out, "\nState graph: unchanged: `%s`\n", strings.Join(workflow.CurrentGraph, "; "))
+		out.WriteString("\nValidation diagnostics:\n")
+		for _, diagnostic := range workflow.Diagnostics {
+			fmt.Fprintf(&out, "- %s\n", diagnostic)
+		}
+		if workflow.TargetGraph == nil {
+			fmt.Fprintf(&out, "\nCurrent state graph: `%s`\n", strings.Join(workflow.CurrentGraph, "; "))
+			out.WriteString("Target canonical state graph: no same-name canonical workflow exists.\n")
+		} else if reflect.DeepEqual(workflow.CurrentGraph, workflow.TargetGraph) {
+			fmt.Fprintf(&out, "\nTarget canonical state graph: unchanged: `%s`\n", strings.Join(workflow.CurrentGraph, "; "))
 		} else {
-			fmt.Fprintf(&out, "\nState-graph diff:\n- current: `%s`\n- target: `%s`\n",
+			fmt.Fprintf(&out, "\nTarget canonical state-graph diff:\n- current: `%s`\n- target: `%s`\n",
 				strings.Join(workflow.CurrentGraph, "; "), strings.Join(workflow.TargetGraph, "; "))
+		}
+		if reflect.DeepEqual(workflow.CurrentGraph, workflow.ProposedGraph) {
+			fmt.Fprintf(&out, "Proposed state graph: unchanged: `%s`\n", strings.Join(workflow.ProposedGraph, "; "))
+		} else {
+			fmt.Fprintf(&out, "Proposed state-graph diff:\n- current: `%s`\n- proposed: `%s`\n",
+				strings.Join(workflow.CurrentGraph, "; "), strings.Join(workflow.ProposedGraph, "; "))
 		}
 
 		items := recommendationsFor(workflow, scenario.Drift, scenario.Target)
@@ -281,23 +414,25 @@ func renderAdvisory(scenario fixtureScenario) string {
 	step := 1
 	for _, migration := range scenario.Migrations {
 		fmt.Fprintf(&out,
-			"%d. `%s`: in an isolated scratch copy, run `%s` for `%s -> %s`; dependency: %s; review: %s. Apply that edge only after review, then validate it with the target interpreter.\n",
-			step, migration.Workflow, migration.Tool, migration.From, migration.To, migration.Dependency, migration.Review)
+			"%d. `%s`: in an isolated scratch copy, run `%s` for `%s -> %s`; dependency: %s; expected file diff: %s; review: %s; validation command: `%s`.\n",
+			step, migration.Workflow, migration.Tool, migration.From, migration.To, migration.Dependency,
+			migration.ExpectedDiff, migration.Review, migration.Validation)
 		step++
 	}
 	for _, drift := range scenario.Drift {
 		if drift.Plan == "" {
 			continue
 		}
-		fmt.Fprintf(&out, "%d. `%s`: %s; dependency: %s; review: %s.\n",
-			step, drift.Workflow, drift.Plan, drift.Dependency, drift.Review)
+		fmt.Fprintf(&out, "%d. `%s`: %s; dependency: %s; expected file diff: %s; review: %s; validation command: `%s`.\n",
+			step, drift.Workflow, drift.Plan, drift.Dependency, drift.ExpectedDiff, drift.Review, drift.Validation)
 		step++
 	}
 	if changeCount == 0 {
 		fmt.Fprintf(&out, "%d. No write: all workflows are already at the target and no compatibility or structural change is identified. Retain the target validation baseline.\n", step)
 	} else {
-		fmt.Fprintf(&out, "%d. Run target `goobers validate`, targeted `goobers config diff`, and the state-graph comparison. A write is complete only when target validation is clean and approved tuning is unchanged.\n", step)
+		fmt.Fprintf(&out, "%d. Run target `goobers validate --strict`, targeted `goobers config diff`, and the state-graph comparison. A write is complete only when target validation has no warnings and approved tuning is unchanged.\n", step)
 	}
+	fmt.Fprintf(&out, "\n## Write readiness\n\n`%s`: %s\n", scenario.WriteReadiness, scenario.ReadinessReason)
 	return out.String()
 }
 
@@ -311,12 +446,15 @@ func recommendationsFor(
 		items = append(items, recommendation{
 			Class:      "required compatibility change",
 			Text:       fmt.Sprintf("dslVersion `%s` is unsupported; move to `%s`", workflow.CurrentDSL, workflow.TargetDSL),
-			Source:     target.Source,
+			Source:     withTargetProvenance(target.Source, target),
 			Confidence: target.Confidence,
 		})
 	}
 	for _, feature := range workflow.Features {
-		item := recommendation{Source: feature.Source, Confidence: feature.Confidence}
+		item := recommendation{
+			Source:     withTargetProvenance(feature.Source, target),
+			Confidence: feature.Confidence,
+		}
 		switch feature.TargetLevel {
 		case "removed":
 			item.Class = "required compatibility change"
@@ -342,7 +480,7 @@ func recommendationsFor(
 			continue
 		}
 		item := recommendation{
-			Source:     difference.Source,
+			Source:     withTargetProvenance(difference.Source, target),
 			Confidence: difference.Confidence,
 		}
 		switch difference.Kind {
@@ -357,6 +495,333 @@ func recommendationsFor(
 		items = append(items, item)
 	}
 	return items
+}
+
+func withTargetProvenance(source string, target fixtureRelease) string {
+	return fmt.Sprintf("%s; target %s at commit %s", source, target.Ref, target.Commit)
+}
+
+type loadedFixtureWorkflow struct {
+	document apiv1.Workflow
+	graph    []string
+	features map[string]bool
+}
+
+func loadFixtureConfig(
+	t *testing.T,
+	scenario fixtureScenario,
+	fixtures []string,
+	allowInvalid bool,
+) map[string]loadedFixtureWorkflow {
+	t.Helper()
+	if len(fixtures) == 0 {
+		t.Fatal("fixture config set is empty")
+	}
+
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	if err := os.Remove(filepath.Join(workflowDir, "default-implement.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	var workflowNames []string
+	for _, name := range fixtures {
+		data := readFixture(t, name)
+		var document apiv1.Workflow
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			t.Fatalf("parse fixture %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(workflowDir, document.Name+".yaml"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		workflowNames = append(workflowNames, document.Name)
+	}
+	sort.Strings(workflowNames)
+	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
+	gooberData, err := os.ReadFile(gooberPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflowRefs strings.Builder
+	for _, name := range workflowNames {
+		fmt.Fprintf(&workflowRefs, "    - %s\n", name)
+	}
+	updatedGoober := strings.Replace(string(gooberData), "    - default-implement\n", workflowRefs.String(), 1)
+	if err := os.WriteFile(gooberPath, []byte(updatedGoober), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		set     *instance.ConfigSet
+		report  *validate.Report
+		loadErr error
+	)
+	if allowInvalid {
+		set, report, loadErr = instance.LoadConfigDirForComparison(filepath.Join(root, "config"))
+	} else {
+		set, report, loadErr = instance.LoadConfigDir(filepath.Join(root, "config"))
+	}
+	if set == nil {
+		t.Fatalf("load fixture config: %v (report: %+v)", loadErr, report)
+	}
+	if !allowInvalid && loadErr != nil {
+		t.Fatalf("target interpreter rejected fixture config: %v", loadErr)
+	}
+	if allowInvalid && loadErr != nil && !scenarioAllowsInvalidCurrent(scenario) {
+		t.Fatalf("current fixture config is unexpectedly invalid: %v (report: %+v)", loadErr, report)
+	}
+	if report != nil && len(report.Warnings()) != 0 &&
+		(!allowInvalid || !scenarioAllowsInvalidCurrent(scenario)) {
+		t.Fatalf("target validation is not clean: %v", report.Warnings())
+	}
+
+	loaded := make(map[string]loadedFixtureWorkflow, len(set.Workflows))
+	for _, document := range set.Workflows {
+		definition := workflow.Definition{
+			Name:       document.Name,
+			Version:    1,
+			DSLVersion: document.DSLVersion,
+			Spec:       document.Spec,
+		}
+		machine, compileErr := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+		if compileErr != nil && allowInvalid && strings.Contains(compileErr.Error(), "not supported") {
+			definition.DSLVersion = targetDSLFor(scenario, document.Name)
+			machine, compileErr = workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+		}
+		if compileErr != nil && !allowInvalid {
+			t.Fatalf("compile fixture workflow %q: %v", document.Name, compileErr)
+		}
+		features, featureErr := workflow.FeaturesForWorkflow(definition)
+		if featureErr != nil {
+			t.Fatalf("discover fixture workflow %q features: %v", document.Name, featureErr)
+		}
+		featureSet := make(map[string]bool, len(features))
+		for _, feature := range features {
+			featureSet[string(feature.ID)] = true
+		}
+		graph := graphLinesFromDocument(document)
+		if compileErr == nil {
+			graph = graphLines(machine.Graph())
+		}
+		loaded[document.Name] = loadedFixtureWorkflow{
+			document: document,
+			graph:    graph,
+			features: featureSet,
+		}
+	}
+	return loaded
+}
+
+func targetDSLFor(scenario fixtureScenario, name string) string {
+	for _, candidate := range scenario.Workflows {
+		if candidate.Name == name {
+			return candidate.TargetDSL
+		}
+	}
+	return ""
+}
+
+func scenarioAllowsInvalidCurrent(scenario fixtureScenario) bool {
+	for _, candidate := range scenario.Workflows {
+		if candidate.TargetVersionLevel == "unsupported" {
+			return true
+		}
+	}
+	return false
+}
+
+func graphLines(graph workflow.Graph) []string {
+	var lines []string
+	for _, node := range graph.Nodes {
+		var edges []workflow.GraphEdge
+		for _, edge := range graph.Edges {
+			if edge.Source == node.ID {
+				edges = append(edges, edge)
+			}
+		}
+		if node.Kind != workflow.GraphNodeGate {
+			if len(edges) != 1 {
+				lines = append(lines, fmt.Sprintf("%s -> <invalid>", node.ID))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s -> %s", node.ID, graphTarget(edges[0])))
+			continue
+		}
+		branches := make([]string, 0, len(edges))
+		for _, edge := range edges {
+			branches = append(branches, fmt.Sprintf("%s -> %s", edge.Outcome, graphTarget(edge)))
+		}
+		lines = append(lines, fmt.Sprintf("%s(%s)", node.ID, strings.Join(branches, ", ")))
+	}
+	return lines
+}
+
+func graphLinesFromDocument(document apiv1.Workflow) []string {
+	lines := make([]string, 0, len(document.Spec.Tasks)+len(document.Spec.Gates))
+	for _, task := range document.Spec.Tasks {
+		lines = append(lines, fmt.Sprintf("%s -> %s", task.Name, rawGraphTarget(task.Next)))
+	}
+	for _, gate := range document.Spec.Gates {
+		outcomes := make([]string, 0, len(gate.Branches))
+		for outcome := range gate.Branches {
+			outcomes = append(outcomes, outcome)
+		}
+		sort.Slice(outcomes, func(i, j int) bool {
+			return outcomeRank(outcomes[i]) < outcomeRank(outcomes[j])
+		})
+		branches := make([]string, 0, len(outcomes))
+		for _, outcome := range outcomes {
+			branches = append(branches, fmt.Sprintf("%s -> %s", outcome, rawGraphTarget(gate.Branches[outcome])))
+		}
+		lines = append(lines, fmt.Sprintf("%s(%s)", gate.Name, strings.Join(branches, ", ")))
+	}
+	return lines
+}
+
+func outcomeRank(outcome string) string {
+	switch outcome {
+	case "pass":
+		return "0"
+	case "fail":
+		return "1"
+	default:
+		return "2" + outcome
+	}
+}
+
+func rawGraphTarget(target string) string {
+	switch target {
+	case "":
+		return "done"
+	case "@abort":
+		return "abort"
+	case "@escalate":
+		return "escalate"
+	default:
+		return target
+	}
+}
+
+func graphTarget(edge workflow.GraphEdge) string {
+	switch edge.Terminal {
+	case workflow.GraphTerminalComplete:
+		return "done"
+	case workflow.GraphTerminalAbort:
+		return "abort"
+	case workflow.GraphTerminalEscalate:
+		return "escalate"
+	default:
+		return edge.Target
+	}
+}
+
+func assertDriftBehavior(
+	t *testing.T,
+	scenario fixtureScenario,
+	current, canonical, proposed map[string]loadedFixtureWorkflow,
+) {
+	t.Helper()
+	for _, difference := range scenario.Drift {
+		currentWorkflow := current[difference.Workflow]
+		proposedWorkflow := proposed[difference.Workflow]
+		switch difference.Kind {
+		case "tuning":
+			canonicalWorkflow, ok := canonical[difference.Workflow]
+			if !ok {
+				t.Errorf("tuning drift %q has no canonical workflow", difference.Path)
+				continue
+			}
+			currentValue := tuningValue(currentWorkflow.document, difference.Path)
+			canonicalValue := tuningValue(canonicalWorkflow.document, difference.Path)
+			proposedValue := tuningValue(proposedWorkflow.document, difference.Path)
+			if reflect.DeepEqual(currentValue, canonicalValue) {
+				t.Errorf("tuning drift %q is not present in the fixtures", difference.Path)
+			}
+			if !reflect.DeepEqual(currentValue, proposedValue) {
+				t.Errorf("tuning drift %q was not preserved", difference.Path)
+			}
+		case "structural":
+			taskName := bracketedName(difference.Path)
+			canonicalWorkflow, ok := canonical[difference.Workflow]
+			if !ok {
+				t.Errorf("structural drift %q has no canonical workflow", difference.Path)
+				continue
+			}
+			if hasTask(currentWorkflow.document, taskName) ||
+				!hasTask(canonicalWorkflow.document, taskName) ||
+				!hasTask(proposedWorkflow.document, taskName) {
+				t.Errorf("structural drift %q is not represented by a surgical proposed patch", difference.Path)
+			}
+		case "custom":
+			if _, ok := canonical[difference.Workflow]; ok {
+				t.Errorf("custom workflow %q unexpectedly has a canonical peer", difference.Workflow)
+			}
+			if !reflect.DeepEqual(currentWorkflow.document.Spec, proposedWorkflow.document.Spec) {
+				t.Errorf("custom workflow %q changed in the proposed config", difference.Workflow)
+			}
+		default:
+			t.Errorf("unknown drift kind %q", difference.Kind)
+		}
+	}
+}
+
+func tuningValue(document apiv1.Workflow, path string) any {
+	switch path {
+	case "spec.triggers[0].schedule":
+		if len(document.Spec.Triggers) == 0 {
+			return ""
+		}
+		return document.Spec.Triggers[0].Schedule
+	case "spec.readiness.maxConcurrentRuns":
+		return document.Spec.Readiness.MaxConcurrentRuns
+	default:
+		return nil
+	}
+}
+
+func bracketedName(path string) string {
+	start := strings.IndexByte(path, '[')
+	end := strings.LastIndexByte(path, ']')
+	if start < 0 || end <= start {
+		return ""
+	}
+	return path[start+1 : end]
+}
+
+func hasTask(document apiv1.Workflow, name string) bool {
+	for _, task := range document.Spec.Tasks {
+		if task.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func tuningFromWorkflow(document apiv1.Workflow) tuning {
+	var value tuning
+	value.Triggers = make([]struct {
+		Type     string `yaml:"type"`
+		Schedule string `yaml:"schedule"`
+	}, len(document.Spec.Triggers))
+	for i, trigger := range document.Spec.Triggers {
+		value.Triggers[i].Type = string(trigger.Type)
+		value.Triggers[i].Schedule = trigger.Schedule
+	}
+	value.Readiness.MaxConcurrentRuns = int(document.Spec.Readiness.MaxConcurrentRuns)
+	value.Readiness.MaxRunsPerHour = int(document.Spec.Readiness.MaxRunsPerHour)
+	value.Readiness.MaxRunsPerDay = int(document.Spec.Readiness.MaxRunsPerDay)
+	value.Readiness.MaxOpenPRs = int(document.Spec.Readiness.MaxOpenPRs)
+	return value
+}
+
+func configDocuments(config map[string]loadedFixtureWorkflow) map[string]apiv1.Workflow {
+	documents := make(map[string]apiv1.Workflow, len(config))
+	for name, loaded := range config {
+		documents[name] = loaded.document
+	}
+	return documents
 }
 
 func sentence(value string) string {
