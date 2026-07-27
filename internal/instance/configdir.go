@@ -162,6 +162,9 @@ func readDocs(root string) ([]rawDoc, error) {
 			return err
 		}
 		if d.IsDir() {
+			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if gooberassets.IsSourceDir(path) {
 				return filepath.SkipDir
 			}

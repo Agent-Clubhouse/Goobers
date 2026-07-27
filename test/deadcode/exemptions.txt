@@ -79,7 +79,6 @@ github.com/goobers/goobers/internal/httpapi.withEventSweepInterval # Event-strea
 github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/instance.InitGuided # Direct guided scaffold seam retained for focused generated-config and validation tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 

@@ -1,0 +1,55 @@
+[
+  {
+    "action": "stub-sample",
+    "version": 1,
+    "created": [
+      ".github/workflows/ci.yml",
+      ".gitignore",
+      "README.md",
+      "package-lock.json",
+      "package.json",
+      "sample.json",
+      "seed-issues.json",
+      "src/index.ts",
+      "src/server.ts",
+      "test/sample.test.ts",
+      "test/server.test.ts",
+      "tsconfig.json"
+    ],
+    "skipped": [
+      "issue:reject-empty-task-titles (pending: work-tracking target not supplied)",
+      "issue:make-completion-idempotent (pending: work-tracking target not supplied)",
+      "issue:filter-tasks-by-status (pending: work-tracking target not supplied)"
+    ],
+    "path": "\u003csample\u003e",
+    "nextCommand": "goobers init --template=quickstart ./tutorial-instance"
+  },
+  {
+    "action": "seed-config-source",
+    "version": 1,
+    "created": [
+      "instance.yaml.example",
+      "gaggles/example/gaggle.yaml",
+      "gaggles/example/goobers/implementer/goober.yaml",
+      "gaggles/example/goobers/implementer/instructions.md",
+      "gaggles/example/goobers/reviewer/goober.yaml",
+      "gaggles/example/goobers/reviewer/instructions.md",
+      "gaggles/example/workflows/quickstart.yaml",
+      "manifest.yaml"
+    ],
+    "skipped": [],
+    "path": "\u003csource-tree\u003e",
+    "nextCommand": "goobers validate --source-tree --json '\u003csource-tree\u003e'"
+  },
+  {
+    "action": "stub-agent-instructions",
+    "version": 1,
+    "created": [
+      ".goobers/agent-toolkit",
+      "AGENTS.md"
+    ],
+    "skipped": [],
+    "path": "\u003csource-tree\u003e",
+    "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'"
+  }
+]

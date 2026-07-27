@@ -144,6 +144,32 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDirIgnoresHiddenRepositoryMetadata(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(root, "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolkitManifest := filepath.Join(root, ".goobers", "agent-toolkit", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(toolkitManifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(toolkitManifest, manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if set.Manifest == nil {
+		t.Fatalf("hidden metadata changed loaded config: %+v", set)
+	}
+}
+
 func TestLoadConfigDirMissingDir(t *testing.T) {
 	set, report, err := LoadConfigDir("../../does/not/exist")
 	if err == nil {

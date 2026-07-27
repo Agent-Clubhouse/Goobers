@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -9,8 +10,105 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
+	base := onboardingTestTempDir(t)
+	sampleRoot := filepath.Join(base, "sample")
+	sourceRoot := filepath.Join(base, "config-source")
+	instanceRoot := filepath.Join(base, "instance")
+	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runAgentKitTestGit(t, sourceRoot, "init", "--quiet")
+	invocations := [][]string{
+		{
+			"onboarding", "stub-sample",
+			"--destination", sampleRoot,
+			"--json",
+		},
+		{
+			"init",
+			"--template=quickstart",
+			"--source-tree", sourceRoot,
+			"--json",
+		},
+		{
+			"onboarding", "stub-agent-instructions",
+			"--source-tree", sourceRoot,
+			"--harness", "generic",
+			"--json",
+		},
+	}
+
+	results := make([]onboardingActionResult, 0, len(invocations))
+	for _, args := range invocations {
+		code, stdout, stderr := runArgs(t, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		var result onboardingActionResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("%v: decode result: %v\n%s", args, err, stdout)
+		}
+		if result.Version != onboardingActionVersion {
+			t.Fatalf("%v: version=%d, want %d", args, result.Version, onboardingActionVersion)
+		}
+		switch result.Action {
+		case stubSampleAction:
+			result.Path = "<sample>"
+		case seedConfigSourceAction, stubAgentInstructionsAction:
+			result.Path = "<source-tree>"
+			result.NextCommand = strings.ReplaceAll(
+				result.NextCommand,
+				absolutePath(sourceRoot),
+				"<source-tree>",
+			)
+		default:
+			t.Fatalf("%v: unexpected action %q", args, result.Action)
+		}
+		results = append(results, result)
+	}
+
+	assertCleanValidation := func(args ...string) {
+		t.Helper()
+		code, stdout, stderr := runArgs(t, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		var result diagnosticsEnvelope
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("%v: decode validation: %v\n%s", args, err, stdout)
+		}
+		if !result.OK || result.Counts.Errors != 0 || result.Counts.Warnings != 0 || len(result.Findings) != 0 {
+			t.Fatalf("%v: validation was not clean: %s", args, stdout)
+		}
+	}
+	assertCleanValidation("validate", "--source-tree", "--json", sourceRoot)
+
+	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("load composed config source: %v", err)
+	}
+	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
+		t.Fatalf("materialize composed instance: %v", err)
+	}
+	assertCleanValidation("validate", "--json", instanceRoot)
+
+	var golden bytes.Buffer
+	encoder := json.NewEncoder(&golden)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(results); err != nil {
+		t.Fatal(err)
+	}
+	assertGoldenFile(
+		t,
+		filepath.Join("testdata", "onboarding", "composed.golden.json"),
+		golden.String(),
+	)
+}
 
 func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 	for _, fixture := range []string{"empty", "partial", "populated"} {

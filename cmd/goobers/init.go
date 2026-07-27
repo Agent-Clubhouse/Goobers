@@ -233,58 +233,37 @@ func ensureInitCompleted(root string) error {
 	return instanceLog.Close()
 }
 
-const configSourceActionVersion = 1
-
-type configSourceActionEnvelope struct {
-	Action      string   `json:"action"`
-	Version     int      `json:"version"`
-	Created     []string `json:"created"`
-	Skipped     []string `json:"skipped"`
-	Path        string   `json:"path"`
-	NextCommand string   `json:"nextCommand"`
-}
-
 func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
-	result, err := instance.SeedQuickstartConfigSource(root)
+	envelope, err := executeSeedConfigSourceAction(root, nil, goos)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	var validationOutput strings.Builder
 	if code := runValidate(
-		[]string{"--source-tree", "--json", result.Root},
+		[]string{"--source-tree", "--json", envelope.Path},
 		&validationOutput,
 		&validationOutput,
 	); code != 0 {
 		pf(stderr, "error: seeded config source failed validation\n%s", validationOutput.String())
 		return code
 	}
-	abs := absolutePath(result.Root)
-	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs, goos)
-	envelope := configSourceActionEnvelope{
-		Action:      "seed-config-source",
-		Version:     configSourceActionVersion,
-		Created:     result.Created,
-		Skipped:     result.Skipped,
-		Path:        abs,
-		NextCommand: nextCommand,
-	}
 	if asJSON {
-		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, envelope); err != nil {
-			pf(stderr, "error: encode config-source result: %v\n", err)
+		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, envelope); err != nil {
+			pf(stderr, "error: encode onboarding action result: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
-	pf(stdout, "seeded quickstart config source at %s\n", abs)
-	for _, created := range result.Created {
+	pf(stdout, "seeded quickstart config source at %s\n", envelope.Path)
+	for _, created := range envelope.Created {
 		pf(stdout, "  created  %s\n", created)
 	}
-	for _, skipped := range result.Skipped {
+	for _, skipped := range envelope.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", skipped)
 	}
-	pf(stdout, "\nNext: %s\n", nextCommand)
+	pf(stdout, "\nNext: %s\n", envelope.NextCommand)
 	return 0
 }
 

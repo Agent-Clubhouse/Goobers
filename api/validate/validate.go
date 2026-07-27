@@ -487,6 +487,9 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if err != nil {
 			return err
 		}
+		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if gooberassets.IsSourceDir(path) {
 			if assetErr := gooberassets.Validate(path); assetErr != nil {
 				rel, _ := filepath.Rel(root, path)

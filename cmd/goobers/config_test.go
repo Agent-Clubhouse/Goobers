@@ -115,8 +115,8 @@ func TestConfigMaterializeUsesRecordedSource(t *testing.T) {
 		WorkTrackingTokenEnv: "ISSUES_TOKEN",
 		Workflows:            []string{instance.GuidedWorkflowWorkNomination},
 	}
-	if err := instance.InitGuidedSource(sourceRoot, opts); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if err := seedGuidedSourceForTest(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
 	if err != nil {
