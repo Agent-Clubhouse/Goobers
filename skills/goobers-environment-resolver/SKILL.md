@@ -158,7 +158,8 @@ manifest:
 2. Before opening an asset, require its path to start with
    `payload/.goobers/agent-toolkit/`, contain no `..` or backslash segment, and
    resolve beneath the candidate config repository after removing only the
-   leading `payload/`.
+   leading `payload/`. Reject a symbolic link in any path component between the
+   config repository and the asset.
 3. Require every listed asset to be a regular, non-symbolic-link file. Recompute
    and compare its SHA-256, byte size, and permission mode. Validate every
    asset, not only the paths needed by the next skill.
