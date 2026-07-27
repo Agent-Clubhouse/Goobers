@@ -2,8 +2,8 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha5` (`api/v1alpha1.StageContractVersion`). The TBH-1 extension below
-> is a proposed design target, not part of `v1alpha5`; implementation must bump the
+> version: `v1alpha6` (`api/v1alpha1.StageContractVersion`). The TBH-1 extension below
+> is a proposed design target, not part of `v1alpha6`; implementation must bump the
 > contract version and land the corresponding Go types and closed JSON Schemas.
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
@@ -757,7 +757,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha5` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha6` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -765,7 +765,8 @@ from the diff alone.
   checkouts for a gaggle's `additionalRepos` (MGV-11 #1286); `v1alpha4` admits
   `no-work` through the closed result schema for both deterministic and agentic
   stage producers; `v1alpha5` adds paired branch attribution to artifact context
-  pointers used at parallel joins.
+  pointers used at parallel joins; `v1alpha6` admits the optional `repoRef.project`
+  invocation field for Azure DevOps repository identity.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a
