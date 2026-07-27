@@ -337,6 +337,31 @@ func TestRemoteReleaseRejectsMismatchedContentObject(t *testing.T) {
 	}
 }
 
+func TestVerifyToolkitRejectsSymlinkedTrustRoots(t *testing.T) {
+	root := t.TempDir()
+	writeToolkit(t, root, fixtureToolkit{
+		ConfigRoot: "external", Version: "v1.2.3", Commit: strings.Repeat("a", 40),
+	})
+	for _, test := range []struct{ name, target, link string }{
+		{"toolkit root", "external/.goobers/agent-toolkit", ".goobers/agent-toolkit"},
+		{"intermediate component", "external/.goobers", ".goobers"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-"))
+			link := filepath.Join(config, filepath.FromSlash(test.link))
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(fixturePath(root, test.target), link); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+			if _, ok := verifyToolkit(config, binaryIdentity{}, nil, false); ok {
+				t.Fatal("toolkit outside the config trust root was accepted through a symlink")
+			}
+		})
+	}
+}
+
 func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) resolverReport {
 	report := resolverReport{
 		CurrentRole: "unresolved",
@@ -566,7 +591,10 @@ func verifyToolkit(
 		return contractReport{}, false
 	}
 	root := filepath.Join(config, agentkit.InstalledRoot)
-	manifestData, ok := secureFile(filepath.Join(root, "manifest.json"))
+	if !secureDirectoryUnder(config, root) {
+		return contractReport{}, false
+	}
+	manifestData, _, ok := secureFileUnder(config, filepath.Join(root, "manifest.json"))
 	if !ok {
 		return contractReport{}, false
 	}
@@ -580,10 +608,12 @@ func verifyToolkit(
 		if err != nil || inventory[asset.Path] {
 			return contractReport{}, false
 		}
-		data, ok := secureFile(filepath.Join(config, filepath.FromSlash(installed)))
-		info, statErr := os.Lstat(filepath.Join(config, filepath.FromSlash(installed)))
+		data, info, ok := secureFileUnder(config, filepath.Join(config, filepath.FromSlash(installed)))
+		if !ok {
+			return contractReport{}, false
+		}
 		sum := sha256.Sum256(data)
-		if !ok || statErr != nil || fmt.Sprintf("%x", sum) != asset.SHA256 ||
+		if fmt.Sprintf("%x", sum) != asset.SHA256 ||
 			int64(len(data)) != asset.Size || fmt.Sprintf("%04o", info.Mode().Perm()) != asset.Mode {
 			return contractReport{}, false
 		}
@@ -1167,6 +1197,47 @@ func secureFile(path string) ([]byte, bool) {
 	}
 	data, err := os.ReadFile(path)
 	return data, err == nil
+}
+
+func secureDirectoryUnder(root, path string) bool {
+	info, ok := securePathUnder(root, path)
+	return ok && info.IsDir()
+}
+
+func secureFileUnder(root, path string) ([]byte, fs.FileInfo, bool) {
+	info, ok := securePathUnder(root, path)
+	if !ok || !info.Mode().IsRegular() {
+		return nil, nil, false
+	}
+	data, err := os.ReadFile(path)
+	return data, info, err == nil
+}
+
+func securePathUnder(root, path string) (fs.FileInfo, bool) {
+	root, rootErr := filepath.Abs(root)
+	path, pathErr := filepath.Abs(path)
+	if rootErr != nil || pathErr != nil || !pathWithin(path, root) {
+		return nil, false
+	}
+	var target fs.FileInfo
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || current != path && !info.IsDir() {
+			return nil, false
+		}
+		if current == path {
+			target = info
+		}
+		if current == root {
+			break
+		}
+		if filepath.Dir(current) == current {
+			return nil, false
+		}
+	}
+	canonicalRoot, rootErr := filepath.EvalSymlinks(root)
+	canonicalPath, pathErr := filepath.EvalSymlinks(path)
+	return target, rootErr == nil && pathErr == nil && pathWithin(canonicalPath, canonicalRoot)
 }
 
 func isInstance(root string) bool {
