@@ -224,6 +224,63 @@ func TestFallbackRejectsSchemaValidIncompleteRequirementInventory(t *testing.T) 
 		t.Fatal(err)
 	}
 	const removed = "payload/.goobers/agent-toolkit/docs/requirements/workflow.md"
+	removeToolkitInventoryAsset(t, root, manifestPath, &manifest, removed)
+	if _, _, ok := verifyToolkitManifest(root); ok {
+		t.Fatal("fallback verifier accepted an incomplete requirements inventory")
+	}
+}
+
+func TestFallbackRejectsSchemaValidMissingDeclaredAssets(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(toolkitManifest) string
+	}{
+		{
+			name: "adapter",
+			path: func(manifest toolkitManifest) string {
+				return manifest.Adapters[0].Path
+			},
+		},
+		{
+			name: "skill",
+			path: func(manifest toolkitManifest) string {
+				return agentkit.ProductRoot + "/skills/" + manifest.Adapters[0].Skills[0] + "/SKILL.md"
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixtureToolkit(t, root, fixtureToolkit{
+				ConfigRoot: ".",
+				Version:    "v1.2.3",
+				Commit:     "abc1230000000000000000000000000000000000",
+			})
+			manifestPath := filepath.Join(root, agentkit.InstalledManifestPath)
+			manifestData, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := agentkit.DecodeManifest(manifestData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			removed := tt.path(manifest)
+			removeToolkitInventoryAsset(t, root, manifestPath, &manifest, removed)
+			if _, _, ok := verifyToolkitManifest(root); ok {
+				t.Fatalf("fallback verifier accepted missing declared %s asset %s", tt.name, removed)
+			}
+		})
+	}
+}
+
+func removeToolkitInventoryAsset(
+	t *testing.T,
+	root, manifestPath string,
+	manifest *toolkitManifest,
+	removed string,
+) {
+	t.Helper()
 	assets := manifest.Assets[:0]
 	for _, asset := range manifest.Assets {
 		if asset.Path != removed {
@@ -234,7 +291,7 @@ func TestFallbackRejectsSchemaValidIncompleteRequirementInventory(t *testing.T) 
 		t.Fatalf("canonical fixture does not contain %s", removed)
 	}
 	manifest.Assets = assets
-	manifestData, err = json.MarshalIndent(manifest, "", "  ")
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,9 +308,6 @@ func TestFallbackRejectsSchemaValidIncompleteRequirementInventory(t *testing.T) 
 	}
 	if err := os.Remove(filepath.Join(root, filepath.FromSlash(installed))); err != nil {
 		t.Fatal(err)
-	}
-	if _, _, ok := verifyToolkitManifest(root); ok {
-		t.Fatal("fallback verifier accepted an incomplete requirements inventory")
 	}
 }
 

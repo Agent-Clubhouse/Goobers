@@ -86,6 +86,8 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"local Git config source",
 		"remote Git config source",
 		"remote Git config source without provider access",
+		"default instance config source",
+		"reject installed toolkit DSL mismatch",
 	} {
 		if !runs[name] {
 			t.Errorf("resolver fixture suite is missing %q", name)
@@ -104,6 +106,8 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"local Git config source",
 		"remote Git config source",
 		"remote Git config source without provider access",
+		"default instance config source",
+		"installed toolkit DSL mismatch",
 	} {
 		if !scenarios[name] {
 			t.Errorf("resolver fixture suite is missing scenario %q", name)
@@ -149,6 +153,7 @@ func TestResolverSkillMatchesFixtureContract(t *testing.T) {
 		"`kind: git` with `path`",
 		"`kind: git` with `url`",
 		"`git/<lowercase-host[:port]>/<repository-path>`",
+		"`<instance>/config` is both the",
 	} {
 		if !strings.Contains(skill, required) {
 			t.Errorf("resolver skill is missing fixture-backed directive %q", required)

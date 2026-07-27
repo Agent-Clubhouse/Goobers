@@ -593,6 +593,79 @@
           }
         }
       ]
+    },
+    {
+      "name": "default instance config source",
+      "files": {
+        "instance/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instance/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instance/config/gaggles/.keep": "",
+        "instance/nested/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"dev\",\"commit\":\"unknown\"}\n",
+        "versions --json": "{\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]}]}\n",
+        "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"repos\":[]}\n"
+      },
+      "runs": [
+        {
+          "name": "default instance config source",
+          "start": "instance/nested",
+          "instance": "instance",
+          "want": {
+            "currentRole": "instance",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/instance/config",
+            "configSourceKind": "local-dir"
+          }
+        }
+      ]
+    },
+    {
+      "name": "installed toolkit DSL mismatch",
+      "files": {
+        "config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "config/gaggles/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "config",
+          "remoteUrls": ["https://github.com/acme/config.git"],
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "installedToolkit": {
+        "configRoot": "config",
+        "version": "v5.0.0",
+        "commit": "5555550000000000000000000000000000000000"
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v5.0.0\",\"commit\":\"5555550000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"dslVersions\":[{\"version\":\"9.9\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v5.0.0\"}]}]}\n",
+        "agent-kit check": "state: current\nbundle version: 1\nsource binary version: v5.0.0\nsource binary commit: 5555550000000000000000000000000000000000\ninstalled bundle version: 1\ninstalled source version: v5.0.0\ninstalled source commit: 5555550000000000000000000000000000000000\nupdate available: no\nmodified owned files: none\nmissing owned files: none\n"
+      },
+      "runs": [
+        {
+          "name": "reject installed toolkit DSL mismatch",
+          "start": "config",
+          "want": {
+            "currentRole": "config-source",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "configSource": "$ROOT/config",
+            "diagnosticsContain": [
+              "installed toolkit identity does not match binary",
+              "known release v5.0.0 has no exact verified contract source"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

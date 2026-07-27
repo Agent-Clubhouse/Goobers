@@ -241,12 +241,17 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 			report.Diagnostics = append(report.Diagnostics, "instance config unresolved: "+err.Error())
 		} else if err := json.Unmarshal(configJSON, &effectiveConfig); err != nil {
 			report.Diagnostics = append(report.Diagnostics, "instance config unresolved: invalid config JSON")
-		} else if !configSourceExplicit && effectiveConfig.WorkflowSource != nil {
-			var diagnostic string
-			configSource, configSourceKind, configSourceRef, report.ConfigSourceCommit, diagnostic =
-				resolveConfiguredWorkflowSource(environment, *effectiveConfig.WorkflowSource)
-			if diagnostic != "" {
-				report.Diagnostics = append(report.Diagnostics, diagnostic)
+		} else if !configSourceExplicit {
+			if effectiveConfig.WorkflowSource == nil {
+				configSource = report.ActiveConfig
+				configSourceKind = "local-dir"
+			} else {
+				var diagnostic string
+				configSource, configSourceKind, configSourceRef, report.ConfigSourceCommit, diagnostic =
+					resolveConfiguredWorkflowSource(environment, *effectiveConfig.WorkflowSource)
+				if diagnostic != "" {
+					report.Diagnostics = append(report.Diagnostics, diagnostic)
+				}
 			}
 		}
 	}
@@ -258,7 +263,15 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 	if configSourceKind == "local-dir" || (configSourceKind == "git" && filepath.IsAbs(configSource)) {
 		localConfigSource = configSource
 	}
-	report.Contract = selectContract(environment, sourceRoot, localConfigSource, binaryPath, identity, &report.Diagnostics)
+	report.Contract = selectContract(
+		environment,
+		sourceRoot,
+		localConfigSource,
+		binaryPath,
+		identity,
+		report.DSLVersions,
+		&report.Diagnostics,
+	)
 	switch {
 	case binaryPath == "":
 		report.Executable.Provenance = "unresolved"
@@ -434,6 +447,7 @@ func selectContract(
 	environment *testEnvironment,
 	sourceRoot, configSource, binaryPath string,
 	identity binaryIdentity,
+	binaryDSLVersions []dslVersion,
 	diagnostics *[]string,
 ) contractReport {
 	if sourceRoot != "" {
@@ -442,7 +456,13 @@ func selectContract(
 		}
 	}
 	if configSource != "" {
-		contract, exists, matches := verifyInstalledToolkit(environment, configSource, binaryPath, identity)
+		contract, exists, matches := verifyInstalledToolkit(
+			environment,
+			configSource,
+			binaryPath,
+			identity,
+			binaryDSLVersions,
+		)
 		if exists && !matches {
 			*diagnostics = append(*diagnostics, "installed toolkit identity does not match binary")
 		}
@@ -493,6 +513,7 @@ func verifyInstalledToolkit(
 	environment *testEnvironment,
 	configSource, binaryPath string,
 	identity binaryIdentity,
+	binaryDSLVersions []dslVersion,
 ) (contractReport, bool, bool) {
 	toolkitRoot := filepath.Join(configSource, ".goobers", "agent-toolkit")
 	if _, err := os.Stat(filepath.Join(toolkitRoot, "manifest.json")); err != nil {
@@ -500,6 +521,7 @@ func verifyInstalledToolkit(
 	}
 
 	var producer toolkitProducer
+	var release toolkitRelease
 	if binaryPath != "" && environment.cli.supports("agent-kit check") {
 		checkOutput, err := environment.cli.run(binaryPath, "agent-kit check", configSource)
 		if err != nil {
@@ -520,19 +542,21 @@ func verifyInstalledToolkit(
 			Version: check.InstalledSourceVersion,
 			Commit:  check.InstalledSourceCommit,
 		}
-		release, ok := readToolkitRelease(toolkitRoot)
+		release, ok = readToolkitRelease(toolkitRoot)
 		if !ok || release.Producer != producer {
 			return contractReport{}, true, false
 		}
 	} else {
-		manifest, _, ok := verifyToolkitManifest(configSource)
+		manifest, verifiedRelease, ok := verifyToolkitManifest(configSource)
 		if !ok {
 			return contractReport{}, true, false
 		}
 		producer = manifest.Producer
+		release = verifiedRelease
 	}
 	if binaryPath != "" && (!versionsMatch(producer.Version, identity.Version) ||
-		!commitsMatch(producer.Commit, identity.Commit, nil)) {
+		!commitsMatch(producer.Commit, identity.Commit, nil) ||
+		!dslVersionsEqual(release.DSLVersions, binaryDSLVersions)) {
 		return contractReport{}, true, false
 	}
 	return contractReport{
@@ -637,6 +661,9 @@ func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease
 			return toolkitManifest{}, toolkitRelease{}, false
 		}
 	}
+	if !declaredToolkitInventoryComplete(manifest, inventory) {
+		return toolkitManifest{}, toolkitRelease{}, false
+	}
 	requirementsIndex := verified["payload/.goobers/agent-toolkit/docs/requirements/README.md"]
 	if !requirementsInventoryComplete(requirementsIndex, inventory) {
 		return toolkitManifest{}, toolkitRelease{}, false
@@ -651,6 +678,21 @@ func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease
 		return toolkitManifest{}, toolkitRelease{}, false
 	}
 	return manifest, release, true
+}
+
+func declaredToolkitInventoryComplete(manifest toolkitManifest, inventory map[string]bool) bool {
+	for _, adapter := range manifest.Adapters {
+		if !inventory[adapter.Path] {
+			return false
+		}
+		for _, skill := range adapter.Skills {
+			path := agentkit.ProductRoot + "/skills/" + skill + "/SKILL.md"
+			if !inventory[path] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 var markdownLinkPattern = regexp.MustCompile(`\]\(([^)#?]+\.md)(?:#[^)]*)?\)`)

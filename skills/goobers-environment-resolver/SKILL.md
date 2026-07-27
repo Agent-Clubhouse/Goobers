@@ -70,7 +70,9 @@ Use an explicitly supplied instance or config-source path first. Otherwise,
 accept an ancestor instance or config source only when the markers identify
 exactly one candidate. Record `<instance>/config` as the active runtime copy and
 the instance's `workflowSource` as the config source; do not substitute one for
-the other.
+the other. When `workflowSource` is absent, `<instance>/config` is both the
+default config source and active runtime copy; report it as a local directory
+rather than leaving the config source unresolved.
 
 Resolve `workflowSource` according to its structured kind:
 
@@ -99,8 +101,9 @@ A relative local `workflowSource.path` is resolved by Goobers from the daemon
 process working directory, not from the instance root. Resolve it only when
 that working directory is supplied by the caller or authoritative
 process/supervisor metadata; otherwise preserve the configured value as
-evidence and report the config source unresolved. A missing, malformed, or
-unsupported kind, path, URL, or ref is likewise unresolved rather than guessed.
+evidence and report the config source unresolved. A present `workflowSource`
+with a missing, malformed, or unsupported kind, path, URL, or ref is likewise
+unresolved rather than guessed.
 
 Resolve the executable in this order:
 
