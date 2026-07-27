@@ -6,6 +6,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'version'
         'versions'
         'init'
+        'preflight'
         'examples'
         'scaffold'
         'agent-kit'

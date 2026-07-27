@@ -73,6 +73,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 	},
+	"preflight": {
+		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
+		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
+	},
 	"scaffold goober": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},

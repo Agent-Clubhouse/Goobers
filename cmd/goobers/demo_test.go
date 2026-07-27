@@ -186,7 +186,8 @@ func TestInitDemoRejectsUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("init --demo: code = %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "supported only on Linux and macOS") ||
-		!strings.Contains(stderr.String(), "unavailable on windows") {
+		!strings.Contains(stderr.String(), "unavailable on windows") ||
+		!strings.Contains(stderr.String(), "goobers preflight") {
 		t.Fatalf("init --demo stderr = %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -217,6 +218,7 @@ func TestInitDemoInsecureScaffoldsOnUnsupportedPlatform(t *testing.T) {
 	for _, want := range []string{
 		"WITHOUT enforced network isolation",
 		"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1",
+		"goobers preflight",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("init --demo --insecure output missing %q:\n%s", want, stdout.String())
