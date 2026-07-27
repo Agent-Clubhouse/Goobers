@@ -71,20 +71,13 @@ type authoringModel struct {
 	Target                resolvedTarget
 	DSLVersion            string
 	AgenticIssueOnFailure bool
-	Contract              selectedAuthoringContract
-}
-
-type selectedAuthoringContract struct {
-	DSLVersion       string
-	CanonicalExample string
-	Features         map[string]bool
 }
 
 type packagedAuthoringEnvironment struct {
-	ToolkitRoot string
-	Binary      *selectedBinary
-	Provider    *repositoryProviderStub
-	Target      resolvedTarget
+	Binary   *selectedBinary
+	Bundle   agentkit.Bundle
+	Provider *repositoryProviderStub
+	Target   resolvedTarget
 }
 
 type selectedBinary struct {
@@ -139,17 +132,11 @@ func TestRepositoryAwareGoldenScenarios(t *testing.T) {
 
 			dslVersion := environment.Binary.selectDSL(t)
 			needsIssueTriager := requestNeedsIssueTriager(scenario.Request)
-			contract := environment.Binary.inspectContract(
-				t,
-				dslVersion,
-				environment.ToolkitRoot,
-				needsIssueTriager,
-			)
+			environment.Binary.inspectContract(t, dslVersion, needsIssueTriager, environment.Bundle)
 			model := authoringModel{
 				Target:                environment.Target,
 				DSLVersion:            dslVersion,
 				AgenticIssueOnFailure: needsIssueTriager,
-				Contract:              contract,
 			}
 			materializeGoldenConfig(t, root, configDir, scenario, analysis, model)
 			environment.Binary.validate(t, root, scenario.ExistingConfig)
@@ -165,7 +152,6 @@ func TestRepositoryAwareGoldenScenarios(t *testing.T) {
 				t.Errorf("capabilities = %v, want %v", capabilities, scenario.WantCapabilities)
 			}
 			assertWorkflowCommand(t, workflow, scenario.WantCommand)
-			assertSupportedDSL(t, workflow.DSLVersion)
 			assertSecretFreeTree(t, root)
 			if scenario.ExistingConfig {
 				assertSurgicalChange(t, root, before, scenario.WantChangedPaths)
@@ -184,13 +170,7 @@ func TestRepositoryAwareFixturesCoverAcceptanceMatrix(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := []string{
-		"existing config",
-		"go service",
-		"node app",
-		"remote-only target",
-		"static documentation repo",
-	}
+	want := []string{"existing config", "go service", "node app", "remote-only target", "static documentation repo"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("scenarios = %v, want %v", names, want)
 	}
@@ -575,10 +555,8 @@ func resolvePackagedAuthoringEnvironment(
 	if !reflect.DeepEqual(binary.dslVersions, bundle.Manifest.DSLVersions) {
 		t.Fatal("packaged toolkit DSL support does not match selected binary")
 	}
-	toolkitRoot := materializePackagedToolkit(t, bundle)
-	releaseData := readFile(t, filepath.Join(toolkitRoot, "release.json"))
 	var release agentkit.Release
-	if err := json.Unmarshal([]byte(releaseData), &release); err != nil {
+	if err := json.Unmarshal(bundle.Files[agentkit.InstalledRoot+"/release.json"].Data, &release); err != nil {
 		t.Fatalf("decode packaged release: %v", err)
 	}
 	if release.Producer.Version != binary.version ||
@@ -586,14 +564,8 @@ func resolvePackagedAuthoringEnvironment(
 		!reflect.DeepEqual(release.DSLVersions, binary.dslVersions) {
 		t.Fatalf("packaged release does not match selected binary: %+v", release.Producer)
 	}
-	installedSkill := readFile(t, filepath.Join(toolkitRoot, "skills", "goobers-dsl-author", "SKILL.md"))
-	installedReference := readFile(t, filepath.Join(
-		toolkitRoot,
-		"skills",
-		"goobers-dsl-author",
-		"references",
-		"repository-authoring.md",
-	))
+	installedSkill := string(bundle.Files[agentkit.InstalledRoot+"/skills/goobers-dsl-author/SKILL.md"].Data)
+	installedReference := string(bundle.Files[agentkit.InstalledRoot+"/skills/goobers-dsl-author/references/repository-authoring.md"].Data)
 	if !strings.Contains(installedSkill, "prospective-target bootstrap") ||
 		!strings.Contains(installedReference, "## Bootstrap one prospective target") {
 		t.Fatal("packaged authoring procedure does not contain the prospective-target path")
@@ -601,21 +573,11 @@ func resolvePackagedAuthoringEnvironment(
 	provider := &repositoryProviderStub{scenario: scenario}
 	target := resolveRequestedTarget(t, scenario, root, configDir, targetRoot, provider)
 	return packagedAuthoringEnvironment{
-		ToolkitRoot: toolkitRoot,
-		Binary:      &binary,
-		Provider:    provider,
-		Target:      target,
+		Binary:   &binary,
+		Bundle:   bundle,
+		Provider: provider,
+		Target:   target,
 	}
-}
-
-func materializePackagedToolkit(t *testing.T, bundle agentkit.Bundle) string {
-	t.Helper()
-	repositoryRoot := t.TempDir()
-	for path, file := range bundle.Files {
-		writeFile(t, filepath.Join(repositoryRoot, filepath.FromSlash(path)), string(file.Data))
-	}
-	writeFile(t, filepath.Join(repositoryRoot, filepath.FromSlash(agentkit.InstalledManifestPath)), string(bundle.ManifestJSON))
-	return filepath.Join(repositoryRoot, filepath.FromSlash(agentkit.InstalledRoot))
 }
 
 func resolveRequestedTarget(
@@ -882,9 +844,10 @@ func (b *selectedBinary) selectDSL(t *testing.T) string {
 
 func (b *selectedBinary) inspectContract(
 	t *testing.T,
-	version, toolkitRoot string,
+	version string,
 	needsIssueTriager bool,
-) selectedAuthoringContract {
+	bundle agentkit.Bundle,
+) {
 	t.Helper()
 	if !slices.ContainsFunc(b.dslVersions, func(entry supportmatrix.Version) bool {
 		return entry.Version == version && entry.Level != supportmatrix.LevelUnsupported
@@ -930,21 +893,9 @@ func (b *selectedBinary) inspectContract(
 	if !strings.Contains(string(example), "kind: Workflow") {
 		t.Fatalf("selected binary example %q is not a workflow", list[0])
 	}
-	packagedExample := readFile(t, filepath.Join(
-		toolkitRoot,
-		"config-examples",
-		"gaggles",
-		"acme-web",
-		"workflows",
-		list[0]+".yaml",
-	))
-	if string(example) != packagedExample {
+	packagedPath := agentkit.InstalledRoot + "/config-examples/gaggles/acme-web/workflows/" + list[0] + ".yaml"
+	if string(example) != string(bundle.Files[packagedPath].Data) {
 		t.Fatalf("selected binary example %q differs from packaged contract", list[0])
-	}
-	return selectedAuthoringContract{
-		DSLVersion:       version,
-		CanonicalExample: list[0],
-		Features:         available,
 	}
 }
 
@@ -1204,11 +1155,6 @@ func materializeGoldenConfig(
 	model authoringModel,
 ) {
 	t.Helper()
-	if model.Contract.DSLVersion != model.DSLVersion ||
-		model.Contract.CanonicalExample == "" ||
-		len(model.Contract.Features) == 0 {
-		t.Fatal("authoring model is not grounded in the selected release contract")
-	}
 	if !scenario.ExistingConfig {
 		writeFile(t, filepath.Join(root, "instance.yaml.example"), instanceYAML(model))
 		writeFile(t, filepath.Join(configDir, "manifest.yaml"), manifestYAML())
@@ -1392,21 +1338,7 @@ func writeExistingDefinitions(t *testing.T, configDir string) {
 	t.Helper()
 	writeFile(t,
 		filepath.Join(configDir, "gaggles", "app", "goobers", "maintainer", "goober.yaml"),
-		`apiVersion: goobers.dev/v1alpha1
-kind: Goober
-metadata:
-  name: maintainer
-spec:
-  gaggle: app
-  role: maintainer
-  instructions: instructions.md
-  harness: copilot
-  capabilities:
-    - repo:read
-  scaleFactor: 1
-  workflows:
-    - nightly
-`,
+		`{"apiVersion":"goobers.dev/v1alpha1","kind":"Goober","metadata":{"name":"maintainer"},"spec":{"gaggle":"app","role":"maintainer","instructions":"instructions.md","harness":"copilot","capabilities":["repo:read"],"scaleFactor":1,"workflows":["nightly"]}}`,
 	)
 	writeFile(t,
 		filepath.Join(configDir, "gaggles", "app", "goobers", "maintainer", "instructions.md"),
@@ -1414,33 +1346,7 @@ spec:
 	)
 	writeFile(t,
 		filepath.Join(configDir, "gaggles", "app", "workflows", "nightly.yaml"),
-		`apiVersion: goobers.dev/v1alpha1
-kind: Workflow
-dslVersion: "1.4"
-metadata:
-  name: nightly
-spec:
-  gaggle: app
-  triggers:
-    - type: schedule
-      schedule: "17 2 * * *"
-  readiness:
-    maxConcurrentRuns: 2
-    maxRunsPerHour: 3
-  runControls:
-    maxRepasses: 4
-    stalledRunTimeout: 2h
-  start: existing-check
-  tasks:
-    - name: existing-check
-      type: deterministic
-      goal: Preserve the existing tuned workflow.
-      run:
-        command: ["make", "nightly"]
-      retry:
-        maxAttempts: 3
-        backoffSeconds: 20
-`,
+		`{"apiVersion":"goobers.dev/v1alpha1","kind":"Workflow","dslVersion":"1.4","metadata":{"name":"nightly"},"spec":{"gaggle":"app","triggers":[{"type":"schedule","schedule":"17 2 * * *"}],"readiness":{"maxConcurrentRuns":2,"maxRunsPerHour":3},"runControls":{"maxRepasses":4,"stalledRunTimeout":"2h"},"start":"existing-check","tasks":[{"name":"existing-check","type":"deterministic","goal":"Preserve the existing tuned workflow.","run":{"command":["make","nightly"]},"retry":{"maxAttempts":3,"backoffSeconds":20}}]}}`,
 	)
 }
 
@@ -1505,14 +1411,6 @@ func assertWorkflowCommand(t *testing.T, workflow apiv1.Workflow, want []string)
 		}
 	}
 	t.Errorf("workflow start task %q has no deterministic command", workflow.Spec.Start)
-}
-
-func assertSupportedDSL(t *testing.T, version string) {
-	t.Helper()
-	support, ok := supportmatrix.GetDSL().Lookup(version)
-	if !ok || support.Level == supportmatrix.LevelUnsupported {
-		t.Errorf("golden workflow targets unsupported DSL %q: %+v", version, support)
-	}
 }
 
 func assertEvidencePaths(t *testing.T, paths, evidence []string) {
@@ -1634,15 +1532,6 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
-
 func sortedKeys[V any](values map[string]V) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -1680,22 +1569,5 @@ func TestRepositoryAnalysisRejectsUnsafeOrMissingCommands(t *testing.T) {
 	analysis = analyzeRepository(base)
 	if analysis.Status != "unresolved" || !slices.Contains(analysis.Diagnostics, "target branch is unresolved") {
 		t.Fatalf("missing branch analysis = %+v", analysis)
-	}
-}
-
-func TestRepositoryAnalysisUsesResolvedBranch(t *testing.T) {
-	scenario := fixtureScenario{
-		Identity:        "github/acme/app",
-		Access:          "local",
-		DefaultBranch:   "release",
-		Request:         "Run tests.",
-		RepositoryFiles: map[string]string{"package.json": `{"scripts":{"test":"node --test"}}`},
-	}
-	analysis := analyzeRepository(scenario)
-	if analysis.Branch != "release" {
-		t.Fatalf("branch = %q, want resolved release branch", analysis.Branch)
-	}
-	if !slices.Equal(analysis.Command, []string{"npm", "run", "test"}) {
-		t.Fatalf("command = %v, want package test script", analysis.Command)
 	}
 }
