@@ -49,10 +49,10 @@ type fixtureRelease struct {
 }
 
 type fixtureWorkflow struct {
-	Name, CurrentDSL, TargetDSL, TargetVersionLevel string
-	Features                                        []fixtureFeature
-	CurrentGraph, TargetGraph, ProposedGraph        []string
-	Diagnostics                                     []string
+	Identity, CurrentDSL, TargetDSL, TargetVersionLevel string
+	Features                                            []fixtureFeature
+	CurrentGraph, TargetGraph, ProposedGraph            []string
+	Diagnostics                                         []string
 }
 
 type fixtureFeature struct {
@@ -208,51 +208,51 @@ func TestFixtureConfigsExerciseAdvisorBehavior(t *testing.T) {
 			proposed := loadFixtureConfig(t, scenario, scenario.Configs.Proposed, false)
 
 			for _, expected := range scenario.Workflows {
-				currentWorkflow, ok := current[expected.Name]
+				currentWorkflow, ok := current[expected.Identity]
 				if !ok {
-					t.Fatalf("current config is missing workflow %q", expected.Name)
+					t.Fatalf("current config is missing workflow %q", expected.Identity)
 				}
 				if currentWorkflow.document.DSLVersion != expected.CurrentDSL {
 					t.Errorf("%s current dslVersion = %q, want %q",
-						expected.Name, currentWorkflow.document.DSLVersion, expected.CurrentDSL)
+						expected.Identity, currentWorkflow.document.DSLVersion, expected.CurrentDSL)
 				}
 				if !reflect.DeepEqual(currentWorkflow.graph, expected.CurrentGraph) {
 					t.Errorf("%s current graph = %v, want %v",
-						expected.Name, currentWorkflow.graph, expected.CurrentGraph)
+						expected.Identity, currentWorkflow.graph, expected.CurrentGraph)
 				}
 
-				proposedWorkflow, ok := proposed[expected.Name]
+				proposedWorkflow, ok := proposed[expected.Identity]
 				if !ok {
-					t.Fatalf("proposed config is missing workflow %q", expected.Name)
+					t.Fatalf("proposed config is missing workflow %q", expected.Identity)
 				}
 				if proposedWorkflow.document.DSLVersion != expected.TargetDSL {
 					t.Errorf("%s proposed dslVersion = %q, want %q",
-						expected.Name, proposedWorkflow.document.DSLVersion, expected.TargetDSL)
+						expected.Identity, proposedWorkflow.document.DSLVersion, expected.TargetDSL)
 				}
 				if !reflect.DeepEqual(proposedWorkflow.graph, expected.ProposedGraph) {
 					t.Errorf("%s proposed graph = %v, want %v",
-						expected.Name, proposedWorkflow.graph, expected.ProposedGraph)
+						expected.Identity, proposedWorkflow.graph, expected.ProposedGraph)
 				}
 
-				canonicalWorkflow, hasCanonical := canonical[expected.Name]
+				canonicalWorkflow, hasCanonical := canonical[expected.Identity]
 				if expected.TargetGraph == nil {
 					if hasCanonical {
-						t.Errorf("custom workflow %q unexpectedly has a canonical peer", expected.Name)
+						t.Errorf("custom workflow %q unexpectedly has a canonical peer", expected.Identity)
 					}
 				} else if !hasCanonical {
-					t.Errorf("canonical config is missing workflow %q", expected.Name)
+					t.Errorf("canonical config is missing workflow %q", expected.Identity)
 				} else if !reflect.DeepEqual(canonicalWorkflow.graph, expected.TargetGraph) {
 					t.Errorf("%s canonical graph = %v, want %v",
-						expected.Name, canonicalWorkflow.graph, expected.TargetGraph)
+						expected.Identity, canonicalWorkflow.graph, expected.TargetGraph)
 				}
 
 				for _, feature := range expected.Features {
 					if !currentWorkflow.features[feature.Name] && !proposedWorkflow.features[feature.Name] {
-						t.Errorf("workflow %q fixtures do not exercise reported feature %q", expected.Name, feature.Name)
+						t.Errorf("workflow %q fixtures do not exercise reported feature %q", expected.Identity, feature.Name)
 					}
 				}
 				if got, want := tuningFromWorkflow(proposedWorkflow.document), tuningFromWorkflow(currentWorkflow.document); !reflect.DeepEqual(got, want) {
-					t.Errorf("%s operational tuning changed: got %+v, want %+v", expected.Name, got, want)
+					t.Errorf("%s operational tuning changed: got %+v, want %+v", expected.Identity, got, want)
 				}
 			}
 
@@ -296,7 +296,7 @@ func TestFixturePlansDecomposeVersionJumpsAndPreserveCustomDrift(t *testing.T) {
 	if strings.Contains(report, "copy canonical workflow") {
 		t.Fatal("custom workflow report proposes wholesale replacement")
 	}
-	if !strings.Contains(report, "no same-name canonical workflow exists") {
+	if !strings.Contains(report, "no same-identity canonical workflow exists") {
 		t.Fatal("custom workflow report does not preserve the unmatched workflow")
 	}
 }
@@ -306,6 +306,15 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 	var document apiv1.Workflow
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
+	}
+	otherGaggle := document
+	otherGaggle.Spec.Gaggle = "other"
+	byIdentity := map[string]apiv1.Workflow{
+		workflowIdentity(document):    document,
+		workflowIdentity(otherGaggle): otherGaggle,
+	}
+	if len(byIdentity) != 2 {
+		t.Fatal("same-name workflows in different gaggles collide")
 	}
 	definition := workflow.Definition{
 		Name:       document.Name,
@@ -394,6 +403,7 @@ func TestUpgradeSkillMatchesFixtureContract(t *testing.T) {
 	for _, directive := range []string{
 		"`kind: git` source is the committed configured ref",
 		"authoring worktree",
+		"`<spec.gaggle>/<metadata.name>` identity used by `config diff`",
 		"`features --used` returns an instance-wide union",
 		"`config diff` classifies these paths as",
 		"delegate the mechanical transform to",
@@ -433,12 +443,12 @@ func hydrateScenarioGraphs(t *testing.T, scenario *fixtureScenario) {
 	for i := range scenario.Workflows {
 		candidate := &scenario.Workflows[i]
 		var ok bool
-		if candidate.CurrentGraph, ok = current[candidate.Name]; !ok {
-			t.Fatalf("current fixtures are missing workflow %q", candidate.Name)
+		if candidate.CurrentGraph, ok = current[candidate.Identity]; !ok {
+			t.Fatalf("current fixtures are missing workflow %q", candidate.Identity)
 		}
-		candidate.TargetGraph = canonical[candidate.Name]
-		if candidate.ProposedGraph, ok = proposed[candidate.Name]; !ok {
-			t.Fatalf("proposed fixtures are missing workflow %q", candidate.Name)
+		candidate.TargetGraph = canonical[candidate.Identity]
+		if candidate.ProposedGraph, ok = proposed[candidate.Identity]; !ok {
+			t.Fatalf("proposed fixtures are missing workflow %q", candidate.Identity)
 		}
 	}
 }
@@ -451,7 +461,7 @@ func fixtureGraphs(t *testing.T, fixtures []string) map[string][]string {
 		if err := yaml.Unmarshal(readFixture(t, name), &document); err != nil {
 			t.Fatalf("parse fixture %s: %v", name, err)
 		}
-		graphs[document.Name] = graphLinesFromDocument(document)
+		graphs[workflowIdentity(document)] = graphLinesFromDocument(document)
 	}
 	return graphs
 }
@@ -480,7 +490,7 @@ func renderAdvisory(scenario fixtureScenario) string {
 
 	changeCount := len(scenario.Migrations)
 	for _, workflow := range scenario.Workflows {
-		fmt.Fprintf(&out, "\n## Workflow `%s` (`%s` -> `%s`)\n\n", workflow.Name, workflow.CurrentDSL, workflow.TargetDSL)
+		fmt.Fprintf(&out, "\n## Workflow `%s` (`%s` -> `%s`)\n\n", workflow.Identity, workflow.CurrentDSL, workflow.TargetDSL)
 		out.WriteString("Feature inventory:\n")
 		if len(workflow.Features) == 0 {
 			out.WriteString("- none\n")
@@ -499,7 +509,7 @@ func renderAdvisory(scenario fixtureScenario) string {
 		}
 		if workflow.TargetGraph == nil {
 			fmt.Fprintf(&out, "\nCurrent state graph: `%s`\n", strings.Join(workflow.CurrentGraph, "; "))
-			out.WriteString("Target canonical state graph: no same-name canonical workflow exists.\n")
+			out.WriteString("Target canonical state graph: no same-identity canonical workflow exists.\n")
 		} else if reflect.DeepEqual(workflow.CurrentGraph, workflow.TargetGraph) {
 			fmt.Fprintf(&out, "\nTarget canonical state graph: unchanged: `%s`\n", strings.Join(workflow.CurrentGraph, "; "))
 		} else {
@@ -591,7 +601,7 @@ func recommendationsFor(
 		items = append(items, item)
 	}
 	for _, difference := range drift {
-		if difference.Workflow != workflow.Name {
+		if difference.Workflow != workflow.Identity {
 			continue
 		}
 		item := recommendation{
@@ -702,7 +712,7 @@ func loadFixtureConfig(
 		}
 		machine, compileErr := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
 		if compileErr != nil && allowInvalid && strings.Contains(compileErr.Error(), "not supported") {
-			definition.DSLVersion = targetDSLFor(scenario, document.Name)
+			definition.DSLVersion = targetDSLFor(scenario, workflowIdentity(document))
 			machine, compileErr = workflow.Compile(definition, workflow.WithPreviewFeatures(true))
 		}
 		if compileErr != nil && !allowInvalid {
@@ -720,7 +730,7 @@ func loadFixtureConfig(
 		if compileErr == nil {
 			graph = graphLines(machine.Graph())
 		}
-		loaded[document.Name] = loadedFixtureWorkflow{
+		loaded[workflowIdentity(document)] = loadedFixtureWorkflow{
 			document: document,
 			graph:    graph,
 			features: featureSet,
@@ -729,13 +739,17 @@ func loadFixtureConfig(
 	return loaded
 }
 
-func targetDSLFor(scenario fixtureScenario, name string) string {
+func targetDSLFor(scenario fixtureScenario, identity string) string {
 	for _, candidate := range scenario.Workflows {
-		if candidate.Name == name {
+		if candidate.Identity == identity {
 			return candidate.TargetDSL
 		}
 	}
 	return ""
+}
+
+func workflowIdentity(document apiv1.Workflow) string {
+	return document.Spec.Gaggle + "/" + document.Name
 }
 
 func featureLevelAtDSLVersion(feature workflow.Feature, version string) (string, bool) {

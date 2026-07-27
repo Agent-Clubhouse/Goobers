@@ -11,7 +11,7 @@
 - Source provenance: target binary v2.0.0 (2222222222222222222222222222222222222222) fix dry-run and feature output
 - Compatibility confidence: `high`
 
-## Workflow `default-implement` (`1.4` -> `2.0`)
+## Workflow `example/default-implement` (`1.4` -> `2.0`)
 
 Feature inventory:
 - `gate.evaluator.automated.pollIntervalSeconds`: `ga` - DSL 2.0 injects a 10-second ci-poll default, so pin 10 to preserve DSL 1.4 behavior. (source: v2.0.0 goobers fix --to 2.0 dry-run from commit 2222222222222222222222222222222222222222; confidence: high)
@@ -28,7 +28,7 @@ Recommendations:
 
 ## Ordered upgrade plan
 
-1. `default-implement`: in an isolated scratch copy, run `goobers fix --to 2.0` for `1.4 -> 2.0`; dependency: baseline and target provenance approved; expected file diff: gaggles/example/workflows/default-implement.yaml bumps dslVersion and pins automated pollIntervalSeconds to 10; review: generated dslVersion bump and poll interval pin; validation command: `/opt/goobers-v2.0.0/bin/goobers validate --strict --source-tree <scratch-2.0>`.
+1. `example/default-implement`: in an isolated scratch copy, run `goobers fix --to 2.0` for `1.4 -> 2.0`; dependency: baseline and target provenance approved; expected file diff: gaggles/example/workflows/default-implement.yaml bumps dslVersion and pins automated pollIntervalSeconds to 10; review: generated dslVersion bump and poll interval pin; validation command: `/opt/goobers-v2.0.0/bin/goobers validate --strict --source-tree <scratch-2.0>`.
 2. Run target `goobers validate --strict`, targeted `goobers config diff`, and the state-graph comparison. A write is complete only when target validation has no warnings and approved tuning is unchanged.
 
 ## Write readiness

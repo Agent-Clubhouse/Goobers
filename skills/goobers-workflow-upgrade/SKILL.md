@@ -62,7 +62,9 @@ report, never an unqualified `goobers` whose identity is unknown.
    scratch copy. Keep every warning and error associated with its workflow.
 4. Run `<target> config diff --against <target-canonical-root>
    <scratch-instance>` with an explicit canonical root from the verified target
-   release. Compare only same-name workflows. A workflow with no same-name
+   release. Match workflows only by the full
+   `<spec.gaggle>/<metadata.name>` identity used by `config diff`; a same-name
+   workflow in another gaggle is not a peer. A workflow with no same-identity
    canonical definition is custom, not missing or obsolete.
 5. Read support transitions and feature deltas from the selected release's
    machine-readable support matrix and feature output. Use exact-ref release
@@ -91,8 +93,8 @@ finding in exactly one class:
 1. **Required compatibility change.** Target validation, the target support
    matrix, a removed feature, or an exact release delta proves the current form
    cannot preserve supported behavior at the target.
-2. **Recommended canonical workflow improvement.** A same-name target canonical
-   workflow has a structural improvement that is not required for
+2. **Recommended canonical workflow improvement.** A same-identity target
+   canonical workflow has a structural improvement that is not required for
    compatibility. Explain the benefit; do not apply it automatically.
 3. **Local operational tuning.** `config diff` classifies these paths as
    `INFO`: trigger presence, `spec.triggers[].schedule`,
@@ -100,7 +102,7 @@ finding in exactly one class:
    `maxOpenPRs`. No other path is tuning merely because it contains a number.
 4. **User customization requiring human judgment.** Commands, goals,
    instructions, capabilities, inputs, outputs, routing, custom tasks or gates,
-   and workflows with no same-name canonical definition stay user-owned unless
+   and workflows with no same-identity canonical definition stay user-owned unless
    exact compatibility evidence requires a surgical change.
 
 If evidence could fit multiple classes, required compatibility wins only when
