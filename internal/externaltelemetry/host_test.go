@@ -286,6 +286,125 @@ func TestHostBoundsFailureArtifacts(t *testing.T) {
 	}
 }
 
+func TestHostBoundsEveryEarlyFailurePath(t *testing.T) {
+	largeValue := strings.Repeat("request-controlled-value", 1000)
+	connector := &sequenceConnector{}
+	configuredRegistry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: MinimumMaxBytes,
+	})
+	tests := []struct {
+		name          string
+		host          Host
+		connectorName string
+		wantCode      string
+	}{
+		{
+			name:          "registry not configured",
+			host:          Host{},
+			connectorName: largeValue,
+			wantCode:      "host_not_configured",
+		},
+		{
+			name:          "connector not found",
+			host:          Host{Registry: NewRegistry()},
+			connectorName: largeValue,
+			wantCode:      "connector_not_found",
+		},
+		{
+			name:          "invalid shape",
+			host:          Host{Registry: configuredRegistry},
+			connectorName: "sequence",
+			wantCode:      "invalid_shape",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact, err := test.host.Query(context.Background(), test.connectorName, QueryRequest{
+				Query:    "q",
+				QueryRef: largeValue,
+				Shape:    ResultShape(largeValue),
+				Limits:   QueryLimits{MaxBytes: MinimumMaxBytes},
+			})
+			if err == nil || artifact.Failure == nil || artifact.Failure.Code != test.wantCode {
+				t.Fatalf("failure = %+v err %v", artifact.Failure, err)
+			}
+			data, marshalErr := json.Marshal(artifact)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if len(data) > MinimumMaxBytes {
+				t.Fatalf("failed artifact size = %d, limit %d", len(data), MinimumMaxBytes)
+			}
+			if !artifact.Metadata.Truncated || strings.Contains(string(data), largeValue) {
+				t.Fatalf("unbounded failed artifact: %s", data)
+			}
+		})
+	}
+	if connector.calls != 0 {
+		t.Fatalf("invalid request reached connector %d time(s)", connector.calls)
+	}
+}
+
+func TestHostConvertsConnectorPanicToBoundedFailure(t *testing.T) {
+	panicValue := strings.Repeat("sensitive panic payload", 1000)
+	connector := connectorFunc(func(context.Context, QueryRequest) (SourceResult, error) {
+		panic(panicValue)
+	})
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: MinimumMaxBytes,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query:    "q",
+		QueryRef: strings.Repeat("queries/panic.kql", 1000),
+		Shape:    ShapeTable,
+	})
+	if err == nil || artifact.Failure == nil || artifact.Failure.Code != "plugin_panic" ||
+		artifact.Failure.Kind != "plugin" {
+		t.Fatalf("panic failure = %+v err %v", artifact.Failure, err)
+	}
+	data, marshalErr := json.Marshal(artifact)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if len(data) > MinimumMaxBytes || strings.Contains(string(data), panicValue) ||
+		strings.Contains(err.Error(), panicValue) {
+		t.Fatalf("unbounded or unsanitized panic failure: artifact=%s err=%v", data, err)
+	}
+}
+
+func TestHostRecoversConnectorPanicAfterTimeout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	panicking := make(chan struct{})
+	connector := connectorFunc(func(context.Context, QueryRequest) (SourceResult, error) {
+		close(started)
+		<-release
+		defer close(panicking)
+		panic("late plugin panic")
+	})
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: 10 * time.Millisecond, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: MinimumMaxBytes,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "q", Shape: ShapeTable,
+	})
+	if err == nil || artifact.Failure == nil || artifact.Failure.Code != "timeout" {
+		t.Fatalf("timeout failure = %+v err %v", artifact.Failure, err)
+	}
+	<-started
+	close(release)
+	select {
+	case <-panicking:
+	case <-time.After(time.Second):
+		t.Fatal("connector did not reach late panic")
+	}
+}
+
 func TestHostRejectsUndersizedRequestByteLimit(t *testing.T) {
 	connector := &sequenceConnector{}
 	registry := registryForHostTest(connector, QueryLimits{

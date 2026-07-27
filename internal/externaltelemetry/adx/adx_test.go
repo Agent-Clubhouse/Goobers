@@ -318,6 +318,17 @@ func TestADXFailuresAreExplicit(t *testing.T) {
 			wantCode: "invalid_response",
 		},
 		{
+			name: "missing completion after rows",
+			handler: func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write([]byte(`[
+					{"FrameType":"DataTable","TableKind":"PrimaryResult",
+					 "Columns":[{"ColumnName":"value","ColumnType":"long"}],"Rows":[[1]]}
+				]`))
+			},
+			policy:   externaltelemetry.PolicyConfig{MaxAttempts: 1, MaxBytes: 4096},
+			wantCode: "invalid_response",
+		},
+		{
 			name: "multiple primary results",
 			handler: func(writer http.ResponseWriter, _ *http.Request) {
 				_, _ = writer.Write([]byte(`[

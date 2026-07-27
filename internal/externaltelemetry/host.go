@@ -28,22 +28,23 @@ type Host struct {
 func (h *Host) Query(ctx context.Context, connectorName string, request QueryRequest) (ResultArtifact, error) {
 	started := h.now()()
 	provenance, provenanceErr := queryProvenance(request)
+	unconfiguredLimits := failureLimits(request.Limits)
 	if h.Registry == nil {
 		if provenanceErr != nil {
 			queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
-			return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+			return boundedFailedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, unconfiguredLimits, queryErr), queryErr
 		}
 		queryErr := classifyError(NewQueryError("host_not_configured", "configuration", false, errors.New("external telemetry registry is nil")))
-		return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+		return boundedFailedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, unconfiguredLimits, queryErr), queryErr
 	}
 	entry, err := h.Registry.connector(connectorName)
 	if err != nil {
 		if provenanceErr != nil {
 			queryErr := classifyError(NewQueryError("invalid_parameters", "configuration", false, provenanceErr))
-			return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+			return boundedFailedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, unconfiguredLimits, queryErr), queryErr
 		}
 		queryErr := classifyError(err)
-		return failedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, QueryLimits{}, queryErr), queryErr
+		return boundedFailedArtifact(connectorName, Descriptor{}, request, provenance, started, h.now()(), 0, unconfiguredLimits, queryErr), queryErr
 	}
 	if request.Limits.MaxBytes > 0 && request.Limits.MaxBytes < MinimumMaxBytes {
 		queryErr := classifyError(NewQueryError(
@@ -124,8 +125,19 @@ func executeConnector(ctx context.Context, connector Connector, request QueryReq
 	}
 	completed := make(chan connectorResult, 1)
 	go func() {
-		source, err := connector.Query(ctx, request)
-		completed <- connectorResult{source: source, err: err}
+		result := connectorResult{}
+		defer func() {
+			if recover() != nil {
+				result = connectorResult{err: NewQueryError(
+					"plugin_panic",
+					"plugin",
+					false,
+					errors.New("external telemetry connector panicked"),
+				)}
+			}
+			completed <- result
+		}()
+		result.source, result.err = connector.Query(ctx, request)
 	}()
 	select {
 	case <-ctx.Done():
@@ -254,9 +266,11 @@ func boundedFailedArtifact(
 	artifact.Query.Reference = ""
 	artifact.Query.ParameterNames = nil
 	artifact.Query.ParameterDigest = ""
+	artifact.Connector.Name = compactArtifactString(artifact.Connector.Name)
 	artifact.Connector.Kind = compactArtifactString(artifact.Connector.Kind)
 	artifact.Connector.Version = compactArtifactString(artifact.Connector.Version)
 	artifact.Source.ID = compactArtifactString(artifact.Source.ID)
+	artifact.Shape = ResultShape(compactArtifactString(string(artifact.Shape)))
 	artifact.Failure.Code = compactArtifactString(artifact.Failure.Code)
 	artifact.Failure.Kind = compactArtifactString(artifact.Failure.Kind)
 	if artifactFits(artifact, limits.MaxBytes) {
@@ -271,8 +285,18 @@ func boundedFailedArtifact(
 	artifact.Connector.Kind = ""
 	artifact.Connector.Version = ""
 	artifact.Source.ID = ""
+	artifact.Shape = ""
 	artifact.Failure = &FailureInfo{Code: "failure_artifact_too_large", Kind: "limit"}
-	return artifact
+	if artifactFits(artifact, limits.MaxBytes) {
+		return artifact
+	}
+
+	artifact.Connector.Name = ""
+	artifact.Query = QueryProvenance{Digest: provenance.Digest}
+	if artifactFits(artifact, limits.MaxBytes) {
+		return artifact
+	}
+	panic("external telemetry minimum maxBytes cannot hold a failed result artifact")
 }
 
 func compactArtifactString(value string) string {
@@ -290,6 +314,13 @@ func artifactFits(artifact ResultArtifact, maxBytes int) bool {
 	}
 	data, err := json.Marshal(artifact)
 	return err == nil && len(data) <= maxBytes
+}
+
+func failureLimits(requested QueryLimits) QueryLimits {
+	if requested.MaxBytes > 0 && requested.MaxBytes < MinimumMaxBytes {
+		requested.MaxBytes = 0
+	}
+	return effectiveLimits(defaultQueryLimits(), requested)
 }
 
 func validateRequest(request QueryRequest, supportedShapes []ResultShape) error {

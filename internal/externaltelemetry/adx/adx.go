@@ -407,6 +407,9 @@ func decodeResponse(data []byte, units map[string]string) (externaltelemetry.Sou
 		if err := decodeJSON(data, &frames); err != nil {
 			return externaltelemetry.SourceResult{}, fmt.Errorf("decode ADX v2 response: %w", err)
 		}
+		if len(frames) == 0 || frames[len(frames)-1].FrameType != "DataSetCompletion" {
+			return externaltelemetry.SourceResult{}, errors.New("ADX v2 response is missing a final dataset completion frame")
+		}
 		for _, frame := range frames {
 			switch frame.FrameType {
 			case "DataTable":

@@ -361,13 +361,7 @@ func (a AuthConfig) Validate() error {
 
 // Limits parses configured policy and supplies deterministic defaults.
 func (p PolicyConfig) Limits() (QueryLimits, error) {
-	limits := QueryLimits{
-		Timeout:      DefaultTimeout,
-		MaxAttempts:  DefaultMaxAttempts,
-		RetryBackoff: DefaultRetryBackoff,
-		MaxRows:      DefaultMaxRows,
-		MaxBytes:     DefaultMaxBytes,
-	}
+	limits := defaultQueryLimits()
 	var err error
 	if p.Timeout != "" {
 		limits.Timeout, err = positiveDuration("timeout", p.Timeout)
@@ -400,6 +394,16 @@ func (p PolicyConfig) Limits() (QueryLimits, error) {
 		return QueryLimits{}, fmt.Errorf("maxBytes must be at least %d", MinimumMaxBytes)
 	}
 	return limits, nil
+}
+
+func defaultQueryLimits() QueryLimits {
+	return QueryLimits{
+		Timeout:      DefaultTimeout,
+		MaxAttempts:  DefaultMaxAttempts,
+		RetryBackoff: DefaultRetryBackoff,
+		MaxRows:      DefaultMaxRows,
+		MaxBytes:     DefaultMaxBytes,
+	}
 }
 
 func positiveDuration(name, value string) (time.Duration, error) {
