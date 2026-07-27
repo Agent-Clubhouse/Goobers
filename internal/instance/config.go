@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runnercap"
@@ -63,8 +64,12 @@ type Config struct {
 	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
-	RunConditions  RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
-	Retention      RetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
+	// ExternalTelemetry declares named, read-only operational telemetry
+	// connectors. Workflows select only a connector name and generic query
+	// inputs; provider fields remain confined to each connector's config.
+	ExternalTelemetry externaltelemetry.Configuration `json:"externalTelemetry,omitempty" yaml:"externalTelemetry,omitempty"`
+	RunConditions     RunConditions                   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	Retention         RetentionConfig                 `json:"retention,omitempty" yaml:"retention,omitempty"`
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
@@ -938,6 +943,19 @@ func (c *Config) Validate() error {
 			if err := validateStoreRef(fmt.Sprintf("telemetry.otlp.headers[%q]", name), c.Telemetry.OTLP.Headers[name], stores); err != nil {
 				return err
 			}
+		}
+	}
+	if err := c.ExternalTelemetry.Validate(); err != nil {
+		return fmt.Errorf("externalTelemetry: %w", err)
+	}
+	for i, connector := range c.ExternalTelemetry.Connectors {
+		if connector.Auth.Token != nil &&
+			connector.Auth.Token.Env != "" &&
+			stageEnvironmentAllows(connector.Auth.Token.Env, c.Runner.EnvPassthrough) {
+			return fmt.Errorf(
+				"externalTelemetry.connectors[%d] (%s): auth.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				i, connector.Name, connector.Auth.Token.Env,
+			)
 		}
 	}
 	if c.Telemetry.Retention != nil {
