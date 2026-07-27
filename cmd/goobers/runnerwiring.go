@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,13 +17,17 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -45,6 +50,7 @@ func buildTelemetryClient(
 	scrubber journal.Scrubber,
 	registry *journal.RegistryScrubber,
 	otlp instance.OTLPConfig,
+	stores credentials.StoreResolver,
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
 		ServiceName:    "goobers",
@@ -54,7 +60,7 @@ func buildTelemetryClient(
 		Batch:          true,
 	}
 	if otlp.Enabled() {
-		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry)
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +76,7 @@ func resolveOTLPHeaders(
 	ctx context.Context,
 	headerRefs map[string]instance.TokenRef,
 	registry *journal.RegistryScrubber,
+	stores credentials.StoreResolver,
 ) (map[string]string, error) {
 	names := make([]string, 0, len(headerRefs))
 	for name := range headerRefs {
@@ -79,14 +86,9 @@ func resolveOTLPHeaders(
 
 	refs := make([]credentials.TokenRef, 0, len(names))
 	for _, name := range names {
-		ref := headerRefs[name]
-		refs = append(refs, credentials.TokenRef{
-			Name: "telemetry.otlp.headers." + strings.ToLower(name),
-			Env:  ref.Env,
-			File: ref.File,
-		})
+		refs = append(refs, headerRefs[name].CredentialTokenRef("telemetry.otlp.headers."+strings.ToLower(name)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWithStores(refs, stores)
 	if err != nil {
 		return nil, fmt.Errorf("configure telemetry OTLP headers: %w", err)
 	}
@@ -232,6 +234,8 @@ const credentialGrantEnv = "GH_TOKEN"
 // clobbers the other (#288, multi-token credentials 2/3).
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
+const claudeModelEnv = "ANTHROPIC_API_KEY"
+
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
@@ -259,7 +263,7 @@ func buildEnvCapabilities() map[string]string {
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot, selfBin string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
-	adapter := &harness.CopilotAdapter{
+	copilotAdapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
 		AuthCheckArgs:   copilotAuthCheckArgs,
 		EnvCapabilities: envCaps,
@@ -270,8 +274,27 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 	}
-	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
+	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
+	}
+
+	claudeEnvCaps := make(map[string]string, len(envCaps)+1)
+	for capability, envVar := range envCaps {
+		claudeEnvCaps[capability] = envVar
+	}
+	claudeEnvCaps[string(capability.AgentModel)] = claudeModelEnv
+	claudeAdapter := &harness.ClaudeAdapter{
+		Command:         []string{"claude"},
+		EnvCapabilities: claudeEnvCaps,
+		OptionalCredentialCapabilities: map[string]bool{
+			string(capability.AgentModel): true,
+		},
+		ExtraEnvAllowlist: envPassthrough,
+		InstanceRoot:      instanceRoot,
+		SelfBin:           selfBin,
+	}
+	if err := registry.RegisterAs(string(apiv1.HarnessClaudeCode), claudeAdapter); err != nil {
+		return nil, fmt.Errorf("register Claude Code harness: %w", err)
 	}
 	return registry, nil
 }
@@ -298,9 +321,25 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // token, byte-identical to the prior instance-global behavior. agent:model and
 // other cfg.Credentials entries stay unqualified (the shared token every gaggle
 // uses), overriding the repo-default grant for their capability (#287).
-func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
+// stores resolves store-backed token refs (#683) — built once per composition
+// root (daemon setup, or a one-shot command's own scope) so every consumer
+// shares one TTL cache; a store ref with a nil stores fails closed at
+// resolver construction rather than degrading into an unconfigured token.
+//
+// A github-app repo (#686) contributes a minting dynamic source under the same
+// ref name a static token would use, so every consumer that resolves the repo
+// ref — capability grants, ci-poll, the open-PR lister, worktree git auth —
+// receives short-lived installation tokens with no further wiring. registrar
+// receives every minted token (and the App key) at mint time; nil is only for
+// display-path callers that never write journals.
+//
+// additionalRepos are the gaggle's read-only reference repos (MGV-10, #1285):
+// each gains only a repo-qualified contents:read grant from its own token, never
+// a write capability. Pass nil for instance-level or single-repo callers.
+func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	var sources map[string]credentials.ResolveFunc
 	for _, r := range cfg.Repos {
 		owner := r.Owner
 		if r.Provider == "ado" && r.Project != "" {
@@ -308,9 +347,28 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		}
 		ref := owner + "/" + r.Name
 		tokenRef := ""
-		if r.Token.Env != "" || r.Token.File != "" {
+		if r.GitHubAppAuth() {
+			// Fail closed on a duplicate owner/name (as a static-token repo does
+			// at NewResolverWith's duplicate-ref check): silently overwriting the
+			// minting source would let a second entry hijack the first's grants.
+			if _, dup := sources[ref]; dup {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: duplicate repository reference", ref)
+			}
+			mint, err := newGitHubAppTokenSource(r, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ResolveFunc)
+			}
+			sources[ref] = mint
 			tokenRef = ref
-			refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
+		} else if r.Token.Configured() {
+			// The full token ref (env|file|store) is appended; a store-backed ref
+			// resolves through stores below (#683) and fails closed there if no
+			// store resolver is configured.
+			tokenRef = ref
+			refs = append(refs, r.Token.CredentialTokenRef(ref))
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
@@ -320,13 +378,9 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		if !capability.StageDeclarable(cg.Capability) {
 			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
 		}
-		refs = append(refs, credentials.TokenRef{
-			Name: credentialRefName(cg.Capability),
-			Env:  cg.Token.Env,
-			File: cg.Token.File,
-		})
+		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(cg.Capability)))
 	}
-	resolver, err := credentials.NewResolver(refs)
+	resolver, err := credentials.NewResolverWith(refs, stores, sources)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
@@ -340,6 +394,21 @@ func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (cre
 		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: credentialRefName(cg.Capability)})
 	}
 	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
+	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
+	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
+	// from that repo's own configured token binding. These runner-owned grants
+	// authenticate the reference-repo checkout at provision time (MGV-11); no
+	// write capability is ever produced for an additional repo, so a stage cannot
+	// obtain a write token for one — reference repos are read-only by construction.
+	additionalBindings := make([]credentials.RepoBinding, 0, len(additionalRepos))
+	for _, r := range additionalRepos {
+		owner := r.Owner
+		if r.Provider == apiv1.ProviderADO && r.Project != "" {
+			owner += "/" + r.Project
+		}
+		additionalBindings = append(additionalBindings, credentials.RepoBinding{Owner: owner, Name: r.Name})
+	}
+	grants = append(grants, credentials.AdditionalReadGrants(bindings, additionalBindings, string(capability.ContentsRead))...)
 	return resolver, grants, nil
 }
 
@@ -379,11 +448,105 @@ func buildGooberCredentialGrants(gooberName string, capabilities []string, sourc
 // entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
 func credentialRefName(cap string) string { return "credential:" + cap }
 
-// ciPollTaskExecutor admits ci-poll's credential against each invocation's
-// declared capabilities. Other deterministic kinds retain TaskExecutor's
-// existing dispatch behavior without materializing the PR credential.
-type ciPollTaskExecutor struct {
-	fallback invoke.Deterministic
+// newGitHubAppTokenSource builds the installation-token minting source for a
+// github-app repo (#686). A package var so CLI tests substitute an
+// httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
+// production source caches until near expiry and single-flights refreshes.
+var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.Token, nil
+}
+
+// buildWorktreeGitEnv builds the worktree Manager's per-repo git-auth resolver
+// (MGV-11 #1286). Keyed on the clone URL the runner hands WorkingCopy, it backs:
+//   - each read-only reference repo (additionalRepos) with that repo's own
+//     contents:read token (MGV-10/#1285), as an x-access-token http.extraheader
+//     scoped to that URL — a read credential, never a push one;
+//   - an ADO project repo with its Entra/PAT source, stores-aware (#683);
+//   - a GitHub project repo with its github-app installation token or a
+//     static/store-backed token (#667/#686), via githubWorktreeGitEnvironment,
+//     scoped to the project repo's own clone URL;
+//   - every other URL with the ambient git environment (nil return).
+//
+// Returns (nil, nil) when nothing bespoke is needed — a GitHub-only gaggle whose
+// project repo and reference repos carry no configured tokens — so the Manager
+// keeps its plain ambient behavior and a single-gaggle instance is unchanged.
+func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, resolver credentials.Resolver, grants []credentials.Grant, cloneURL func(apiv1.RepoRef) (string, error), reg providers.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	grantRef := make(map[string]string, len(grants))
+	for _, g := range grants {
+		grantRef[g.Capability] = g.Ref
+	}
+	readRefByURL := make(map[string]string, len(additionalRepos))
+	for _, repo := range additionalRepos {
+		owner := repo.Owner
+		if repo.Provider == apiv1.ProviderADO && repo.Project != "" {
+			owner += "/" + repo.Project
+		}
+		ref, ok := grantRef[credentials.RepoScopedCapability(string(capability.ContentsRead), owner, repo.Name)]
+		if !ok {
+			// No configured read token for this reference repo — a public repo
+			// clones fine anonymously, so fall through to the ambient env.
+			continue
+		}
+		url, err := cloneURL(repo)
+		if err != nil {
+			return nil, fmt.Errorf("resolve reference repo %q clone URL: %w", repo.Name, err)
+		}
+		readRefByURL[url] = ref
+	}
+
+	var adoSource providers.ADOCredentialSource
+	if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
+		source, err := adoauth.Source(adoRepo, nil, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure ADO worktree authentication: %w", err)
+		}
+		adoSource = source
+	}
+
+	// GitHub project-repo authentication (#667/#686): github-app installation
+	// tokens or a static/store-backed token for the gaggle's own GitHub repo,
+	// scoped to its clone URL. nil when the project repo is not an authenticated
+	// GitHub repo (public, or a non-GitHub provider).
+	var githubProjectEnv func(context.Context, string) ([]string, error)
+	if githubRepo, ok := githubRepoForGaggle(cfg, gaggleProject); ok {
+		env, err := githubWorktreeGitEnvironment(workcopiesDir, githubRepo, reg, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure GitHub worktree authentication: %w", err)
+		}
+		githubProjectEnv = env
+	}
+
+	if len(readRefByURL) == 0 && adoSource == nil && githubProjectEnv == nil {
+		return nil, nil // nothing bespoke — keep the Manager's ambient behavior
+	}
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if ref, ok := readRefByURL[repoURL]; ok {
+			token, err := resolver.Resolve(ctx, ref)
+			if err != nil {
+				return nil, fmt.Errorf("resolve reference-repo read token: %w", err)
+			}
+			return providers.GitHubGitAuthEnvironment(token, repoURL, reg), nil
+		}
+		if adoSource != nil {
+			return providers.ADOGitAuthEnvironment(ctx, adoSource, reg, repoURL)
+		}
+		if githubProjectEnv != nil {
+			// Scoped to the project repo's clone URL; returns nil (ambient) for
+			// any other URL.
+			return githubProjectEnv(ctx, repoURL)
+		}
+		return nil, nil // ambient
+	}, nil
+}
+
+// ciPollKindExecutor admits ci-poll's credential against each invocation's
+// declared capabilities. Registering it only for KindCIPoll keeps credential
+// materialization out of every other deterministic kind.
+type ciPollKindExecutor struct {
 	injector *credentials.Injector
 	recorder executor.ArtifactRecorder
 	// adoRepo is set when this gaggle's repo is Azure DevOps. When set, ci-poll
@@ -394,15 +557,10 @@ type ciPollTaskExecutor struct {
 	registrar providers.SecretRegistrar
 }
 
-func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	kind, _ := env.Inputs[executor.InputKind].(string)
-	if kind != executor.KindCIPoll {
-		return e.fallback.Run(ctx, env, run)
-	}
-
+func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	var poller executor.PRPoller
 	if e.adoRepo != nil {
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -433,25 +591,22 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	return ciPoll.Run(ctx, pollCfg)
 }
 
-// buildCIPollExecutor wraps the deterministic dispatcher for a repo-backed
-// instance. Credential resolution stays lazy so a non-ci-poll stage never
-// requires the PR capability or token. When adoRepo is non-nil the gaggle's
-// repo is Azure DevOps, and ci-poll resolves its poller from instance config
-// instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, registrar providers.SecretRegistrar) (invoke.Deterministic, error) {
+// buildCIPollExecutor builds the registered ci-poll kind for a repo-backed
+// instance. Credential resolution stays lazy until that kind is dispatched.
+// When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
+// resolves its poller from instance config (adoauth.Provider shells out to
+// `az` for the token) instead of a GitHub capability token.
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
-		return fallback, nil
+		return executor.NewCIPollKindExecutor(nil), nil
 	}
 	if injector == nil {
 		return nil, fmt.Errorf("build ci-poll executor: credential injector is nil")
 	}
-	if fallback == nil {
-		return nil, fmt.Errorf("build ci-poll executor: fallback executor is nil")
-	}
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollTaskExecutor{fallback: fallback, injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -1053,7 +1208,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // starts/wires the returned refresher; a single `goobers run` has no accretion
 // to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
 // is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string) (*localscheduler.OpenPRRefresher, error) {
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -1067,7 +1222,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, "", "")
+	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1088,32 +1243,93 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	ref          string
-	repo         providers.RepositoryRef
-	labels       []string
-	resolver     credentials.Resolver
-	reg          runner.SecretRegistrar
-	schedulerDir string
-	quota        *localscheduler.ProviderQuotaState
+	mu             sync.Mutex
+	ref            string
+	repo           providers.RepositoryRef
+	labels         []string
+	labelPredicate *labelpredicate.Predicate
+	fieldPredicate *fieldpredicate.Predicate
+	resolver       credentials.Resolver
+	reg            runner.SecretRegistrar
+	schedulerDir   string
+	quota          *localscheduler.ProviderQuotaState
+	cursor         string
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
-	var accounting *providerQuotaAccounting
-	if b.quota != nil {
-		accounting = &providerQuotaAccounting{state: b.quota}
-		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
-			accounting.prepaid = &reservation
-		}
-		defer accounting.RefundUnused()
-	}
-
-	token, err := b.resolver.Resolve(ctx, b.ref)
+	provider, cleanup, err := newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
-	b.reg.Register([]byte(token))
+	defer cleanup()
+
+	b.mu.Lock()
+	cursor := b.cursor
+	b.mu.Unlock()
+
+	const pageSize = 100
+	pageInfo := &providers.ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
+	})
+	if err != nil {
+		return 0, err
+	}
+	b.mu.Lock()
+	if pageInfo.HasNext {
+		b.cursor = pageInfo.NextCursor
+	} else {
+		b.cursor = ""
+	}
+	b.mu.Unlock()
+	count := 0
+	for _, item := range items {
+		matched, err := b.labelPredicate.Matches(item.Labels)
+		if err != nil {
+			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+		}
+		if matched {
+			matched, err = b.fieldPredicate.Matches(item.Fields)
+			if err != nil {
+				return 0, fmt.Errorf("evaluate backlog field predicate: %w", err)
+			}
+			if matched {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+func newCounterGitHubProvider(
+	ctx context.Context,
+	ref string,
+	schedulerDir string,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	quota *localscheduler.ProviderQuotaState,
+) (*providers.GitHubProvider, func(), error) {
+	var accounting *providerQuotaAccounting
+	if quota != nil {
+		accounting = &providerQuotaAccounting{state: quota}
+		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+			accounting.prepaid = &reservation
+		}
+	}
+	cleanup := func() {}
+	if accounting != nil {
+		cleanup = accounting.RefundUnused
+	}
+
+	token, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	reg.Register([]byte(token))
 	opts := []func(*providers.GitHubProvider){
-		apiReadCacheOptionForSnapshot(b.schedulerDir, providersnapshot.ID(ctx)),
+		apiReadCacheOptionForSnapshot(schedulerDir, providersnapshot.ID(ctx)),
 	}
 	if accounting != nil {
 		opts = append(opts,
@@ -1125,65 +1341,127 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	// reset-aware admission. Transport and 5xx retries remain enabled and each
 	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
-	items, err := newGitHubProvider(token, opts...).ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(items), nil
+	return newGitHubProvider(token, opts...), cleanup, nil
 }
 
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
 	return b.quota != nil
 }
 
-// buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
-// declared type=backlog-item trigger, if it has one (#344) — the daemon-
-// side fan-out counter, independent of and never dispatched through
-// `goobers backlog-query`'s own per-run claim (that stays the actual
-// claiming mechanism; this only estimates how many runs a Tick should fan
-// out to). Trigger.Selector (already declared in the schema, never
-// implemented until now — #342's own survey found it, like Signal, entirely
-// unwired) is a flat map; only its KEYS are used as required GitHub labels
-// — values are ignored, since GitHub issue labels are plain strings with no
-// key=value structure to match against, unlike a true k8s label selector.
+// buildBacklogCounter wires the daemon-side fan-out counter for a workflow's
+// declared type=backlog-item trigger (#344). It counts work items carrying
+// every selector key as a GitHub label. The per-run backlog-query stage remains
+// the actual claiming mechanism; this only estimates how many runs a Tick
+// should fan out to.
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
-		return nil
+		return nil, nil
 	}
 	var selector map[string]string
+	var expression string
+	var fieldExpression string
 	found := false
 	for _, tr := range wf.Spec.Triggers {
 		if tr.Type == apiv1.TriggerBacklogItem {
 			selector = tr.Selector
+			expression = tr.LabelPredicate
+			fieldExpression = tr.FieldPredicate
 			found = true
 			break
 		}
 	}
 	if !found {
-		return nil
+		return nil, nil
 	}
 	labels := make([]string, 0, len(selector))
 	for k := range selector {
 		labels = append(labels, k)
 	}
 	sort.Strings(labels)
+	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
+	}
+	fieldPredicate, err := fieldpredicate.CompileConjunction(gaggle.Spec.Backlog.FieldPredicate, fieldExpression)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q backlog field predicate: %w", wf.Name, err)
+	}
 	counter := &backlogCounter{
-		ref:          cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
-		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
-		labels:       labels,
-		resolver:     resolver,
-		reg:          reg,
-		schedulerDir: schedulerDir,
+		ref:            cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:         labels,
+		labelPredicate: predicate,
+		fieldPredicate: fieldPredicate,
+		resolver:       resolver,
+		reg:            reg,
+		schedulerDir:   schedulerDir,
 	}
 	if quota != nil {
 		counter.quota = quota
 	}
-	return counter
+	return counter, nil
+}
+
+// buildScheduleDemandCounter recognizes the built-in update-behind-pr selector
+// and sizes each due schedule tick to its unclaimed eligible PR set.
+func buildScheduleDemandCounter(
+	cfg *instance.Config,
+	wf *apiv1.Workflow,
+	repoRef apiv1.RepoRef,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	schedulerDir, branchNamespace string,
+	quota *localscheduler.ProviderQuotaState,
+) localscheduler.BacklogCounter {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	hasSchedule := false
+	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule {
+			hasSchedule = true
+			break
+		}
+	}
+	base, headPrefix, ok := remediationCounterScope(wf, branchNamespace)
+	if !hasSchedule || !ok {
+		return nil
+	}
+	return &remediationDemandCounter{
+		ref:          repoRef.Owner + "/" + repoRef.Name,
+		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		base:         base,
+		headPrefix:   headPrefix,
+		gaggle:       wf.Spec.Gaggle,
+		resolver:     resolver,
+		reg:          reg,
+		schedulerDir: schedulerDir,
+		quota:        quota,
+	}
+}
+
+func remediationCounterScope(wf *apiv1.Workflow, branchNamespace string) (base, headPrefix string, ok bool) {
+	for _, task := range wf.Spec.Tasks {
+		if task.Name != wf.Spec.Start || task.Run == nil ||
+			len(task.Run.Command) != 2 ||
+			task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "update-behind-pr" {
+			continue
+		}
+		base = task.Inputs["base"]
+		if base == "" {
+			base = "main"
+		}
+		headPrefix = task.Inputs["headPrefix"]
+		if headPrefix == "" {
+			headPrefix = providers.NormalizeBranchNamespace(branchNamespace)
+		}
+		return base, headPrefix, true
+	}
+	return "", "", false
 }
 
 type providerQuotaAccounting struct {
@@ -1281,7 +1559,29 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, harnessInfo harnessPreflightInfo) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
+	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
+	// gaggle, so its stages are granted that gaggle's own project-repo token —
+	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
+	// legacy instance, which falls back to the first repo's token unchanged.
+	// Computed before the worktree Manager so its per-repo git-auth resolver can
+	// back each read-only reference-repo clone with that repo's contents:read
+	// token (MGV-10/#1285, consumed by MGV-11/#1286).
+	gaggleOwner := gaggleProject.Owner
+	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
+		gaggleOwner += "/" + gaggleProject.Project
+	}
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name, additionalRepos, sharedReg)
+	if err != nil {
+		return runner.Config{}, nil, err
+	}
+	// The clone-URL derivation the runner will use (the test seam when set, else
+	// the runner default) — the worktree auth resolver must key on the identical
+	// URLs the runner hands WorkingCopy.
+	cloneURLFn := repoCloneURL
+	if cloneURLFn == nil {
+		cloneURLFn = runner.DefaultRepoCloneURL
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1292,14 +1592,15 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
-		if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
-			source, sourceErr := adoauth.Source(adoRepo, nil)
-			if sourceErr != nil {
-				return runner.Config{}, nil, fmt.Errorf("configure ADO worktree authentication: %w", sourceErr)
-			}
-			managerOptions = append(managerOptions, worktree.WithGitEnvironment(func(ctx context.Context, repoURL string) ([]string, error) {
-				return providers.ADOGitAuthEnvironment(ctx, source, sharedReg, repoURL)
-			}))
+		if cfg.PartialCloneEnabled() {
+			managerOptions = append(managerOptions, worktree.WithPartialClone())
+		}
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
+		if gitEnvErr != nil {
+			return runner.Config{}, nil, gitEnvErr
+		}
+		if gitEnv != nil {
+			managerOptions = append(managerOptions, worktree.WithGitEnvironment(gitEnv))
 		}
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
@@ -1308,18 +1609,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
-	}
-	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
-	// gaggle, so its stages are granted that gaggle's own project-repo token —
-	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
-	// legacy instance, which falls back to the first repo's token unchanged.
-	gaggleOwner := gaggleProject.Owner
-	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
-		gaggleOwner += "/" + gaggleProject.Project
-	}
-	resolver, grants, err := buildCredentials(cfg, gaggleOwner, gaggleProject.Name)
-	if err != nil {
-		return runner.Config{}, nil, err
 	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
@@ -1372,6 +1661,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	rc := runner.Config{
+		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			// Register resolved secrets into the run's own registrar AND the
 			// instance-global shared registry, so they are scrubbed from the run
@@ -1408,20 +1698,34 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				shell.DefaultMaxOutputBytes = diagnosticsMaxOutputBytes
 			}
 
-			fallback, err := executor.NewTaskExecutor(shell, nil)
-			if err != nil {
+			kinds := executor.NewKindRegistry()
+			if err := kinds.Register(executor.KindShell, shell); err != nil {
 				return nil, err
 			}
 			var adoRepo *instance.RepoRef
 			if r, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
 				adoRepo = &r
 			}
-			return buildCIPollExecutor(cfg, injector, fallback, rec, adoRepo, reg)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, reg)
+			if err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindCIPoll, ciPoll); err != nil {
+				return nil, err
+			}
+			return executor.NewTaskExecutor(kinds)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]
 			if !ok {
 				return nil, fmt.Errorf("goober %q not found in config", gooberName)
+			}
+			harnessName := spec.Harness
+			if harnessName == "" {
+				harnessName = apiv1.HarnessCopilot
+			}
+			if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+				return nil, fmt.Errorf("validate goober %q MCP config: %w", gooberName, err)
 			}
 			// The injector registers resolved secrets into the run's registrar AND
 			// the shared instance registry (#117 Piece B). reg (not the tee) is
@@ -1431,10 +1735,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
 			if err != nil {
 				return nil, err
-			}
-			harnessName := spec.Harness
-			if harnessName == "" {
-				harnessName = apiv1.HarnessCopilot
 			}
 			adapter, err := adapterRegistry.Get(string(harnessName))
 			if err != nil {
@@ -1472,6 +1772,8 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
+				harness.WithMCPServers(spec.MCPServers),
+				harness.WithTools(spec.Tools),
 			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without
@@ -1480,6 +1782,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// fallback that applies when a stage sets none.
 			if spec.TimeoutSeconds > 0 {
 				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
+			}
+			// Opt-in agentic sandbox enforcement (S3/#166, #1305): this
+			// gaggle's effective posture, resolved once at the composition
+			// root (instance.EffectiveAgenticSandbox). The default posture,
+			// disabled, adds no option — the executor and adapter behave
+			// byte-identically to an instance with no sandbox config at all.
+			if sandboxPosture == instance.SandboxEnforced {
+				opts = append(opts, harness.WithSandboxEnforcement())
 			}
 			return harness.NewExecutor(
 				adapter,
@@ -1498,10 +1808,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
-		BranchNamespaces:       branchNamespaces,
-		ScratchDir:             filepath.Join(l.WorkcopiesDir(), "scratch"),
-		RunsDir:                l.RunsDir(),
-		RepoCloneURL:           repoCloneURL,
+		BranchNamespaces: branchNamespaces,
+		ScratchDir:       filepath.Join(l.WorkcopiesDir(), "scratch"),
+		RunsDir:          l.RunsDir(),
+		RepoCloneURL:     repoCloneURL,
+		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
+		// provisions a read-only checkout of each alongside a repo-workspace
+		// stage's primary worktree. Empty for a single-repo gaggle (unchanged).
+		AdditionalRepos:        additionalRepos,
 		GateGooberCapabilities: gateGooberCaps,
 		AgentProvenance:        agentProvenance,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
@@ -1520,6 +1834,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
+		// a real daemon run. Left nil in every runner-package test and any
+		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
+		// this is the one place that actually wants a host PATH check.
+		LookPathFunc: exec.LookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
@@ -1550,6 +1869,104 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 	return instance.RepoRef{}, false
 }
 
+// githubRepoForGaggle is adoRepoForGaggle's GitHub counterpart: the instance
+// repo backing this gaggle's project, resolved so its configured token can
+// authenticate mirror clone/fetch (#667).
+func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+		return cfg.Repos[0], true
+	}
+	if project.Provider != apiv1.ProviderGitHub {
+		return instance.RepoRef{}, false
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == "github" && repo.Owner == project.Owner && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	return instance.RepoRef{}, false
+}
+
+// githubWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
+// that authenticates mirror clone/fetch of a GitHub repo with its configured
+// credential (#667), via the secret-free askpass helper — the token only ever
+// exists in the git child process's environment, never on disk or argv.
+//
+// A repo with no credential returns a nil resolver and writes nothing: a
+// public-repo instance keeps today's unauthenticated child environment, byte
+// for byte. With a token ref configured the resolver re-resolves it on every
+// clone/fetch (rotation without restart, matching the env/file resolver's
+// contract); a github-app repo (#686) mints per operation instead, so a
+// refreshed installation token flows into the next fetch with no worktree
+// changes. A store-backed token ref (#683) resolves through stores like
+// env/file refs. All three fail closed — an unresolvable ref or failed mint
+// aborts provisioning rather than falling back to an anonymous fetch, and
+// GIT_TERMINAL_PROMPT=0 turns a rejected credential into an immediate error
+// instead of an interactive hang. The token is scoped to the configured repo:
+// any other remote URL the manager is ever pointed at gets the ambient
+// (unauthenticated) environment.
+func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	var resolve credentials.ResolveFunc
+	switch {
+	case repo.GitHubAppAuth():
+		// The minting source registers tokens with registrar itself, at mint
+		// time — before any consumer (including this one) sees the value.
+		mint, err := newGitHubAppTokenSource(repo, registrar, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = mint
+	case repo.Token.Configured():
+		// A static token ref (env|file|store) resolves through stores; a
+		// store-backed ref can never fall into the unauthenticated arm because
+		// Configured() counts it as a source and resolver construction fails
+		// closed without store support.
+		refName := repo.Owner + "/" + repo.Name
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
+		if err != nil {
+			return nil, err
+		}
+		resolve = func(ctx context.Context) (string, error) {
+			return resolver.Resolve(ctx, refName)
+		}
+	default:
+		return nil, nil
+	}
+	askpass, err := credentials.WriteAskpassScript(filepath.Join(workcopiesDir, "auth"))
+	if err != nil {
+		return nil, err
+	}
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if !sameGitRemote(repoURL, cloneURL) {
+			return nil, nil
+		}
+		token, err := resolve(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if registrar != nil {
+			registrar.Register([]byte(token))
+		}
+		return credentials.GitAuthEnvironment(askpass, token), nil
+	}, nil
+}
+
+// sameGitRemote reports whether two https remote URLs name the same repo,
+// tolerating the cosmetic variance git remotes carry: an optional .git
+// suffix, a trailing slash, and case (GitHub owner/name are case-insensitive).
+func sameGitRemote(a, b string) bool {
+	normalize := func(u string) string {
+		u = strings.TrimRight(strings.TrimSpace(u), "/")
+		u = strings.TrimSuffix(u, ".git")
+		return strings.ToLower(u)
+	}
+	return normalize(a) == normalize(b)
+}
+
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers
 // admission and NewAgentic's instructions/harness lookup.
 func goobersByName(set *instance.ConfigSet) map[string]apiv1.GooberSpec {
@@ -1574,6 +1991,33 @@ func knownAutomatedCheckNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+type gooberHarnessConfigError struct {
+	Goober string
+	Err    error
+}
+
+func (e *gooberHarnessConfigError) Error() string {
+	return fmt.Sprintf("validate goober %q harness config: %v", e.Goober, e.Err)
+}
+
+func (e *gooberHarnessConfigError) Unwrap() error {
+	return e.Err
+}
+
+type workflowCompileError struct {
+	Gaggle   string
+	Workflow string
+	Err      error
+}
+
+func (e *workflowCompileError) Error() string {
+	return fmt.Sprintf("compile workflow %q: %v", e.Workflow, e.Err)
+}
+
+func (e *workflowCompileError) Unwrap() error {
+	return e.Err
 }
 
 // compiledMachines compiles every workflow in set, admission-checked against
@@ -1602,7 +2046,10 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			harnessName = apiv1.HarnessCopilot
 		}
 		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+			return nil, &gooberHarnessConfigError{Goober: name, Err: err}
+		}
+		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
@@ -1618,7 +2065,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
@@ -1643,6 +2090,21 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 		refs[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = g.Spec.Project
 	}
 	return refs, nil
+}
+
+// sandboxPosturesByGaggle resolves each configured gaggle's effective agentic
+// isolation posture (#1305): the gaggle's own sandbox override when declared,
+// else the instance-wide sandbox.agentic posture, else disabled. Resolved once
+// here, at the composition root, so the per-gaggle runner wiring and anything
+// else that needs the posture agree on one resolution (the same shape as
+// branchNamespacesByGaggle above).
+func sandboxPosturesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]instance.SandboxPosture {
+	out := make(map[string]instance.SandboxPosture, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = instance.EffectiveAgenticSandbox(cfg, g)
+	}
+	return out
 }
 
 // branchNamespacesByGaggle maps each configured gaggle to its run-branch

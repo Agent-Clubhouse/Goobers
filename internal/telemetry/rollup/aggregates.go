@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,21 +29,29 @@ const (
 	stageStatusFailure = "failure"
 )
 
-// StatsRequest filters the aggregate views Stats returns. Model and
+// StatsRequest filters the aggregate views Stats returns. Branch filters stage
+// and usage rows; GroupByBranch splits those rows into branch cohorts. Model and
 // HarnessVersion restrict results to agentic invocations; their GroupBy flags
 // split run and stage rows into provenance cohorts. Run cohorts are
-// participatory: a run using multiple grouped cohorts appears in each.
+// participatory: a run using multiple grouped agent cohorts appears in each.
 type StatsRequest struct {
 	Workflow              string
 	Gaggle                string
 	Stage                 string
+	Branch                *int
 	Model                 string
 	HarnessVersion        string
+	GroupByBranch         bool
 	GroupByModel          bool
 	GroupByHarnessVersion bool
 	Since                 time.Time
 	Until                 time.Time
 }
+
+// ErrBranchAttributionRequiresRebuild means an upgraded rollup contains rows
+// written before branch attribution was projected. Re-ingesting the journals
+// is required before a branch-filtered or branch-grouped result can be exact.
+var ErrBranchAttributionRequiresRebuild = errors.New("rollup: branch attribution is unknown for legacy rows; rebuild telemetry from journals")
 
 // GaggleStats is the success/failure/duration aggregate for one gaggle.
 type GaggleStats struct {
@@ -83,6 +92,7 @@ type StageStats struct {
 	Gaggle            string `json:"gaggle"`
 	Workflow          string `json:"workflow"`
 	Stage             string `json:"stage"`
+	Branch            *int   `json:"branch,omitempty"`
 	Model             string `json:"model,omitempty"`
 	HarnessVersion    string `json:"harnessVersion,omitempty"`
 	TotalAttempts     int    `json:"totalAttempts"`
@@ -127,6 +137,7 @@ type UsageStats struct {
 	Gaggle         string `json:"gaggle,omitempty"`
 	Workflow       string `json:"workflow,omitempty"`
 	Stage          string `json:"stage,omitempty"`
+	Branch         *int   `json:"branch,omitempty"`
 	Model          string `json:"model,omitempty"`
 	HarnessVersion string `json:"harnessVersion,omitempty"`
 	TotalAttempts  int    `json:"totalAttempts"`
@@ -328,6 +339,9 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 // stage, optionally filtered by workflow and/or a [Since, Until] time window
 // on the run's start time (TEL-020/#24).
 func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
+	if err := db.requireKnownBranchAttribution(req); err != nil {
+		return StatsResult{}, err
+	}
 	gaggles, err := db.gaggleStats(req)
 	if err != nil {
 		return StatsResult{}, err
@@ -345,7 +359,7 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 		return StatsResult{}, err
 	}
 	populateStageDistributions(stages, distributions)
-	usage, err := usageStats(distributions)
+	usage, err := usageStats(distributions, req.GroupByBranch || req.Branch != nil)
 	if err != nil {
 		return StatsResult{}, err
 	}
@@ -372,6 +386,29 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 		Gaggles: gaggles, Runs: runs, Stages: stages, Usage: usage, Models: models,
 		Curation: curation, ReadyPool: readyPool,
 	}, nil
+}
+
+func (db *DB) requireKnownBranchAttribution(req StatsRequest) error {
+	if req.Branch == nil && !req.GroupByBranch {
+		return nil
+	}
+	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
+	clauses = append(clauses, "sa.branch IS NULL")
+	query := fmt.Sprintf(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM stage_attempts sa
+			JOIN runs r ON r.run_id = sa.run_id
+			%s
+		)`, whereClause(clauses))
+	var unknown bool
+	if err := db.sql.QueryRow(query, args...).Scan(&unknown); err != nil {
+		return fmt.Errorf("rollup: query unknown branch attribution: %w", err)
+	}
+	if unknown {
+		return ErrBranchAttributionRequiresRebuild
+	}
+	return nil
 }
 
 func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {
@@ -466,6 +503,9 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 	// consistent with runStats — a stage's own started_at can be null for an
 	// attempt that never started).
 	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
+	branchClauses, branchArgs := branchFilterClauses("sa", req)
+	clauses = append(clauses, branchClauses...)
+	args = append(args, branchArgs...)
 	join := ""
 	if agentStatsActive(req) {
 		join = `JOIN agent_invocations ai
@@ -476,7 +516,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		args = append(args, agentArgs...)
 	}
 	joinWhere := whereClause(clauses)
-	dimensions := agentDimensionColumns(req, "ai")
+	dimensions := stageDimensionColumns(req, "sa", "ai")
 	selectDimensions := prefixedColumns(dimensions)
 	groupDimensions := groupedColumns(dimensions)
 	query := fmt.Sprintf(`
@@ -504,11 +544,19 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		var s StageStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
+		var branch sql.NullInt64
 		scan := []any{&s.Gaggle, &s.Workflow, &s.Stage}
-		scan = appendAgentDimensionScan(scan, req, &s.Model, &s.HarnessVersion)
+		scan = appendStageDimensionScan(scan, req, &branch, &s.Model, &s.HarnessVersion)
 		scan = append(scan, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage stats: %w", err)
+		}
+		if req.GroupByBranch && branch.Valid {
+			value := int(branch.Int64)
+			s.Branch = &value
+		} else if req.Branch != nil {
+			filteredBranch := *req.Branch
+			s.Branch = &filteredBranch
 		}
 		if terminal := s.SucceededAttempts + s.FailedAttempts; terminal > 0 {
 			s.SuccessRate = float64(s.SucceededAttempts) / float64(terminal)
@@ -585,6 +633,21 @@ func agentDimensionColumns(req StatsRequest, alias string) []string {
 	return columns
 }
 
+func stageDimensionColumns(req StatsRequest, stageAlias, agentAlias string) []string {
+	var columns []string
+	if req.GroupByBranch {
+		columns = append(columns, stageAlias+".branch")
+	}
+	return append(columns, agentDimensionColumns(req, agentAlias)...)
+}
+
+func branchFilterClauses(alias string, req StatsRequest) ([]string, []any) {
+	if req.Branch == nil {
+		return nil, nil
+	}
+	return []string{alias + ".branch = ?"}, []any{*req.Branch}
+}
+
 func prefixedColumns(columns []string) string {
 	if len(columns) == 0 {
 		return ""
@@ -607,6 +670,13 @@ func appendAgentDimensionScan(scan []any, req StatsRequest, model, harnessVersio
 		scan = append(scan, harnessVersion)
 	}
 	return scan
+}
+
+func appendStageDimensionScan(scan []any, req StatsRequest, branch *sql.NullInt64, model, harnessVersion *string) []any {
+	if req.GroupByBranch {
+		scan = append(scan, branch)
+	}
+	return appendAgentDimensionScan(scan, req, model, harnessVersion)
 }
 
 func runAgentJoin(req StatsRequest) (string, []any) {

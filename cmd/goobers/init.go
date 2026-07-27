@@ -17,19 +17,34 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/version"
+
+	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--guided | --demo | --template=quickstart] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
 	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
-	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
-	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
-	"then validates the result. --template=quickstart seeds the versioned onboarding\n" +
-	"workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"with instance.yaml or a populated config/ before prompting. It separately\n" +
+	"selects a checked-in config source and target GitHub application repository,\n" +
+	"then validates both. The source may be new or existing locally, cloned from\n" +
+	"GitHub, or optionally backed by a newly confirmed GitHub repository.\n" +
+	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
+	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
+	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
+	"and gaggles/) without runtime state. The source-tree action is non-interactive,\n" +
+	"preserves every existing file, and reports each created or skipped path;\n" +
+	"--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
-	"demo is supported on Linux and macOS, where network isolation is enforced.\n"
+	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
+	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
+	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
+	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
+	"the general Windows sandbox policy (#651). Use `goobers preflight` to check and\n" +
+	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -40,15 +55,34 @@ func runInitWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 }
 
 func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Writer, goos string) int {
+	return runInitWithInputForOSAndGitHub(args, stdin, stdout, stderr, goos, defaultGuidedGitHubOperations{})
+}
+
+func runInitWithInputForOSAndGitHub(
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	goos string,
+	github guidedGitHubOperations,
+) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
-	guided := fs.Bool("guided", false, "prompt for repository, work tracking, credentials, and workflows")
+	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
+	guided := fs.Bool("guided", false, "prompt for config source, target repository, credentials, and workflows")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
+	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
+	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	sourceTreeSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source-tree" {
+			sourceTreeSet = true
+		}
+	})
 	selectedModes := 0
 	for _, selected := range []bool{*demo, *guided, *template != ""} {
 		if selected {
@@ -59,17 +93,41 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --demo, --guided, and --template cannot be combined\n")
 		return 2
 	}
+	if *insecure && !*demo {
+		pf(stderr, "error: --insecure requires --demo\n")
+		return 2
+	}
 	if *template != "" && *template != instance.QuickstartTemplate {
 		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
+		return 2
+	}
+	if sourceTreeSet && *sourceTree == "" {
+		pf(stderr, "error: --source-tree destination must not be empty\n")
+		return 2
+	}
+	if *sourceTree != "" && *template != instance.QuickstartTemplate {
+		pf(stderr, "error: --source-tree requires --template=%s\n", instance.QuickstartTemplate)
+		return 2
+	}
+	if *asJSON && *sourceTree == "" {
+		pf(stderr, "error: --json is supported by init only with --source-tree\n")
+		return 2
+	}
+	if *sourceTree != "" && fs.NArg() != 0 {
+		pf(stderr, "error: --source-tree supplies the destination; do not also pass [path]\n")
 		return 2
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
 	}
-	if *demo && goos != "linux" && goos != "darwin" {
-		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s\n", goos)
+	demoUnisolated := *demo && goos != "linux" && goos != "darwin"
+	if demoUnisolated && !*insecure {
+		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s; run `goobers preflight` for the fully isolated WSL 2 route, or pass --insecure to proceed without isolation\n", goos)
 		return 2
+	}
+	if *sourceTree != "" {
+		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr, goos)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -83,13 +141,11 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 
 	var res *instance.InitResult
+	var guidedResult guidedInitResult
 	var err error
+	errCode := 2
 	if *guided {
-		var opts instance.GuidedOptions
-		opts, err = promptGuidedOptions(stdin, stdout)
-		if err == nil {
-			res, err = instance.InitGuided(root, opts)
-		}
+		res, guidedResult, errCode, err = runGuidedInit(root, stdin, stdout, stderr, github)
 	} else if *template == instance.QuickstartTemplate {
 		res, err = instance.InitQuickstart(root)
 	} else if *demo {
@@ -99,7 +155,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 2
+		return errCode
 	}
 
 	abs, err := filepath.Abs(res.Root)
@@ -108,8 +164,17 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if len(res.Created) == 0 {
 		pf(stdout, "instance already initialized at %s (nothing to do)\n", abs)
+		if demoUnisolated {
+			pln(stdout, demoInsecureWarning)
+		}
 		if *guided {
-			return finishGuidedInit(root, abs, stdout, stderr)
+			if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
+				return code
+			}
+		}
+		if err := ensureInitCompleted(root); err != nil {
+			pf(stderr, "error: record successful init completion: %v\n", err)
+			return 2
 		}
 		return 0
 	}
@@ -120,7 +185,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
-	pf(stdout, "\nLearn the desired-state model: %s\n", conceptsGuideURL)
+	pf(stdout, "\nLearn the desired-state model: %s\n", documentationURL("docs/concepts/README.md"))
 	demoSeeded := false
 	for _, created := range res.Created {
 		if created == instance.ConfigDirName {
@@ -129,21 +194,156 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		}
 	}
 	if *demo && demoSeeded {
+		if demoUnisolated {
+			pln(stdout, demoInsecureWarning)
+		}
 		pf(stdout, demoTourBanner, abs)
 	}
 	if *guided {
-		return finishGuidedInit(root, abs, stdout, stderr)
+		if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
+			return code
+		}
+	}
+	if err := ensureInitCompleted(root); err != nil {
+		pf(stderr, "error: record successful init completion: %v\n", err)
+		return 2
 	}
 	return 0
 }
 
-func finishGuidedInit(root, abs string, stdout, stderr io.Writer) int {
+func ensureInitCompleted(root string) error {
+	instanceLog, _, err := journal.OpenInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		return err
+	}
+	events, err := journal.ReadInstanceLog(instanceLog.Dir())
+	if err != nil {
+		_ = instanceLog.Close()
+		return err
+	}
+	for _, event := range events {
+		if event.Type == journal.EventInitCompleted {
+			return instanceLog.Close()
+		}
+	}
+	if err := instanceLog.Append(journal.Event{Type: journal.EventInitCompleted}); err != nil {
+		_ = instanceLog.Close()
+		return err
+	}
+	return instanceLog.Close()
+}
+
+const configSourceActionVersion = 1
+
+type configSourceActionEnvelope struct {
+	Action      string   `json:"action"`
+	Version     int      `json:"version"`
+	Created     []string `json:"created"`
+	Skipped     []string `json:"skipped"`
+	Path        string   `json:"path"`
+	NextCommand string   `json:"nextCommand"`
+}
+
+func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
+	result, err := instance.SeedQuickstartConfigSource(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	var validationOutput strings.Builder
+	if code := runValidate(
+		[]string{"--source-tree", "--json", result.Root},
+		&validationOutput,
+		&validationOutput,
+	); code != 0 {
+		pf(stderr, "error: seeded config source failed validation\n%s", validationOutput.String())
+		return code
+	}
+	abs := absolutePath(result.Root)
+	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs, goos)
+	envelope := configSourceActionEnvelope{
+		Action:      "seed-config-source",
+		Version:     configSourceActionVersion,
+		Created:     result.Created,
+		Skipped:     result.Skipped,
+		Path:        abs,
+		NextCommand: nextCommand,
+	}
+	if asJSON {
+		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, envelope); err != nil {
+			pf(stderr, "error: encode config-source result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	pf(stdout, "seeded quickstart config source at %s\n", abs)
+	for _, created := range result.Created {
+		pf(stdout, "  created  %s\n", created)
+	}
+	for _, skipped := range result.Skipped {
+		pf(stdout, "  skipped  %s (already exists)\n", skipped)
+	}
+	pf(stdout, "\nNext: %s\n", nextCommand)
+	return 0
+}
+
+func quoteShellArg(arg, goos string) string {
+	if goos == "windows" {
+		// nextCommand targets PowerShell, where single-quoted strings are literal.
+		return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
+}
+
+func finishGuidedInit(root, abs string, result guidedInitResult, stdout, stderr io.Writer) int {
 	pln(stdout, "")
 	if code := runValidate([]string{root}, stdout, stderr); code != 0 {
 		pf(stderr, "error: guided setup did not produce a valid instance\n")
 		return code
 	}
-	pf(stdout, guidedDocsBanner, abs)
+	pf(stdout, `
+Onboarding mapping:
+  config-repo:  %s
+  config-source: %s
+  instance-root: %s
+  target-repo:   %s
+  backlog:       %s
+  mapping:       %s -> %s -> %s
+
+After editing the checked-in source, validate and materialize it before startup:
+  goobers validate --source-tree %s
+  goobers config materialize %s
+  goobers up %s
+`,
+		result.ConfigRepo,
+		result.SourceRoot,
+		abs,
+		result.TargetRepo,
+		result.Backlog,
+		result.SourceRoot,
+		filepath.Join(abs, instance.GagglesDirName, result.Gaggle),
+		result.TargetRepo,
+		strconv.Quote(result.SourceRoot),
+		strconv.Quote(abs),
+		strconv.Quote(abs),
+	)
+	if result.RemoteCreated {
+		pf(stdout, `
+The GitHub config repository is empty; no commit or push was performed:
+  git -C %s init
+  git -C %s remote add origin %s
+`, strconv.Quote(result.SourceRoot), strconv.Quote(result.SourceRoot), strconv.Quote(result.ConfigRepo+".git"))
+	}
+	pf(
+		stdout,
+		guidedDocsBanner,
+		abs,
+		documentationURL("docs/guides/dsl-authoring-skill.md"),
+		documentationURL("docs/requirements/goober.md"),
+		documentationURL("docs/stage-contract.md"),
+		documentationURL("docs/cli/README.md"),
+	)
 	return 0
 }
 
@@ -154,9 +354,11 @@ type guidedPrompter struct {
 
 func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOptions, error) {
 	p := guidedPrompter{reader: bufio.NewReader(stdin), out: stdout}
-	pln(stdout, "Guided first-run setup")
-	pln(stdout, "")
+	return promptGuidedOptionsWithPrompter(p)
+}
 
+func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, error) {
+	stdout := p.out
 	repoText, err := p.ask("Main GitHub repository (owner/name or URL)", "", validGitHubRepoInput)
 	if err != nil {
 		return instance.GuidedOptions{}, err
@@ -206,7 +408,7 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 	pln(stdout, "")
 	pln(stdout, "Create separate fine-grained, least-privilege PATs; never paste their values here.")
 	pln(stdout, "  Create: https://github.com/settings/personal-access-tokens/new")
-	pln(stdout, "  Scopes: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md")
+	pf(stdout, "  Scopes: %s\n", documentationURL("docs/guides/github-token-scopes.md"))
 	pf(stdout, "  Repository access: select only %s/%s for repository-scoped PATs.\n", repoOwner, repoName)
 	pln(stdout, "Repository read PAT permissions: Contents: Read-only.")
 	repoTokenEnv, err := p.ask("Repository read PAT environment variable", "GOOBERS_GITHUB_REPO_TOKEN", instance.ValidGuidedTokenEnvName)
@@ -430,15 +632,35 @@ Ready to run from %s:
   goobers run <workflow>
 
 Developer docs:
-  Author workflows:          https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md
-  Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and docs/stage-contract.md
-  View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (` + "`goobers trace` / `goobers telemetry`" + `)
+  Author workflows:         %s
+  Make custom agent stages: %s and %s
+  View journal telemetry:   %s (` + "`goobers trace` / `goobers telemetry`" + `)
 `
 
-const conceptsGuideURL = "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
+var stableReleaseVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+func documentationURL(path string) string {
+	ref := "main"
+	if stableReleaseVersion.MatchString(version.Version) {
+		ref = url.PathEscape(version.Version)
+	}
+	return fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/blob/%s/%s", ref, path)
+}
 
 const demoTourBanner = `
 Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact
 `
+
+// demoInsecureWarning is printed whenever --demo --insecure scaffolds a demo
+// on a platform with no enforced network:none equivalent (issue #1545).
+// Scaffolding is unconditional once --insecure opts in, but actually running
+// the demo still requires the same trusted-local-execution env var every
+// other network:none stage needs on Windows (internal/executor/
+// network_windows.go) — this issue narrowly lifts the CLI-level refusal to
+// even scaffold, it does not alter that general Windows sandbox policy.
+const demoInsecureWarning = "\nwarning: demo scaffolded WITHOUT enforced network isolation — this platform\n" +
+	"has no network:none equivalent. Before `goobers run demo`, set\n" +
+	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n" +
+	"For full isolation instead, run `goobers preflight` and launch the command through WSL 2.\n"

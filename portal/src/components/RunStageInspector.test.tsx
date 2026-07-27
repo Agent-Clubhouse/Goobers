@@ -1,19 +1,41 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AttemptList,
   ArtifactContent,
   DaemonClient,
+  RunEvent,
   StageAttempt,
   WorkflowGraphNode,
 } from "../api/types";
+import { goWireFixtures } from "../api/wire.generated";
+import styles from "../styles.css?inline";
+import tokens from "../tokens.css?inline";
 import { RunStageInspector } from "./RunStageInspector";
 
 const reviewNode: WorkflowGraphNode = { id: "review", kind: "gate", evaluator: "agentic" };
+const implementNode: WorkflowGraphNode = { id: "implement", kind: "agentic" };
+const reviewerRepassEvents: RunEvent[] = [
+  {
+    schema: "v1",
+    seq: 9,
+    type: "gate.evaluated",
+    branch: 0,
+    time: "2026-07-18T12:36:57Z",
+    knownSchema: true,
+    gate: "review",
+    verdict: "needs-changes",
+    target: "implement",
+  },
+];
 
 function attempt(overrides: Partial<StageAttempt>): StageAttempt {
+  const visit = overrides.visit ?? 1;
+  const number = overrides.number ?? 1;
   return {
-    number: 1,
+    id: overrides.id ?? `sta-${visit}-${number}`,
+    visit,
+    number,
     class: "initial",
     status: "success",
     startedSeq: 1,
@@ -41,7 +63,66 @@ function stubClient(
   } as unknown as DaemonClient;
 }
 
+function resolveComputedColor(element: Element, property: "background" | "color"): string {
+  const computed = window.getComputedStyle(element).getPropertyValue(property).trim();
+  const customProperty = computed.match(/^var\((--[\w-]+)\)$/)?.[1];
+  const resolved = customProperty
+    ? window.getComputedStyle(document.documentElement).getPropertyValue(customProperty).trim()
+    : computed;
+
+  if (!/^#[\da-f]{6}$/i.test(resolved)) {
+    throw new Error(`Expected ${property} to resolve to a six-digit hex color, received "${resolved}".`);
+  }
+  return resolved;
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const luminance = (color: string) => {
+    const channels = color
+      .slice(1)
+      .match(/.{2}/g)!
+      .map((channel) => Number.parseInt(channel, 16) / 255)
+      .map((channel) =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+      );
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const foregroundLuminance = luminance(foreground);
+  const backgroundLuminance = luminance(background);
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function expectPreviewColors(
+  preview: HTMLElement,
+  expected: { foreground: string; background: string },
+) {
+  const colors = {
+    foreground: resolveComputedColor(preview, "color"),
+    background: resolveComputedColor(preview, "background"),
+  };
+  expect(colors).toEqual(expected);
+  expect(contrastRatio(colors.foreground, colors.background)).toBeGreaterThanOrEqual(4.5);
+  return colors;
+}
+
 describe("run stage inspector", () => {
+  const portalStyles = document.createElement("style");
+
+  beforeAll(() => {
+    portalStyles.textContent = `${tokens}\n${styles}`;
+    document.head.append(portalStyles);
+  });
+
+  afterAll(() => {
+    portalStyles.remove();
+  });
+
+  beforeEach(() => {
+    delete document.documentElement.dataset.theme;
+  });
+
   it("prompts to select a node when none is chosen", () => {
     render(
       <RunStageInspector client={stubClient([])} node={undefined} runId="run-1" selectedSeq={9} />,
@@ -67,6 +148,21 @@ describe("run stage inspector", () => {
     expect(client.listStageAttempts).toHaveBeenCalledWith("run-1", "review", expect.anything());
   });
 
+  it("shows the requested model when the telemetry rollup has indexed it (#1550)", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success", model: "auto" })]);
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("model: auto")).toBeInTheDocument();
+  });
+
+  it("omits the model line when telemetry has not indexed one", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),
@@ -77,23 +173,168 @@ describe("run stage inspector", () => {
     // Attempt 2 started at seq 8, after the playhead at 5 — it must not appear.
     await waitFor(() => expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument());
     // With a single visible attempt the switcher is not rendered at all.
-    expect(screen.queryByText("Attempt 1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Stage visits" })).not.toBeInTheDocument();
   });
 
-  it("fetches and previews a textual artifact body on demand", async () => {
-    const bytes = new TextEncoder().encode("# Rationale\nApproved.").buffer;
+  it("groups the generated reviewer-repass fixture into visits and nested retries", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fixtureAttempts = goWireFixtures.stageAttempts.attempts;
+      const repeatedInitials = fixtureAttempts.filter(
+        (candidate) => candidate.number === 1 && candidate.visit <= 2,
+      );
+      expect(repeatedInitials).toHaveLength(2);
+      expect(new Set(repeatedInitials.map((candidate) => candidate.id)).size).toBe(2);
+
+      const client = stubClient(fixtureAttempts);
+      render(
+        <RunStageInspector
+          client={client}
+          events={reviewerRepassEvents}
+          node={implementNode}
+          runId="run-123"
+          selectedSeq={13}
+        />,
+      );
+
+      const visits = await screen.findByRole("group", { name: "Stage visits" });
+      const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
+      const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
+      expect(visit2).toHaveAttribute("aria-pressed", "true");
+
+      let retries = screen.getByRole("group", { name: "Visit 2 attempts" });
+      const repassAttempt = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 1",
+      });
+      const infraRetry = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 2 (infra retry)",
+      });
+      expect(infraRetry).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("2m 0s")).toBeInTheDocument();
+      expect(screen.getByText("success")).toBeInTheDocument();
+      expect(screen.getByText("Review returned needs-changes and selected implement.")).toBeInTheDocument();
+
+      fireEvent.click(repassAttempt);
+      expect(screen.getByText("repass_failed: first repass failed")).toBeInTheDocument();
+
+      fireEvent.click(visit1);
+      expect(screen.queryByText(/Repass decision/)).not.toBeInTheDocument();
+      expect(screen.getByText("implemented")).toBeInTheDocument();
+      expect(screen.getByText("result")).toBeInTheDocument();
+      expect(screen.getByText("Visit 1 · Attempt 2 · Seq 8")).toBeInTheDocument();
+
+      visit1.focus();
+      fireEvent.keyDown(visit1, { key: "ArrowRight" });
+      expect(visit2).toHaveFocus();
+      expect(visit2).toHaveAttribute("aria-pressed", "true");
+
+      retries = screen.getByRole("group", { name: "Visit 2 attempts" });
+      const selectedInfraRetry = within(retries).getByRole("button", {
+        name: "Visit 2 · Attempt 2 (infra retry)",
+      });
+      selectedInfraRetry.focus();
+      fireEvent.keyDown(selectedInfraRetry, { key: "ArrowLeft" });
+      expect(
+        within(retries).getByRole("button", { name: "Visit 2 · Attempt 1" }),
+      ).toHaveFocus();
+      expect(screen.getByText("repass_failed: first repass failed")).toBeInTheDocument();
+
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(
+        /same key|unique ["']key["']/i,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reveals a repass visit only after its traversal starts", async () => {
+    const client = stubClient(goWireFixtures.stageAttempts.attempts);
+    const view = render(
+      <RunStageInspector
+        client={client}
+        events={reviewerRepassEvents}
+        node={implementNode}
+        runId="run-123"
+        selectedSeq={9}
+      />,
+    );
+
+    const visits = await screen.findByRole("group", { name: "Stage visits" });
+    expect(within(visits).queryByRole("button", { name: "Visit 2" })).not.toBeInTheDocument();
+
+    view.rerender(
+      <RunStageInspector
+        client={client}
+        events={reviewerRepassEvents}
+        node={implementNode}
+        runId="run-123"
+        selectedSeq={10}
+      />,
+    );
+    expect(
+      await within(screen.getByRole("group", { name: "Stage visits" })).findByRole("button", {
+        name: "Visit 2",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["plain text", "text/plain", "plain text preview"],
+    ["JSON", "application/json", '{"preview":"json"}'],
+    ["YAML", "application/yaml", "preview: yaml"],
+    ["Markdown", "text/markdown", "# Markdown preview"],
+  ])("fetches and previews %s artifact bodies on demand", async (_format, mediaType, body) => {
+    const bytes = new TextEncoder().encode(body).buffer;
     const client = stubClient(
       [
         attempt({
-          artifacts: [{ name: "rationale.md", digest: "sha256:abc", size: 20, mediaType: "text/markdown" }],
+          artifacts: [{ name: "preview", digest: "sha256:abc", size: body.length, mediaType }],
         }),
       ],
-      { digest: "sha256:abc", mediaType: "text/markdown", size: 20, etag: null, bytes },
+      { digest: "sha256:abc", mediaType, size: body.length, etag: null, bytes },
     );
     render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
-    expect(await screen.findByText(/Approved\./)).toBeInTheDocument();
+    expect(await screen.findByText(body)).toBeInTheDocument();
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc");
+  });
+
+  it("keeps an open artifact preview readable across initial, light, and dark themes", async () => {
+    const body = "artifact preview contrast";
+    const bytes = new TextEncoder().encode(body).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [{ name: "preview.txt", digest: "sha256:abc", size: body.length, mediaType: "text/plain" }],
+        }),
+      ],
+      { digest: "sha256:abc", mediaType: "text/plain", size: body.length, etag: null, bytes },
+    );
+    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    const preview = await screen.findByText(body);
+    const initialColors = expectPreviewColors(preview, {
+      foreground: "#f2eff8",
+      background: "#25242b",
+    });
+    expect(window.getComputedStyle(preview).whiteSpace).toBe("pre-wrap");
+    // #1457 makes the preview overflow visible (no inner scroll/clip) so the
+    // sticky stage inspector no longer traps expanded artifact content; the
+    // earlier auto value is superseded.
+    expect(window.getComputedStyle(preview).overflow).toBe("visible");
+    expect(window.getComputedStyle(preview).wordBreak).toBe("break-word");
+
+    document.documentElement.dataset.theme = "light";
+    expectPreviewColors(preview, initialColors);
+
+    document.documentElement.dataset.theme = "dark";
+    const darkColors = expectPreviewColors(preview, {
+      foreground: "#eeebf5",
+      background: "#0d0d11",
+    });
+    expect(darkColors).not.toEqual(initialColors);
+    expect(preview).toBeInTheDocument();
   });
 });

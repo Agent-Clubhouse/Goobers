@@ -3,10 +3,11 @@ import type {
   ArtifactContent,
   ArtifactMetadata,
   DaemonClient,
+  RunEvent,
   StageAttempt,
   WorkflowGraphNode,
 } from "../api/types";
-import { formatDuration } from "../runDetailData";
+import { eventSummary, formatDuration } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 import { Inspector } from "../ui/Inspector";
 
@@ -31,6 +32,63 @@ function nodeIcon(kind: WorkflowGraphNode["kind"]): "gate" | "code" | "workflow"
   return kind === "gate" ? "gate" : kind === "agentic" ? "code" : "workflow";
 }
 
+interface StageVisit {
+  id: string;
+  ordinal: number;
+  attempts: StageAttempt[];
+}
+
+function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
+  const visits: StageVisit[] = [];
+  const byOrdinal = new Map<number, StageVisit>();
+  for (const attempt of attempts) {
+    let visit = byOrdinal.get(attempt.visit);
+    if (!visit) {
+      visit = { id: attempt.id, ordinal: attempt.visit, attempts: [] };
+      visits.push(visit);
+      byOrdinal.set(attempt.visit, visit);
+    }
+    visit.attempts.push(attempt);
+  }
+  return visits;
+}
+
+function attemptLabel(attempt: StageAttempt): string {
+  const retry = attempt.class === "initial" ? "" : ` (${attempt.class} retry)`;
+  return `Attempt ${attempt.number}${retry}`;
+}
+
+function repassDecision(
+  events: RunEvent[],
+  stageId: string,
+  visit: StageVisit,
+  previousVisit: StageVisit | undefined,
+): RunEvent | undefined {
+  const startedSeq = visit.attempts[0]?.startedSeq;
+  if (visit.ordinal === 1 || startedSeq === undefined) {
+    return undefined;
+  }
+  const previousFinishedSeq = Math.max(
+    0,
+    ...(previousVisit?.attempts.map(
+      (attempt) => attempt.finishedSeq ?? attempt.startedSeq ?? 0,
+    ) ?? []),
+  );
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (
+      event.knownSchema &&
+      event.type === "gate.evaluated" &&
+      event.target === stageId &&
+      event.seq > previousFinishedSeq &&
+      event.seq < startedSeq
+    ) {
+      return event;
+    }
+  }
+  return undefined;
+}
+
 // RunStageInspector drills into a selected graph node's stage: it loads that
 // stage's live attempts (DASH-20), shows the current attempt as of the selected
 // sequence — status, outputs, artifacts with digest/provenance — and previews
@@ -41,16 +99,21 @@ export function RunStageInspector({
   runId,
   node,
   selectedSeq,
+  events = [],
+  inspectorRef,
 }: {
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
   selectedSeq: number;
+  events?: RunEvent[];
+  inspectorRef?: React.Ref<HTMLElement>;
 }) {
   const [attempts, setAttempts] = useState<StageAttempt[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
-  const [selectedNumber, setSelectedNumber] = useState<number>();
+  const [selectedId, setSelectedId] = useState<string>();
+  const visitButtons = useRef<Array<HTMLButtonElement | null>>([]);
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const stageId = node?.id;
@@ -67,7 +130,7 @@ export function RunStageInspector({
       .then((list) => {
         setAttempts(list.attempts);
         setLoadState("idle");
-        setSelectedNumber(undefined);
+        setSelectedId(undefined);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
@@ -81,7 +144,7 @@ export function RunStageInspector({
 
   if (!node) {
     return (
-      <Inspector className="run-inspector" label="Stage inspector">
+      <Inspector className="run-inspector" label="Stage inspector" rootRef={inspectorRef}>
         <div className="not-reached">
           <span>Select a node</span>
           <small>Choose a stage in the graph to inspect its attempts.</small>
@@ -94,29 +157,66 @@ export function RunStageInspector({
   const visible = attempts.filter(
     (attempt) => attempt.startedSeq === undefined || attempt.startedSeq <= selectedSeq,
   );
+  const visits = groupAttemptsByVisit(visible);
   const selected =
-    visible.find((attempt) => attempt.number === selectedNumber) ?? visible[visible.length - 1];
+    visible.find((attempt) => attempt.id === selectedId) ?? visible[visible.length - 1];
+  const selectedVisitIndex = visits.findIndex((visit) => visit.ordinal === selected?.visit);
+  const selectedVisit = visits[selectedVisitIndex];
+  const decision = selectedVisit
+    ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
+    : undefined;
 
-  const moveSelection = (index: number) => {
-    const attempt = visible[index];
+  const selectVisit = (visit: StageVisit) => {
+    const attempt = visit.attempts[visit.attempts.length - 1];
     if (!attempt) {
       return;
     }
-    setSelectedNumber(attempt.number);
+    setSelectedId(attempt.id);
+  };
+
+  const moveVisitSelection = (index: number) => {
+    const visit = visits[index];
+    if (!visit) {
+      return;
+    }
+    selectVisit(visit);
+    visitButtons.current[index]?.focus();
+  };
+  const onVisitKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      event.preventDefault();
+      moveVisitSelection((index + 1) % visits.length);
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveVisitSelection((index - 1 + visits.length) % visits.length);
+    }
+  };
+
+  const moveAttemptSelection = (index: number) => {
+    const attempt = selectedVisit?.attempts[index];
+    if (!attempt) {
+      return;
+    }
+    setSelectedId(attempt.id);
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const count = selectedVisit?.attempts.length ?? 0;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
-      moveSelection((index + 1) % visible.length);
+      moveAttemptSelection((index + 1) % count);
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       event.preventDefault();
-      moveSelection((index - 1 + visible.length) % visible.length);
+      moveAttemptSelection((index - 1 + count) % count);
     }
   };
 
   return (
-    <Inspector className="run-inspector" label={`${node.id} attempt inspector`}>
+    <Inspector
+      className="run-inspector"
+      label={`${node.id} attempt inspector`}
+      rootRef={inspectorRef}
+    >
       <div className="inspector-heading">
         <span className={`primitive-icon primitive-${node.kind}`}>
           <Icon name={nodeIcon(node.kind)} size={17} />
@@ -148,27 +248,66 @@ export function RunStageInspector({
         ) : (
           <>
             {visible.length > 1 && (
-              <div aria-label="Stage attempts" className="attempt-switcher" role="group">
-                {visible.map((attempt, index) => (
-                  <button
-                    aria-pressed={selected?.number === attempt.number}
-                    className={
-                      selected?.number === attempt.number
-                        ? "attempt-button attempt-button-active"
-                        : "attempt-button"
-                    }
-                    key={attempt.number}
-                    onClick={() => setSelectedNumber(attempt.number)}
-                    onKeyDown={(event) => onAttemptKeyDown(event, index)}
-                    ref={(element) => {
-                      attemptButtons.current[index] = element;
-                    }}
-                    tabIndex={selected?.number === attempt.number ? 0 : -1}
-                    type="button"
+              <>
+                <div aria-label="Stage visits" className="attempt-switcher" role="group">
+                  {visits.map((visit, index) => (
+                    <button
+                      aria-pressed={selectedVisit?.ordinal === visit.ordinal}
+                      className={
+                        selectedVisit?.ordinal === visit.ordinal
+                          ? "attempt-button attempt-button-active"
+                          : "attempt-button"
+                      }
+                      key={visit.id}
+                      onClick={() => selectVisit(visit)}
+                      onKeyDown={(event) => onVisitKeyDown(event, index)}
+                      ref={(element) => {
+                        visitButtons.current[index] = element;
+                      }}
+                      tabIndex={selectedVisit?.ordinal === visit.ordinal ? 0 : -1}
+                      type="button"
+                    >
+                      Visit {visit.ordinal}
+                    </button>
+                  ))}
+                </div>
+                {selectedVisit && (
+                  <div
+                    aria-label={`Visit ${selectedVisit.ordinal} attempts`}
+                    className="retry-switcher"
+                    role="group"
                   >
-                    Attempt {attempt.number}
-                  </button>
-                ))}
+                    {selectedVisit.attempts.map((attempt, index) => (
+                      <button
+                        aria-label={`Visit ${selectedVisit.ordinal} · ${attemptLabel(attempt)}`}
+                        aria-pressed={selected?.id === attempt.id}
+                        className={
+                          selected?.id === attempt.id
+                            ? "attempt-button attempt-button-active"
+                            : "attempt-button"
+                        }
+                        key={attempt.id}
+                        onClick={() => setSelectedId(attempt.id)}
+                        onKeyDown={(event) => onAttemptKeyDown(event, index)}
+                        ref={(element) => {
+                          attemptButtons.current[index] = element;
+                        }}
+                        tabIndex={selected?.id === attempt.id ? 0 : -1}
+                        type="button"
+                      >
+                        {attemptLabel(attempt)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            {decision && (
+              <div className="repass-context">
+                <span>
+                  Repass decision · Sequence {decision.seq}
+                </span>
+                <strong>{eventSummary(decision)}</strong>
               </div>
             )}
             {selected && (
@@ -196,7 +335,8 @@ function AttemptDetail({
       <div className="attempt-summary-row">
         <span className={`attempt-state attempt-${status}`}>{status}</span>
         <span className="mono">{formatDuration(attempt.durationMillis)}</span>
-        <span>{attempt.class}</span>
+        <span>{attemptLabel(attempt)}</span>
+        {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
       {attempt.error && (
         <p className="artifact-load-error">
@@ -227,6 +367,7 @@ function AttemptDetail({
             <ArtifactRow
               artifact={artifact}
               attemptNumber={attempt.number}
+              attemptVisit={attempt.visit}
               client={client}
               key={artifact.digest}
               runId={runId}
@@ -241,11 +382,13 @@ function AttemptDetail({
 function ArtifactRow({
   artifact,
   attemptNumber,
+  attemptVisit,
   client,
   runId,
 }: {
   artifact: ArtifactMetadata;
   attemptNumber: number;
+  attemptVisit: number;
   client: DaemonClient;
   runId: string;
 }) {
@@ -285,7 +428,7 @@ function ArtifactRow({
         <div>
           <dt>Provenance</dt>
           <dd>
-            Attempt {attemptNumber}
+            Visit {attemptVisit} · Attempt {attemptNumber}
             {artifact.recordedSeq !== undefined ? ` · Seq ${artifact.recordedSeq}` : ""}
           </dd>
         </div>

@@ -1,0 +1,25 @@
+{
+  "action": "stub-sample",
+  "version": 1,
+  "created": [
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    "package-lock.json",
+    "package.json",
+    "sample.json",
+    "seed-issues.json",
+    "src/index.ts",
+    "src/server.ts",
+    "test/sample.test.ts",
+    "test/server.test.ts",
+    "tsconfig.json"
+  ],
+  "skipped": [
+    "README.md",
+    "issue:reject-empty-task-titles (pending: work-tracking target not supplied)",
+    "issue:make-completion-idempotent (pending: work-tracking target not supplied)",
+    "issue:filter-tasks-by-status (pending: work-tracking target not supplied)"
+  ],
+  "path": "\u003cdestination\u003e",
+  "nextCommand": "goobers init --template=quickstart ./tutorial-instance"
+}

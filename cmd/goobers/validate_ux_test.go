@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -89,9 +90,11 @@ func TestValidateCheckRepos(t *testing.T) {
 
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
 
 	called := 0
-	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string) error {
+	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
 		called++
 		if repo.Owner != "your-org" || repo.Name != "your-repo" {
 			t.Errorf("repository = %s/%s, want your-org/your-repo", repo.Owner, repo.Name)
@@ -101,6 +104,11 @@ func TestValidateCheckRepos(t *testing.T) {
 		}
 		return nil
 	}
+	sizeCalled := 0
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		sizeCalled++
+		return 100, nil
+	}
 	code, stdout, stderr := runArgs(t, "validate", "--check-repos", root)
 	if code != 0 {
 		t.Fatalf("validate --check-repos: code=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -108,8 +116,14 @@ func TestValidateCheckRepos(t *testing.T) {
 	if called != 1 || !strings.Contains(stdout, "REPOSITORY repos[0] your-org/your-repo: reachable") {
 		t.Fatalf("repository check calls=%d stdout=%q", called, stdout)
 	}
+	if sizeCalled != 1 {
+		t.Fatalf("size check calls=%d, want 1", sizeCalled)
+	}
+	if strings.Contains(stdout, "checkout-size threshold") {
+		t.Fatalf("did not expect oversized-repo warning for a small repo:\n%s", stdout)
+	}
 
-	targetRepositoryReachable = func(context.Context, instance.RepoRef, string) error {
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
 		return errors.New("repository not found or access denied for test-token")
 	}
 	code, stdout, stderr = runArgs(t, "validate", "--check-repos", root)
@@ -132,13 +146,13 @@ func TestValidateCheckRepos(t *testing.T) {
 func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n        image: alpine:3.20")
+	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n      expectedOutputs:\n        - artifact")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("advisory validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "run.image is not honored by the local runner") {
+	if !strings.Contains(stdout, "expectedOutputs is declared but the stage has no inputs.resultFile") {
 		t.Fatalf("advisory validate did not render warning:\n%s", stdout)
 	}
 
@@ -147,11 +161,43 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 		t.Fatalf("strict validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"run.image is not honored by the local runner",
-		"config directory has 2 warning(s); --strict treats warnings as errors",
+		"expectedOutputs is declared but the stage has no inputs.resultFile",
+		"config directory has 1 warning(s); --strict treats warnings as errors",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidatePrintsDSLVersionSummary(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 1.4 (supported)") {
+		t.Fatalf("validate output missing the DSL version summary line:\n%s", stdout)
+	}
+}
+
+func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
+	root := initDeterministicDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "dslVersion: \"1.4\"\n", "")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"DVL001",
+		`spec has no dslVersion pin; defaulting to "1.4"`,
+		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (supported)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
 		}
 	}
 }
@@ -160,7 +206,7 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
 
-	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string) error {
+	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
 		if repo.Provider != "ado" || repo.Project != "widgets" {
 			t.Fatalf("repository = %#v", repo)
 		}
@@ -170,15 +216,76 @@ func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 		return nil
 	}
 	var stdout strings.Builder
-	ok := checkTargetRepositories([]instance.RepoRef{{
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
 		Provider: "ado",
 		Owner:    "acme",
 		Project:  "widgets",
 		Name:     "web",
-		Auth:     &instance.ADOAuthConfig{Kind: instance.ADOAuthAzureCLI},
-	}}, &stdout)
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
+	}}, nil, &stdout, "instance.yaml")
 	if !ok || !strings.Contains(stdout.String(), "reachable") {
 		t.Fatalf("checkTargetRepositories() = %v, output %q", ok, stdout.String())
+	}
+}
+
+func TestCheckTargetRepositoriesWarnsOnOversizedGitHubRepo(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN_TEST_1547", "test-token")
+	originalReachable := targetRepositoryReachable
+	t.Cleanup(func() { targetRepositoryReachable = originalReachable })
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
+		return nil
+	}
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		return 2 * oversizedRepoThresholdKB, nil
+	}
+
+	var stdout strings.Builder
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monorepo",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
+	}}, nil, &stdout, "instance.yaml")
+	if !ok {
+		t.Fatalf("checkTargetRepositories() = %v, want true (a size warning is advisory, not a failure)", ok)
+	}
+	for _, want := range []string{
+		"REPOSITORY repos[0] acme/monorepo: WARNING: repository is 2048 MB, larger than the 1024 MB checkout-size threshold",
+		"AdditionalRepos",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("checkTargetRepositories() output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN_TEST_1547", "test-token")
+	originalReachable := targetRepositoryReachable
+	t.Cleanup(func() { targetRepositoryReachable = originalReachable })
+	targetRepositoryReachable = func(context.Context, instance.RepoRef, string, credentials.StoreResolver) error {
+		return nil
+	}
+	originalSize := targetRepositorySize
+	t.Cleanup(func() { targetRepositorySize = originalSize })
+	targetRepositorySize = func(context.Context, instance.RepoRef, string) (int64, error) {
+		return 0, errors.New("rate limited")
+	}
+
+	var stdout strings.Builder
+	ok := checkTargetRepositoriesAtFile([]instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monorepo",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN_TEST_1547"},
+	}}, nil, &stdout, "instance.yaml")
+	if !ok {
+		t.Fatalf("checkTargetRepositories() = %v, want true (size-check failure must not fail --check-repos)", ok)
+	}
+	if !strings.Contains(stdout.String(), "REPOSITORY repos[0] acme/monorepo: could not determine repository size: rate limited") {
+		t.Fatalf("checkTargetRepositories() output missing size-check-failure diagnostic:\n%s", stdout.String())
 	}
 }
 

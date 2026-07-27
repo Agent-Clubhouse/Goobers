@@ -35,8 +35,9 @@ const runnerTestWaitTimeout = 15 * time.Second
 // three methods (issue #126). Returns the zero telemetry.Span throughout, so
 // its End/Succeed/Fail calls no-op exactly like a nil Telemetry would.
 type fakeSpanStarter struct {
-	mu    sync.Mutex
-	calls []string
+	mu        sync.Mutex
+	calls     []string
+	taskAttrs []telemetry.TaskAttributes
 }
 
 func (f *fakeSpanStarter) record(s string) {
@@ -51,7 +52,10 @@ func (f *fakeSpanStarter) StartRun(ctx context.Context, attrs telemetry.RunAttri
 }
 
 func (f *fakeSpanStarter) StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error) {
-	f.record("task:" + attrs.TaskID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "task:"+attrs.TaskID)
+	f.taskAttrs = append(f.taskAttrs, attrs)
 	return ctx, telemetry.Span{}, nil
 }
 
@@ -552,6 +556,115 @@ func newFixtureRepoWithFiles(t *testing.T, files map[string]string) string {
 	runGit(t, work, "commit", "-m", "initial")
 	runGit(t, "", "clone", "--bare", work, bare)
 	return bare
+}
+
+// TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts is MGV-11 (#1286): a gaggle
+// with read-only reference repos gets a detached (read-only, no run branch)
+// checkout of each alongside its stage, the stage can READ their files, and the
+// invocation envelope carries their paths. A gaggle with no AdditionalRepos
+// provisions nothing (byte-identical to before).
+func TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts(t *testing.T) {
+	projRepo := newFixtureRepoWithFiles(t, map[string]string{"README.md": "project\n"})
+	goobersRepo := newFixtureRepoWithFiles(t, map[string]string{"REFERENCE.md": "goobers-reference\n"})
+	clubhouseRepo := newFixtureRepoWithFiles(t, map[string]string{"SITE.md": "clubhouse-reference\n"})
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	urlByName := map[string]string{"site": projRepo, "goobers": goobersRepo, "clubhouse": clubhouseRepo}
+	r, err := New(Config{
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: wtMgr,
+		RunsDir:   filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(ref apiv1.RepoRef) (string, error) {
+			url, ok := urlByName[ref.Name]
+			if !ok {
+				return "", fmt.Errorf("no fixture repo for %q", ref.Name)
+			}
+			return url, nil
+		},
+		AdditionalRepos: []apiv1.RepoRef{
+			{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"},
+			{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "clubhouse"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	checkouts, err := r.provisionAdditionalCheckouts(context.Background(), StartInput{RunID: "run-1"}, "implement")
+	if err != nil {
+		t.Fatalf("provisionAdditionalCheckouts: %v", err)
+	}
+	if len(checkouts) != 2 {
+		t.Fatalf("provisioned %d reference checkouts, want 2", len(checkouts))
+	}
+
+	// Each reference repo is readable at its checkout, and detached (no run
+	// branch to push — read-only by construction).
+	wantFile := map[string]struct{ file, content string }{
+		"goobers":   {"REFERENCE.md", "goobers-reference\n"},
+		"clubhouse": {"SITE.md", "clubhouse-reference\n"},
+	}
+	for _, c := range checkouts {
+		if c.worktree == nil {
+			t.Fatalf("reference checkout %q has no worktree", c.name)
+		}
+		if c.worktree.Branch != "" {
+			t.Errorf("reference checkout %q is on branch %q, want a detached read-only checkout", c.name, c.worktree.Branch)
+		}
+		want, ok := wantFile[c.name]
+		if !ok {
+			t.Fatalf("unexpected reference checkout %q", c.name)
+		}
+		got, err := os.ReadFile(filepath.Join(c.worktree.Path, want.file))
+		if err != nil {
+			t.Fatalf("read %s from reference checkout %q: %v", want.file, c.name, err)
+		}
+		if string(got) != want.content {
+			t.Errorf("reference checkout %q %s = %q, want %q", c.name, want.file, got, want.content)
+		}
+	}
+
+	// The invocation envelope projection carries both, keyed by name.
+	ws := additionalWorkspaces(&stageWorkspace{additional: checkouts})
+	if len(ws) != 2 {
+		t.Fatalf("envelope AdditionalWorkspaces = %d, want 2", len(ws))
+	}
+	byName := map[string]string{}
+	for _, w := range ws {
+		byName[w.Name] = w.Path
+	}
+	for _, name := range []string{"goobers", "clubhouse"} {
+		if byName[name] == "" {
+			t.Errorf("envelope missing AdditionalWorkspace for %q", name)
+		}
+	}
+
+	// Teardown removes every reference checkout cleanly.
+	if err := (&stageWorkspace{additional: checkouts}).Remove(context.Background()); err != nil {
+		t.Errorf("teardown reference checkouts: %v", err)
+	}
+
+	// A runner with no AdditionalRepos provisions nothing.
+	bare, err := New(Config{
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return projRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New (no additional): %v", err)
+	}
+	none, err := bare.provisionAdditionalCheckouts(context.Background(), StartInput{RunID: "run-2"}, "implement")
+	if err != nil {
+		t.Fatalf("provisionAdditionalCheckouts (none): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a gaggle with no AdditionalRepos provisioned %d checkouts, want 0", len(none))
+	}
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -1250,6 +1363,72 @@ func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 	}
 }
 
+// TestRunnerKeepsCheckoutOffTheStageWire: declaring the accepted-but-inert
+// project.checkout.sparse (B2, #649) must not change the stage wire contract
+// — both the task envelope (buildEnvelope) and the automated-gate envelope
+// carry repoRef identity fields only, so they still satisfy the closed
+// invocation.schema.json repoRef.
+func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-checkout:build": {status: apiv1.ResultSuccess},
+	}}
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, auto)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-checkout",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"services/web"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskEnv, ok := det.received["run-checkout:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	if taskEnv.RepoRef.Checkout != nil {
+		t.Fatalf("task envelope RepoRef.Checkout = %+v, want stripped", taskEnv.RepoRef.Checkout)
+	}
+	if taskEnv.RepoRef.Owner != "acme" || taskEnv.RepoRef.Name != "web" || taskEnv.RepoRef.Branch != "main" {
+		t.Fatalf("task envelope RepoRef = %+v, want identity fields intact", taskEnv.RepoRef)
+	}
+	if auto.env.RepoRef.Checkout != nil {
+		t.Fatalf("gate envelope RepoRef.Checkout = %+v, want stripped", auto.env.RepoRef.Checkout)
+	}
+}
+
 func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
@@ -1350,6 +1529,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		Trigger:      journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Item:         &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+		RunControls:  apiv1.RunControls{MaxRepasses: 2, StalledRunTimeout: "2h"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1376,6 +1556,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.GooberDigest != gooberDigest {
 		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
+	}
+	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 || id.RunControls.StalledRunTimeout != "2h0m0s" {
+		t.Errorf("run.yaml runControls = %+v, want pinned effective controls", id.RunControls)
 	}
 	if len(id.Inputs) != 2 ||
 		id.Inputs[0].Name != "item" ||
@@ -2621,7 +2804,7 @@ func TestRunnerMaxStepsExceededFailsRunClosed(t *testing.T) {
 	}
 }
 
-func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
+func TestRunnerAcceptsHumanGateDefinition(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -2635,10 +2818,8 @@ func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
 			},
 		},
 	}
-	_, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
-	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("compile error = %v, want actionable rejection before runner start", err)
+	if _, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true)); err != nil {
+		t.Fatalf("compile human gate: %v", err)
 	}
 }
 
@@ -3755,7 +3936,7 @@ func TestReconstructPointersIncludesVerdictOnRepassRoute(t *testing.T) {
 		// artifact) must be a no-op too, same as the live path's nil check.
 		{Type: journal.EventGateEvaluated, Gate: "autogate", Verdict: "fail", Target: "implement"},
 	}
-	got := reconstructPointers(events)
+	got := reconstructPointers(events, fixtureMachine(t))
 
 	var stagePtr, verdictPtr *apiv1.ContextPointer
 	for i := range got {
@@ -4736,6 +4917,27 @@ func TestRunnerEmitsRunTaskAndGateSpans(t *testing.T) {
 	want := []string{"run:run-span", "task:implement", "gate:review"}
 	if !reflect.DeepEqual(spans.calls, want) {
 		t.Fatalf("span calls = %v, want %v", spans.calls, want)
+	}
+	if len(spans.taskAttrs) != 1 || spans.taskAttrs[0].Branch != 0 {
+		t.Fatalf("root task span attributes = %#v, want branch 0", spans.taskAttrs)
+	}
+}
+
+func TestStartTaskSpanCarriesParallelBranch(t *testing.T) {
+	machine := fixtureMachine(t)
+	task, ok := machine.Task("implement")
+	if !ok {
+		t.Fatal("fixture task implement missing")
+	}
+	spans := &fakeSpanStarter{}
+	r := &Runner{cfg: Config{Telemetry: spans}}
+
+	r.startTaskSpan(context.Background(), StartInput{
+		RunID: "parallel-span", Machine: machine, Gaggle: "acme-web",
+	}, task, 2, 1, "")
+
+	if len(spans.taskAttrs) != 1 || spans.taskAttrs[0].Branch != 2 {
+		t.Fatalf("parallel task span attributes = %#v, want branch 2", spans.taskAttrs)
 	}
 }
 

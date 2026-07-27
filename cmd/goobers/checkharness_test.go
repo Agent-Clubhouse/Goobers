@@ -29,7 +29,15 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("adapterFor(copilot) = %T, want *harness.CopilotAdapter", adapter)
 	}
 
-	if _, err := adapterFor("claude-code"); err == nil {
+	adapter, err = adapterFor(apiv1.HarnessClaudeCode)
+	if err != nil {
+		t.Fatalf("adapterFor(claude-code): %v", err)
+	}
+	if _, ok := adapter.(*harness.ClaudeAdapter); !ok {
+		t.Fatalf("adapterFor(claude-code) = %T, want *harness.ClaudeAdapter", adapter)
+	}
+
+	if _, err := adapterFor("nonesuch"); err == nil {
 		t.Fatal("expected an error for an unsupported harness")
 	}
 }
@@ -42,7 +50,7 @@ func TestCheckHarnessesSucceeds(t *testing.T) {
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if !checkHarnesses(goobers, &out, &errOut) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
 		t.Fatalf("checkHarnesses returned false; stdout=%q", out.String())
 	}
 	if !strings.Contains(out.String(), "HARNESS copilot: OK") {
@@ -58,7 +66,7 @@ func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if checkHarnesses(goobers, &out, &errOut) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil) {
 		t.Fatal("checkHarnesses returned true, want false on a Preflight failure")
 	}
 	if !strings.Contains(out.String(), errNotSignedIn.Error()) {
@@ -78,7 +86,7 @@ func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 		{Spec: apiv1.GooberSpec{Harness: ""}}, // no harness declared — skipped
 	}
 	var out, errOut strings.Builder
-	if !checkHarnesses(goobers, &out, &errOut) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
 		t.Fatal("checkHarnesses returned false")
 	}
 	if calls != 1 {
@@ -164,7 +172,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 		}, nil
 	})
 	var out, errOut strings.Builder
-	if checkHarnesses(goobers, &out, &errOut) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil) {
 		t.Fatal("checkHarnesses returned true; a signed-out CLI (version OK, auth probe fails) must fail closed")
 	}
 	if !authInvoked {
@@ -181,7 +189,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	})
 	out.Reset()
 	errOut.Reset()
-	if !checkHarnesses(goobers, &out, &errOut) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
 		t.Fatalf("checkHarnesses returned false for a healthy signed-in CLI; stdout=%q", out.String())
 	}
 }

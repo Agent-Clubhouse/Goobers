@@ -17,13 +17,29 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	base := apiv1.GooberSpec{
 		Instructions: "instructions.md",
 		Skills:       []string{"testing", "go"},
+		Tools:        []string{"shell", "reachability"},
 		Model:        "model-a",
 		Harness:      apiv1.HarnessCopilot,
 		HarnessOptions: map[string]apiextensionsv1.JSON{
 			"reasoningEffort": {Raw: []byte(`"high"`)},
 		},
+		MCPServers: []apiv1.MCPServer{
+			{
+				Name:    "local",
+				Command: "context-server",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Env:        "TOKEN",
+				}},
+			},
+			{Name: "remote", URL: "https://mcp.example.test"},
+		},
 	}
-	digest := func(spec apiv1.GooberSpec, instructions string) string {
+	baseSkillPackages := map[string][]SkillFile{
+		"go":      {{Path: "SKILL.md", Content: "Use idiomatic Go."}},
+		"testing": {{Path: "SKILL.md", Content: "Run targeted tests."}},
+	}
+	digest := func(spec apiv1.GooberSpec, instructions string, skillPackages map[string][]SkillFile) string {
 		t.Helper()
 		value, err := ComputeGooberDigest(
 			def,
@@ -38,6 +54,7 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 				"coder":  instructions,
 				"unused": "unused instructions",
 			},
+			skillPackages,
 		)
 		if err != nil {
 			t.Fatalf("compute digest: %v", err)
@@ -48,16 +65,33 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 		return value
 	}
 
-	original := digest(base, "original instructions")
+	original := digest(base, "original instructions", baseSkillPackages)
 	for _, tc := range []struct {
-		name         string
-		spec         apiv1.GooberSpec
-		instructions string
+		name          string
+		spec          apiv1.GooberSpec
+		instructions  string
+		skillPackages map[string][]SkillFile
 	}{
 		{name: "instructions content", spec: base, instructions: "changed instructions"},
+		{name: "skill body", spec: base, instructions: "original instructions", skillPackages: map[string][]SkillFile{
+			"go":      {{Path: "SKILL.md", Content: "Use idiomatic Go."}},
+			"testing": {{Path: "SKILL.md", Content: "Run the full test suite."}},
+		}},
+		{name: "skill support file", spec: base, instructions: "original instructions", skillPackages: map[string][]SkillFile{
+			"go": {{Path: "SKILL.md", Content: "Use idiomatic Go."}},
+			"testing": {
+				{Path: "SKILL.md", Content: "Run targeted tests."},
+				{Path: "references/cases.md", Content: "Cover the retry case."},
+			},
+		}},
 		{name: "skills", spec: func() apiv1.GooberSpec {
 			spec := base
 			spec.Skills = []string{"testing", "go", "security"}
+			return spec
+		}(), instructions: "original instructions"},
+		{name: "tools", spec: func() apiv1.GooberSpec {
+			spec := base
+			spec.Tools = []string{"shell"}
 			return spec
 		}(), instructions: "original instructions"},
 		{name: "model", spec: func() apiv1.GooberSpec {
@@ -77,9 +111,19 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			}
 			return spec
 		}(), instructions: "original instructions"},
+		{name: "MCP servers", spec: func() apiv1.GooberSpec {
+			spec := base
+			spec.MCPServers = append([]apiv1.MCPServer(nil), base.MCPServers...)
+			spec.MCPServers[1].URL = "https://other.example.test"
+			return spec
+		}(), instructions: "original instructions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			changed := digest(tc.spec, tc.instructions)
+			skillPackages := tc.skillPackages
+			if skillPackages == nil {
+				skillPackages = baseSkillPackages
+			}
+			changed := digest(tc.spec, tc.instructions, skillPackages)
 			if changed == original {
 				t.Fatalf("goober digest did not change: %s", changed)
 			}
@@ -89,7 +133,13 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	reordered := base
 	reordered.Instructions = "renamed.md"
 	reordered.Skills = []string{"go", "testing", "go"}
-	equivalent := digest(reordered, "original instructions")
+	reordered.Tools = []string{"reachability", "shell", "shell"}
+	reordered.MCPServers = []apiv1.MCPServer{base.MCPServers[1], base.MCPServers[0]}
+	equivalent := digest(reordered, "original instructions", map[string][]SkillFile{
+		"testing": {{Path: "SKILL.md", Content: "Run targeted tests."}},
+		"unused":  {{Path: "SKILL.md", Content: "Not used by coder."}},
+		"go":      {{Path: "SKILL.md", Content: "Use idiomatic Go."}},
+	})
 	if equivalent != original {
 		t.Fatalf("path or set ordering changed goober digest: %s != %s", equivalent, original)
 	}

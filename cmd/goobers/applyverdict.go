@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
@@ -27,6 +28,20 @@ import (
 const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
 
 const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
+
+const findingSetHistoryLimit = 10
+
+type findingSetHistory struct {
+	Hashes []string `json:"hashes"`
+}
+
+type canonicalFinding struct {
+	Severity    apiv1.Severity     `json:"severity"`
+	Class       apiv1.FindingClass `json:"class,omitempty"`
+	Message     string             `json:"message"`
+	Location    string             `json:"location,omitempty"`
+	BlockingPRs []int              `json:"blockingPrs,omitempty"`
+}
 
 // verdictLabel maps a #358 Verdict's Decision to the design doc's label
 // contract (§3): pass -> eligible to merge, needs-changes -> selected by
@@ -342,6 +357,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: no %s gate.evaluated event with a verdict found in this run's journal\n", *gateName)
 		return 1
 	}
+	if err := validateVerdictForPublish(*verdict); err != nil {
+		pf(stderr, "error: validate %s verdict from journal: %v\n", *gateName, err)
+		return 1
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -446,6 +465,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// reach election even if the reviewer under-named (or missed) the blocking
 	// siblings; a verdict with a real defect is returned unchanged.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
+	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 
@@ -472,14 +492,64 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.Rationale = reason
 	}
 
-	// Election resolves an all-ordering verdict into a real pass (#833/#834,
-	// reframed). See electedLanderPassRationale.
-	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted, clusterPolicy, resolvedPolicyName); elected {
-		posted.Decision = apiv1.VerdictPass
+	// Election resolves single-lander status for EVERY sibling-overlap PR —
+	// not only one a reviewer classified needs-changes — so a genuinely
+	// clean review still waits its turn behind a live predecessor (#1071):
+	// GitHub's native merge queue must never be a second, uncoordinated
+	// merge authority that crowns a cluster member on its own. See
+	// resolveElectionOutcome.
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+		posted.Elected = elected
 		posted.Rationale = rationale
+		if elected {
+			posted.Decision = apiv1.VerdictPass
+		} else {
+			posted.Decision = apiv1.VerdictNeedsChanges
+			posted.Findings = effective.Findings
+		}
 	}
 
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
+	statusComments, err := provider.ListComments(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("load finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	priorHistory, err := findingSetHistoryFromComments(statusComments, verdictAuthor)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("read finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	history, findingHash, revisited, err := advanceFindingSetHistory(priorHistory, posted.Findings)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("hash finding set for PR #%d", selectedNumber), err, resultFile)
+	}
+	oscillated := revisited &&
+		posted.Decision == apiv1.VerdictNeedsChanges &&
+		verdictLabel(posted.Decision, effective.Findings) == needsRemediationLabel
+	if oscillated {
+		reason := fmt.Sprintf(
+			"Finding-set oscillation detected: `%s` matches an earlier merge-review state. Remediation returned to a prior unresolved finding set, so this PR is escalated instead of spending the remaining repass budget.",
+			findingHash,
+		)
+		posted.Decision = apiv1.VerdictFail
+		if posted.Rationale == "" {
+			posted.Rationale = reason
+		} else {
+			posted.Rationale += "\n\n" + reason
+		}
+	}
+
+	if err := validateVerdictForPublish(posted); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
+	}
 	comment := renderVerdictComment(posted)
+	historyPayload, err := findingSetHistoryComment(history)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)
+	}
+	comment += "\n\n" + historyPayload
 	label := verdictLabel(posted.Decision, effective.Findings)
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
@@ -534,10 +604,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
-	}
 	if posted.Decision == apiv1.VerdictPass {
 		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
@@ -549,11 +615,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// Publish the native review first. If the legacy handoff below fails, the
 	// absence of an exclusion label leaves the PR eligible for a later
 	// merge-review run instead of stranding it without a platform verdict.
-	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+	update := providers.UpdateWorkItemRequest{
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
 		AddLabels:  []string{label},
-	}); err != nil {
+	}
+	if oscillated {
+		update.RemoveLabels = []string{needsRemediationLabel}
+	}
+	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
 	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
@@ -647,16 +717,18 @@ func isMergeReviewStatusComment(body string) bool {
 	return body == mergeReviewStatusMarker || strings.HasPrefix(body, mergeReviewStatusMarker+"\n")
 }
 
-// electedLanderPass resolves an entirely-cross-PR-ordering `needs-changes`
-// verdict into a genuine `pass` when this PR is its cluster's elected lander.
-//
 // WHAT ELECTION MEANS. Being elected does not mean "merge this regardless of
 // review". It means "stop counting those siblings as blockers." And once that
 // is said out loud, the verdict follows deterministically rather than by fiat:
 // every finding was a pure ordering ask (allCrossPRBlocked — the PR is
 // individually fine and merely waiting its turn), and this PR is the one whose
 // turn it is. There is no defect left to fix, so there is nothing for
-// `needs-changes` to describe. The decision is derived, not overridden.
+// `needs-changes` to describe. The decision is derived, not overridden. The
+// same reasoning now also covers a PR whose reviewer verdict is ALREADY a
+// genuine pass (resolveElectionOutcome below): sharing a deterministic
+// overlap with a live sibling means it is not automatically its cluster's
+// lander either, and #1071 requires that to be resolved before it reaches
+// merge-pr, exactly like the needs-changes case.
 //
 // WHY NOT THE PREVIOUS SHAPE. elect-gate's pass branch used to route straight
 // to merge-pr, deliberately bypassing this stage — which produced three
@@ -687,14 +759,55 @@ func isMergeReviewStatusComment(body string) bool {
 // The findings are deliberately left intact on the published verdict. The
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
-func electedLanderPass(selectedNumber int, posted apiv1.Verdict, demoted map[int]bool, policy electionPolicyFunc, policyName string) (bool, string) {
-	if posted.Decision != apiv1.VerdictNeedsChanges {
+
+// resolveElectionOutcome resolves single-lander election for a sibling-
+// overlap PR (#1071/PRL-021), regardless of whether the reviewer's raw
+// decision was needs-changes (electedLanderPass's original case, an
+// all-ordering verdict resolved into a derived pass) or already a genuine
+// pass (a reviewer verdict with no defect of its own). Either way, once a PR
+// shares a deterministic file overlap with a live sibling, it must not reach
+// merge-pr as a landing authority until this same election crowns it —
+// otherwise two overlap-cluster members could each independently earn a
+// clean pass and race GitHub's native merge queue with no arbitration at
+// all, exactly the bypass #1071 exists to close.
+//
+// Returns rationale == "" whenever nothing needs to change: no overlap, a
+// non-electable decision (fail, or an already-escalated verdict), or an
+// ordinary parked needs-changes member (unrelated to this PR — the existing
+// blocked-on-sibling routing already handles it via effective.Findings/
+// verdictLabel without touching Decision/Rationale here).
+func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, findings []apiv1.Finding, rationale string, overlappingSiblings []int, demoted map[int]bool, policy electionPolicyFunc, policyName string) (elected bool, newRationale string) {
+	if len(overlappingSiblings) == 0 {
 		return false, ""
 	}
-	if !electionDecision(posted.Findings, selectedNumber, policy, demoted) {
+	if decision != apiv1.VerdictPass && decision != apiv1.VerdictNeedsChanges {
 		return false, ""
 	}
-	return true, electedLanderPassRationale(selectedNumber, posted, policyName)
+	if electionDecision(findings, selectedNumber, policy, demoted) {
+		return true, electedLanderPassRationale(selectedNumber, apiv1.Verdict{Findings: findings, Rationale: rationale}, policyName)
+	}
+	if decision == apiv1.VerdictPass {
+		// A genuinely clean review still is not this cluster's lander yet —
+		// it must wait behind its live predecessor(s) rather than reach
+		// merge-pr with nothing recording that it skipped the queue.
+		return false, notElectedBlockedRationale(selectedNumber, findings, policyName)
+	}
+	return false, ""
+}
+
+// notElectedBlockedRationale explains why an individually-passing PR is
+// nonetheless parked blocked-on-sibling: it shares a deterministic overlap
+// with a live predecessor and single-lander election has not crowned it yet
+// — the mirror image of electedLanderPassRationale.
+func notElectedBlockedRationale(selectedNumber int, findings []apiv1.Finding, policyName string) string {
+	blockers := unionBlockingPRs(findings)
+	rendered := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		rendered = append(rendered, "#"+strconv.Itoa(b))
+	}
+	return fmt.Sprintf(
+		"This pull request's own review found no defect, but it deterministically overlaps sibling PR(s) %s and is not yet its cluster's elected lander (policy: %s). Landing must wait for single-lander election (#1071) rather than race GitHub's native merge queue.",
+		strings.Join(rendered, ", "), policyName)
 }
 
 // electedLanderPassRationale explains a derived pass in the published comment.
@@ -1087,6 +1200,21 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
 }
 
+func validateVerdictForPublish(v apiv1.Verdict) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal verdict payload: %w", err)
+	}
+	return validateVerdictJSON(data)
+}
+
+func validateVerdictJSON(data []byte) error {
+	if err := validateSchemaJSON(schemas.Envelope["verdict"], data); err != nil {
+		return fmt.Errorf("validate verdict payload: %w", err)
+	}
+	return nil
+}
+
 // parseVerdictComment recovers the Verdict a merge-review apply-verdict run
 // embedded in a PR comment via verdictJSONComment — the handoff
 // pr-remediation's gather-pr-context (issue #362) uses to read merge-review's
@@ -1103,6 +1231,122 @@ func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
 		return apiv1.Verdict{}, false
 	}
 	return v, true
+}
+
+var findingSetHistoryPattern = regexp.MustCompile(`(?s)<!-- finding-set-history: (.*?) -->`)
+
+func findingSetHistoryComment(history findingSetHistory) (string, error) {
+	data, err := json.Marshal(history)
+	if err != nil {
+		return "", fmt.Errorf("marshal finding-set history: %w", err)
+	}
+	return fmt.Sprintf("<!-- finding-set-history: %s -->", data), nil
+}
+
+func parseFindingSetHistoryComment(body string) (findingSetHistory, bool) {
+	m := findingSetHistoryPattern.FindStringSubmatch(body)
+	if m == nil {
+		return findingSetHistory{}, false
+	}
+	var history findingSetHistory
+	if err := json.Unmarshal([]byte(m[1]), &history); err != nil {
+		return findingSetHistory{}, false
+	}
+	if len(history.Hashes) > findingSetHistoryLimit {
+		history.Hashes = append([]string(nil), history.Hashes[len(history.Hashes)-findingSetHistoryLimit:]...)
+	}
+	return history, true
+}
+
+func findingSetHistoryFromComments(comments []providers.Comment, author string) (findingSetHistory, error) {
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return findingSetHistory{}, nil
+	}
+	if history, ok := parseFindingSetHistoryComment(marked[0].Body); ok && len(history.Hashes) > 0 {
+		return history, nil
+	}
+	priorVerdict, ok := parseVerdictComment(marked[0].Body)
+	if !ok {
+		return findingSetHistory{}, nil
+	}
+	digest, err := findingSetDigest(priorVerdict.Findings)
+	if err != nil {
+		return findingSetHistory{}, err
+	}
+	return findingSetHistory{Hashes: []string{digest}}, nil
+}
+
+func advanceFindingSetHistory(prior findingSetHistory, findings []apiv1.Finding) (findingSetHistory, string, bool, error) {
+	digest, err := findingSetDigest(findings)
+	if err != nil {
+		return findingSetHistory{}, "", false, err
+	}
+	revisited := false
+	if len(prior.Hashes) > 0 && prior.Hashes[len(prior.Hashes)-1] == digest {
+		for _, previous := range prior.Hashes[:len(prior.Hashes)-1] {
+			if previous == digest {
+				revisited = true
+				break
+			}
+		}
+		return findingSetHistory{Hashes: append([]string(nil), prior.Hashes...)}, digest, revisited, nil
+	}
+	for _, previous := range prior.Hashes {
+		if previous == digest {
+			revisited = true
+			break
+		}
+	}
+	hashes := append(append([]string(nil), prior.Hashes...), digest)
+	if len(hashes) > findingSetHistoryLimit {
+		hashes = hashes[len(hashes)-findingSetHistoryLimit:]
+	}
+	return findingSetHistory{Hashes: hashes}, digest, revisited, nil
+}
+
+func findingSetDigest(findings []apiv1.Finding) (string, error) {
+	encoded := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		blockers := append([]int(nil), finding.BlockingPRs...)
+		sort.Ints(blockers)
+		if len(blockers) > 1 {
+			unique := blockers[:1]
+			for _, blocker := range blockers[1:] {
+				if blocker != unique[len(unique)-1] {
+					unique = append(unique, blocker)
+				}
+			}
+			blockers = unique
+		}
+		data, err := json.Marshal(canonicalFinding{
+			Severity:    finding.Severity,
+			Class:       finding.Class,
+			Message:     finding.Message,
+			Location:    finding.Location,
+			BlockingPRs: blockers,
+		})
+		if err != nil {
+			return "", fmt.Errorf("marshal canonical finding: %w", err)
+		}
+		encoded = append(encoded, string(data))
+	}
+	sort.Strings(encoded)
+	if len(encoded) > 1 {
+		unique := encoded[:1]
+		for _, finding := range encoded[1:] {
+			if finding != unique[len(unique)-1] {
+				unique = append(unique, finding)
+			}
+		}
+		encoded = unique
+	}
+	data, err := json.Marshal(encoded)
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical finding set: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func isTrustedMergeReviewStatusComment(commentAuthor, body, authenticatedAuthor string) bool {

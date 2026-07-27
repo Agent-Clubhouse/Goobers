@@ -176,10 +176,16 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 {
+	var timeoutEvents []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventClaimLockTimeout {
+			timeoutEvents = append(timeoutEvents, event)
+		}
+	}
+	if len(timeoutEvents) != 1 {
 		t.Fatalf("events = %+v, want one timeout event", events)
 	}
-	event := events[0]
+	event := timeoutEvents[0]
 	if event.Type != journal.EventClaimLockTimeout || event.Error == nil || event.Error.Code != claimsLockTimeoutCode {
 		t.Fatalf("timeout event = %+v", event)
 	}
@@ -242,7 +248,14 @@ func TestClaimLockTimeoutWithoutDeclaredResultFileIsInfrastructureRetryableThrou
 	}
 	shell.InstanceRoot = root
 	shell.SelfBin = wrapper
-	dispatch, err := executor.NewTaskExecutor(shell, nil)
+	kinds := executor.NewKindRegistry()
+	if err := kinds.Register(executor.KindShell, shell); err != nil {
+		t.Fatal(err)
+	}
+	if err := kinds.Register(executor.KindCIPoll, executor.NewCIPollKindExecutor(nil)); err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := executor.NewTaskExecutor(kinds)
 	if err != nil {
 		t.Fatal(err)
 	}

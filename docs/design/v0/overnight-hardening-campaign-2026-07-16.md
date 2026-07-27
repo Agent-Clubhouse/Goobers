@@ -107,10 +107,12 @@ The shared gate-evaluator warning stands: anything touching
 
 ## 4. Design questions deliberately left open (captured, not approved)
 
-- #482 — where claim/in-progress state canonically lives (remote store vs
-  ledger) and cross-run visibility.
-- #507 — who owns test-suite quality (tutor vs work-nomination vs a new
-  canonical workflow); #533/#506 make the underlying signals exist first.
+- #482 — **Resolved 2026-07-25:** the local ledger remains authoritative by
+  default; provider-backed visibility is a per-workflow opt-in. See the
+  [claim-visibility decision](../claim-visibility.md).
+- #507 — **Resolved 2026-07-25:** the dedicated canonical
+  `test-suite-quality` workflow owns test-suite quality. See the
+  [test-suite-quality decision](../test-suite-quality-workflow.md).
 - #522 — general `goobers doctor`/reconcile pass; tonight's #535/#536/#537
   fixes shrink its scope — re-scope it after they land.
 - #509 — selection priority beyond FIFO; interacts with #519's fairness layer

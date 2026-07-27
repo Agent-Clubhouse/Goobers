@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,7 +18,9 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -44,22 +48,41 @@ const DefaultClaimLease = 6 * time.Hour
 // that the full eligible set is normally covered outright (the live backlog
 // runs ~40 eligible items; 250 is ~6x that), low enough to bound provider
 // pagination (3 pages at GitHub's per_page=100 max). Truncation past this
-// ceiling is starvation-safe because the fetch is OldestFirst — see the
-// ListWorkItems call below.
+// ceiling is starvation-safe because empty windows advance a durable cursor
+// and wrap after reaching the end of the oldest-first result set.
 const backlogScanCeiling = 250
+const backlogScanPageSize = 100
+
+type backlogScanCursor struct {
+	Cursor string `json:"cursor,omitempty"`
+}
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
 const inReviewStatusLabel = "goobers/status:in-review"
+
+type backlogClaimLedger interface {
+	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
+	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
+	ForRunAll(runID string) []localscheduler.ClaimEntry
+}
+
+var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
+	return localscheduler.OpenClaimLedger(path, opts...)
+}
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
 const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
-	"Query the provider for eligible backlog items — labeled with both\n" +
-	"trustLabel (SEC-047: required on public repos, since backlog content is\n" +
-	"untrusted input otherwise) and requireLabels. With --claim, claims\n" +
+	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
+	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
+	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
+	"labelPredicate CEL expression. CEL supports string membership in `labels`\n" +
+	"combined with &&, ||, and !. fieldPredicate adds typed comparisons against\n" +
+	"provider-native scalar fields using fields[\"name\"]; unavailable fields fail\n" +
+	"explicitly. With --claim, claims\n" +
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
@@ -83,6 +106,14 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"candidates (never drops one — an all-contested cycle still claims FIFO)\n" +
 	"and falls back to FIFO on any provider error. Disable with input\n" +
 	"deprioritizeContestedFiles=false.\n\n" +
+	"selectionPriority (#1335) is an opt-in, ordered comma-separated label\n" +
+	"list (highest priority first, e.g. \"security,bug\") applied before FIFO:\n" +
+	"eligible items carrying an earlier-listed label claim ahead of items\n" +
+	"carrying only a later one or none at all; FIFO still breaks ties within\n" +
+	"a priority tier. An item carrying more than one listed label ranks by\n" +
+	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
+	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
+	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -161,6 +192,28 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
+	labelExpression := providerInput("labelPredicate", "")
+	labelFilter, err := labelpredicate.Compile(labelExpression, requireLabels, excludeLabels)
+	if err != nil {
+		pf(stderr, "error: invalid labelPredicate: %v\n", err)
+		return 1
+	}
+	fieldExpression := providerInput("fieldPredicate", "")
+	fieldFilter, err := fieldpredicate.Compile(fieldExpression)
+	if err != nil {
+		pf(stderr, "error: invalid fieldPredicate: %v\n", err)
+		return 1
+	}
+	fieldOrderExpression := providerInput("fieldOrder", "")
+	fieldOrder, err := fieldpredicate.ParseOrder(fieldOrderExpression)
+	if err != nil {
+		pf(stderr, "error: invalid fieldOrder: %v\n", err)
+		return 1
+	}
+	// selectionPriority is #1335's opt-in priority contract: an ordered label
+	// list, highest priority first. Empty (the default) preserves #350's
+	// plain FIFO claim order unchanged — priority is strictly additive.
+	selectionPriority := splitLabelList(providerInput("selectionPriority", ""))
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
@@ -277,14 +330,24 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)
 	}
-	labels = append(labels, requireLabels...)
-	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  backlogRepo,
-		Labels:      labels,
-		State:       "open",
-		Limit:       scanLimit,
-		OldestFirst: true,
-	})
+	labels = append(labels, labelFilter.RequiredLabels()...)
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	cursorPath := backlogScanCursorPath(
+		l.SchedulerDir(), backlogRepo, trustLabel, labelExpression, fieldExpression,
+		requireLabels, excludeLabels,
+	)
+	exhaustiveScan := fieldOrder.Configured()
+	scanCursor := backlogScanCursor{}
+	if !exhaustiveScan {
+		scanCursor, err = readBacklogScanCursor(lockPath, cursorPath)
+		if err != nil {
+			pf(stderr, "error: read backlog scan cursor: %v\n", err)
+			return 1
+		}
+	}
+	items, nextScanCursor, err := listBacklogScanWindow(
+		ctx, issueProvider, backlogRepo, labels, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
+	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
 	}
@@ -297,17 +360,20 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		if trustLabel != "" && !item.HasLabel(trustLabel) {
 			continue
 		}
-		hasRequiredLabels := true
-		for _, label := range requireLabels {
-			if !item.HasLabel(label) {
-				hasRequiredLabels = false
-				break
-			}
+		matched, matchErr := labelFilter.Matches(item.Labels)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
 		}
-		if !hasRequiredLabels {
+		if !matched {
 			continue
 		}
-		if hasAnyLabel(item.Labels, excludeLabels) {
+		matched, matchErr = fieldFilter.Matches(item.Fields)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched {
 			continue
 		}
 		// Defense-in-depth state re-verify (#947): the provider query above
@@ -387,13 +453,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// client-side, provider-independent, pins a deterministic FIFO default
 	// (oldest-filed-first, the starvation-safe choice) so a future provider
 	// API change — or a provider whose own default happens to differ from
-	// GitHub's — can't silently flip claim order again. A fuller
-	// configurable priority mechanism (native-field or label-list ranking,
-	// configurable tie-break) is tracked separately; this is the
-	// unconditional baseline every claim order now starts from.
-	sortEligibleFIFO(eligible)
+	// GitHub's — can't silently flip claim order again. selectionPriority
+	// (#1335) is the opt-in priority tier layered on top of that baseline:
+	// FIFO still breaks ties within a tier, and an unconfigured
+	// selectionPriority ranks every item identically, so behavior is
+	// byte-identical to plain FIFO until an operator opts in.
+	if err := sortEligibleByFields(eligible, selectionPriority, fieldOrder); err != nil {
+		pf(stderr, "error: apply fieldOrder: %v\n", err)
+		return 1
+	}
 
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
@@ -411,7 +480,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
+
 		if len(eligible) == 0 {
+			if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+				pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+				return 1
+			}
 			pln(stdout, "no eligible items")
 			return 0
 		}
@@ -470,6 +544,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 	runID, workflow, err := providerRunContext()
@@ -506,84 +584,177 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// Claim up to maxItems eligible items under this run (#236): curation runs a
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
-	var claimed []providers.WorkItem
+	var claimed, newlyClaimed []providers.WorkItem
+	claimResultCommitted := false
+
 	gaggle := providerGaggle()
 	if beforeClaimTransaction != nil {
 		beforeClaimTransaction()
 	}
-	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
-		var lerr error
-		eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
-			blockedRecordsPath(l),
-			backlogRepo,
-			eligible,
-			observedRecords,
-			remainingRecords,
-			verifiedSkips,
-		)
-		if lerr != nil {
-			return lerr
-		}
-		for _, skip := range observedSkips {
-			runner := map[string]any{
-				"annotation":   blockedEligibilitySkipAnnotation,
-				"itemId":       skip.ItemID,
-				"openBlockers": skip.OpenBlockers,
+	nextClaimIndex := 0
+	claimSetPrepared := false
+	var preexistingClaimIDs map[string]struct{}
+	acquireClaims := func() error {
+		return withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+			if !claimSetPrepared {
+				var lerr error
+				eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
+					blockedRecordsPath(l),
+					backlogRepo,
+					eligible,
+					observedRecords,
+					remainingRecords,
+					verifiedSkips,
+				)
+				if lerr != nil {
+					return lerr
+				}
+				for _, skip := range observedSkips {
+					runner := map[string]any{
+						"annotation":   blockedEligibilitySkipAnnotation,
+						"itemId":       skip.ItemID,
+						"openBlockers": skip.OpenBlockers,
+					}
+					if skip.ItemStateUnresolved {
+						runner["itemStateUnresolved"] = true
+					}
+					if len(skip.UnresolvedBlockers) != 0 {
+						runner["unresolvedBlockers"] = skip.UnresolvedBlockers
+					}
+					if skip.VerificationPending {
+						runner["verificationPending"] = true
+					}
+					if jerr := instanceLog.Append(journal.Event{
+						Type:     journal.EventRunnerAnnotation,
+						Workflow: workflow,
+						RunID:    runID,
+						Reason:   skip.reason(),
+						Runner:   runner,
+					}); jerr != nil {
+						return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
+					}
+				}
+				claimSetPrepared = true
 			}
-			if skip.ItemStateUnresolved {
-				runner["itemStateUnresolved"] = true
-			}
-			if len(skip.UnresolvedBlockers) != 0 {
-				runner["unresolvedBlockers"] = skip.UnresolvedBlockers
-			}
-			if skip.VerificationPending {
-				runner["verificationPending"] = true
-			}
-			if jerr := instanceLog.Append(journal.Event{
-				Type:     journal.EventRunnerAnnotation,
-				Workflow: workflow,
-				RunID:    runID,
-				Reason:   skip.reason(),
-				Runner:   runner,
-			}); jerr != nil {
-				return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
-			}
-		}
 
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
-		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		for i := range eligible {
-			if len(claimed) >= maxItems {
-				break
+			ledger, lerr := openBacklogClaimLedger(
+				filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+				localscheduler.WithInstanceLog(instanceLog),
+			)
+			if lerr != nil {
+				return fmt.Errorf("open claim ledger: %w", lerr)
 			}
-			item := eligible[i]
-			var ok bool
-			var cerr error
+			if preexistingClaimIDs == nil {
+				preexistingClaimIDs = make(map[string]struct{})
+				for _, entry := range ledger.ForRunAll(runID) {
+					if gaggle == "" {
+						if entry.Gaggle == "" && entry.Provider == "" {
+							preexistingClaimIDs[entry.ItemID] = struct{}{}
+						}
+						continue
+					}
+					if entry.Gaggle == gaggle && entry.Provider == string(repo.Provider) {
+						preexistingClaimIDs[entry.ExternalID] = struct{}{}
+					}
+				}
+			}
+			for nextClaimIndex < len(eligible) && len(claimed) < maxItems {
+				item := eligible[nextClaimIndex]
+				nextClaimIndex++
+				var ok bool
+				var cerr error
+				if gaggle == "" {
+					ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
+				} else {
+					ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
+						Gaggle:     gaggle,
+						Provider:   string(repo.Provider),
+						ExternalID: item.ID,
+					}, runID, workflow, leaseDuration)
+				}
+				if cerr != nil {
+					return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
+				}
+				if ok {
+					claimed = append(claimed, item)
+					if _, preexisting := preexistingClaimIDs[item.ID]; !preexisting {
+						newlyClaimed = append(newlyClaimed, item)
+					}
+				}
+			}
+			return nil
+		})
+	}
+	releaseClaim := func(item providers.WorkItem) error {
+		return withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
+			ledger, lerr := localscheduler.OpenClaimLedger(
+				filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+				localscheduler.WithInstanceLog(instanceLog),
+			)
+			if lerr != nil {
+				return fmt.Errorf("open claim ledger: %w", lerr)
+			}
 			if gaggle == "" {
-				ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
-			} else {
-				ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
-					Gaggle:     gaggle,
-					Provider:   string(repo.Provider),
-					ExternalID: item.ID,
-				}, runID, workflow, leaseDuration)
+				return ledger.Release(item.ID, runID)
 			}
-			if cerr != nil {
-				return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
-			}
-			if ok {
-				claimed = append(claimed, item)
+			return ledger.ReleaseScoped(localscheduler.ClaimKey{
+				Gaggle:     gaggle,
+				Provider:   string(repo.Provider),
+				ExternalID: item.ID,
+			}, runID)
+		})
+	}
+	defer func() {
+		if claimResultCommitted {
+			return
+		}
+		for _, item := range newlyClaimed {
+			if releaseErr := releaseClaim(item); releaseErr != nil {
+				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	}()
+
+	malformedReadyItems := 0
+	for !claimSetPrepared || (len(claimed) < maxItems && nextClaimIndex < len(eligible)) {
+		firstNewClaim := len(claimed)
+		if err := acquireClaims(); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		if !labelFilter.ReferencesLabel(providers.LabelReady) {
+			continue
+		}
+		for i := firstNewClaim; i < len(claimed); {
+			if !claimed[i].HasLabel(providers.LabelReady) {
+				i++
+				continue
+			}
+			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
+				ctx, backlogRepo, claimed[i].ID, providers.LabelReady,
+			)
+			if transitionErr != nil {
+				return failProviderStage(stderr, "read ready-label transitions", transitionErr, "claimed-item.json")
+			}
+			if transitionErr := annotateReadyTimes(claimed[i:i+1], providers.LabelReady, transitions); transitionErr != nil {
+				malformed := claimed[i]
+				if releaseErr := releaseClaim(malformed); releaseErr != nil {
+					pf(stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+					return 1
+				}
+				pf(stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, transitionErr)
+				claimed = append(claimed[:i], claimed[i+1:]...)
+				malformedReadyItems++
+				continue
+			}
+			i++
+		}
 	}
 	if len(eligible) == 0 {
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
@@ -591,21 +762,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
 	if len(claimed) == 0 {
-		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
-	}
-	if hasAnyLabel(requireLabels, []string{providers.LabelReady}) {
-		for i := range claimed {
-			transitions, transitionErr := issueProvider.ListWorkItemLabelTransitionsForItem(
-				ctx, repo, claimed[i].ID, providers.LabelReady,
-			)
-			if transitionErr != nil {
-				return failProviderStage(stderr, "read ready-label transitions", transitionErr, "claimed-item.json")
-			}
-			if transitionErr := annotateReadyTimes(claimed[i:i+1], providers.LabelReady, transitions); transitionErr != nil {
-				pf(stderr, "error: measure ready age: %v\n", transitionErr)
-				return 1
-			}
+		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
 		}
+		if malformedReadyItems > 0 {
+			return writeNoWorkResult(stdout, stderr, "no well-formed eligible item could be claimed")
+		}
+		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
 
 	var curationItems []curationClaimedItem
@@ -615,16 +779,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		curationItems, err = enrichClaimedItemsWithStaleness(ctx, ghIssueProvider, repo, claimed, observedAt, stalenessPolicy)
 		if err != nil {
 			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
-		}
-	}
-
-	// Provider-visible marker per claimed item: best-effort mirror of the
-	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
-	// decision, for human visibility on the provider. A failure here does not
-	// undo the ledger claim — the ledger, not this marker, is the source of truth.
-	for i := range claimed {
-		if _, err := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: backlogRepo, ID: claimed[i].ID, RunID: runID}); err != nil {
-			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
 		}
 	}
 
@@ -655,11 +809,22 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 1
 	}
 
+	// Provider-visible marker per claimed item: best-effort mirror of the
+	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
+	// decision, for human visibility on the provider. A failure here does not
+	// undo the ledger claim — the ledger, not this marker, is the source of truth.
+	for i := range claimed {
+		if _, err := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: backlogRepo, ID: claimed[i].ID, RunID: runID}); err != nil {
+			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
+		}
+	}
+
 	if len(claimed) == 1 {
 		pf(stdout, "claimed %s: %s\n", claimed[0].ID, claimed[0].Title)
 	} else {
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
+	claimResultCommitted = true
 	return 0
 }
 
@@ -696,9 +861,7 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 // repo. GitHub-only extras (curation, the open-PR backstop) keep the concrete
 // *providers.GitHubProvider and are skipped for ADO.
 type backlogIssueProvider interface {
-	ListWorkItems(context.Context, providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
-	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
-	ClaimWorkItem(context.Context, providers.ClaimWorkItemRequest) (providers.ClaimResult, error)
+	providers.BacklogProvider
 	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
 	HasOpenWorkItemBlocker(context.Context, providers.RepositoryRef, string) (bool, error)
@@ -863,16 +1026,30 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 	return out
 }
 
-// sortEligibleFIFO orders items ascending by numeric ID in place — both
-// GitHubProvider and ADOProvider mint WorkItem.ID as strconv.Itoa of the
-// issue/work-item number, which is monotonically increasing with creation
-// order, so this is exactly "oldest filed first" without needing a
-// dedicated CreatedAt field or per-provider sort-parameter wiring (#350).
-// A non-numeric ID (a future provider whose IDs don't work this way) falls
-// back to a stable lexical compare rather than leaving that item's relative
-// position to whatever order the provider happened to return it in.
-func sortEligibleFIFO(items []providers.WorkItem) {
+// sortEligibleByFields applies opt-in label priority, then native-field
+// ordering, then the starvation-safe numeric-ID FIFO baseline.
+func sortEligibleByFields(items []providers.WorkItem, priorityLabels []string, fieldOrder fieldpredicate.Order) error {
+	fieldSets := make([]fieldpredicate.Fields, len(items))
+	for i := range items {
+		fieldSets[i] = items[i].Fields
+	}
+	if err := fieldOrder.Validate(fieldSets); err != nil {
+		return err
+	}
+	var compareErr error
 	sort.SliceStable(items, func(i, j int) bool {
+		ri, rj := itemPriorityRank(items[i], priorityLabels), itemPriorityRank(items[j], priorityLabels)
+		if ri != rj {
+			return ri < rj
+		}
+		comparison, err := fieldOrder.Compare(items[i].Fields, items[j].Fields)
+		if err != nil {
+			compareErr = err
+			return false
+		}
+		if comparison != 0 {
+			return comparison < 0
+		}
 		ni, iOK := parseWorkItemID(items[i].ID)
 		nj, jOK := parseWorkItemID(items[j].ID)
 		if iOK && jOK {
@@ -880,11 +1057,156 @@ func sortEligibleFIFO(items []providers.WorkItem) {
 		}
 		return items[i].ID < items[j].ID
 	})
+	return compareErr
+}
+
+// itemPriorityRank reports item's priority tier: the index of the first
+// (highest-priority) entry in priorityLabels that item carries, or
+// len(priorityLabels) — the lowest tier — if item carries none, including
+// when priorityLabels itself is empty.
+func itemPriorityRank(item providers.WorkItem, priorityLabels []string) int {
+	for i, label := range priorityLabels {
+		if item.HasLabel(label) {
+			return i
+		}
+	}
+	return len(priorityLabels)
 }
 
 func parseWorkItemID(id string) (int64, bool) {
 	n, err := strconv.ParseInt(id, 10, 64)
 	return n, err == nil
+}
+
+func backlogScanCursorPath(
+	schedulerDir string,
+	repo providers.RepositoryRef,
+	trustLabel, labelExpression, fieldExpression string,
+	requireLabels, excludeLabels []string,
+) string {
+	key, _ := json.Marshal(struct {
+		Repository      providers.RepositoryRef `json:"repository"`
+		TrustLabel      string                  `json:"trustLabel,omitempty"`
+		Expression      string                  `json:"expression,omitempty"`
+		FieldExpression string                  `json:"fieldExpression,omitempty"`
+		RequireLabels   []string                `json:"requireLabels,omitempty"`
+		ExcludeLabels   []string                `json:"excludeLabels,omitempty"`
+	}{
+		Repository:      repo,
+		TrustLabel:      trustLabel,
+		Expression:      labelExpression,
+		FieldExpression: fieldExpression,
+		RequireLabels:   requireLabels,
+		ExcludeLabels:   excludeLabels,
+	})
+	sum := sha256.Sum256(key)
+	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
+}
+
+func readBacklogScanCursor(lockPath, cursorPath string) (backlogScanCursor, error) {
+	cursor := backlogScanCursor{}
+	err := withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
+		var err error
+		cursor, err = loadBacklogScanCursor(cursorPath)
+		return err
+	})
+	return cursor, err
+}
+
+func loadBacklogScanCursor(path string) (backlogScanCursor, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return backlogScanCursor{}, nil
+	}
+	if err != nil {
+		return backlogScanCursor{}, err
+	}
+	var cursor backlogScanCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return backlogScanCursor{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return cursor, nil
+}
+
+func advanceBacklogScanCursor(
+	lockPath, cursorPath string,
+	observed, next backlogScanCursor,
+) error {
+	return withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
+		current, err := loadBacklogScanCursor(cursorPath)
+		if err != nil {
+			return err
+		}
+		if current != observed {
+			return nil
+		}
+		data, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("marshal backlog scan cursor: %w", err)
+		}
+		if err := journal.WriteFileAtomic(cursorPath, data, 0o644); err != nil {
+			return fmt.Errorf("write backlog scan cursor: %w", err)
+		}
+		return nil
+	})
+}
+
+func listBacklogScanWindow(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	labels []string,
+	fieldFilter *fieldpredicate.Predicate,
+	limit int,
+	cursor backlogScanCursor,
+	exhaustive bool,
+) ([]providers.WorkItem, backlogScanCursor, error) {
+	if limit <= 0 && !exhaustive {
+		return nil, cursor, nil
+	}
+	items := make([]providers.WorkItem, 0, limit)
+	maxPages := (limit + backlogScanPageSize - 1) / backlogScanPageSize
+	for page := 0; exhaustive || page < maxPages; page++ {
+		pageLimit := backlogScanPageSize
+		if !exhaustive {
+			pageLimit = min(pageLimit, limit)
+		}
+		pageInfo := &providers.ListWorkItemsPageInfo{}
+		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+			Repository:     repo,
+			Labels:         labels,
+			FieldPredicate: fieldFilter,
+			State:          "open",
+			Limit:          pageLimit,
+			Cursor:         cursor.Cursor,
+			PageInfo:       pageInfo,
+			OldestFirst:    true,
+		})
+		if err != nil {
+			return nil, cursor, err
+		}
+		if pageInfo.CandidateCount < 0 || pageInfo.CandidateCount > pageLimit {
+			return nil, cursor, fmt.Errorf(
+				"provider returned invalid work-item candidate count %d for limit %d",
+				pageInfo.CandidateCount, pageLimit,
+			)
+		}
+		items = append(items, pageItems...)
+		if !pageInfo.HasNext {
+			return items, backlogScanCursor{}, nil
+		}
+		if pageInfo.CandidateCount == 0 || pageInfo.NextCursor == "" {
+			return nil, cursor, fmt.Errorf("provider returned a non-advancing work-item cursor")
+		}
+		cursor.Cursor = pageInfo.NextCursor
+		if !exhaustive {
+			limit -= pageInfo.CandidateCount
+			if limit <= 0 {
+				break
+			}
+		}
+	}
+	return items, cursor, nil
 }
 
 // runBacklogQueryRelease implements `backlog-query --release` (issues

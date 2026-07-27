@@ -24,7 +24,7 @@
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/goobers/goobers/internal/version
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
@@ -41,6 +41,7 @@ NPM           ?= npm
 COVERAGE_THRESHOLD ?= 70
 STRESS_OUTPUT_DIR   ?= stress-results
 STRESS_SEED         ?= 0
+BENCH_WORKCOPY_ARGS ?= -preset medium
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
@@ -82,8 +83,16 @@ generate:
 manifests:
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
-## docs: Regenerate the committed CLI reference (docs/cli) + man pages (docs/man)
-## from the command registry, and the feature matrix (docs/feature-matrix.md)
+## manifests-check: Fail if the committed CRD manifests drift from the CRD types.
+## The CRDs are a published contract — a field present in the Go types but absent
+## from the manifests is a contract that silently lies about the DSL. Mirrors
+## portal-contract's regenerate-then-diff guard.
+.PHONY: manifests-check
+manifests-check: manifests
+	git diff --exit-code -- config/crd/bases
+
+## docs: Regenerate the committed CLI reference (docs/cli), man pages (docs/man),
+## and shell completions (docs/completion) from the command registry, and the feature matrix (docs/feature-matrix.md)
 ## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and
 ## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
 ## from this, so run it after any CLI help or DSL-feature change.
@@ -179,6 +188,30 @@ build-%:
 
 build-goobers: portal-build
 
+## image: Build the goobers container image (packaging/docker/Dockerfile) via docker.
+# Optional path — not part of `ci`, `build`, or `go run ./release`; requires a
+# local docker. Override the tag with IMAGE=<repo>:<tag>. CI publishing on
+# tagged releases is a follow-up.
+IMAGE ?= goobers:$(VERSION)
+.PHONY: image
+image:
+	docker build -f packaging/docker/Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		-t $(IMAGE) .
+
+## deploy-validate: Build the k8s reference manifests (deploy/reference) with kubectl kustomize.
+# Optional local validation for the #663 reference tree; requires kubectl.
+# Schema validation (kubeconform) + helm-template rendering are follow-ups for
+# the Validation & CI milestone.
+.PHONY: deploy-validate
+deploy-validate:
+	kubectl kustomize deploy/reference/goobers-system >/dev/null
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
+	@echo "deploy/reference kustomize builds OK"
+
 ## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
@@ -216,9 +249,14 @@ JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 # modules or a newer Go toolchain before the wrapper applies the same guards.
 GO_TEST_NETWORK_OFF := GOENV=off GOFLAGS=-mod=readonly GONOPROXY=none GONOSUMDB=none GOPRIVATE= GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOVCS=*:off
 
+## schema-description-coverage: Emit and enforce JSON Schema description coverage.
+.PHONY: schema-description-coverage
+schema-description-coverage:
+	$(GO_TEST_NETWORK_OFF) $(GO) test -v -run '^TestDescriptionCoverage$$' ./api/schemas
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
-test:
+test: schema-description-coverage
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
@@ -267,6 +305,14 @@ verify-fast:
 .PHONY: ci
 ci: deadcode
 	$(GO) run ./test/ci
+
+## bench-workcopy: Benchmark working-copy provisioning on a synthetic fixture (dev tool, not part of ci).
+# Emits JSON timings (see test/benchworkcopy's doc comment for the schema and
+# how to crank the fixture to a true multi-GB repo). Override the fixture with
+# e.g. `make bench-workcopy BENCH_WORKCOPY_ARGS="-preset large"`.
+.PHONY: bench-workcopy
+bench-workcopy:
+	$(GO) run ./test/benchworkcopy $(BENCH_WORKCOPY_ARGS)
 
 ## stress: Repeat timing-sensitive packages under the race detector.
 .PHONY: stress

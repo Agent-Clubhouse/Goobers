@@ -41,6 +41,7 @@ const (
 	contractHelperResultFile = "GOOBERS_SHIPPED_CONTRACT_RESULT_FILE"
 	contractHelperExitCode   = "GOOBERS_SHIPPED_CONTRACT_EXIT_CODE"
 	skipShippedContracts     = "GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS"
+	contractEvidenceDir      = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
 	contractMaxRepasses      = 1
 	contractNumber           = float64(73)
 )
@@ -104,6 +105,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 	}{
 		{name: "selfhost", path: filepath.Join(root, "selfhost")},
 		{name: "config-examples", path: filepath.Join(root, "config-examples")},
+		{name: "ios-simulator", path: filepath.Join(root, "examples", "ios-simulator")},
 	}
 	for _, config := range configs {
 		config := config
@@ -189,11 +191,26 @@ func TestShippedWorkflowContracts(t *testing.T) {
 								t.Fatalf("%s: workflow %q terminal path %q phase = %q, want %q",
 									source, key, scenario.name, state.Phase, scenario.wantPhase)
 							}
+							captureImplementationEvidence(t, config.name, key, scenario.name, runDir)
 						})
 					}
 				})
 			}
 		})
+	}
+}
+
+func captureImplementationEvidence(t *testing.T, config, workflowName, scenario, runDir string) {
+	t.Helper()
+	evidenceDir := os.Getenv(contractEvidenceDir)
+	if evidenceDir == "" ||
+		config != "selfhost" ||
+		workflowName != "goobers/implementation" ||
+		scenario != "01_query-backlog_next" {
+		return
+	}
+	if err := os.CopyFS(evidenceDir, os.DirFS(runDir)); err != nil {
+		t.Fatalf("capture implementation-workflow journal: %v", err)
 	}
 }
 
@@ -1316,6 +1333,7 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		}
 	}
 	run.Command = []string{d.executable, "-test.run=^TestShippedWorkflowCommandHelper$"}
+	run.Script = ""
 	run.Env = map[string]string{
 		contractHelperMode:       "1",
 		contractHelperPayload:    string(payload),
@@ -1365,7 +1383,14 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if err != nil {
 				return nil, err
 			}
-			builtins, err := executor.NewTaskExecutor(shell, ciPoll)
+			kinds := executor.NewKindRegistry()
+			if err := kinds.Register(executor.KindShell, shell); err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindCIPoll, executor.NewCIPollKindExecutor(ciPoll)); err != nil {
+				return nil, err
+			}
+			builtins, err := executor.NewTaskExecutor(kinds)
 			if err != nil {
 				return nil, err
 			}

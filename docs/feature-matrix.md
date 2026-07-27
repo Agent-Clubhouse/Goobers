@@ -6,6 +6,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 | Feature | DSL version | Feature support | Version support | Since app version |
 | --- | --- | --- | --- | --- |
+| `gaggle.spec.project.checkout.sparse` | 1.4 | preview | supported | dev |
+| `gaggle.spec.sandbox` | 1.4 | preview | supported | dev |
 | `gate.branch.escalate` | 1.4 | ga | supported | dev |
 | `gate.branches` | 1.4 | ga | supported | dev |
 | `gate.evaluator.agentic` | 1.4 | ga | supported | dev |
@@ -42,9 +44,11 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.capabilities` | 1.4 | ga | supported | dev |
 | `goober.spec.displayName` | 1.4 | ga | supported | dev |
 | `goober.spec.gaggle` | 1.4 | ga | supported | dev |
+| `goober.spec.harness.claude-code` | 1.4 | ga | supported | dev |
 | `goober.spec.harness.copilot` | 1.4 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 1.4 | ga | supported | dev |
 | `goober.spec.instructions` | 1.4 | ga | supported | dev |
+| `goober.spec.mcpServers` | 1.4 | ga | supported | dev |
 | `goober.spec.model` | 1.4 | ga | supported | dev |
 | `goober.spec.role` | 1.4 | ga | supported | dev |
 | `goober.spec.scaleFactor` | 1.4 | ga | supported | dev |
@@ -56,7 +60,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.resultFile` | 1.4 | ga | supported | dev |
 | `stage.run.command` | 1.4 | ga | supported | dev |
 | `stage.run.env` | 1.4 | ga | supported | dev |
-| `stage.run.image` | 1.4 | preview | supported | dev |
 | `stage.run.network.none` | 1.4 | ga | supported | dev |
 | `stage.run.syncBase` | 1.4 | ga | supported | dev |
 | `stage.run.workspace.repo` | 1.4 | ga | supported | dev |
@@ -104,6 +107,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `workflow.terminal.abort` | 1.4 | ga | supported | dev |
 | `workflow.terminal.complete` | 1.4 | ga | supported | dev |
 | `workflow.terminal.escalate` | 1.4 | ga | supported | dev |
+| `gaggle.spec.project.checkout.sparse` | 2.0 | preview | supported | dev |
+| `gaggle.spec.sandbox` | 2.0 | preview | supported | dev |
 | `gate.branch.escalate` | 2.0 | ga | supported | dev |
 | `gate.branches` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic` | 2.0 | ga | supported | dev |
@@ -112,6 +117,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `gate.evaluator.agentic.retry.backoff` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.retry.maxAttempts` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic.timeoutSeconds` | 2.0 | ga | supported | dev |
+| `gate.evaluator.agentic.workspace` | 2.0 | preview | supported | dev |
 | `gate.evaluator.automated` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 2.0 | ga | supported | dev |
@@ -140,9 +146,11 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.capabilities` | 2.0 | ga | supported | dev |
 | `goober.spec.displayName` | 2.0 | ga | supported | dev |
 | `goober.spec.gaggle` | 2.0 | ga | supported | dev |
+| `goober.spec.harness.claude-code` | 2.0 | ga | supported | dev |
 | `goober.spec.harness.copilot` | 2.0 | ga | supported | dev |
 | `goober.spec.harnessOptions` | 2.0 | ga | supported | dev |
 | `goober.spec.instructions` | 2.0 | ga | supported | dev |
+| `goober.spec.mcpServers` | 2.0 | ga | supported | dev |
 | `goober.spec.model` | 2.0 | ga | supported | dev |
 | `goober.spec.role` | 2.0 | ga | supported | dev |
 | `goober.spec.scaleFactor` | 2.0 | ga | supported | dev |
@@ -154,12 +162,14 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `stage.resultFile` | 2.0 | ga | supported | dev |
 | `stage.run.command` | 2.0 | ga | supported | dev |
 | `stage.run.env` | 2.0 | ga | supported | dev |
-| `stage.run.image` | 2.0 | preview | supported | dev |
 | `stage.run.network.none` | 2.0 | ga | supported | dev |
+| `stage.run.script` | 2.0 | ga | supported | dev |
 | `stage.run.syncBase` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.repo` | 2.0 | ga | supported | dev |
 | `stage.run.workspace.scratch` | 2.0 | ga | supported | dev |
 | `stage.shell` | 2.0 | ga | supported | dev |
+| `stage.workspace` | 2.0 | preview | supported | dev |
+| `stage.workspace.repo-readonly` | 2.0 | preview | supported | dev |
 | `task.agentic` | 2.0 | ga | supported | dev |
 | `task.capabilities` | 2.0 | ga | supported | dev |
 | `task.continueOnError` | 2.0 | ga | supported | dev |
@@ -169,6 +179,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `task.goober` | 2.0 | ga | supported | dev |
 | `task.inputs` | 2.0 | ga | supported | dev |
 | `task.inputsFrom` | 2.0 | ga | supported | dev |
+| `task.inputsFrom.stageQualified` | 2.0 | preview | supported | dev |
 | `task.limits` | 2.0 | ga | supported | dev |
 | `task.limits.maxCostUSD` | 2.0 | ga | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | dev |
@@ -190,6 +201,13 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `workflow.spec.displayName` | 2.0 | ga | supported | dev |
 | `workflow.spec.gaggle` | 2.0 | ga | supported | dev |
 | `workflow.spec.gates` | 2.0 | ga | supported | dev |
+| `workflow.spec.parallels` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branchTimeoutSeconds` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.branches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.failurePolicy` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.join` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.maxConcurrentBranches` | 2.0 | preview | supported | dev |
+| `workflow.spec.parallels.onFailure` | 2.0 | preview | supported | dev |
 | `workflow.spec.readiness` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxChainDepth` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 2.0 | ga | supported | dev |
@@ -207,6 +225,6 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 ### 1.4 -> 2.0
 
-- Added: none
+- Added: `gate.evaluator.agentic.workspace`, `stage.run.script`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.inputsFrom.stageQualified`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
 - Removed: none
 - Level changes: none

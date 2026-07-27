@@ -85,3 +85,20 @@ allowed no writable root outside the temporary worktree.
   access; V1 documents that residual risk, while tier 3 enforces network policy.
 - The wrapper deliberately avoids creating a new session so the harness
   runner's existing process-group timeout and kill semantics remain intact.
+- A linked-worktree workspace needs writable roots inside the shared bare
+  mirror for the stage's own `git commit`. Those grants are narrowed to the
+  run's per-worktree gitdir plus the mirror's `objects/`, `refs/`, and `logs/`
+  — never the mirror's `config`, `hooks/`, or other runs' gitdirs — because
+  the daemon later runs git unconfined against the same mirror
+  (`git worktree add` executes post-checkout hooks) and a confined agent able
+  to write those files would escape with the daemon's privileges. As defense
+  in depth, every daemon-side git invocation in `internal/worktree` also
+  forces `core.hooksPath` to the null device and `core.fsmonitor=false`.
+  Residual risk the flip-to-default decision (#166) must account for:
+  `objects/`, `refs/`, and `logs/` remain shared per mirror, so a malicious
+  confined agent can still corrupt the shared object store or move sibling
+  runs' refs (data tampering within the gaggle's mirror, not daemon code
+  execution); and a confined agent can rewrite its own workspace `.git`
+  gitfile to point at a crafted in-workspace repository whose config-named
+  programs beyond hooks/fsmonitor (clean/smudge filters, merge drivers) the
+  daemon-side overrides do not neutralize.

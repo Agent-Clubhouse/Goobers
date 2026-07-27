@@ -3,6 +3,7 @@ package readservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -88,6 +89,7 @@ type OfflineRuns interface {
 	Artifact(context.Context, string, string) (ArtifactContent, error)
 	RunTranscripts(context.Context, string, string) ([]TranscriptContent, error)
 	RunSpans(context.Context, string) ([]rollup.SpanSummary, error)
+	RunTelemetryStageAttempts(context.Context, string) ([]rollup.StageAttempt, error)
 	RunEscalation(context.Context, string) (*TraceEscalation, error)
 	RunTraceRepassCount(context.Context, string) (int, error)
 }
@@ -156,6 +158,34 @@ type RunDetail struct {
 	Graph       *workflow.Graph  `json:"graph,omitempty"`
 	GraphStatus string           `json:"graphStatus"`
 	Escalation  *EscalationCause `json:"escalation,omitempty"`
+	Outcome     *RunOutcome      `json:"outcome,omitempty"`
+}
+
+// RunOutcome projects the business decision a completed run reached — the
+// second axis distinct from Phase (issue #851). Phase/Terminal answer "did
+// the machinery work" (the execution axis #849 fixed); Outcome answers "of a
+// completed run, what did it decide" (e.g. merge-review's merged / declined
+// to merge). Only present when Phase == journal.PhaseCompleted; non-nil but
+// all-empty for a completed run whose path evaluated no gate at all (a
+// purely deterministic workflow) — the axis is still meaningful, it just has
+// no gate decision to report, which a nil RunOutcome could not distinguish
+// from "not computed."
+//
+// Deliberately not a fixed enum: Verdict/Target are the terminal gate's own
+// values (per-workflow vocabulary), matching #851's explicit implementation
+// latitude rather than inventing a cross-workflow taxonomy. Rollup/dashboard
+// propagation and the curated no-work-run disposition are intentionally left
+// as follow-up work — this is the read-model projection only.
+type RunOutcome struct {
+	// Gate is the last gate evaluated before completion. Empty when the run
+	// completed with no gate evaluation.
+	Gate string `json:"gate,omitempty"`
+	// Verdict is that gate's decision.
+	Verdict string `json:"verdict,omitempty"`
+	// Target is the branch/state the gate selected.
+	Target string `json:"target,omitempty"`
+	// CausalEventSeq is the deciding gate.evaluated event's sequence number.
+	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
 }
 
 // EscalationCause projects the durable event that selected escalation.
@@ -241,9 +271,18 @@ type AttemptList struct {
 
 // StageAttempt is one durable stage traversal.
 type StageAttempt struct {
-	Number         int                  `json:"number"`
-	Class          string               `json:"class"`
-	Status         string               `json:"status"`
+	// ID is opaque and remains stable when a live attempt completes.
+	ID string `json:"id"`
+	// Visit groups retries under the same per-stage graph traversal.
+	Visit  int    `json:"visit"`
+	Number int    `json:"number"`
+	Class  string `json:"class"`
+	Status string `json:"status"`
+	// Model is the requested/selected model (e.g. "auto") indexed from the
+	// attempt's agent-invocation span, when the telemetry rollup has ingested
+	// it. Empty when telemetry is unavailable or the attempt has no matching
+	// span yet.
+	Model          string               `json:"model,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -252,6 +291,7 @@ type StageAttempt struct {
 	Outputs        map[string]any       `json:"outputs,omitempty"`
 	Artifacts      []ArtifactMetadata   `json:"artifacts"`
 	Error          *journal.ErrorDetail `json:"error,omitempty"`
+	branch         int
 }
 
 // ArtifactContent is a verified, already-redacted journal artifact.
@@ -374,6 +414,96 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 	return true
 }
 
+// candidateRunStatuses translates options.Phase / options.Outcome into the
+// runs.status values a matching journal could possibly carry, so
+// listRunsIndexed can ask the index to skip candidates that runMatches would
+// reject anyway (DASH-18 continued: an unfiltered or stage-filtered list
+// still opens one journal per page row, but a Phase/Outcome-filtered list —
+// e.g. the Overview's "active runs" query — no longer has to open every
+// terminal run in history just to find the rare non-terminal ones, which is
+// what made ListRuns effectively hang once an instance accumulated tens of
+// thousands of runs).
+//
+// narrowed reports whether any narrowing applies at all; when false, the
+// caller must not touch RunListFilter.Statuses (nil means "no filter", not
+// "match nothing"). possible reports whether the combination can match any
+// row; when narrowed is true and possible is false, the caller can return an
+// empty page without any index or journal I/O.
+//
+// This is a pure optimization: runMatches still re-checks every candidate
+// against its hydrated journal, so a stale or not-yet-reconciled index row
+// can only cost an extra journal open, never wrongly hide a run.
+func candidateRunStatuses(options RunListOptions) (statuses []string, narrowed, possible bool) {
+	var set map[string]struct{}
+	intersect := func(next []string) {
+		if set == nil {
+			set = make(map[string]struct{}, len(next))
+			for _, status := range next {
+				set[status] = struct{}{}
+			}
+			return
+		}
+		for status := range set {
+			if !containsString(next, status) {
+				delete(set, status)
+			}
+		}
+	}
+	if options.Phase != "" {
+		intersect(phaseStatuses(options.Phase))
+		narrowed = true
+	}
+	// Outcome pushdown is only valid when it is being applied directly to the
+	// run's own phase — runMatches applies a Stage-scoped Outcome to that
+	// stage's attempts instead, which the runs.status column cannot answer.
+	if options.Stage == "" && options.Outcome != "" {
+		intersect(outcomeStatuses(options.Outcome))
+		narrowed = true
+	}
+	if !narrowed {
+		return nil, false, true
+	}
+	statuses = make([]string, 0, len(set))
+	for status := range set {
+		statuses = append(statuses, status)
+	}
+	return statuses, true, len(statuses) > 0
+}
+
+// phaseStatuses returns the runs.status values consistent with phase. A
+// non-terminal run has no recorded status (see insertRun), represented here
+// by the empty string.
+func phaseStatuses(phase journal.RunPhase) []string {
+	if phase == journal.PhaseRunning {
+		return []string{""}
+	}
+	return []string{string(phase)}
+}
+
+// outcomeStatuses returns the runs.status values consistent with a run-scoped
+// (non-Stage) outcome filter.
+func outcomeStatuses(outcome OutcomeFilter) []string {
+	switch outcome {
+	case OutcomeFinished:
+		return []string{
+			string(journal.PhaseCompleted),
+			string(journal.PhaseFailed),
+			string(journal.PhaseAborted),
+			string(journal.PhaseEscalated),
+		}
+	case OutcomeTerminal:
+		return []string{string(journal.PhaseCompleted), string(journal.PhaseFailed)}
+	case OutcomeSuccess:
+		return []string{string(journal.PhaseCompleted)}
+	case OutcomeFailure:
+		return []string{string(journal.PhaseFailed)}
+	case OutcomeOther:
+		return []string{string(journal.PhaseAborted), string(journal.PhaseEscalated)}
+	default:
+		return nil
+	}
+}
+
 func attemptStageFor(options RunListOptions) string {
 	if options.Stage != "" &&
 		(options.Outcome != "" ||
@@ -433,6 +563,14 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		return RunList{}, err
 	}
 
+	statuses, narrowed, possible := candidateRunStatuses(options)
+	if narrowed && !possible {
+		// Phase and Outcome together can't match anything (e.g. Phase=running
+		// with Outcome=success): every candidate would fail runMatches, so
+		// skip the index round-trip and journal opens entirely.
+		return paginateRuns(nil, limit)
+	}
+
 	observedAt := s.now().UTC()
 	attemptStage := attemptStageFor(options)
 	filter := rollup.RunListFilter{
@@ -441,6 +579,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		TriggerKind: string(options.Trigger),
 		Since:       options.Since,
 		Until:       options.Until,
+		Statuses:    statuses,
 	}
 
 	// Keyset the first index fetch from the caller's cursor; thereafter advance
@@ -509,13 +648,15 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 // ingest simply stays out of this pass rather than failing the whole list.
 //
 // The scan is incremental. A new or removed run directory bumps its parent's
-// mtime, so a parent whose mtime has not advanced past the last successful
-// reconcile's watermark cannot hold anything new and is skipped without a
-// ReadDir. Steady-state reconcile therefore costs one stat per run-parent
-// directory rather than one ReadDir over every run — bounded by newly-appeared
-// runs, not by history or by the orphan directories that accumulate alongside
-// it. The first reconcile (zero watermark) still full-scans so nothing on disk
-// is missed on startup. This bound is safe because a run that is actively
+// mtime, so a parent whose mtime has not advanced past its own recorded
+// watermark cannot hold anything new and is skipped without a ReadDir.
+// Steady-state reconcile therefore costs one stat per run-parent directory
+// rather than one ReadDir over every run — bounded by newly-appeared runs, not
+// by history or by the unpublished directories that accumulate alongside it.
+// A parent not yet watermarked still full-scans, so nothing on disk is missed on
+// startup. Watermarks are recorded per parent as each one finishes, so a scan
+// the caller cancels keeps the parents already walked instead of restarting from
+// nothing on the next pass. This bound is safe because a run that is actively
 // executing is ingested into the index at write time by the runner; reconcile
 // is only a backstop for imported/migrated/externally-added runs, whose
 // appearance necessarily bumps a parent mtime, so a bounded incremental scan
@@ -544,11 +685,12 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 
 	// Watermarks are compared against filesystem mtimes, so they are real wall
 	// clock and independent of the injectable s.now() used only for TTL
-	// throttling. newWatermark tracks the newest parent mtime across every parent
-	// (skipped ones included), and advances the stored watermark only on success.
-	previousWatermark := s.reconcileWatermark
-	fullScan := previousWatermark.IsZero()
-	newWatermark := previousWatermark
+	// throttling. Each parent's watermark is recorded as soon as that parent is
+	// walked to completion, so a scan cut short part-way keeps the parents it
+	// already finished.
+	if s.reconcileWatermarks == nil {
+		s.reconcileWatermarks = make(map[string]time.Time, len(runDirs))
+	}
 	for _, runsDir := range runDirs {
 		// Stat the parent before reading it: a run directory added concurrently
 		// with or after this stat lands on a strictly later mtime (on any
@@ -560,10 +702,11 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			}
 			return fmt.Errorf("inspect runs directory: %w", err)
 		}
-		if mtime := info.ModTime(); mtime.After(newWatermark) {
-			newWatermark = mtime
-		}
-		if !fullScan && !info.ModTime().After(previousWatermark) {
+		// Record the mtime seen before the walk, never a later one, so a run
+		// directory created during the walk still reads as newer next time.
+		mtime := info.ModTime()
+		previous, scanned := s.reconcileWatermarks[runsDir]
+		if scanned && !mtime.After(previous) {
 			continue
 		}
 		entries, err := os.ReadDir(runsDir)
@@ -586,10 +729,23 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if _, ok := indexed[entry.Name()]; ok {
 				continue
 			}
-			_ = s.sources.Telemetry.IngestRun(filepath.Join(runsDir, entry.Name()))
+			runDir := filepath.Join(runsDir, entry.Name())
+			// A directory with no run.yaml is not a journal and can never be
+			// ingested, so skip it on a stat rather than paying for the attempt.
+			// IngestRun would take the run's journal lock — creating a .lock file
+			// in the directory — before failing to read the identity, and because
+			// the failure leaves the directory un-indexed it recurred on every
+			// subsequent pass. On a long-lived instance these unpublished
+			// directories outnumber real runs' backlog by orders of magnitude
+			// (measured: 10,906 of 30,140), which made a pass unable to finish
+			// and so left ListRuns permanently blocked (#1708).
+			if !journal.Recorded(runDir) {
+				continue
+			}
+			_ = s.sources.Telemetry.IngestRun(runDir)
 		}
+		s.reconcileWatermarks[runsDir] = mtime
 	}
-	s.reconcileWatermark = newWatermark
 	s.lastReconcile = s.now()
 	return nil
 }
@@ -724,6 +880,7 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		Graph:       graph,
 		GraphStatus: status,
 		Escalation:  escalation,
+		Outcome:     runOutcome(summary, run.records),
 	}, nil
 }
 
@@ -774,8 +931,71 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 		return AttemptList{}, err
 	}
 
-	attempts := collectStageAttempts(run.records, indexArtifacts(run.records), stage)[stage]
+	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
+	if telemetryAttempts, err := s.telemetryStageAttempts(run.identity.RunID); err == nil {
+		attachStageAttemptModels(attempts, stage, telemetryAttempts)
+	}
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
+}
+
+// attachStageAttemptModels fills in Model on each attempt of stage from the
+// matching rollup-indexed stage attempt, correlated by durable traversal
+// (Visit) and attempt number. Best-effort: an attempt with no telemetry match
+// simply keeps an empty Model.
+func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAttempts []rollup.StageAttempt) {
+	for i := range attempts {
+		for _, ta := range telemetryAttempts {
+			if ta.Stage == stage && ta.Traversal == attempts[i].Visit && ta.Attempt == attempts[i].Number && ta.Model != "" {
+				attempts[i].Model = ta.Model
+				break
+			}
+		}
+	}
+}
+
+// telemetryStageAttempts returns rollup-ingested stage attempts (each
+// carrying its indexed requested model, when present) for runID. A missing
+// telemetry database is a valid empty result, matching RunSpans' contract:
+// model provenance is informational and must never make StageAttempts fail.
+func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, error) {
+	empty := []rollup.StageAttempt{}
+	db := s.sources.Telemetry
+	if db == nil {
+		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return empty, nil
+			}
+			return nil, err
+		}
+		var err error
+		db, err = rollup.Open(s.sources.Layout.TelemetryDB())
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = db.Close() }()
+	}
+	return db.StageAttempts(runID)
+}
+
+// RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
+// attempt's indexed requested model) for the whole run, across every stage.
+// Best-effort, same contract as RunSpans: a missing telemetry database is a
+// valid empty result.
+func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := s.openRun(runID); err != nil {
+		return nil, err
+	}
+	attempts, err := s.telemetryStageAttempts(runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return attempts, nil
 }
 
 // Artifact returns bytes only for a digest recorded as an artifact in this run.
@@ -1102,7 +1322,7 @@ func summarizeRunForStage(
 	sort.Strings(stages)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
-		stageAttempts = collectStageAttempts(run.records, artifactIndex{}, attemptStage)
+		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
 
 	return RunSummary{
@@ -1240,10 +1460,20 @@ func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions)
 }
 
 func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, population StagePopulation) bool {
-	latest := make(map[string]int)
+	type traversalKey struct {
+		stage       string
+		branch      int
+		branchKnown bool
+	}
+	latest := make(map[traversalKey]int)
 	for _, attempt := range attempts {
-		if attempt.Traversal > latest[attempt.Stage] {
-			latest[attempt.Stage] = attempt.Traversal
+		key := traversalKey{
+			stage:       attempt.Stage,
+			branch:      attempt.Branch,
+			branchKnown: attempt.BranchKnown,
+		}
+		if attempt.Traversal > latest[key] {
+			latest[key] = attempt.Traversal
 		}
 	}
 	for _, attempt := range attempts {
@@ -1264,7 +1494,12 @@ func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, popu
 				return true
 			}
 		case StagePopulationRetryWaste:
-			if attempt.Traversal < latest[attempt.Stage] {
+			key := traversalKey{
+				stage:       attempt.Stage,
+				branch:      attempt.Branch,
+				branchKnown: attempt.BranchKnown,
+			}
+			if attempt.Traversal < latest[key] {
 				return true
 			}
 		}
@@ -1399,6 +1634,30 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+// runOutcome derives the #851 business-decision axis for a completed run
+// from the last gate evaluated before completion — the same "walk backward
+// for the decisive gate" approach escalationCause uses for the escalated
+// case. Returns nil for a non-completed run.
+func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
+	if summary.Phase != journal.PhaseCompleted {
+		return nil
+	}
+	records = currentLifecycleRecords(records)
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated {
+			continue
+		}
+		return &RunOutcome{
+			Gate:           event.Gate,
+			Verdict:        event.Verdict,
+			Target:         event.Target,
+			CausalEventSeq: event.Seq,
+		}
+	}
+	return &RunOutcome{}
 }
 
 func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
@@ -1814,11 +2073,13 @@ func (i *artifactIndex) applyRedaction(event journal.Event) {
 }
 
 func collectStageAttempts(
+	runID string,
 	records []journal.EventRecord,
 	artifacts artifactIndex,
 	stage string,
 ) map[string][]StageAttempt {
 	byStage := make(map[string][]StageAttempt)
+	visits := make(map[string]stageVisitState)
 	if stage != "" {
 		byStage[stage] = []StageAttempt{}
 	}
@@ -1855,21 +2116,17 @@ func collectStageAttempts(
 		}
 		attempts := byStage[event.Stage]
 		switch event.Type {
+		case journal.EventStageRerunRequested:
+			visit := visits[event.Stage]
+			visit.humanRequested = true
+			visits[event.Stage] = visit
 		case journal.EventStageStarted:
-			started := event.Time
-			attempts = append(attempts, StageAttempt{
-				Number:     event.Attempt,
-				Class:      attemptClass(event.AttemptClass),
-				Status:     "running",
-				StartedSeq: event.Seq,
-				StartedAt:  &started,
-				Artifacts:  []ArtifactMetadata{},
-			})
+			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
 			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass); i >= 0 {
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
 				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
 				}
@@ -1878,24 +2135,16 @@ func collectStageAttempts(
 			if event.Error == nil || event.Error.Code != "executor_error" {
 				continue
 			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
 		case journal.EventStageFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
+				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
@@ -1917,6 +2166,60 @@ func collectStageAttempts(
 		byStage[event.Stage] = attempts
 	}
 	return byStage
+}
+
+type stageVisitState struct {
+	ordinal        int
+	humanVisit     bool
+	humanRequested bool
+}
+
+func newStageAttempt(
+	runID string,
+	event journal.Event,
+	visits map[string]stageVisitState,
+	started bool,
+) StageAttempt {
+	visit := visits[event.Stage]
+	switch event.AttemptClass {
+	case "":
+		visit.ordinal++
+		visit.humanVisit = false
+		visit.humanRequested = false
+	case journal.AttemptHuman:
+		// Legacy journals can lack stage.rerun.requested. Treat their first
+		// consecutive human attempt as the visit boundary.
+		if visit.humanRequested || !visit.humanVisit || visit.ordinal == 0 {
+			visit.ordinal++
+		}
+		visit.humanVisit = true
+		visit.humanRequested = false
+	default:
+		if visit.ordinal == 0 {
+			visit.ordinal = 1
+		}
+	}
+	visits[event.Stage] = visit
+	attempt := StageAttempt{
+		ID:        stageAttemptID(runID, event.Branch, event.Stage, event.Seq),
+		Visit:     visit.ordinal,
+		Number:    event.Attempt,
+		Class:     attemptClass(event.AttemptClass),
+		Artifacts: []ArtifactMetadata{},
+		branch:    event.Branch,
+	}
+	if started {
+		eventTime := event.Time
+		attempt.Status = "running"
+		attempt.StartedSeq = event.Seq
+		attempt.StartedAt = &eventTime
+	}
+	return attempt
+}
+
+func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
+	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func finishAttempt(
@@ -1958,21 +2261,35 @@ func attemptClass(class journal.AttemptClass) string {
 	return string(class)
 }
 
-func matchingOpenAttempt(attempts []StageAttempt, number int, class journal.AttemptClass) int {
+func matchingOpenAttempt(
+	attempts []StageAttempt,
+	number int,
+	class journal.AttemptClass,
+	branch int,
+) int {
 	wantClass := attemptClass(class)
-	fallback := -1
+	bestIndex := -1
+	bestScore := -1
 	for i := len(attempts) - 1; i >= 0; i-- {
 		if attempts[i].FinishedSeq != 0 || attempts[i].Number != number {
 			continue
 		}
+		score := 0
+		if attempts[i].branch == branch {
+			score += 2
+		}
 		if attempts[i].Class == wantClass {
+			score++
+		}
+		if score > bestScore {
+			bestIndex = i
+			bestScore = score
+		}
+		if score == 3 {
 			return i
 		}
-		if fallback < 0 {
-			fallback = i
-		}
 	}
-	return fallback
+	return bestIndex
 }
 
 func scalarOutputs(outputs map[string]any) map[string]any {

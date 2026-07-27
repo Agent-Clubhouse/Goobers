@@ -71,10 +71,13 @@ execution. Two runners implement the same contract:
   Tutor, and operators see one shape everywhere. Raw Temporal mechanics (replay,
   task queues, worker lifecycle) are never part of the product surface.
 - Brings durable long waits (multi-day human gates), schedules at scale, and
-  per-gaggle worker isolation. Parallel branches and child workflows are **tier-3 DSL
-  extensions**: DSL v0 compiles sequential machines, and a definition that uses these
-  extensions is tier-3-only until the local runner implements them (`CFG-022`,
-  `GAG-010`) — they are not part of the cross-runner conformance surface.
+  per-gaggle worker isolation. **Child workflows** remain a **tier-3 DSL extension**: a
+  definition that uses them is tier-3-only until the local runner implements them
+  (`CFG-022`, `GAG-010`), and they are not part of the cross-runner conformance
+  surface. **Static parallel branches are not** — they are core DSL, implemented by the
+  local runner first, and inside the conformance surface
+  ([`design/static-fan-out-fan-in.md`](design/static-fan-out-fan-in.md) §4). Dynamic
+  (data-driven) branch width remains future work.
 
 ### 3.3 Conformance property
 
@@ -84,15 +87,19 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
 
 - **The conformance set** is the ordered sequence of orchestration events: run
   started/finished, stage started/finished (policy-retry attempts included), gate
-  verdicts, artifacts recorded (with digests), external refs touched. Events are
-  compared in `seq` order (§4); at tier 3, parallel-branch events order by
-  `(branch, seq)`.
+  verdicts, artifacts recorded (with digests), external refs touched, parallel and
+  branch lifecycle (`parallel.started`, `branch.started`, `branch.finished`,
+  `parallel.finished`) including the branch completeness record. Events are compared in
+  `seq` order (§4); parallel-branch events order by `(branch, seq)` **at every tier**.
 - **Excluded** from comparison: timestamps and durations; infrastructure-retry
   attempts (attempt events are tagged `policy` vs `infra`, and only `policy`
   attempts are normative); `spans/` contents (telemetry, not conformance);
-  `state.json` (a derived checkpoint); and runner-specific annotations, which MUST
-  live under a namespaced `runner.*` field — that namespace is the *only* sanctioned
-  runner-specific divergence.
+  `state.json` (a derived checkpoint); the **absolute value of `seq` across distinct
+  non-zero branches** (branch interleaving is a scheduling artefact, so `seq` is
+  compared *within* a branch — it stays fully normative for the root branch and for
+  every run that never forks); and runner-specific annotations, which MUST live under a
+  namespaced `runner.*` field — that namespace is the *only* sanctioned runner-specific
+  divergence.
 - **Fixed stage effects** means: deterministic stages with pinned commands over
   fixture inputs, provider reads mocked or replayed from journaled responses, and
   agentic stages driven by the fixture harness. For **live agentic runs** the
@@ -125,6 +132,21 @@ gaggles/<gaggle>/runs/<run-id>/
 
 Rules:
 
+- **Publish initialized runs atomically.** Local journal creation builds the
+  identity, input snapshots, initial event, checkpoint, lock, and reserved
+  directories in a hidden sibling staging area, then atomically renames that
+  directory to `<run-id>`. Span export only appends to a directory whose
+  `run.yaml` already exists. Before this ordering was enforced, `journal.Create`
+  exposed the final directory and created `spans/` and `.lock` before writing
+  `run.yaml`; a crash or initialization error could therefore leave a directory
+  that looked like half a run, and the span exporter could keep it alive.
+  Existing directories from that historical failure mode and half-initialized
+  crash residue in the dedicated `.runs.creating` staging area are handled only
+  by the operator-invoked `goobers telemetry prune-orphans` command. It reports
+  by default, requires `--delete` to remove anything, and never selects a
+  directory with `run.yaml`, a recently modified directory, or a staging
+  directory whose creation lock is still held. The inactivity window has a
+  non-reducible 24-hour minimum.
 - **Append-only events; immutable snapshots.** Nothing in a journal is edited after
   the fact. Repairs happen by appending corrective events. The one sanctioned
   exception is secret remediation: `goobers journal redact` replaces a leaked blob
@@ -158,7 +180,9 @@ the doc set.)
 - **Deterministic stages** — arbitrary commands (tests, linters, builders, CI pollers)
   run with declared env, timeout, and retry policy. They use a repository worktree
   by default, or an empty disposable scratch workspace when they do not need a repo;
-  commands that require no connectivity may declare `run.network: none`.
+  commands that require no connectivity may declare `run.network: none`. At tiers 1–2
+  these commands are native host subprocesses, not containers; containerized stage
+  execution is tracked in [#1494](https://github.com/Agent-Clubhouse/Goobers/issues/1494).
 - **Agentic stages** — an agent harness invoked in the stage worktree with an
   **invocation envelope** (goal, context pointers, capability grants); it must finish
   by producing a **result envelope** (status, outputs, artifact pointers). Harness
@@ -200,6 +224,20 @@ Contract rules:
   capability is not declared by both the task and its goober.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
+- **Run-control inheritance is explicit:** `runConditions` supplies instance
+  defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
+  `Workflow.spec.runControls` overrides them for one definition. The resolved
+  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
+  starts, so config reloads cannot retune a run in flight. An automated or
+  agentic gate may override `maxRepasses` because separate review loops in one
+  definition can legitimately need different budgets. Stall detection does not
+  have a task-level override: task/gate `timeoutSeconds` and retry policies
+  already own per-attempt execution bounds, while the stall watchdog protects
+  the run journal as a whole.
+- Retry attempt counts and backoff remain declared on each task or executable
+  gate. They are intentionally not inherited run controls: they classify and
+  repeat one stage attempt, whereas repass and stall budgets bound orchestration
+  across stage attempts.
 
 ## 6. Instance anatomy (local runner)
 
@@ -247,15 +285,33 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   first stage — a built-in deterministic **`backlog-query`** stage kind — still
   performs the actual query and **claims** items (label/assignee marker + claim
   ledger) so concurrent runs never double-process (`WF-031`). A trigger
-  `selector`'s KEYS are applied as required GitHub labels; values are ignored
-  (GitHub labels are flat strings). On public repos, eligibility requires a
-  maintainer-applied trust label: backlog content is untrusted input (`SEC-047`).
+  `selector`'s KEYS remain required labels (values are ignored because GitHub
+  labels are flat strings). Gaggle backlogs, backlog-item triggers, and
+  `backlog-query` tasks may additionally declare a `labelPredicate`: restricted
+  CEL string-membership checks against `labels`, composed with `&&`, `||`, and
+  `!`. The CEL predicate is ANDed with legacy label inputs and evaluated exactly
+  after any provider-side label optimization. The same surfaces accept a
+  `fieldPredicate` over `fields["name"]`, with scalar string/number/bool
+  comparisons composed by the same boolean operators. GitHub projects `id`,
+  `number`, `state`, `locked`, `comments`, `user.login`, `assignee.login`,
+  `created_at`, `updated_at`, milestone number/title, and native dependency
+  count (`issue_dependencies_summary.total_blocked_by`); Azure DevOps projects
+  every scalar work-item field by its reference name plus `System.Id` and
+  `System.Rev`. Gaggle and workflow-trigger field predicates are ANDed.
+  Optional or unsupported fields are errors rather than false matches.
+  `backlog-query` also accepts `fieldOrder` as comma-separated
+  `field[:asc|desc]` terms, applied across the complete candidate set after
+  label priority and before FIFO. With none of these additive inputs configured,
+  label selection and FIFO remain unchanged. On public repos, eligibility
+  requires a maintainer-applied trust label: backlog content is untrusted input
+  (`SEC-047`).
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
   provider-quota / rate-limit-reset gating.
-- **Still prescriptive (V1):** true k8s-style selector matching (values, set
-  expressions), routing one item across multiple candidate workflows with a
+- **Still prescriptive (V1):** true k8s-style selector value semantics (the
+  shipped boolean label surface is CEL rather than k8s selectors), routing one
+  item across multiple candidate workflows with a
   priority single-winner election (`SCH-010` full form, `SCH-011`), dead-letter /
   unrouted-item surfacing (`SCH-012`), and an item priority field (`SCH-030`).
   None of these have runtime consumers.

@@ -37,15 +37,43 @@ implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
 gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
 pieces are left untouched.
 
+A fresh successful initialization records
+`init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+
 ### Onboarding-only template
 
 For a first autonomous run against a disposable tutorial target, seed the
-versioned `quickstart@v1` template:
+versioned `quickstart@v1` template and copy its paired sample into a separate
+throwaway directory:
+
+```sh
+bin/goobers onboarding stub-sample \
+  --destination ./getting-started-task-api \
+  --json
+```
+
+The action is non-interactive, embeds the release-matched sample, and is safe to
+re-run. It reports every created or skipped file plus the destination and next
+command. It refuses conflicting user-owned files unless `--force` is explicit.
+To also seed the catalog's labels and issues into an existing disposable GitHub
+repository, add `--work-tracking owner/repo`; the command reads
+`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,
+the JSON envelope reports the issues pending and still materializes the local
+sample without network access. It never creates or pushes a remote.
 
 ```sh
 bin/goobers init --template=quickstart ./tutorial-instance
 bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
+```
+
+To seed the same template as a checked-in config source without runtime state,
+use the non-interactive source-tree action. Its JSON result lists every created
+or preserved file and the validation command to run next:
+
+```sh
+bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
+bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
 This linear template claims one approved issue, implements it, performs an
@@ -138,11 +166,16 @@ the run id up front and the final phase/state once it returns.
 bin/goobers status ./my-instance
 ```
 
-`status` revalidates the active configuration before listing runs. Non-fatal
+`status` revalidates the active configuration before listing runs. On a new
+instance its first-run success indicator waits for the first PR; after the
+workflow journals its first PR open, it celebrates
+`First-run success: first PR in <duration>`. The duration is read from the
+successful-init `init.completed` event and the first PR-open `ref.touched`
+event, not from command timing. Non-fatal
 configuration warnings use the same `WARNING <code> <scope>: <explanation>`
 lines printed during `up` startup. `status --json` returns an object with
-`warnings` and `runs` arrays; warning objects contain `code`, `severity`,
-`scope`, and `explanation`.
+`warnings` and `runs` arrays plus the structured `timeToFirstPR` metric; warning
+objects contain `code`, `severity`, `scope`, and `explanation`.
 
 ```
 RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED

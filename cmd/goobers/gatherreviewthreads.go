@@ -115,6 +115,10 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: marshal remediation brief: %v\n", err)
 		return 1
 	}
+	if err := validateRemediationBriefJSON(data); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 2

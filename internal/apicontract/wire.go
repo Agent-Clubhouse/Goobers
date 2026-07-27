@@ -16,6 +16,7 @@ import (
 type wireFixtures struct {
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
+	PortalConfig             readservice.PortalConfig                   `json:"portalConfig"`
 	Gaggles                  readservice.GagglePage                     `json:"gaggles"`
 	Goobers                  readservice.GooberPage                     `json:"goobers"`
 	Workflows                readservice.WorkflowPage                   `json:"workflows"`
@@ -37,6 +38,7 @@ var wireFixtureTypes = []struct {
 }{
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
+	{name: "portalConfig", scriptType: "PortalConfig"},
 	{name: "gaggles", scriptType: "GagglePage"},
 	{name: "goobers", scriptType: "GooberPage"},
 	{name: "workflows", scriptType: "WorkflowPage"},
@@ -182,8 +184,8 @@ func newWireFixtures() wireFixtures {
 		FinishedAt:       &finishedAt,
 		DurationMillis:   120000,
 		LastActivityAt:   finishedAt,
-		LastSeq:          9,
-		RepassCount:      1,
+		LastSeq:          16,
+		RepassCount:      2,
 		RetryCount:       2,
 		PolicyRetryCount: 1,
 		InfraRetryCount:  1,
@@ -236,6 +238,29 @@ func newWireFixtures() wireFixtures {
 			},
 			Warnings: []validate.CodedWarning{warning},
 		},
+		PortalConfig: readservice.PortalConfig{
+			Brand: readservice.PortalBrandResponse{
+				Name:       "goobers",
+				Tagline:    "local operations",
+				ScopeMark:  "G",
+				LogoURL:    nil,
+				FaviconURL: nil,
+			},
+			Theme: readservice.PortalThemeResponse{
+				AccentLight:     nil,
+				AccentDark:      nil,
+				AccentSoftLight: nil,
+				AccentSoftDark:  nil,
+				AccentInkLight:  nil,
+				AccentInkDark:   nil,
+			},
+			Support: readservice.PortalSupportResponse{
+				DocsURL:   nil,
+				IssuesURL: nil,
+				ChatURL:   nil,
+				Links:     []readservice.PortalSupportLink{},
+			},
+		},
 		Gaggles: readservice.GagglePage{
 			Items: []readservice.Gaggle{{
 				Name:        "core",
@@ -268,7 +293,7 @@ func newWireFixtures() wireFixtures {
 				DisplayName:  "Implementer",
 				Role:         "coder",
 				Status:       readservice.DefinitionStatusConfigured,
-				Harness:      apiv1.HarnessCopilot,
+				Harness:      apiv1.HarnessClaudeCode,
 				Skills:       []string{"go"},
 				Capabilities: []string{"repo:push"},
 				Workflows:    []readservice.WorkflowReference{{Gaggle: "core", Name: "implementation"}},
@@ -373,22 +398,80 @@ func newWireFixtures() wireFixtures {
 		StageAttempts: readservice.AttemptList{
 			RunID: "run-123",
 			Stage: "implement",
-			Attempts: []readservice.StageAttempt{{
-				Number:         2,
-				Class:          string(journal.AttemptPolicy),
-				Status:         string(apiv1.ResultSuccess),
-				StartedSeq:     4,
-				FinishedSeq:    8,
-				StartedAt:      &startedAt,
-				FinishedAt:     &finishedAt,
-				DurationMillis: 120000,
-				Outputs:        map[string]any{"summary": "implemented"},
-				Artifacts:      []readservice.ArtifactMetadata{artifact},
-				Error: &journal.ErrorDetail{
-					Code:    "recovered",
-					Message: "completed after retry",
+			Attempts: []readservice.StageAttempt{
+				{
+					ID:             "sta_visit_1_attempt_1",
+					Visit:          1,
+					Number:         1,
+					Class:          "initial",
+					Status:         string(apiv1.ResultFailure),
+					StartedSeq:     2,
+					FinishedSeq:    3,
+					StartedAt:      &startedAt,
+					FinishedAt:     &finishedAt,
+					DurationMillis: 120000,
+					Artifacts:      []readservice.ArtifactMetadata{},
+					Error: &journal.ErrorDetail{
+						Code:    "initial_failed",
+						Message: "initial execution failed",
+					},
 				},
-			}},
+				{
+					ID:             "sta_visit_1_attempt_2",
+					Visit:          1,
+					Number:         2,
+					Class:          string(journal.AttemptPolicy),
+					Status:         string(apiv1.ResultSuccess),
+					StartedSeq:     4,
+					FinishedSeq:    8,
+					StartedAt:      &startedAt,
+					FinishedAt:     &finishedAt,
+					DurationMillis: 120000,
+					Outputs:        map[string]any{"summary": "implemented"},
+					Artifacts:      []readservice.ArtifactMetadata{artifact},
+				},
+				{
+					ID:             "sta_visit_2_attempt_1",
+					Visit:          2,
+					Number:         1,
+					Class:          "initial",
+					Status:         string(apiv1.ResultFailure),
+					StartedSeq:     10,
+					FinishedSeq:    11,
+					StartedAt:      &startedAt,
+					FinishedAt:     &finishedAt,
+					DurationMillis: 120000,
+					Artifacts:      []readservice.ArtifactMetadata{},
+					Error: &journal.ErrorDetail{
+						Code:    "repass_failed",
+						Message: "first repass failed",
+					},
+				},
+				{
+					ID:             "sta_visit_2_attempt_2",
+					Visit:          2,
+					Number:         2,
+					Class:          string(journal.AttemptInfra),
+					Status:         string(apiv1.ResultSuccess),
+					StartedSeq:     12,
+					FinishedSeq:    13,
+					StartedAt:      &startedAt,
+					FinishedAt:     &finishedAt,
+					DurationMillis: 120000,
+					Artifacts:      []readservice.ArtifactMetadata{},
+				},
+				{
+					ID:             "sta_visit_3_attempt_1",
+					Visit:          3,
+					Number:         1,
+					Class:          "initial",
+					Status:         "running",
+					StartedSeq:     15,
+					StartedAt:      &startedAt,
+					DurationMillis: 0,
+					Artifacts:      []readservice.ArtifactMetadata{},
+				},
+			},
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{
 			Gaggles: []readservice.TelemetryGaggleStats{{

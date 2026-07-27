@@ -90,6 +90,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrModel, "gpt-5.6-sol"),
 		attribute.String(AttrHarnessVersion, "copilot version 1.2.3"),
 		attribute.String(AttrStage, "implement"),
+		attribute.Int(AttrBranch, 3),
 		attribute.String(AttrStageType, StageTypeAgentic),
 		attribute.Int(AttrAttemptNumber, 2),
 		attribute.String(AttrAttemptKind, AttemptKindPolicy),
@@ -164,6 +165,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}
@@ -314,6 +316,7 @@ func TestJournalSpanExporterNormalizesInvalidUTF8ForOTLPJSON(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}
@@ -357,6 +360,7 @@ func TestJournalSpanExporterRedactsFloatWireRepresentation(t *testing.T) {
 	}.Snapshot()
 
 	dir := t.TempDir()
+	writeTestRunMarker(t, dir, runID)
 	if err := NewJournalSpanExporter(dir, registry).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{span}); err != nil {
 		t.Fatalf("ExportSpans: %v", err)
 	}

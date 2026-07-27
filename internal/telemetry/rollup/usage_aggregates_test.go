@@ -16,6 +16,7 @@ import (
 
 type usageAttemptFixture struct {
 	number         int
+	branch         int
 	duration       time.Duration
 	status         string
 	model          string
@@ -49,12 +50,12 @@ func seedUsageRun(
 		seq++
 		cursor = cursor.Add(time.Millisecond)
 		started := cursor
-		eventLines = append(eventLines, eventLine(seq, started,
+		eventLines = append(eventLines, eventLineForBranch(seq, attempt.branch, started,
 			fmt.Sprintf(`"type":"stage.started","stage":%q,"attempt":%d,"attemptClass":"policy"`, stage, attemptNumber)))
 
 		cursor = cursor.Add(attempt.duration)
 		seq++
-		eventLines = append(eventLines, eventLine(seq, cursor,
+		eventLines = append(eventLines, eventLineForBranch(seq, attempt.branch, cursor,
 			fmt.Sprintf(`"type":"stage.finished","stage":%q,"attempt":%d,"status":%q`, stage, attemptNumber, attempt.status)))
 
 		attrs := map[string]string{
@@ -169,6 +170,73 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 		!got.HasRetryWasteTokens || got.RetryWasteTokens != 15 ||
 		!got.HasRetryWasteCost || got.RetryWasteCostUSD != 0.5 {
 		t.Fatalf("repass retry waste = %#v", got)
+	}
+}
+
+func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "quality-sprint", "research", fixtureStart,
+		usageAttemptFixture{number: 1, branch: 1, duration: 10 * time.Millisecond, status: "failure", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 5, telemetry.AttrGenAIUsageOutputTokens: 10,
+			telemetry.AttrUsageCostUSD: 0.5,
+		}},
+		usageAttemptFixture{number: 1, branch: 2, duration: 20 * time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 15, telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD: 1.5,
+		}})
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 ||
+		attempts[0].Branch != 1 || attempts[0].CostUSD == nil || *attempts[0].CostUSD != 0.5 ||
+		attempts[1].Branch != 2 || attempts[1].CostUSD == nil || *attempts[1].CostUSD != 1.5 {
+		t.Fatalf("branch-attributed attempts = %#v", attempts)
+	}
+
+	grouped, err := db.Stats(StatsRequest{Workflow: "quality-sprint", GroupByBranch: true})
+	if err != nil {
+		t.Fatalf("Stats grouped by branch: %v", err)
+	}
+	if len(grouped.Stages) != 2 {
+		t.Fatalf("grouped stages = %#v, want two branch rows", grouped.Stages)
+	}
+	first, second := grouped.Stages[0], grouped.Stages[1]
+	if first.Branch == nil || *first.Branch != 1 || first.FailedAttempts != 1 ||
+		first.P50DurationMs != 10 || first.P50CostUSD != 0.5 {
+		t.Fatalf("branch 1 stats = %#v", first)
+	}
+	if second.Branch == nil || *second.Branch != 2 || second.SucceededAttempts != 1 ||
+		second.P50DurationMs != 20 || second.P50CostUSD != 1.5 {
+		t.Fatalf("branch 2 stats = %#v", second)
+	}
+
+	branch := 2
+	filtered, err := db.Stats(StatsRequest{Workflow: "quality-sprint", Branch: &branch})
+	if err != nil {
+		t.Fatalf("Stats filtered by branch: %v", err)
+	}
+	if len(filtered.Stages) != 1 || filtered.Stages[0].Branch == nil ||
+		*filtered.Stages[0].Branch != 2 || filtered.Stages[0].TotalAttempts != 1 ||
+		filtered.Stages[0].P50CostUSD != 1.5 {
+		t.Fatalf("branch-filtered stage stats = %#v", filtered.Stages)
+	}
+	var stageUsage *UsageStats
+	for i := range filtered.Usage {
+		if filtered.Usage[i].Scope == "stage" {
+			stageUsage = &filtered.Usage[i]
+			break
+		}
+	}
+	if stageUsage == nil || stageUsage.Branch == nil || *stageUsage.Branch != 2 ||
+		stageUsage.CostSamples != 1 || stageUsage.P50CostUSD != 1.5 {
+		t.Fatalf("branch-filtered usage = %#v", filtered.Usage)
 	}
 }
 

@@ -14,14 +14,33 @@ type effectiveGoober struct {
 	Name           string                     `json:"name"`
 	Instructions   string                     `json:"instructions"`
 	Skills         []string                   `json:"skills,omitempty"`
+	SkillPackages  []effectiveSkillPackage    `json:"skillPackages,omitempty"`
 	Model          string                     `json:"model,omitempty"`
 	Harness        string                     `json:"harness"`
 	HarnessOptions map[string]json.RawMessage `json:"harnessOptions,omitempty"`
+	MCPServers     []apiv1.MCPServer          `json:"mcpServers,omitempty"`
+	Tools          []string                   `json:"tools,omitempty"`
+}
+
+type effectiveSkillPackage struct {
+	Name  string      `json:"name"`
+	Files []SkillFile `json:"files,omitempty"`
+}
+
+// SkillFile is one canonically named regular file in a declared skill package.
+type SkillFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 // ComputeGooberDigest returns the stable content identity of the resolved
 // goobers that participate in def.
-func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, instructions map[string]string) (string, error) {
+func ComputeGooberDigest(
+	def Definition,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	skillPackages map[string][]SkillFile,
+) (string, error) {
 	names := participatingGoobers(def)
 	effective := make([]effectiveGoober, 0, len(names))
 	for _, name := range names {
@@ -51,12 +70,46 @@ func ComputeGooberDigest(def Definition, goobers map[string]apiv1.GooberSpec, in
 			Name:           name,
 			Instructions:   content,
 			Skills:         canonicalSet(spec.Skills),
+			SkillPackages:  resolvedSkillPackages(spec.Skills, skillPackages),
 			Model:          spec.Model,
 			Harness:        string(harness),
 			HarnessOptions: options,
+			MCPServers:     canonicalMCPServers(spec.MCPServers),
+			Tools:          canonicalSet(spec.Tools),
 		})
 	}
 	return canonicalDigest(effective)
+}
+
+func resolvedSkillPackages(skills []string, packages map[string][]SkillFile) []effectiveSkillPackage {
+	var resolved []effectiveSkillPackage
+	for _, name := range canonicalSet(skills) {
+		if files, ok := packages[name]; ok {
+			canonical := append([]SkillFile(nil), files...)
+			sort.Slice(canonical, func(i, j int) bool { return canonical[i].Path < canonical[j].Path })
+			resolved = append(resolved, effectiveSkillPackage{Name: name, Files: canonical})
+		}
+	}
+	return resolved
+}
+
+func canonicalMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
+	if len(servers) == 0 {
+		return nil
+	}
+	out := make([]apiv1.MCPServer, len(servers))
+	for i := range servers {
+		out[i] = servers[i]
+		out[i].Args = append([]string(nil), servers[i].Args...)
+		out[i].CredentialRefs = append([]apiv1.MCPCredentialRef(nil), servers[i].CredentialRefs...)
+		sort.Slice(out[i].CredentialRefs, func(a, b int) bool {
+			left, right := out[i].CredentialRefs[a], out[i].CredentialRefs[b]
+			return left.Capability+"\x00"+left.Env+"\x00"+left.Header+"\x00"+string(left.Scheme) <
+				right.Capability+"\x00"+right.Env+"\x00"+right.Header+"\x00"+string(right.Scheme)
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func participatingGoobers(def Definition) []string {

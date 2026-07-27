@@ -58,9 +58,10 @@ metadata:
 spec:
   gaggle: acme-web
   triggers:
-    - type: schedule
-      schedule: "30 5 * * *"
-  start: gather-churn
+    # The shipped mechanism is inert until a maintainer explicitly activates
+    # its production schedule.
+    - type: manual
+  start: signal-gather
   # In-repo documentation roots this workflow keeps current. Ordered,
   # repo-relative, files or directories. The signal-gather stage groups code
   # churn by whether it touched a declared root, and the write boundary confines
@@ -71,15 +72,17 @@ spec:
     - README.md
     - ARCHITECTURE.md
   tasks:
-    - name: gather-churn
+    - name: signal-gather
       type: deterministic
       goal: Report code churn since docs were last refreshed.
       run:
         command: ["goobers", "docs-churn", "--since", "168h", "--buffer-multiplier", "3"]
       inputs:
         resultFile: "docs-churn.json"
-      # ... an agentic docs stage + open-pr (with confineToDocsRoots:"true",
-      # docsRoots wired from spec.docsRoots) follow — the capstone (#1018).
+        docsRoots: "docs,docs/design,README.md,ARCHITECTURE.md"
+      next: update-docs
+      # The shipped docs-updater.yaml continues through update-docs, validate,
+      # push-branch, and open-pr with confineToDocsRoots:"true".
 ```
 
 Each root must be **non-empty, repo-relative, and inside the repository** —

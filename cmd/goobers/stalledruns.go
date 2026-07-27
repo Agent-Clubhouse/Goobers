@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -126,6 +128,23 @@ func sweepStalledRuns(
 				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q identity: %w", entry.Name(), err))
 				continue
 			}
+			runTimeout := timeout
+			if identity.RunControls != nil {
+				if controlsErr := runcontrol.ValidatePinned(identity.RunControls); controlsErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
+					continue
+				}
+				controls, controlsErr := runcontrol.Resolve(
+					apiv1.RunControls{StalledRunTimeout: timeout.String()},
+					nil,
+					identity.RunControls,
+				)
+				if controlsErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
+					continue
+				}
+				runTimeout = controls.StalledRunTimeout
+			}
 			phase, err := reader.Phase()
 			if err != nil {
 				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q phase: %w", identity.RunID, err))
@@ -146,7 +165,7 @@ func sweepStalledRuns(
 			if events[len(events)-1].Type == journal.EventGatePaused {
 				continue
 			}
-			if !events[len(events)-1].Time.Before(now.Add(-timeout)) {
+			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
 				continue
 			}
 
@@ -188,7 +207,7 @@ func sweepStalledRuns(
 					terminalizers[runsDir] = runRunner
 				}
 			}
-			result, escalated, err := runRunner.EscalateStalled(identity.RunID, now, timeout)
+			result, escalated, err := runRunner.EscalateStalled(identity.RunID, now, runTimeout)
 			if escalated {
 				if release != nil {
 					release(identity.RunID, identity.Workflow)
@@ -202,7 +221,7 @@ func sweepStalledRuns(
 						Status:   string(journal.PhaseEscalated),
 						Error: &journal.ErrorDetail{
 							Code:    runner.RunStalledErrorCode,
-							Message: fmt.Sprintf("run exceeded %s without journal activity", timeout),
+							Message: fmt.Sprintf("run exceeded %s without journal activity", runTimeout),
 						},
 					})
 					err = errors.Join(err, appendErr)

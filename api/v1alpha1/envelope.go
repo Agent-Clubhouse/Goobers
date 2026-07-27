@@ -19,7 +19,9 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-const StageContractVersion = "v1alpha2"
+// v1alpha6 admits the optional repoRef.project invocation field for Azure
+// DevOps repository identity.
+const StageContractVersion = "v1alpha6"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -69,6 +71,13 @@ type InvocationEnvelope struct {
 	Workspace string `json:"workspace"`
 	// RepoRef is the target repository for this run.
 	RepoRef RepoRef `json:"repoRef"`
+	// AdditionalWorkspaces are read-only checkouts of the gaggle's reference
+	// repos (GaggleSpec.AdditionalRepos, MGV-11 #1286): the stage may READ them
+	// for cross-repo context, but no push credential is ever provisioned for
+	// them, so they are read-only by construction. Empty for a gaggle with no
+	// AdditionalRepos. Each is surfaced to the stage subprocess as
+	// GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<absolute path>.
+	AdditionalWorkspaces []AdditionalWorkspace `json:"additionalWorkspaces,omitempty"`
 	// Item is the backlog item / trigger payload that started the run. Nil for
 	// schedule/signal-triggered runs with no originating item. It is a bounded
 	// provider-neutral descriptor, not another stage's state; the authoritative,
@@ -88,6 +97,17 @@ type InvocationEnvelope struct {
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+}
+
+// AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
+// alongside its primary Workspace (MGV-11 #1286). Name is the reference repo's
+// name (from GaggleSpec.AdditionalRepos), Path is the absolute on-disk location
+// of its checkout. The stage may read Path but has no credential to push to it.
+type AdditionalWorkspace struct {
+	// Name is the reference repo's name (GaggleSpec.AdditionalRepos[i].Name).
+	Name string `json:"name"`
+	// Path is the absolute path to the reference repo's read-only checkout.
+	Path string `json:"path"`
 }
 
 // BacklogItem is a provider-neutral mirror of a unit of work. The backlog
@@ -179,7 +199,7 @@ type ResultEnvelope struct {
 	// goobers.usage.copilot_premium_requests, and goobers.usage.cost_usd.
 	// Unavailable measures are omitted; observed zeroes remain present.
 	Metrics map[string]float64 `json:"metrics,omitempty"`
-	// Error carries failure detail; set when status != success.
+	// Error carries failure or blockage detail; omitted for success and no-work.
 	Error *ErrorInfo `json:"error,omitempty"`
 }
 
@@ -220,6 +240,26 @@ const (
 	SeverityError    Severity = "error"
 	SeverityCritical Severity = "critical"
 )
+
+// Rank orders severities from least to most serious (1-4), for threshold
+// comparisons (e.g. pr-remediation's minSeverity policy, issue #941). An
+// unknown value ranks below SeverityInfo (0) so a typo in a declared
+// threshold fails toward "nothing meets this bar" rather than silently
+// matching every finding.
+func (s Severity) Rank() int {
+	switch s {
+	case SeverityInfo:
+		return 1
+	case SeverityWarning:
+		return 2
+	case SeverityError:
+		return 3
+	case SeverityCritical:
+		return 4
+	default:
+		return 0
+	}
+}
 
 // FindingClass routes a merge-review Finding to the right pr-remediation
 // action (issue #358, design docs/design/v0/pr-lifecycle-loop.md §4 D1).
@@ -311,6 +351,19 @@ type Verdict struct {
 	// always still names the run a human or `goobers trace` would need to
 	// inspect to see the real reviewer reasoning behind it.
 	SourceRunID string `json:"sourceRunId,omitempty"`
+	// OverlapCluster records whether this PR shared a deterministic file
+	// overlap with at least one other open PR (#989/#990) at the moment this
+	// verdict was published — PR-altitude only, always false for an in-run
+	// gate Verdict. See Elected.
+	OverlapCluster bool `json:"overlapCluster,omitempty"`
+	// Elected records whether this PR was the single-lander election's
+	// deterministic winner (PRL-021) for its overlap cluster at the moment
+	// this verdict was published — always false when OverlapCluster is
+	// false. A published `pass` with OverlapCluster true and Elected false
+	// is not a landing authority: merge-pr's election conjunct (#1071)
+	// refuses to land it, so GitHub's native merge queue can never crown a
+	// cluster member on its own.
+	Elected bool `json:"elected,omitempty"`
 }
 
 // Finding is a single issue raised by an evaluator.

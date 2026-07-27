@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -90,6 +91,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
 		}
+		if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+			return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
+		}
+		runControls, err := r.resolveRunControls(id.RunControls)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
+		}
 		events, err := rd.Events()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
@@ -97,6 +105,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		seedEvents, err := rerunSeedEvents(events, in.Stage, isGate)
 		if err != nil {
 			return Result{}, err
+		}
+		activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+		if activeParallel != nil {
+			jr.SetBranchCursors(activeParallel.cursors())
+			if current := activeParallel.current(); current != nil {
+				jr.SetBranch(current.id)
+			}
 		}
 		item, err := resumeItem(rd, id)
 		if err != nil {
@@ -129,9 +144,23 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Trigger:      id.Trigger,
 			RepoRef:      in.RepoRef,
 			Item:         item,
+			RunControls:  runControls,
 		}
-		seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+		pointerEvents := seedEvents
+		if activeParallel != nil {
+			pointerEvents = seedEvents[:parallelStart]
+		}
+		seed := walkSeed{
+			pointers:     reconstructPointers(pointerEvents, in.Machine),
+			stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
+			parallel:     activeParallel,
+			fanIn:        rerunFanIn(seedEvents, in.Machine, in.Stage),
+		}
+		if activeParallel != nil {
+			seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+		}
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
+		seed.lastResult = discardToleratedFailureOutputs(in.Machine, seed.lastStage, seed.lastResult)
 		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		seed.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)

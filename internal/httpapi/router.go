@@ -1,5 +1,6 @@
-// Package httpapi exposes the versioned, read-only loopback HTTP adapter over
-// readservice.Reader.
+// Package httpapi exposes the versioned loopback HTTP adapter: read routes
+// over readservice.Reader, plus the tier-2 human-intervention mutation routes
+// (approve/override/rerun — HITL-7/#469).
 package httpapi
 
 import (
@@ -32,6 +33,8 @@ const (
 	RunsPath = apicontract.RunsPath
 	// InstancePath is the instance inventory endpoint.
 	InstancePath = apicontract.InstancePath
+	// PortalConfigPath is the dashboard co-brand config endpoint.
+	PortalConfigPath = apicontract.PortalConfigPath
 	// GagglesPath is the gaggle inventory endpoint.
 	GagglesPath = apicontract.GagglesPath
 	// GaggleGoobersPath is the gaggle-scoped goober inventory route.
@@ -53,6 +56,74 @@ type Authorizer interface {
 // Principal is the identity established by an Authenticator.
 type Principal struct {
 	Subject string
+	// Issuer identifies the trust domain that authenticated Subject.
+	Issuer string
+	// Name is a human-readable display claim when the issuer provides one.
+	Name string
+	// Roles are the instance-scoped roles granted to this principal by
+	// configuration. Empty means authenticated but authorized for nothing.
+	Roles []Role
+}
+
+// Role is an instance-scoped authorization level (#644). Roles are ordered:
+// admin implies operate, operate implies view.
+type Role string
+
+// Instance roles, weakest first.
+const (
+	RoleView    Role = "view"
+	RoleOperate Role = "operate"
+	RoleAdmin   Role = "admin"
+)
+
+func roleRank(role Role) int {
+	switch role {
+	case RoleView:
+		return 1
+	case RoleOperate:
+		return 2
+	case RoleAdmin:
+		return 3
+	default:
+		return 0
+	}
+}
+
+// HasRole reports whether the principal holds required or a stronger role.
+// Unknown role values never satisfy anything, so a mangled grant fails closed.
+func (p Principal) HasRole(required Role) bool {
+	need := roleRank(required)
+	if need == 0 {
+		return false
+	}
+	for _, role := range p.Roles {
+		if roleRank(role) >= need {
+			return true
+		}
+	}
+	return false
+}
+
+// RequireRoles authorizes read requests (GET/HEAD) for principals holding
+// view or stronger and every other method for operate or stronger. Requests
+// without an authenticated principal are denied, so this authorizer must be
+// paired with a real Authenticator — under NullAuthenticator every request
+// stays anonymous and would be refused.
+func RequireRoles() Authorizer {
+	return authorizerFunc(func(request *http.Request) error {
+		principal, ok := PrincipalFromRequest(request)
+		if !ok {
+			return errors.New("no authenticated principal")
+		}
+		required := RoleView
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			required = RoleOperate
+		}
+		if !principal.HasRole(required) {
+			return fmt.Errorf("principal %q does not hold the %s role", principal.Subject, required)
+		}
+		return nil
+	})
 }
 
 // Authenticator establishes the caller identity before authorization.
@@ -131,7 +202,8 @@ func WithAuthenticator(authenticator Authenticator) HandlerOption {
 
 type apiHandler struct {
 	http.Handler
-	events *EventStream
+	events        *EventStream
+	authenticated bool
 }
 
 func (h *apiHandler) shutdown() {
@@ -139,6 +211,11 @@ func (h *apiHandler) shutdown() {
 		h.events.Close()
 	}
 }
+
+// authenticatedTransport reports whether a real (non-null) Authenticator
+// gates this handler. NewServer consults it for the off-loopback fail-closed
+// startup rule (#640).
+func (h *apiHandler) authenticatedTransport() bool { return h.authenticated }
 
 func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, error) {
 	if authenticator == nil {
@@ -236,7 +313,8 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
 	}
-	return &apiHandler{Handler: router.Handler(), events: config.events}, nil
+	_, isNull := config.authenticator.(NullAuthenticator)
+	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
 func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
@@ -249,9 +327,20 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		writeJSON(w, http.StatusOK, health)
 	})
+	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
+		config, err := reader.PortalConfig(request.Context())
+		if err != nil {
+			errorLog.Printf("portal config read failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "portal config could not be read")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, config)
+	})
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
+	registerMutationRoutes(router)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -104,6 +106,13 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "docs/concepts/README.md") {
 		t.Fatalf("init stdout lacks concepts guide: %q", stdout)
 	}
+	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read init journal: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != journal.EventInitCompleted {
+		t.Fatalf("init journal = %+v, want one init.completed event", events)
+	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)
 	if code != 0 {
@@ -124,6 +133,32 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "nothing to do") {
 		t.Fatalf("second init stdout = %q", stdout)
+	}
+	events, err = journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read init journal after no-op: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("no-op init appended another completion: %+v", events)
+	}
+}
+
+func TestInitNoOpRecordsMissingCompletion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "legacy-instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "init", root)
+	if code != 0 || !strings.Contains(stdout, "nothing to do") {
+		t.Fatalf("init: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != journal.EventInitCompleted {
+		t.Fatalf("init journal = %+v, want one init.completed event", events)
 	}
 }
 
@@ -326,11 +361,12 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 6 goober(s), 6 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 7 goober(s), 7 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
-	if warnings, previewCount := withoutGeneratedPreviewWarnings(stdout); len(warnings) != 0 || previewCount != 0 {
-		t.Fatalf("validate warnings = %#v, preview count = %d; want a fully clean self-host validation with no preview notices — standard DSL fields are GA (#1196)", warnings, previewCount)
+	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `Workflow/docs-updater: workflow "docs-updater" has no schedule trigger`) || previewCount != 0 {
+		t.Fatalf("validate warnings = %#v, preview count = %d; want only the intentional inert docs-updater notice", warnings, previewCount)
 	}
 }
 

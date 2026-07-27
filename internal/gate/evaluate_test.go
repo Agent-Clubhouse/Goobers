@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,6 +321,7 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
 		Branches:  map[string]string{OutcomePass: "", OutcomeFail: "implement"},
 	}
+
 	auto := &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail, OutcomeFail}}
 	run := newTestJournal(t)
 	ev := &Evaluator{Automated: auto, MaxRepasses: 2, Journal: run}
@@ -350,6 +352,27 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 	}
 	if events[2].Target != wf.TargetEscalate {
 		t.Fatalf("last journaled target = %q, want %q", events[2].Target, wf.TargetEscalate)
+	}
+}
+
+func TestEvaluatorUsesPerGateRepassBudget(t *testing.T) {
+	g := apiv1.Gate{
+		Name:        "autogate",
+		Evaluator:   apiv1.EvaluatorAutomated,
+		Automated:   &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:    map[string]string{OutcomePass: "", OutcomeFail: "implement"},
+		MaxRepasses: 1,
+	}
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail}},
+		MaxRepasses: 5,
+	}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+	if first, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false); err != nil || first.Escalated {
+		t.Fatalf("first evaluation = %+v, %v; want ordinary repass", first, err)
+	}
+	if second, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false); err != nil || !second.Escalated {
+		t.Fatalf("second evaluation = %+v, %v; want gate-budget escalation", second, err)
 	}
 }
 
@@ -727,11 +750,47 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 	}
 }
 
-func TestEvaluatorHumanGateNotSupportedAtV0(t *testing.T) {
-	g := apiv1.Gate{Name: "approve", Evaluator: apiv1.EvaluatorHuman, Human: &apiv1.HumanGate{}, Branches: map[string]string{"approved": "done"}}
-	ev := &Evaluator{}
+func TestEvaluatorHumanGateRequiresExplicitDecision(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "approve",
+		Evaluator: apiv1.EvaluatorHuman,
+		Human:     &apiv1.HumanGate{},
+		Branches:  map[string]string{"pass": "done", "needs-changes": "implement", "reject": wf.TargetAbort},
+	}
+	run := newTestJournal(t)
+	ev := &Evaluator{Journal: run}
+
 	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err == nil {
-		t.Fatal("want error: human gates are not supported at V0")
+		t.Fatal("Evaluate without a human decision succeeded")
+	}
+	if _, err := ev.EvaluateHuman(g, "unknown", ""); err == nil {
+		t.Fatal("EvaluateHuman accepted a decision with no branch")
+	}
+	restricted := g
+	restricted.Human = &apiv1.HumanGate{Approvers: []string{"maintainers"}}
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", ""); err == nil ||
+		!strings.Contains(err.Error(), "actor is required") {
+		t.Fatalf("EvaluateHuman without actor error = %v, want required actor", err)
+	}
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", "contributor"); err == nil ||
+		!strings.Contains(err.Error(), "not an authorized approver") {
+		t.Fatalf("EvaluateHuman unauthorized actor error = %v, want authorization failure", err)
+	}
+	if _, err := (&Evaluator{}).EvaluateHuman(restricted, "pass", "maintainers"); err != nil {
+		t.Fatalf("EvaluateHuman authorized actor: %v", err)
+	}
+
+	got, err := ev.EvaluateHuman(g, "needs-changes", "")
+	if err != nil {
+		t.Fatalf("EvaluateHuman: %v", err)
+	}
+	if got.Outcome != "needs-changes" || got.Target != "implement" || got.Attempt != 0 || got.Escalated {
+		t.Fatalf("EvaluateHuman = %+v, want needs-changes branch to implement", got)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Type != journal.EventGateEvaluated ||
+		events[0].Verdict != "needs-changes" || events[0].Target != "implement" {
+		t.Fatalf("human gate events = %+v, want one gate.evaluated verdict", events)
 	}
 }
 

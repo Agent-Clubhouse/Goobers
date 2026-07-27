@@ -16,6 +16,7 @@ import type {
   Health,
   Instance,
   PageRequest,
+  PortalConfig,
   RequestOptions,
   RunEvent,
   RunDetail,
@@ -62,6 +63,29 @@ export interface FixtureStageUsage {
 }
 
 const DEFAULT_RUN_LIMIT = 50;
+const DEFAULT_PORTAL_CONFIG: PortalConfig = {
+  brand: {
+    name: "goobers",
+    tagline: "local operations",
+    scopeMark: "G",
+    logoUrl: null,
+    faviconUrl: null,
+  },
+  theme: {
+    accentLight: null,
+    accentDark: null,
+    accentSoftLight: null,
+    accentSoftDark: null,
+    accentInkLight: null,
+    accentInkDark: null,
+  },
+  support: {
+    docsUrl: null,
+    issuesUrl: null,
+    chatUrl: null,
+    links: [],
+  },
+};
 
 interface FixtureRunCursor {
   startedAt: string;
@@ -88,6 +112,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getInstance(options?: RequestOptions): Promise<Instance> {
     return fixture(this.fixtures.instance, options);
+  }
+
+  getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
+    return fixture(DEFAULT_PORTAL_CONFIG, options);
   }
 
   listGaggles(_request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {

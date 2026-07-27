@@ -10,6 +10,10 @@ import {
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
 import type {
+  PortalDiagnostics,
+  PortalRequestStatus,
+} from "../portalDiagnostics";
+import type {
   ApiErrorEnvelope,
   ArtifactContent,
   AttemptList,
@@ -23,6 +27,7 @@ import type {
   Health,
   Instance,
   PageRequest,
+  PortalConfig,
   RequestOptions,
   RunDetail,
   RunList,
@@ -45,6 +50,7 @@ type PathParameters = Readonly<Record<string, string>>;
 const clientRoutes = {
   health: apiRoutes.health,
   instance: apiRoutes.instance,
+  portalConfig: apiRoutes.portalConfig,
   gaggles: apiRoutes.gaggles,
   gaggleGoobers: apiRoutes.gaggleGoobers,
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
@@ -58,16 +64,25 @@ const clientRoutes = {
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
   events: apiRoutes.events,
+  // Tier-2 human-intervention stub routes (HITL-7/#469). No DaemonClient
+  // method calls these yet — the real approve/override/rerun UI wiring is
+  // #466/#468's scope — but they must appear here for this exhaustiveness
+  // check to keep passing as the contract grows.
+  approveStage: apiRoutes.approveStage,
+  overrideStage: apiRoutes.overrideStage,
+  rerunStage: apiRoutes.rerunStage,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
   baseUrl?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  diagnostics?: PortalDiagnostics;
 }
 
 export class HttpDaemonClient implements DaemonClient {
   private readonly baseUrl: string;
+  private readonly diagnostics: PortalDiagnostics | undefined;
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
 
@@ -77,6 +92,7 @@ export class HttpDaemonClient implements DaemonClient {
       throw new RangeError("Daemon request timeout must be a positive finite number.");
     }
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "");
+    this.diagnostics = config.diagnostics;
     this.timeoutMs = timeoutMs;
     const fetcher = config.fetch ?? globalThis.fetch;
     if (typeof fetcher !== "function") {
@@ -104,17 +120,24 @@ export class HttpDaemonClient implements DaemonClient {
       abortKind = "timeout";
       controller.abort();
     }, this.timeoutMs);
+    const requestUrl = this.url(clientRoutes.events);
+    const trace = this.diagnostics?.startRequest({
+      endpoint: requestUrl,
+      method: clientRoutes.events.method,
+    });
+    let responseStatus: number | undefined;
 
     try {
       const headers = new Headers({ Accept: "text/event-stream" });
       if (request?.cursor) {
         headers.set("Last-Event-ID", request.cursor);
       }
-      const response = await this.fetch(this.url(clientRoutes.events), {
+      const response = await this.fetch(requestUrl, {
         method: clientRoutes.events.method,
         headers,
         signal: controller.signal,
       });
+      responseStatus = response.status;
       globalThis.clearTimeout(timer);
       if (!response.ok) {
         options?.signal?.removeEventListener("abort", cancel);
@@ -148,6 +171,8 @@ export class HttpDaemonClient implements DaemonClient {
         throw error;
       }
       throw new DaemonUnavailableError({ cause: error });
+    } finally {
+      trace?.finish(responseStatus ?? diagnosticStatus(abortKind));
     }
   }
 
@@ -161,6 +186,10 @@ export class HttpDaemonClient implements DaemonClient {
     const instance = await this.getJSON<Instance>(clientRoutes.instance, undefined, options);
     assertSupportedContractVersion(instance);
     return instance;
+  }
+
+  getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
+    return this.getJSON(clientRoutes.portalConfig, undefined, options);
   }
 
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {
@@ -372,13 +401,20 @@ export class HttpDaemonClient implements DaemonClient {
       abortKind = "timeout";
       controller.abort();
     }, this.timeoutMs);
+    const requestUrl = this.url(route, query, pathParameters);
+    const trace = this.diagnostics?.startRequest({
+      endpoint: requestUrl,
+      method: route.method,
+    });
+    let responseStatus: number | undefined;
 
     try {
-      const response = await this.fetch(this.url(route, query, pathParameters), {
+      const response = await this.fetch(requestUrl, {
         method: route.method,
         headers: { Accept: accept },
         signal: controller.signal,
       });
+      responseStatus = response.status;
       if (!response.ok) {
         throw await apiError(response);
       }
@@ -397,6 +433,7 @@ export class HttpDaemonClient implements DaemonClient {
     } finally {
       globalThis.clearTimeout(timer);
       options?.signal?.removeEventListener("abort", cancel);
+      trace?.finish(responseStatus ?? diagnosticStatus(abortKind));
     }
   }
 
@@ -414,6 +451,12 @@ export class HttpDaemonClient implements DaemonClient {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `${this.baseUrl}${routePath(route.path, pathParameters)}${suffix}`;
   }
+}
+
+function diagnosticStatus(
+  abortKind: "cancelled" | "timeout" | undefined,
+): PortalRequestStatus {
+  return abortKind ?? "error";
 }
 
 async function apiError(response: Response): Promise<DaemonApiError | MalformedResponseError> {

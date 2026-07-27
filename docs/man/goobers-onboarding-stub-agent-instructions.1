@@ -1,0 +1,30 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ONBOARDING STUB AGENT INSTRUCTIONS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers onboarding stub-agent-instructions \- install agent-instruction assets into a config source
+.SH SYNOPSIS
+\fBgoobers onboarding stub-agent-instructions\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]
+
+Install the release-matched Goobers agent toolkit and the selected harness
+instruction reference into a checked-in config source repository. This action
+delegates to `agent-kit install`: product-owned toolkit files are installed
+beneath `.goobers/agent-toolkit/`, existing user instructions are preserved,
+and collisions or drift fail without overwriting files.
+
+Flags:
+  --source-tree <path>  required config source repository root
+  --harness <name>      copilot, claude, or generic (default generic)
+  --json                emit the versioned config-source action envelope
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
+drift, or write error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

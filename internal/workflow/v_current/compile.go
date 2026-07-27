@@ -145,8 +145,7 @@ func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
 //
 // It rejects: duplicate state names, a missing/undefined start, transitions to
 // undefined states, gates with no branches or branches to undefined states,
-// human evaluators while durable pause/resume is unavailable, states
-// unreachable from start, loops with no exit to a terminal, removed DSL
+// states unreachable from start, loops with no exit to a terminal, removed DSL
 // features, preview DSL features unless WithPreviewFeatures(true) is supplied,
 // and — when WithGoobers is supplied — a goober granting or a stage declaring
 // a capability outside the canonical registry (internal/capability, issue #74),
@@ -191,19 +190,32 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		problems = append(problems, reachabilityProblems(m)...)
 	}
 	problems = append(problems, scheduleProblems(def)...)
-	problems = append(problems, evaluatorSupportProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
 	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses, true)...)
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
+	problems = append(problems, runScriptProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func runScriptProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run != nil && task.Run.Script != "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.script is not supported in DSL %s; use run.command or DSL %s",
+				task.Name, DSLVersion, "2.0",
+			))
+		}
+	}
+	return problems
 }
 
 // newMachine builds the state-lookup maps for a definition without validating.
@@ -217,7 +229,10 @@ func newMachine(def Definition) (*Machine, error) {
 	for _, gate := range def.Spec.Gates {
 		gates[gate.Name] = gate
 	}
-	return model.NewMachine(def, tasks, gates, buildGraph(def))
+	// DSL 1.4 has no fan-out construct: parallels are nil, so Has/Outgoing
+	// report nothing for them and a `parallels:` block is rejected as an
+	// unknown field by this version's schema.
+	return model.NewMachine(def, tasks, gates, nil, buildGraph(def))
 }
 
 func newMachineForCheck(def Definition) (*Machine, []string) {
@@ -418,6 +433,26 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				problems = append(problems, fmt.Sprintf("task %q uses capability %q not granted to goober %q", t.Name, cap, t.Goober))
 			}
 		}
+		taskCapabilities := toSet(t.Capabilities)
+		requiredMCPCapabilities := map[string]bool{}
+		for _, server := range g.MCPServers {
+			for _, ref := range server.CredentialRefs {
+				requiredMCPCapabilities[ref.Capability] = true
+			}
+		}
+		requiredNames := make([]string, 0, len(requiredMCPCapabilities))
+		for name := range requiredMCPCapabilities {
+			requiredNames = append(requiredNames, name)
+		}
+		sort.Strings(requiredNames)
+		for _, name := range requiredNames {
+			if !taskCapabilities[name] {
+				problems = append(problems, fmt.Sprintf(
+					"task %q must declare MCP credential capability %q required by goober %q",
+					t.Name, name, t.Goober,
+				))
+			}
+		}
 	}
 	for _, gate := range def.Spec.Gates {
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil && gate.Agentic.Goober != "" {
@@ -473,18 +508,6 @@ var automatedCheckOutcomes = map[string][]string{
 	"queue-outcome": {"merged", "evicted", "timeout", "fail"},
 }
 
-const humanGateUnsupportedMessage = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-
-func evaluatorSupportProblems(def Definition) []string {
-	var problems []string
-	for _, g := range def.Spec.Gates {
-		if g.Evaluator == apiv1.EvaluatorHuman {
-			problems = append(problems, fmt.Sprintf("gate %q: %s", g.Name, humanGateUnsupportedMessage))
-		}
-	}
-	return problems
-}
-
 // gateOutcomeProblems reports two distinct defect classes per gate (#124):
 //   - a branch key that is not one of the evaluator's producible outcomes —
 //     silently dead configuration, never taken;
@@ -492,10 +515,10 @@ func evaluatorSupportProblems(def Definition) []string {
 //     return it, but the gate has nowhere to send it, which today only fails
 //     at evaluation time instead of at compile time.
 //
-// Human gates have no evaluator outcome to check against (§5: "a human gate
-// executes nothing") and are skipped here; evaluatorSupportProblems rejects
-// them until durable pause/resume ships. knownChecks, when non-nil,
-// additionally flags an AutomatedGate.Check name outside the supplied
+// Human gates accept the workflow's declared branch vocabulary as explicit
+// decisions and are skipped here because there is no smaller closed outcome
+// set to validate. knownChecks, when non-nil, additionally flags an
+// AutomatedGate.Check name outside the supplied
 // registry (WithKnownChecks) — nil performs no such check (the default;
 // internal/gate already fails closed on an unknown check at evaluation time
 // regardless).

@@ -28,12 +28,14 @@ type TelemetryReader interface {
 }
 
 // TelemetryStatsRequest filters workflow/stage aggregates and selects optional
-// model and harness-version cohort dimensions.
+// branch, model, and harness-version cohort dimensions.
 type TelemetryStatsRequest struct {
 	Workflow              string
 	Gaggle                string
+	Branch                *int
 	Model                 string
 	HarnessVersion        string
+	GroupByBranch         bool
 	GroupByModel          bool
 	GroupByHarnessVersion bool
 	Since                 time.Time
@@ -116,6 +118,7 @@ type TelemetryStageStats struct {
 	Gaggle               string   `json:"gaggle"`
 	Workflow             string   `json:"workflow"`
 	Stage                string   `json:"stage"`
+	Branch               *int     `json:"branch,omitempty"`
 	Model                string   `json:"model,omitempty"`
 	HarnessVersion       string   `json:"harnessVersion,omitempty"`
 	TotalAttempts        int      `json:"totalAttempts"`
@@ -146,6 +149,7 @@ type TelemetryUsageStats struct {
 	Gaggle                    string   `json:"gaggle,omitempty"`
 	Workflow                  string   `json:"workflow,omitempty"`
 	Stage                     string   `json:"stage,omitempty"`
+	Branch                    *int     `json:"branch,omitempty"`
 	Model                     string   `json:"model,omitempty"`
 	HarnessVersion            string   `json:"harnessVersion,omitempty"`
 	TotalAttempts             int      `json:"totalAttempts"`
@@ -260,14 +264,19 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	if err := validateWindow(req.Since, req.Until); err != nil {
 		return TelemetryStatsResult{}, err
 	}
+	if req.Branch != nil && *req.Branch < 0 {
+		return TelemetryStatsResult{}, fmt.Errorf("%w: branch must be non-negative", ErrInvalidTelemetryRequest)
+	}
 	if err := ctx.Err(); err != nil {
 		return TelemetryStatsResult{}, err
 	}
 	stats, err := s.store.Stats(rollup.StatsRequest{
 		Workflow:              req.Workflow,
 		Gaggle:                req.Gaggle,
+		Branch:                req.Branch,
 		Model:                 req.Model,
 		HarnessVersion:        req.HarnessVersion,
+		GroupByBranch:         req.GroupByBranch,
 		GroupByModel:          req.GroupByModel,
 		GroupByHarnessVersion: req.GroupByHarnessVersion,
 		Since:                 req.Since,
@@ -362,6 +371,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			Gaggle:             stat.Gaggle,
 			Workflow:           stat.Workflow,
 			Stage:              stat.Stage,
+			Branch:             stat.Branch,
 			Model:              stat.Model,
 			HarnessVersion:     stat.HarnessVersion,
 			TotalAttempts:      stat.TotalAttempts,
@@ -407,6 +417,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			Gaggle:                stat.Gaggle,
 			Workflow:              stat.Workflow,
 			Stage:                 stat.Stage,
+			Branch:                stat.Branch,
 			Model:                 stat.Model,
 			HarnessVersion:        stat.HarnessVersion,
 			TotalAttempts:         stat.TotalAttempts,

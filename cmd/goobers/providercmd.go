@@ -67,11 +67,13 @@ const (
 	mergeLockFileName = "merge.lock"
 
 	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
+	claimLockOperationBacklogScanCursor    = "backlog-query.scan-cursor"
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"
 	claimLockOperationPRLookup             = "pr-claim.lookup"
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
+	claimLockOperationPRCount              = "pr-claim.count"
 	claimLockOperationRunLookup            = "run-claims.lookup"
 	claimLockOperationBlockedUpdate        = "blocked-records.update"
 	claimLockOperationRecovery             = "claim-recovery"

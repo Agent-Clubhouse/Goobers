@@ -74,9 +74,30 @@ func CheckStageContractWarnings(def Definition) []string {
 // emit" (bad hygiene) from "a downstream stage will read nothing" (broken).
 func consumedOutputKeys(def Definition) map[string]bool {
 	consumed := map[string]bool{}
+	declared := map[string]bool{}
+	parallels := map[string]bool{}
+	for _, task := range def.Spec.Tasks {
+		declared[task.Name] = true
+	}
+	for _, parallel := range def.Spec.Parallels {
+		parallels[parallel.Name] = true
+	}
 	for _, task := range def.Spec.Tasks {
 		for _, outputKey := range task.InputsFrom {
 			consumed[outputKey] = true
+			if ref, ok := splitBranchInputReference(outputKey); ok && parallels[ref.parallel] {
+				consumed[ref.key] = true
+				continue
+			}
+			// A stage-qualified reference ("<stage>.<key>", #562) consumes the
+			// KEY, not the literal qualified string. Without this the
+			// undeclaredResultFile check silently stops firing the moment an
+			// author switches to a qualified reference — the stage would go
+			// back to promising outputs it has no channel to emit, and the
+			// downstream reader would fail at runtime exactly as before.
+			if stageName, key, ok := splitQualifiedRef(outputKey); ok && declared[stageName] {
+				consumed[key] = true
+			}
 		}
 	}
 	return consumed
@@ -165,6 +186,26 @@ func unsatisfiableInputsFromProblems(m *Machine) []string {
 		preceding := precedingTasks(m, name)
 		for _, inputKey := range sortedKeys(task.InputsFrom) {
 			outputKey := task.InputsFrom[inputKey]
+			if ref, ok := splitBranchInputReference(outputKey); ok {
+				if _, isParallel := m.Parallel(ref.parallel); isParallel {
+					// parallelProblems validates this reference against the
+					// branch graph and producer contract.
+					continue
+				}
+			}
+
+			// A stage-QUALIFIED reference ("<stage>.<key>", #562) is checked
+			// against its named stage instead of the immediate predecessors.
+			// The qualified reading applies only when the prefix names a
+			// declared task; otherwise the whole value is a bare key, which is
+			// what keeps a legacy dotted output key working.
+			if stageName, key, ok := splitQualifiedRef(outputKey); ok {
+				if _, isTask := m.Task(stageName); isTask {
+					problems = append(problems, qualifiedRefProblems(m, name, inputKey, stageName, key)...)
+					continue
+				}
+			}
+
 			for _, predName := range preceding {
 				pred, _ := m.Task(predName)
 				if len(pred.ExpectedOutputs) == 0 {
@@ -257,4 +298,105 @@ func isShellStage(task apiv1.Task) bool {
 	}
 	kind := strings.TrimSpace(task.Inputs["kind"])
 	return kind == "" || kind == "shell"
+}
+
+// splitQualifiedRef splits "<stage>.<key>" on the FIRST dot. An output key may
+// contain dots; a stage name may not (enforced by dottedStateNameProblems), so
+// the first dot is always the unambiguous boundary and no escaping syntax is
+// needed.
+func splitQualifiedRef(value string) (stage, key string, ok bool) {
+	stage, key, found := strings.Cut(value, ".")
+	if !found || stage == "" || key == "" {
+		return "", "", false
+	}
+	return stage, key, true
+}
+
+// qualifiedRefProblems validates one stage-qualified inputsFrom reference:
+// the named stage must precede the consumer on EVERY path that reaches it, and
+// where the stage declares its outputs it must declare the referenced key.
+//
+// "On every path" is the load-bearing rule. A stage that precedes the consumer
+// on one branch but not another would resolve in testing and fail in
+// production on the other branch — the exact defect class #562 exists to kill.
+func qualifiedRefProblems(m *Machine, consumer, inputKey, stageName, key string) []string {
+	var problems []string
+
+	if stageName == consumer {
+		return []string{fmt.Sprintf(
+			"task %q reads inputsFrom %q from itself (%q); a qualified reference must name an upstream stage",
+			consumer, inputKey, stageName)}
+	}
+
+	if !precedesOnEveryPath(m, stageName, consumer) {
+		problems = append(problems, fmt.Sprintf(
+			"task %q reads inputsFrom %q as %q.%q, but task %q does not run on every path that reaches %q, so this resolves on some runs and fails on others",
+			consumer, inputKey, stageName, key, stageName, consumer))
+	}
+
+	producer, _ := m.Task(stageName)
+	if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, key) {
+		problems = append(problems, fmt.Sprintf(
+			"task %q reads inputsFrom %q as %q.%q, but task %q declares outputs %v and not %q",
+			consumer, inputKey, stageName, key, stageName, producer.ExpectedOutputs, key))
+	}
+	return problems
+}
+
+// precedesOnEveryPath reports whether every path from the workflow start to
+// consumer passes through producer. It is computed as: consumer is NOT
+// reachable from start once producer is removed from the graph.
+func precedesOnEveryPath(m *Machine, producer, consumer string) bool {
+	start := m.Def.Spec.Start
+	if start == producer {
+		return true
+	}
+	reachable := map[string]bool{}
+	stack := []string{start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == producer || state == "" || isTerminal(state) || reachable[state] {
+			continue
+		}
+		if !m.Has(state) {
+			continue
+		}
+		reachable[state] = true
+		stack = append(stack, m.Outgoing(state)...)
+	}
+	return !reachable[consumer]
+}
+
+// dottedStateNameProblems rejects a state name containing a dot. With such a
+// name banned, "<stage>.<key>" has exactly one possible split and legacy dotted
+// output keys keep working — which is why #562 needs no escaping syntax.
+func dottedStateNameProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if strings.Contains(task.Name, ".") {
+			problems = append(problems, fmt.Sprintf(
+				"task name %q contains a dot; state names must not, so a qualified inputsFrom reference stays unambiguous", task.Name))
+		}
+	}
+	for _, gate := range def.Spec.Gates {
+		if strings.Contains(gate.Name, ".") {
+			problems = append(problems, fmt.Sprintf(
+				"gate name %q contains a dot; state names must not, so a qualified inputsFrom reference stays unambiguous", gate.Name))
+		}
+	}
+	for _, parallel := range def.Spec.Parallels {
+		if strings.Contains(parallel.Name, ".") {
+			problems = append(problems, fmt.Sprintf(
+				"parallel name %q contains a dot; parallel names must not, so a branch-qualified inputsFrom reference stays unambiguous", parallel.Name))
+		}
+		for _, branch := range parallel.Branches {
+			if strings.Contains(branch.Name, ".") {
+				problems = append(problems, fmt.Sprintf(
+					"parallel %q branch name %q contains a dot; branch names must not, so a branch-qualified inputsFrom reference stays unambiguous",
+					parallel.Name, branch.Name))
+			}
+		}
+	}
+	return problems
 }

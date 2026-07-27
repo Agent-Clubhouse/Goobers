@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
@@ -355,12 +356,40 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer eventStream.Close()
-	handler, err := httpapi.NewHandler(reads, httpapi.AllowAll, apiLog, httpapi.WithEventStream(eventStream))
+	// Unconfigured instances keep the tier-1 posture verbatim: null
+	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
+	// swaps in the OIDC authenticator plus the role-floor authorizer, and
+	// api.tls upgrades the transport (#640/#644).
+	apiAuthorizer := httpapi.AllowAll
+	apiHandlerOpts := []httpapi.HandlerOption{httpapi.WithEventStream(eventStream)}
+	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
+		authenticator, err := oidcauth.New(oidcauth.Config{
+			Issuer:     auth.OIDC.Issuer,
+			Audience:   auth.OIDC.Audience,
+			RolesClaim: auth.OIDC.RolesClaimName(),
+			Roles: oidcauth.RoleMapping{
+				View:    auth.OIDC.Roles.View,
+				Operate: auth.OIDC.Roles.Operate,
+				Admin:   auth.OIDC.Roles.Admin,
+			},
+		})
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(authenticator))
+		apiAuthorizer = httpapi.RequireRoles()
+	}
+	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
 	if err != nil {
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
-	apiServer, err := httpapi.NewServer(apiListenAddress(setup.Config), handler, apiLog)
+	var apiServerOpts []httpapi.ServerOption
+	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
+		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
+	}
+	apiServer, err := httpapi.NewServer(apiListenAddress(setup.Config), handler, apiLog, apiServerOpts...)
 	if err != nil {
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
@@ -455,20 +484,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
-	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
-	opts = append(opts, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
 		return daemonstate.Refresh(lockPath, tickAt)
 	}))
-	// #353: start the open-PR-count refresher and wire it as the MaxOpenPRs cap's
-	// counter. Runs on its own interval/context under the daemon's WaitGroup, so
-	// Admit reads a cached count (never a network call under the tick lock) and
-	// shutdown drains it with every other background loop. Nil when no workflow
-	// opts into the cap.
-	if setup.OpenPRRefresher != nil {
-		opts = append(opts, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
-	}
-
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
 	if err != nil {
@@ -497,7 +515,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			setup.LegacyRunner,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry)
+				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry, setup.SecretStores)
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -727,7 +745,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if webhookGate.Start() {
 		ready.Store(true)
 	}
-	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
+	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
 		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
 	}
@@ -855,6 +873,20 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}
 	return 0
+}
+
+func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {
+	options := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(
+		setup.RunConditions.MaxParallelRuns,
+		setup.RunConditions.WorkflowBudgets,
+		setup.RunConditions.WorkflowDailyBudgets,
+	))
+	// The refresher is nil when no workflow opts into MaxOpenPRs.
+	if setup.OpenPRRefresher != nil {
+		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
+	}
+	options = append(options, additionalOptions...)
+	return localscheduler.New(setup.Entries, setup.InstanceLog, options...)
 }
 
 func publishDaemonAPIAddress(path, address string) error {

@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS AGENT KIT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers agent-kit \- install, inspect, or update the release-matched agent toolkit
+.SH SYNOPSIS
+\fBgoobers agent-kit\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers agent-kit <subcommand> [flags] [path]
+
+Install, inspect, or explicitly update the release-matched Goobers agent
+toolkit in a checked-in configuration repository.
+
+Subcommands:
+  install  install product-owned assets and a minimal harness reference
+  check    report installed version, drift, missing files, and updates
+  update   show a reviewable diff, then write only with --write
+
+Default path is ".". Targets must be repository roots and may not traverse
+symbolic links or parent path segments.
+.fi
+.SH EXAMPLES
+.nf
+goobers agent-kit install --harness generic ./config-repo
+goobers agent-kit check ./config-repo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

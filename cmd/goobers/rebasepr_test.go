@@ -401,6 +401,159 @@ func TestRebasePRSubstantiveFindingDefersEvenWithCleanRebase(t *testing.T) {
 	}
 }
 
+// TestEvaluateRemediatePolicy is #941/PRR-6's unit-level coverage of the pure
+// policy decision: restrictive vs liberal policies, and an unlisted (policy-
+// excluded) cause.
+func TestEvaluateRemediatePolicy(t *testing.T) {
+	tests := []struct {
+		name               string
+		remediate          string
+		conflict           bool
+		substantive        bool
+		failingCI          bool
+		wantNeedsAgent     bool
+		wantPolicyExcluded bool
+		wantReasonContains string
+	}{
+		{
+			name:           "nothing detected, liberal policy",
+			remediate:      defaultRemediatePolicy,
+			wantNeedsAgent: false,
+		},
+		{
+			name:           "conflict detected, liberal policy fires",
+			remediate:      defaultRemediatePolicy,
+			conflict:       true,
+			wantNeedsAgent: true,
+		},
+		{
+			name:           "restrictive policy: conflict only, conflict detected fires",
+			remediate:      "conflict",
+			conflict:       true,
+			wantNeedsAgent: true,
+		},
+		{
+			name:               "restrictive policy: conflict only, substantive detected excluded",
+			remediate:          "conflict",
+			substantive:        true,
+			wantNeedsAgent:     true,
+			wantPolicyExcluded: true,
+			wantReasonContains: "substantive",
+		},
+		{
+			name:               "restrictive policy excludes an unlisted cause (failing-ci)",
+			remediate:          "conflict,substantive",
+			failingCI:          true,
+			wantNeedsAgent:     true,
+			wantPolicyExcluded: true,
+			wantReasonContains: "failing-ci",
+		},
+		{
+			name:               "policy excludes multiple detected causes at once",
+			remediate:          "behind-base",
+			substantive:        true,
+			failingCI:          true,
+			wantNeedsAgent:     true,
+			wantPolicyExcluded: true,
+			wantReasonContains: "substantive, failing-ci",
+		},
+		{
+			name:           "one firing cause outweighs an excluded one",
+			remediate:      "conflict",
+			conflict:       true,
+			substantive:    true,
+			wantNeedsAgent: true,
+			// conflict fires, so this is NOT policyExcluded even though
+			// substantive alone would have been excluded.
+			wantPolicyExcluded: false,
+		},
+		{
+			name:               "empty policy excludes everything detected",
+			remediate:          "",
+			conflict:           true,
+			wantNeedsAgent:     true,
+			wantPolicyExcluded: true,
+			wantReasonContains: "conflict",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := evaluateRemediatePolicy(test.remediate, test.conflict, test.substantive, test.failingCI)
+			if got.needsAgent != test.wantNeedsAgent {
+				t.Fatalf("needsAgent = %v, want %v", got.needsAgent, test.wantNeedsAgent)
+			}
+			if got.policyExcluded != test.wantPolicyExcluded {
+				t.Fatalf("policyExcluded = %v, want %v", got.policyExcluded, test.wantPolicyExcluded)
+			}
+			if test.wantReasonContains != "" && !strings.Contains(got.excludedReason, test.wantReasonContains) {
+				t.Fatalf("excludedReason = %q, want it to contain %q", got.excludedReason, test.wantReasonContains)
+			}
+			if got.policyExcluded != got.policyResult.excluded || got.excludedReason != got.policyResult.reason {
+				t.Fatalf("policyResult %+v does not mirror policyExcluded/excludedReason", got.policyResult)
+			}
+		})
+	}
+}
+
+// TestRebasePRRestrictivePolicyEscalatesUntouchedWithoutForcePush is #941/
+// PRR-6's end-to-end acceptance criterion: `remediate: "conflict"` attempts
+// conflicts only — a detected substantive finding with no conflict escalates
+// untouched (no force-push, label left in place, policyExcluded recorded)
+// rather than either silently force-pushing (dropping the finding) or
+// invoking the agentic chain.
+func TestRebasePRRestrictivePolicyEscalatesUntouchedWithoutForcePush(t *testing.T) {
+	const prBranch = "goobers/impl/run-policy"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 61)
+
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "61",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "true",
+		"remediate":              "conflict",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "remediation policy") || !strings.Contains(stdout, "substantive") {
+		t.Fatalf("stdout = %q, want a reason naming the excluded cause and policy", stdout)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 1 || labels[0] != needsRemediationLabel {
+		t.Fatalf("labels = %v, want %s left untouched (policy-excluded, no clear)", labels, needsRemediationLabel)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
+		!strings.Contains(string(data), `"policyExcluded":"true"`) ||
+		!strings.Contains(string(data), "substantive") {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true, policyExcluded=true, reason naming substantive", data)
+	}
+
+	// The branch must NOT have been force-pushed: origin's PR branch tip is
+	// unchanged from what initNonConflictingPRBranch seeded (verified by
+	// checking out the branch fresh and confirming there's no rebase-onto-
+	// main content, since a force-push here would have republished the
+	// locally rebased/mechanically-clean commit).
+	verify := t.TempDir()
+	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
+	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err == nil {
+		t.Fatal("origin's PR branch was force-pushed despite the policy exclusion — the finding would be silently dropped")
+	}
+}
+
 func TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint(t *testing.T) {
 	const prBranch = "goobers/impl/run-ci-red"
 	origin := initNonConflictingPRBranch(t, prBranch)
@@ -1005,6 +1158,52 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(verify, "check", "goober-change.txt")); err == nil {
 		t.Fatal("goober-change.txt reached origin — the stale-lease push should have been refused entirely")
+	}
+}
+
+func TestRebasePRPushFailurePreservesDownstreamContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reject git push")
+	}
+	const prBranch = "goobers/impl/run-push-failure"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	attemptedHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	rebaseBaseSHA := strings.TrimSpace(runGitOutputT(t, filepath.Dir(origin), "--git-dir="+origin, "rev-parse", "refs/heads/main"))
+
+	hook := filepath.Join(origin, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'push rejected by test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 65)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "65",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want rejected push failure", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	want := map[string]interface{}{
+		"selectedNumber":         "65",
+		"head":                   prBranch,
+		"needsAgent":             "true",
+		"conflict":               "false",
+		"conflictLocations":      "[]",
+		"attemptedHeadSha":       attemptedHeadSHA,
+		"rebaseBaseSha":          rebaseBaseSHA,
+		executor.OutputErrorCode: errorCodeProvider,
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
 	}
 }
 

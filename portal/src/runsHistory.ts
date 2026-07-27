@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
 import type { DaemonClient, RunListOptions, RunPhase, RunSummary } from "./api/types";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 
 export type RunsFilter = "all" | "active" | "attention" | "complete";
@@ -43,32 +44,57 @@ interface RunsStream {
   exhausted: boolean;
 }
 
+interface CachedRunsHistory {
+  data: RunsHistory;
+  streams: RunsStream[];
+}
+
 export function useRunsHistory(
   client: DaemonClient,
   filter: RunsFilter,
   scope: RunHistoryScope = {},
 ): RunsHistoryQuery {
-  const [state, setState] = useState<QueryState<RunsHistory>>({ status: "loading" });
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = runsHistoryCacheKey(filter, scope);
+  const initialCached = useRef(cache.get<CachedRunsHistory>(cacheKey));
+  const [state, setState] = useState<QueryState<RunsHistory>>(() => {
+    const cached = initialCached.current;
+    return cached ? { status: "ready", data: cached.data } : { status: "loading" };
+  });
   const request = useRef<AbortController | undefined>(undefined);
-  const streams = useRef<RunsStream[]>([]);
-  const runs = useRef<RunSummary[]>([]);
+  const streams = useRef<RunsStream[]>(
+    initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
+  );
+  const runs = useRef<RunSummary[]>(initialCached.current?.data.runs ?? []);
   const loadingMore = useRef(false);
-  const { freshness, isFresh, subscribe } = useLiveData();
 
-  const publish = useCallback((fresh: boolean) => {
+  const publish = useCallback((fresh: boolean, cacheRevision?: number) => {
     const data: RunsHistory = {
       runs: runs.current,
       hasMore: streams.current.some((stream) => !stream.exhausted),
       loadingMore: loadingMore.current,
     };
     setState(fresh ? { status: "ready", data } : { status: "stale", data });
-  }, []);
+    if (!loadingMore.current && cacheRevision !== undefined) {
+      cache.set(
+        cacheKey,
+        {
+          data,
+          streams: streams.current.map((stream) => ({ ...stream })),
+        },
+        runsHistoryDependencies(scope),
+        cacheRevision,
+      );
+    }
+  }, [cache, cacheKey, scope.gaggle, scope.workflow]);
 
   // Reset pagination and load the first bounded page. Used on mount, filter
   // change, retry, and live run invalidation — the history reflects current
   // daemon state, always starting from one bounded page.
   const refresh = useCallback(() => {
     request.current?.abort();
+    const dependencies = runsHistoryDependencies(scope);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
     streams.current = FILTER_PHASES[filter].map((phase) => ({
@@ -90,7 +116,7 @@ export function useRunsHistory(
           return true;
         }
         runs.current = mergeRuns([], fetched);
-        publish(isFresh());
+        publish(isFresh(), cacheRevision);
         return true;
       },
       (error: unknown) => {
@@ -100,16 +126,18 @@ export function useRunsHistory(
         return false;
       },
     );
-  }, [client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   const loadMore = useCallback(() => {
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
       return;
     }
     const controller = new AbortController();
+    const dependencies = runsHistoryDependencies(scope);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     request.current = controller;
     loadingMore.current = true;
-    publish(isFresh());
+    publish(isFresh(), cacheRevision);
 
     void advanceStreams(client, streams.current, scope, controller.signal).then(
       (fetched) => {
@@ -118,7 +146,7 @@ export function useRunsHistory(
         }
         loadingMore.current = false;
         runs.current = mergeRuns(runs.current, fetched);
-        publish(isFresh());
+        publish(isFresh(), cacheRevision);
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
@@ -130,12 +158,32 @@ export function useRunsHistory(
   }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["run"], refresh);
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const cached =
+          reason === "initial" ? cache.get<CachedRunsHistory>(cacheKey) : undefined;
+        if (cached) {
+          request.current = undefined;
+          streams.current = cached.streams.map((stream) => ({ ...stream }));
+          runs.current = cached.data.runs;
+          loadingMore.current = false;
+          setState(
+            isFresh()
+              ? { status: "ready", data: cached.data }
+              : { status: "stale", data: cached.data },
+          );
+          return true;
+        }
+        return refresh();
+      },
+      { gaggle: scope.gaggle, workflow: scope.workflow },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [refresh, subscribe]);
+  }, [cache, cacheKey, isFresh, publish, refresh, subscribe]);
 
   useEffect(() => {
     setState((current) => {
@@ -149,7 +197,29 @@ export function useRunsHistory(
     });
   }, [freshness]);
 
-  return { loadMore, retry: refresh, state };
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    void refresh();
+  }, [cache, cacheKey, refresh]);
+  return { loadMore, retry, state };
+}
+
+function runsHistoryCacheKey(filter: RunsFilter, scope: RunHistoryScope): string {
+  return dataCacheKey(
+    "runs-history",
+    filter,
+    scope.gaggle ?? "",
+    scope.workflow ?? "",
+    scope.stage ?? "",
+    scope.outcome ?? "",
+    scope.population ?? "",
+    scope.since ?? "",
+    scope.until ?? "",
+  );
+}
+
+function runsHistoryDependencies(scope: RunHistoryScope): readonly DataCacheDependency[] {
+  return [{ model: "run", gaggle: scope.gaggle, workflow: scope.workflow }];
 }
 
 // Advances every non-exhausted stream by one page and returns the newly fetched

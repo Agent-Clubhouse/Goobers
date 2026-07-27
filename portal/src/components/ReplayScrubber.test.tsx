@@ -1,15 +1,29 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunEvent } from "../api/types";
+import styles from "../styles.css?inline";
+import tokens from "../tokens.css?inline";
 import { ReplayScrubber } from "./ReplayScrubber";
 
-function ev(seq: number, time: string): RunEvent {
-  return { schema: "v1", seq, type: "stage.started", branch: 0, time, knownSchema: true } as RunEvent;
+function ev(
+  seq: number,
+  time: string,
+  fields: Partial<RunEvent> = {},
+): RunEvent {
+  return {
+    schema: "v1",
+    seq,
+    type: "stage.started",
+    branch: 0,
+    time,
+    knownSchema: true,
+    category: "transition",
+    replayChapter: true,
+    ...fields,
+  };
 }
 
-// Harness feeds each seek back as the selected sequence, exactly as the run
-// page does, so the play loop can actually advance.
 function Harness({
   events,
   initial,
@@ -40,12 +54,30 @@ afterEach(() => {
 });
 
 describe("replay scrubber", () => {
-  it("plays forward on a timer, driving the selected sequence", () => {
+  const portalStyles = document.createElement("style");
+
+  beforeAll(() => {
+    portalStyles.textContent = `${tokens}\n${styles}`;
+    document.head.append(portalStyles);
+  });
+
+  afterAll(() => {
+    portalStyles.remove();
+  });
+
+  it("plays every durable event forward on the compressed timeline", () => {
     vi.useFakeTimers();
     const onSeek = vi.fn();
     render(
       <Harness
-        events={[ev(1, "2026-01-01T00:00:00Z"), ev(2, "2026-01-01T00:00:01Z")]}
+        events={[
+          ev(1, "2026-01-01T00:00:00Z"),
+          ev(2, "2026-01-01T00:00:01Z", {
+            type: "artifact.recorded",
+            category: "evidence",
+            replayChapter: false,
+          }),
+        ]}
         initial={1}
         onSeek={onSeek}
         terminal
@@ -56,35 +88,266 @@ describe("replay scrubber", () => {
       vi.advanceTimersByTime(2_000);
     });
     expect(onSeek).toHaveBeenCalledWith(2);
-    expect(screen.getByText("Event 2 of 2")).toBeInTheDocument();
+    expect(screen.getByText(/Raw event 2 of 2 · Sequence 2/)).toBeInTheDocument();
   });
 
-  it("scrubs directly to an event via the range input", () => {
+  it("scrubs by compressed elapsed time and supports keyboard event stepping", () => {
     const onSeek = vi.fn();
     render(
       <Harness
-        events={[ev(1, "2026-01-01T00:00:00Z"), ev(2, "2026-01-01T00:00:01Z"), ev(3, "2026-01-01T00:00:02Z")]}
+        events={[
+          ev(1, "2026-01-01T00:00:00Z"),
+          ev(2, "2026-01-01T00:00:01Z"),
+          ev(3, "2026-01-01T00:00:02Z"),
+        ]}
         initial={1}
         onSeek={onSeek}
         terminal
       />,
     );
-    fireEvent.change(screen.getByRole("slider", { name: "Scrub to event" }), { target: { value: "2" } });
-    expect(onSeek).toHaveBeenCalledWith(3);
+    const timeline = screen.getByRole("slider", { name: "Scrub replay timeline" });
+    fireEvent.change(timeline, { target: { value: "2000" } });
+    expect(onSeek).toHaveBeenLastCalledWith(3);
+
+    fireEvent.keyDown(timeline, { key: "ArrowLeft" });
+    expect(onSeek).toHaveBeenLastCalledWith(2);
   });
 
-  it("does not stall at a live run's end — it resumes when new events arrive", () => {
+  it("skips evidence and liveness noise between chapters while retaining raw steps", () => {
+    const onSeek = vi.fn();
+    render(
+      <Harness
+        events={[
+          ev(1, "2026-01-01T00:00:00Z", { type: "run.started" }),
+          ev(2, "2026-01-01T00:00:01Z", {
+            type: "artifact.recorded",
+            category: "evidence",
+            replayChapter: false,
+          }),
+          ev(3, "2026-01-01T00:00:02Z", {
+            type: "stage.heartbeat",
+            category: "liveness",
+            replayChapter: false,
+          }),
+          ev(4, "2026-01-01T00:00:03Z", {
+            type: "gate.evaluated",
+            category: "decision",
+            gate: "review",
+            verdict: "approve",
+          }),
+        ]}
+        initial={1}
+        onSeek={onSeek}
+        terminal
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next chapter" }));
+    expect(onSeek).toHaveBeenLastCalledWith(4);
+    fireEvent.click(screen.getByRole("button", { name: "Previous raw event" }));
+    expect(onSeek).toHaveBeenLastCalledWith(3);
+    fireEvent.click(screen.getByRole("button", { name: "Previous chapter" }));
+    expect(onSeek).toHaveBeenLastCalledWith(1);
+  });
+
+  it("makes chapter landmarks keyboard reachable and identifies their shape in text", () => {
+    render(
+      <Harness
+        events={[
+          ev(1, "2026-01-01T00:00:00Z", {
+            type: "gate.evaluated",
+            category: "decision",
+            gate: "review",
+            verdict: "approve",
+          }),
+        ]}
+        initial={1}
+        terminal
+      />,
+    );
+    const chapter = screen.getByRole("button", {
+      name: /Go to Gate decision chapter/,
+    });
+    chapter.focus();
+    expect(chapter).toHaveFocus();
+    expect(chapter).toHaveAttribute("aria-current", "step");
+  });
+
+  it("provides a collapsed, accessible key for every chapter marker", () => {
+    render(
+      <Harness
+        events={[ev(1, "2026-01-01T00:00:00Z")]}
+        initial={1}
+        terminal
+      />,
+    );
+
+    const summary = screen.getByText("Chapter key");
+    const disclosure = summary.closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+
+    const key = screen.getByRole("list", { name: "Chapter marker key" });
+    for (const [glyph, label, color] of [
+      ["●", "Workflow transition", "--active"],
+      ["◆", "Gate decision", "--accent"],
+      ["!", "Failure", "--danger"],
+      ["↑", "Escalation", "--warning"],
+      ["↗", "External result", "--success"],
+      ["■", "Terminal outcome", "--ink"],
+    ]) {
+      const item = within(key).getByText(label).closest("li");
+      if (!item) {
+        throw new Error(`Missing legend item for ${label}`);
+      }
+      expect(within(item).getByText(glyph)).toHaveAttribute("aria-hidden", "true");
+      expect(window.getComputedStyle(item).color).toBe(`var(${color})`);
+    }
+  });
+
+  it("discloses and exposes each compressed idle period for inspection", () => {
+    render(
+      <Harness
+        events={[
+          ev(1, "2026-01-01T00:00:00Z"),
+          ev(2, "2026-01-01T00:01:00Z"),
+        ]}
+        initial={1}
+        terminal
+      />,
+    );
+    expect(screen.getByText("Idle compression on")).toBeInTheDocument();
+    expect(
+      screen.getByRole("note", {
+        name: /Compressed idle gap between sequences 1 and 2: 1m shown as 1.5s/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      name: "first-pass run",
+      events: [
+        ev(1, "2026-01-01T00:00:00Z", { type: "run.started" }),
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "ref.touched",
+          category: "result",
+          externalRef: { provider: "github", kind: "pr", id: "42" },
+        }),
+        ev(3, "2026-01-01T00:00:02Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          gate: "review",
+          verdict: "approve",
+        }),
+        ev(4, "2026-01-01T00:00:03Z", {
+          type: "run.finished",
+          status: "completed",
+        }),
+      ],
+      landmarks: ["External result", "Gate decision", "Terminal outcome"],
+    },
+    {
+      name: "reviewer repass",
+      events: [
+        ev(1, "2026-01-01T00:00:00Z", { type: "run.started" }),
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          gate: "review",
+          verdict: "needs-changes",
+          target: "implement",
+        }),
+        ev(3, "2026-01-01T00:00:02Z", {
+          type: "stage.started",
+          stage: "implement",
+          attempt: 2,
+          attemptClass: "policy",
+        }),
+        ev(4, "2026-01-01T00:00:03Z", {
+          type: "run.finished",
+          status: "completed",
+        }),
+      ],
+      landmarks: ["Gate decision", "Workflow transition", "Terminal outcome"],
+    },
+    {
+      name: "failure",
+      events: [
+        ev(1, "2026-01-01T00:00:00Z", {
+          type: "stage.finished",
+          stage: "implement",
+          status: "failure",
+        }),
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "run.finished",
+          status: "failed",
+        }),
+      ],
+      landmarks: ["Failure", "Terminal outcome"],
+    },
+    {
+      name: "escalation",
+      events: [
+        ev(1, "2026-01-01T00:00:00Z", {
+          type: "gate.evaluated",
+          category: "decision",
+          gate: "review",
+          verdict: "fail",
+          target: "@escalate",
+          escalated: true,
+        }),
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "run.finished",
+          status: "escalated",
+        }),
+      ],
+      landmarks: ["Escalation", "Terminal outcome"],
+    },
+    {
+      name: "no-work run",
+      events: [
+        ev(1, "2026-01-01T00:00:00Z", { type: "run.started" }),
+        ev(2, "2026-01-01T00:00:01Z", {
+          type: "stage.finished",
+          stage: "query",
+          status: "no-work",
+        }),
+        ev(3, "2026-01-01T00:00:02Z", {
+          type: "run.finished",
+          status: "completed",
+        }),
+      ],
+      landmarks: ["Workflow transition", "Terminal outcome"],
+    },
+  ])("renders semantic landmarks for a $name", ({ events, landmarks }) => {
+    render(<Harness events={events} initial={events[0].seq} terminal />);
+    for (const landmark of landmarks) {
+      expect(
+        screen.getAllByRole("button", {
+          name: new RegExp(`Go to ${landmark} chapter`),
+        }).length,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not stall at a live run's end and resumes when events arrive", () => {
     vi.useFakeTimers();
     const onSeek = vi.fn();
-    const events = [ev(1, "2026-01-01T00:00:00Z"), ev(2, "2026-01-01T00:00:01Z")];
-    const { rerender } = render(<Harness events={events} initial={2} onSeek={onSeek} terminal={false} />);
+    const events = [
+      ev(1, "2026-01-01T00:00:00Z"),
+      ev(2, "2026-01-01T00:00:01Z"),
+    ];
+    const { rerender } = render(
+      <Harness events={events} initial={2} onSeek={onSeek} terminal={false} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Play replay" }));
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    // Waiting at the current end of a live run: no advance, and still playing
-    // (a stall would have left it stuck; here it simply waits for more).
     expect(onSeek).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Pause replay" })).toBeInTheDocument();
 
@@ -106,7 +369,10 @@ describe("replay scrubber", () => {
     vi.useFakeTimers();
     render(
       <Harness
-        events={[ev(1, "2026-01-01T00:00:00Z"), ev(2, "2026-01-01T00:00:01Z")]}
+        events={[
+          ev(1, "2026-01-01T00:00:00Z"),
+          ev(2, "2026-01-01T00:00:01Z"),
+        ]}
         initial={1}
         terminal
       />,
@@ -115,8 +381,7 @@ describe("replay scrubber", () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    // Advanced to the terminal end, then paused on its own.
-    expect(screen.getByText("Event 2 of 2")).toBeInTheDocument();
+    expect(screen.getByText(/Sequence 2/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
   });
 });

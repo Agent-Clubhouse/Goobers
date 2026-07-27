@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,7 @@ type fakeReader struct {
 	stage        string
 	digest       string
 	instance     readservice.Instance
+	portalConfig readservice.PortalConfig
 	gaggles      readservice.GagglePage
 	goobers      readservice.GooberPage
 	workflows    readservice.WorkflowPage
@@ -114,6 +116,11 @@ func (f *fakeReader) Instance(context.Context) (readservice.Instance, error) {
 	return f.instance, f.err
 }
 
+func (f *fakeReader) PortalConfig(context.Context) (readservice.PortalConfig, error) {
+	f.called++
+	return f.portalConfig, f.err
+}
+
 func (f *fakeReader) Gaggles(_ context.Context, page readservice.PageRequest) (readservice.GagglePage, error) {
 	f.called++
 	f.lastPage = page
@@ -167,6 +174,41 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	}
 	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
+	}
+}
+
+func TestPortalConfigHandlerUsesSharedReadService(t *testing.T) {
+	reader := &fakeReader{portalConfig: readservice.PortalConfig{
+		Brand: readservice.PortalBrandResponse{
+			Name:      "Acme Ops",
+			Tagline:   "AI workforce platform",
+			ScopeMark: "A",
+		},
+		Theme: readservice.PortalThemeResponse{},
+		Support: readservice.PortalSupportResponse{
+			Links: []readservice.PortalSupportLink{},
+		},
+	}}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, PortalConfigPath, nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", got)
+	}
+	var config readservice.PortalConfig
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	if reader.called != 1 || config.Brand.Name != "Acme Ops" {
+		t.Fatalf("reader called %d times, config = %+v", reader.called, config)
 	}
 }
 
@@ -523,6 +565,7 @@ func TestClientCancelledReadsAreQuiet(t *testing.T) {
 func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	since := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
 	until := since.Add(2 * time.Hour)
+	branch := 2
 	rate := 0.5
 	reader := &fakeReader{
 		stats: readservice.TelemetryStatsResult{
@@ -548,7 +591,7 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 
 	statsResponse := httptest.NewRecorder()
-	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=model,harness-version&since=" +
+	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&branch=2&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=branch,model,harness-version&since=" +
 		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
 	handler.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, statsURL, nil))
 	if statsResponse.Code != http.StatusOK {
@@ -557,14 +600,16 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	wantStatsReq := readservice.TelemetryStatsRequest{
 		Workflow:              "implement",
 		Gaggle:                "core",
+		Branch:                &branch,
 		Model:                 "gpt-5.6-sol",
 		HarnessVersion:        "1.2.3",
+		GroupByBranch:         true,
 		GroupByModel:          true,
 		GroupByHarnessVersion: true,
 		Since:                 since,
 		Until:                 until,
 	}
-	if reader.statsReq != wantStatsReq {
+	if !reflect.DeepEqual(reader.statsReq, wantStatsReq) {
 		t.Fatalf("stats request = %+v, want %+v", reader.statsReq, wantStatsReq)
 	}
 	var stats readservice.TelemetryStatsResult
@@ -655,6 +700,8 @@ func TestTelemetryQueryErrorsAreStructured(t *testing.T) {
 	}{
 		{name: "invalid time", path: TelemetryStatsPath + "?since=yesterday"},
 		{name: "reversed window", path: TelemetryStatsPath + "?since=2026-07-02T00:00:00Z&until=2026-07-01T00:00:00Z"},
+		{name: "invalid branch", path: TelemetryStatsPath + "?branch=-1"},
+		{name: "invalid group", path: TelemetryStatsPath + "?groupBy=branch-name"},
 		{name: "unknown parameter", path: TelemetryStatsPath + "?sort=recent"},
 		{name: "duplicate parameter", path: TelemetryStatsPath + "?workflow=a&workflow=b"},
 		{name: "invalid signature limit", path: TelemetryErrorSignaturesPath + "?limit=0"},

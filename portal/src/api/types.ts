@@ -8,7 +8,7 @@ export type Environment = "dev" | "staging" | "prod";
 export type Provider = "github" | "ado";
 export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
-export type Harness = "copilot";
+export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
 export type GraphNodeKind = "deterministic" | "agentic" | "gate";
 export type GraphTerminal = "complete" | "abort" | "escalate";
@@ -337,6 +337,16 @@ export interface RunDetail extends RunSummary {
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   escalation?: EscalationCause;
+  /** The business decision a completed run reached, distinct from phase (the execution axis). */
+  outcome?: RunOutcome;
+}
+
+/** Present only when phase is "completed"; all-empty when no gate decided the completion. */
+export interface RunOutcome {
+  gate?: string;
+  verdict?: string;
+  target?: string;
+  causalEventSeq?: number;
 }
 
 export interface EscalationCause {
@@ -472,6 +482,8 @@ export interface AttemptList {
 }
 
 export interface StageAttempt {
+  id: string;
+  visit: number;
   number: number;
   class: AttemptClass;
   status: StageAttemptStatus | "";
@@ -483,6 +495,8 @@ export interface StageAttempt {
   outputs?: Record<string, JsonValue>;
   artifacts: ArtifactMetadata[];
   error?: ErrorDetail;
+  /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
+  model?: string;
 }
 
 export interface ArtifactContent {
@@ -566,6 +580,7 @@ export interface TelemetryStageStats {
   gaggle: string;
   workflow: string;
   stage: string;
+  branch?: number;
   totalAttempts: number;
   succeededAttempts: number;
   failedAttempts: number;
@@ -593,6 +608,7 @@ export interface TelemetryUsageStats {
   gaggle?: string;
   workflow?: string;
   stage?: string;
+  branch?: number;
   totalAttempts: number;
   tokenSamples: number;
   p50Tokens?: number;
@@ -664,6 +680,41 @@ export interface TelemetryError {
   occurredAt: string;
 }
 
+export interface PortalBrand {
+  name: string;
+  tagline: string;
+  scopeMark: string;
+  logoUrl: string | null;
+  faviconUrl: string | null;
+}
+
+export interface PortalTheme {
+  accentLight: string | null;
+  accentDark: string | null;
+  accentSoftLight: string | null;
+  accentSoftDark: string | null;
+  accentInkLight: string | null;
+  accentInkDark: string | null;
+}
+
+export interface PortalSupportLink {
+  label: string;
+  url: string;
+}
+
+export interface PortalSupport {
+  docsUrl: string | null;
+  issuesUrl: string | null;
+  chatUrl: string | null;
+  links: PortalSupportLink[];
+}
+
+export interface PortalConfig {
+  brand: PortalBrand;
+  theme: PortalTheme;
+  support: PortalSupport;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -671,6 +722,7 @@ export interface DaemonClient {
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
   getInstance(options?: RequestOptions): Promise<Instance>;
+  getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;
   listGoobers(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<GooberPage>;
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;

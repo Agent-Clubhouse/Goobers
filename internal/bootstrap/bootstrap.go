@@ -83,14 +83,15 @@ func (l *Loaded) Gaggle(name string) (apiv1.Gaggle, bool) {
 	return apiv1.Gaggle{}, false
 }
 
-// SchedulerDeps are the injected runtime dependencies for a scheduler: the run
-// Starter (real = engine.TemporalStarter; e2e = a fake), telemetry, the backlog
-// claimer, and readiness conditions.
+// SchedulerDeps are the injected runtime dependencies and instance policy for a
+// scheduler: the run Starter (real = engine.TemporalStarter; e2e = a fake),
+// telemetry, the backlog claimer, readiness conditions, and run-control defaults.
 type SchedulerDeps struct {
-	Starter   engine.Starter
-	Telemetry scheduler.SpanStarter
-	Claimer   scheduler.Claimer
-	Readiness []scheduler.ReadinessCondition
+	Starter             engine.Starter
+	Telemetry           scheduler.SpanStarter
+	Claimer             scheduler.Claimer
+	Readiness           []scheduler.ReadinessCondition
+	InstanceRunControls apiv1.RunControls
 }
 
 // SchedulerFor builds a scheduler scoped to one loaded gaggle, sharing the
@@ -100,13 +101,26 @@ func (l *Loaded) SchedulerFor(gaggleName string, deps SchedulerDeps) (*scheduler
 	if !ok {
 		return nil, fmt.Errorf("bootstrap: gaggle %q not found in config", gaggleName)
 	}
+	// An agentic gate's reviewer has no stage-level capabilities of its own,
+	// so each run pins the reviewer goober's declared grants (#294) — the same
+	// lookup cmd/goobers' runner wiring builds from the goober definitions.
+	gateGooberCaps := make(map[string][]string, len(l.Goobers))
+	for _, goober := range l.Goobers {
+		if len(goober.Spec.Capabilities) > 0 {
+			gateGooberCaps[goober.Name] = append([]string(nil), goober.Spec.Capabilities...)
+		}
+	}
 	return scheduler.New(scheduler.Config{
-		Gaggle:    g.Name,
-		Repo:      g.Spec.Project,
-		Registry:  l.Registry,
-		Starter:   deps.Starter,
-		Telemetry: deps.Telemetry,
-		Claimer:   deps.Claimer,
-		Readiness: deps.Readiness,
+		Gaggle:                 g.Name,
+		Repo:                   g.Spec.Project,
+		Registry:               l.Registry,
+		Starter:                deps.Starter,
+		Telemetry:              deps.Telemetry,
+		Claimer:                deps.Claimer,
+		Readiness:              deps.Readiness,
+		BranchNamespace:        g.Spec.BranchNamespace,
+		GateGooberCapabilities: gateGooberCaps,
+		InstanceRunControls:    deps.InstanceRunControls,
+		GaggleRunControls:      g.Spec.RunControls,
 	})
 }

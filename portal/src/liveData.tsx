@@ -11,8 +11,11 @@ import type {
   DaemonClient,
   DaemonEventStream,
   DaemonUpdateEvent,
+  ModelInvalidation,
   UpdateModel,
 } from "./api/types";
+import { SessionDataCache } from "./dataCache";
+import type { PortalDiagnostics } from "./portalDiagnostics";
 
 const ALL_MODELS: UpdateModel[] = ["instance", "run", "workflow"];
 const CURSOR_STORAGE_KEY = "goobers-live-event-cursor";
@@ -31,6 +34,8 @@ export interface LiveDataConfig {
   reconnectMaxDelayMs: number;
   failuresBeforePolling: number;
   pollingIntervalMs: number;
+  /** Ceiling for the backoff applied to consecutively failing refreshes. */
+  refreshMaxDelayMs: number;
 }
 
 const defaultConfig: LiveDataConfig = {
@@ -39,18 +44,38 @@ const defaultConfig: LiveDataConfig = {
   reconnectMaxDelayMs: 30_000,
   failuresBeforePolling: 3,
   pollingIntervalMs: 5_000,
+  refreshMaxDelayMs: 60_000,
 };
 
 type ModelListener = (
   models: ReadonlySet<UpdateModel>,
+  reason: "initial" | "refresh",
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness) => void;
 
+export interface LiveDataScope {
+  gaggle?: string;
+  runId?: string;
+  workflow?: string;
+}
+
+export interface LiveDataDependencies {
+  diagnostics?: PortalDiagnostics;
+  // Injected so a test (or a future caller) can observe cache behaviour; the
+  // controller owns a session-scoped default when none is supplied.
+  cache?: SessionDataCache;
+}
+
 interface LiveDataContextValue {
+  cache: SessionDataCache;
   freshness: LiveFreshness;
   isFresh: () => boolean;
   refresh: (models?: readonly UpdateModel[]) => void;
-  subscribe: (models: readonly UpdateModel[], listener: ModelListener) => () => void;
+  subscribe: (
+    models: readonly UpdateModel[],
+    listener: ModelListener,
+    scope?: LiveDataScope,
+  ) => () => void;
 }
 
 const LiveDataContext = createContext<LiveDataContextValue | undefined>(undefined);
@@ -59,20 +84,27 @@ export function LiveDataProvider({
   children,
   client,
   config,
+  diagnostics,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
+  diagnostics?: PortalDiagnostics;
 }) {
+  const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
-    () => new LiveDataController(client, { ...defaultConfig, ...config }),
+    () =>
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache }),
     [
+      cache,
       client,
       config?.failuresBeforePolling,
       config?.invalidationWindowMs,
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
       config?.reconnectMaxDelayMs,
+      config?.refreshMaxDelayMs,
+      diagnostics,
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
@@ -88,12 +120,13 @@ export function LiveDataProvider({
 
   const value = useMemo<LiveDataContextValue>(
     () => ({
+      cache,
       freshness,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       subscribe: controller.subscribe,
     }),
-    [controller, freshness],
+    [cache, controller, freshness],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -111,9 +144,10 @@ export class LiveDataController {
   private readonly listeners = new Set<{
     listener: ModelListener;
     models: ReadonlySet<UpdateModel>;
+    scope: LiveDataScope | undefined;
   }>();
   private readonly stateListeners = new Set<StateListener>();
-  private readonly pendingModels = new Set<UpdateModel>();
+  private readonly pendingInvalidations: ModelInvalidation[] = [];
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventOrder: string[] = [];
   private activeStream: DaemonEventStream | undefined;
@@ -121,34 +155,42 @@ export class LiveDataController {
   private cursor: string | undefined;
   private failureCount = 0;
   private generation = 0;
+  private invalidationFlush: Promise<void> | undefined;
+  private invalidationsPaused = false;
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshFailureCount = 0;
   private refreshQueue: Promise<void> = Promise.resolve();
+  private readonly cache: SessionDataCache;
+  private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
 
   constructor(
     private readonly client: DaemonClient,
     private readonly config: LiveDataConfig = defaultConfig,
-  ) {}
+    private readonly dependencies: LiveDataDependencies = {},
+  ) {
+    this.cache = dependencies.cache ?? new SessionDataCache();
+  }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
 
   readonly refresh = (models: readonly UpdateModel[] = ALL_MODELS): void => {
-    this.queueRefresh(models, this.config.invalidationWindowMs);
+    this.queueRefresh({ cursor: "", models: [...models] }, this.config.invalidationWindowMs);
   };
 
-  private queueRefresh(models: readonly UpdateModel[], delay: number): void {
+  private queueRefresh(invalidation: ModelInvalidation, delay: number): void {
     this.invalidationRevision += 1;
-    for (const model of models) {
-      this.pendingModels.add(model);
-    }
+    this.pendingInvalidations.push(copyInvalidation(invalidation));
     if (delay === 0) {
       this.clearInvalidationTimer();
-      void this.flushInvalidations();
+      if (!this.invalidationsPaused) {
+        void this.flushInvalidations();
+      }
       return;
     }
     this.scheduleInvalidationFlush(delay);
@@ -157,11 +199,12 @@ export class LiveDataController {
   readonly subscribe = (
     models: readonly UpdateModel[],
     listener: ModelListener,
+    scope?: LiveDataScope,
   ): (() => void) => {
-    const subscription = { listener, models: new Set(models) };
+    const subscription = { listener, models: new Set(models), scope };
     this.listeners.add(subscription);
-    if (!this.started || this.freshness !== "reconnecting") {
-      listener(new Set(models));
+    if (!this.started || this.freshness !== "reconnecting" || this.cursor) {
+      listener(new Set(models), "initial");
     }
     return () => this.listeners.delete(subscription);
   };
@@ -177,6 +220,8 @@ export class LiveDataController {
       return;
     }
     this.started = true;
+    this.invalidationsPaused =
+      !navigator.onLine || document.visibilityState === "hidden";
     this.cursor = window.sessionStorage.getItem(CURSOR_STORAGE_KEY) ?? undefined;
     window.addEventListener("online", this.onOnline);
     window.addEventListener("offline", this.onOffline);
@@ -189,7 +234,7 @@ export class LiveDataController {
       this.setFreshness("stale");
       return;
     }
-    this.connect();
+    this.connect("initial");
   }
 
   stop(): void {
@@ -200,30 +245,33 @@ export class LiveDataController {
     window.removeEventListener("online", this.onOnline);
     window.removeEventListener("offline", this.onOffline);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
-    this.closeConnection();
+    this.closeConnection("provider-stop");
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.pendingModels.clear();
+    this.cache.dispose();
+    this.pendingInvalidations.length = 0;
   }
 
   private readonly onOnline = (): void => {
     if (!this.started || document.visibilityState === "hidden") {
       return;
     }
+    this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect();
+    this.connect("online");
+    this.resumeInvalidations();
   };
 
   private readonly onOffline = (): void => {
     if (!this.started) {
       return;
     }
-    this.closeConnection();
+    this.invalidationsPaused = true;
+    this.closeConnection("offline");
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.pendingModels.clear();
     this.setFreshness("offline");
   };
 
@@ -232,11 +280,11 @@ export class LiveDataController {
       return;
     }
     if (document.visibilityState === "hidden") {
-      this.closeConnection();
+      this.invalidationsPaused = true;
+      this.closeConnection("visibility-hidden");
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
-      this.pendingModels.clear();
       this.setFreshness("stale");
       return;
     }
@@ -244,28 +292,38 @@ export class LiveDataController {
       this.setFreshness("offline");
       return;
     }
+    this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect();
+    this.connect("visibility-visible");
+    this.resumeInvalidations();
   };
 
-  private connect(): void {
+  private connect(cause: string, delayMs?: number): void {
     if (!this.started || !navigator.onLine || document.visibilityState === "hidden") {
       return;
     }
+    if (cause !== "initial") {
+      this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause, delayMs });
+    }
     this.clearReconnectTimer();
-    this.closeConnection();
+    this.closeConnection("replaced");
     const generation = this.generation;
     const controller = new AbortController();
     this.connectController = controller;
-    void this.consumeStream(generation, controller);
+    void this.consumeStream(generation, controller, cause);
   }
 
-  private async consumeStream(generation: number, controller: AbortController): Promise<void> {
+  private async consumeStream(
+    generation: number,
+    controller: AbortController,
+    cause: string,
+  ): Promise<void> {
     let stream: DaemonEventStream | undefined;
     let receivedEvent = false;
+    const resumeCursor = this.cursor;
     try {
       stream = await this.client.connectEvents(
-        this.cursor ? { cursor: this.cursor } : undefined,
+        resumeCursor ? { cursor: resumeCursor } : undefined,
         { signal: controller.signal },
       );
       if (!this.isCurrent(generation, controller)) {
@@ -273,9 +331,13 @@ export class LiveDataController {
         return;
       }
       this.activeStream = stream;
+      this.dependencies.diagnostics?.recordSSE({ event: "connect", cause });
       this.clearPollingTimer();
-      this.setFreshness("stale");
-      this.queueRefresh(ALL_MODELS, 0);
+      this.setFreshness(resumeCursor ? "connected" : "stale");
+      this.skipNextSnapshotRefresh = !resumeCursor;
+      if (!resumeCursor) {
+        this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
+      }
 
       for await (const event of stream) {
         if (!this.isCurrent(generation, controller)) {
@@ -286,7 +348,7 @@ export class LiveDataController {
         this.applyEvent(event);
       }
       if (this.isCurrent(generation, controller)) {
-        this.handleDisconnect();
+        this.handleDisconnect("stream-ended");
       }
     } catch (error) {
       if (!this.isCurrent(generation, controller)) {
@@ -299,7 +361,7 @@ export class LiveDataController {
       if (receivedEvent) {
         this.failureCount = 0;
       }
-      this.handleDisconnect();
+      this.handleDisconnect("stream-error");
     } finally {
       if (this.activeStream === stream) {
         this.activeStream = undefined;
@@ -315,9 +377,12 @@ export class LiveDataController {
     this.rememberEvent(event.id);
     this.cursor = event.id;
     window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
-    if (event.type === "invalidate") {
-      this.refresh(event.data.models);
+    if (event.type === "snapshot" && this.skipNextSnapshotRefresh) {
+      this.skipNextSnapshotRefresh = false;
+      return;
     }
+    this.cache.invalidate(event.data);
+    this.queueRefresh(event.data, this.config.invalidationWindowMs);
   }
 
   private hasApplied(id: string): boolean {
@@ -352,18 +417,18 @@ export class LiveDataController {
   }
 
   private recoverStaleCursor(): void {
-    this.closeConnection();
+    this.closeConnection("stale-cursor");
     this.cursor = undefined;
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
     window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
     this.failureCount = 0;
     this.setFreshness("stale");
-    this.scheduleReconnect(0);
+    this.scheduleReconnect(0, "stale-cursor");
   }
 
-  private handleDisconnect(): void {
-    this.closeConnection();
+  private handleDisconnect(cause: string): void {
+    this.closeConnection(cause);
     if (!navigator.onLine) {
       this.clearPollingTimer();
       this.setFreshness("offline");
@@ -380,7 +445,7 @@ export class LiveDataController {
       this.config.reconnectBaseDelayMs * 2 ** exponent,
       this.config.reconnectMaxDelayMs,
     );
-    this.scheduleReconnect(delay);
+    this.scheduleReconnect(delay, cause);
   }
 
   private startPollingFallback(): void {
@@ -393,30 +458,42 @@ export class LiveDataController {
   }
 
   private async runPollingCycle(): Promise<void> {
-    await this.runRefresh(new Set(ALL_MODELS));
+    const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
     if (!this.polling || !this.started) {
       return;
+    }
+    // The fallback poll is the other path that hammers a degraded daemon: it is
+    // only active because the event stream is already failing, so a failing poll
+    // backs off too rather than re-firing every 5s (#1710).
+    if (refreshed) {
+      this.refreshFailureCount = 0;
+    } else {
+      this.refreshFailureCount += 1;
     }
     this.pollingTimer = setTimeout(() => {
       this.pollingTimer = undefined;
       void this.runPollingCycle();
-    }, this.config.pollingIntervalMs);
+    }, refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay());
   }
 
-  private scheduleReconnect(delay: number): void {
+  private scheduleReconnect(delay: number, cause: string): void {
     this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      this.connect();
+      this.connect(cause, delay);
     }, delay);
   }
 
-  private closeConnection(): void {
+  private closeConnection(cause: string): void {
+    const connected = this.activeStream !== undefined;
     this.generation += 1;
     this.connectController?.abort();
     this.connectController = undefined;
     this.activeStream?.close();
     this.activeStream = undefined;
+    if (connected) {
+      this.dependencies.diagnostics?.recordSSE({ event: "disconnect", cause });
+    }
   }
 
   private clearReconnectTimer(): void {
@@ -441,51 +518,96 @@ export class LiveDataController {
     }
   }
 
+  // A refresh fails precisely when the daemon is slow or erroring, so retrying
+  // it at a flat pollingIntervalMs applied maximum request pressure exactly when
+  // the backend could least absorb it: an Overview whose run queries time out
+  // re-issued the whole snapshot every 5s indefinitely (#1710). Back off the way
+  // the reconnect path already does, and reset on the first success.
+  private refreshRetryDelay(): number {
+    const exponent = Math.max(0, this.refreshFailureCount - 1);
+    return Math.min(
+      this.config.pollingIntervalMs * 2 ** exponent,
+      this.config.refreshMaxDelayMs,
+    );
+  }
+
   private scheduleInvalidationFlush(delay: number): void {
-    if (this.invalidationTimer !== undefined) {
+    if (this.invalidationsPaused || this.invalidationTimer !== undefined) {
       return;
     }
-    this.invalidationTimer = setTimeout(() => void this.flushInvalidations(), delay);
+    this.invalidationTimer = setTimeout(() => {
+      this.invalidationTimer = undefined;
+      void this.flushInvalidations();
+    }, delay);
   }
 
   private async flushInvalidations(): Promise<void> {
-    this.invalidationTimer = undefined;
-    if (this.pendingModels.size === 0) {
-      return;
+    if (this.invalidationFlush) {
+      return this.invalidationFlush;
     }
-    const revision = this.invalidationRevision;
-    const models = new Set(this.pendingModels);
-    this.pendingModels.clear();
-    const stream = this.activeStream;
-    const restoreConnected = stream !== undefined;
-    if (restoreConnected) {
-      this.setFreshness("stale");
-    }
-    const refreshed = await this.runRefresh(models);
-    if (!this.started) {
-      return;
-    }
-    if (!refreshed && stream === this.activeStream) {
-      this.invalidationRevision += 1;
-      for (const model of models) {
-        this.pendingModels.add(model);
+    const flush = this.drainInvalidations().finally(() => {
+      if (this.invalidationFlush === flush) {
+        this.invalidationFlush = undefined;
+        if (
+          !this.invalidationsPaused &&
+          this.pendingInvalidations.length > 0 &&
+          this.invalidationTimer === undefined
+        ) {
+          void this.flushInvalidations();
+        }
       }
-      this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
-      return;
-    }
-    if (
-      restoreConnected &&
-      refreshed &&
-      stream === this.activeStream &&
-      this.pendingModels.size === 0 &&
-      revision === this.invalidationRevision
-    ) {
-      this.setFreshness("connected");
+    });
+    this.invalidationFlush = flush;
+    return flush;
+  }
+
+  private async drainInvalidations(): Promise<void> {
+    while (this.pendingInvalidations.length > 0) {
+      if (this.invalidationsPaused) {
+        return;
+      }
+      const revision = this.invalidationRevision;
+      const invalidations = this.pendingInvalidations.splice(0);
+      const stream = this.activeStream;
+      const restoreConnected = stream !== undefined;
+      if (restoreConnected) {
+        this.setFreshness("stale");
+      }
+      const refreshed = await this.runRefresh(invalidations);
+      if (!this.started) {
+        return;
+      }
+      if (!refreshed) {
+        this.refreshFailureCount += 1;
+        this.invalidationRevision += 1;
+        this.pendingInvalidations.unshift(...invalidations);
+        this.scheduleInvalidationFlush(this.refreshRetryDelay());
+        return;
+      }
+      this.refreshFailureCount = 0;
+      if (this.invalidationTimer !== undefined) {
+        return;
+      }
+      if (
+        restoreConnected &&
+        refreshed &&
+        stream === this.activeStream &&
+        this.pendingInvalidations.length === 0 &&
+        revision === this.invalidationRevision
+      ) {
+        this.setFreshness("connected");
+      }
     }
   }
 
-  private runRefresh(models: ReadonlySet<UpdateModel>): Promise<boolean> {
-    const refresh = this.refreshQueue.then(() => this.notifyListeners(models));
+  private resumeInvalidations(): void {
+    if (this.pendingInvalidations.length > 0) {
+      this.scheduleInvalidationFlush(0);
+    }
+  }
+
+  private runRefresh(invalidations: readonly ModelInvalidation[]): Promise<boolean> {
+    const refresh = this.refreshQueue.then(() => this.notifyListeners(invalidations));
     this.refreshQueue = refresh.then(
       () => undefined,
       () => undefined,
@@ -493,11 +615,22 @@ export class LiveDataController {
     return refresh;
   }
 
-  private async notifyListeners(models: ReadonlySet<UpdateModel>): Promise<boolean> {
+  private async notifyListeners(invalidations: readonly ModelInvalidation[]): Promise<boolean> {
     const refreshes: Promise<boolean | void>[] = [];
     for (const subscription of this.listeners) {
-      if ([...subscription.models].some((model) => models.has(model))) {
-        refreshes.push(Promise.resolve(subscription.listener(models)));
+      const models = new Set<UpdateModel>();
+      for (const invalidation of invalidations) {
+        if (!matchesScope(invalidation, subscription.scope)) {
+          continue;
+        }
+        for (const model of invalidation.models) {
+          if (subscription.models.has(model)) {
+            models.add(model);
+          }
+        }
+      }
+      if (models.size > 0) {
+        refreshes.push(Promise.resolve(subscription.listener(models, "refresh")));
       }
     }
     const results = await Promise.all(refreshes);
@@ -524,6 +657,47 @@ function isStaleCursorError(error: unknown): boolean {
     error instanceof DaemonApiError &&
     (error.code === "stale_cursor" || error.code === "invalid_cursor")
   );
+}
+
+function copyInvalidation(invalidation: ModelInvalidation): ModelInvalidation {
+  return {
+    cursor: invalidation.cursor,
+    models: [...invalidation.models],
+    ...(invalidation.runIds ? { runIds: [...invalidation.runIds] } : {}),
+    ...(invalidation.workflows
+      ? { workflows: invalidation.workflows.map((workflow) => ({ ...workflow })) }
+      : {}),
+  };
+}
+
+function matchesScope(
+  invalidation: ModelInvalidation,
+  scope: LiveDataScope | undefined,
+): boolean {
+  if (!scope) {
+    return true;
+  }
+  if (
+    scope.runId &&
+    invalidation.runIds &&
+    invalidation.runIds.length > 0 &&
+    !invalidation.runIds.includes(scope.runId)
+  ) {
+    return false;
+  }
+  if (
+    (scope.gaggle || scope.workflow) &&
+    invalidation.workflows &&
+    invalidation.workflows.length > 0 &&
+    !invalidation.workflows.some(
+      (workflow) =>
+        (!scope.gaggle || workflow.gaggle === scope.gaggle) &&
+        (!scope.workflow || workflow.name === scope.workflow),
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function parseCursor(cursor: string | undefined):

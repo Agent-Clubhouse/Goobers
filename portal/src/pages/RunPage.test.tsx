@@ -1,10 +1,19 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { DaemonEventStream, DaemonUpdateEvent } from "../api/types";
+import { FixtureDaemonClient, fixtureKey } from "../api/fixtureClient";
+import type {
+  DaemonEventStream,
+  DaemonUpdateEvent,
+  EventList,
+  RequestOptions,
+  RunDetail,
+} from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
+
+const portalStyles = readFileSync("src/styles.css", "utf8");
 
 const canonicalRuns = [
   ["01JZ441DAEMONAPI", "Running"],
@@ -52,6 +61,292 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Pending at sequence 4" }),
     ).toBeInTheDocument();
+  });
+
+  it("reveals and focuses the inspector for direct graph and journal selections", async () => {
+    const user = userEvent.setup();
+    const previousScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      renderRun("01JZ441DAEMONAPI");
+      await user.click(
+        await screen.findByRole("button", {
+          name: "query, deterministic, Completed at sequence 6",
+        }),
+      );
+
+      let inspector = screen.getByRole("complementary", { name: "query attempt inspector" });
+      expect(inspector).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "start",
+        inline: "nearest",
+      });
+
+      await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
+      inspector = screen.getByRole("complementary", { name: "implement attempt inspector" });
+      expect(inspector).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          previousScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("keeps a tall inspector and long journal in page flow", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    const lastEvent = eventList?.events.at(-1);
+    if (!eventList || !detail || !lastEvent) {
+      throw new Error("Expected active run fixtures.");
+    }
+    eventList.events.push(
+      ...Array.from({ length: 34 }, (_, index) => ({
+        ...lastEvent,
+        seq: index + 7,
+        time: `2026-07-18T06:00:${String(index + 7).padStart(2, "0")}Z`,
+      })),
+    );
+    detail.lastSeq = 40;
+    const artifacts = Array.from({ length: 30 }, (_, index) => ({
+      name: `artifact-${index + 1}.txt`,
+      digest: `sha256:${String(index + 1).padStart(64, "0")}`,
+      size: 1024 + index,
+      mediaType: "text/plain",
+      recordedSeq: 40,
+    }));
+    fixtures.stageAttempts = {
+      [fixtureKey(runId, "review")]: {
+        runId,
+        stage: "review",
+        attempts: [
+          {
+            id: "sta-review-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "running",
+            startedSeq: 6,
+            durationMillis: 34_000,
+            outputs: { digest: "a".repeat(180) },
+            artifacts,
+          },
+        ],
+      },
+    };
+    const previewText = "expanded preview\n".repeat(80);
+    fixtures.artifacts = {
+      [fixtureKey(runId, artifacts[0].digest)]: {
+        digest: artifacts[0].digest,
+        mediaType: "text/plain",
+        size: previewText.length,
+        etag: null,
+        bytes: new TextEncoder().encode(previewText).buffer,
+      },
+    };
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByText("artifact-30.txt")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
+    const workspace = document.querySelector(".run-detail-workspace");
+    const inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    const ledger = screen.getByRole("region", { name: "Event ledger" });
+    expect(workspace).toHaveAttribute("data-scroll-owner", "page");
+    expect(
+      inspector.compareDocumentPosition(ledger) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "View content" })[0]);
+    expect(await screen.findByText(/expanded preview/)).toBeInTheDocument();
+
+    expect(portalStyles).not.toMatch(
+      /\.run-inspector\s*\{[^}]*position:\s*sticky/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.artifact-content\s*\{[^}]*overflow:\s*visible/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.output-line code\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+  });
+
+  it("synchronizes graph, journal, and inspector when a replay chapter is selected", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.["01JZ455ESCALATE"];
+    const stageStart = eventList?.events.find((event) => event.seq === 2);
+    if (!stageStart) {
+      throw new Error("Expected completed run stage chapter.");
+    }
+    stageStart.category = "transition";
+    stageStart.replayChapter = true;
+    renderRun("01JZ455ESCALATE", new FixtureDaemonClient(fixtures));
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Go to Workflow transition chapter at event 2: Stage started/,
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: /^Select sequence 2:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("complementary", { name: "query attempt inspector" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+
+    await user.click(within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }));
+
+    expect(fullscreenRoot).toHaveClass("workflow-graph-shell-expanded");
+    expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
+    expect(fullscreenRoot).toHaveAttribute("role", "dialog");
+    const replayControls = within(fullscreenRoot).getByRole("region", {
+      name: "Replay controls",
+    });
+    const scrubber = within(replayControls).getByRole("slider", {
+      name: "Scrub replay timeline",
+    });
+    const lastReplayControl = within(replayControls).getByRole("button", {
+      name: "Set playback speed to 10×",
+    });
+    const inspector = within(fullscreenRoot).getByRole("complementary", {
+      name: /attempt inspector/,
+    });
+    expect(replayControls).toBeInTheDocument();
+    expect(scrubber).toBeInTheDocument();
+    expect(inspector).toBeInTheDocument();
+    expect(
+      within(fullscreenRoot).queryByRole("heading", { name: "Event ledger" }),
+    ).not.toBeInTheDocument();
+
+    inspector.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(
+      within(fullscreenRoot).getByRole("button", { name: "Zoom out" }),
+    ).toHaveFocus();
+
+    inspector.focus();
+    expect(inspector).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(lastReplayControl).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(fullscreenRoot).not.toHaveClass("workflow-graph-shell-expanded");
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toHaveFocus();
+  });
+
+  it("requests native fullscreen for the complete run graph workspace", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    const graph = await screen.findByRole("group", {
+      name: "implementation pinned execution graph",
+    });
+    const fullscreenRoot = graph.closest(".run-graph-fullscreen-root");
+    if (!(fullscreenRoot instanceof HTMLElement)) {
+      throw new Error("Expected run graph fullscreen root.");
+    }
+    const fullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const exitFullscreenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    let fullscreenElement: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    const requestFullscreen = vi.fn(async () => {
+      fullscreenElement = fullscreenRoot;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(fullscreenRoot, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+
+    try {
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "native"),
+      );
+      expect(requestFullscreen).toHaveBeenCalledOnce();
+      expect(
+        within(fullscreenRoot).getByRole("region", { name: "Replay controls" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        within(fullscreenRoot).getByRole("button", { name: "Exit fullscreen" }),
+      );
+      await waitFor(() =>
+        expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "none"),
+      );
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    } finally {
+      if (fullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "fullscreenElement",
+          fullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "fullscreenElement");
+      }
+      if (exitFullscreenDescriptor) {
+        Object.defineProperty(
+          document,
+          "exitFullscreen",
+          exitFullscreenDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(document, "exitFullscreen");
+      }
+    }
   });
 
   it("follows appended live events without overwriting a historical selection", async () => {
@@ -124,18 +419,68 @@ describe("run detail", () => {
     );
   });
 
+  it("keeps run detail visible while a refresh is pending or fails", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const client = new LiveFixtureClient(populatedDaemonFixtures());
+    renderRun(runId, client);
+    await screen.findByRole("heading", { name: `Run ${runId}` });
+
+    client.holdRefresh();
+    act(() => client.invalidateRun("fixture:stale"));
+
+    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
+
+    act(() => client.failRefresh(new Error("Unable to refresh this run.")));
+
+    expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
+    expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+
+    client.holdRefresh();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
+
+    act(() => client.failRefresh(new Error("Still unable to refresh this run.")));
+
+    expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
+    expect(screen.getByText("Still unable to refresh this run.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+  });
+
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
     renderRun("01JZ402DASHBOARD");
 
     const graph = await screen.findByRole("group", {
       name: "implementation pinned execution graph",
     });
-    const ledger = screen.getByRole("region", { name: "Event ledger" });
+    const implement = within(graph).getByRole("button", { name: /^implement,/ });
     expect(within(graph).getAllByRole("button", { name: /^implement,/ })).toHaveLength(1);
-    expect(within(ledger).getAllByText("Attempt 2")).toHaveLength(4);
     expect(
       screen.getByRole("button", { name: "review, gate, Escalated at sequence 12" }),
     ).toBeInTheDocument();
+
+    fireEvent.click(implement);
+    const visits = await screen.findByRole("group", { name: "Stage visits" });
+    const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
+    const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
+    expect(visit2).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Addressed reviewer feedback.")).toBeInTheDocument();
+    const repassContext = screen.getByText("Repass decision · Sequence 7").parentElement;
+    if (!repassContext) {
+      throw new Error("Expected repass decision context.");
+    }
+    expect(
+      within(repassContext).getByText("Review returned needs-changes and selected implement."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(visit1);
+    expect(screen.getByText("Initial implementation.")).toBeInTheDocument();
+    expect(screen.queryByText(/Repass decision/)).not.toBeInTheDocument();
   });
 
   it("keeps an unknown schema visible without rendering its raw payload", async () => {
@@ -187,6 +532,7 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+    expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 });
@@ -201,9 +547,35 @@ function renderRun(
 
 class LiveFixtureClient extends FixtureDaemonClient {
   private readonly stream = new PushEventStream();
+  private refreshError: Error | undefined;
+  private refreshGate: Deferred | undefined;
 
   override connectEvents(): Promise<DaemonEventStream> {
     return Promise.resolve(this.stream);
+  }
+
+  override async getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
+    await this.waitForRefresh();
+    return super.getRun(runId, options);
+  }
+
+  override async listRunEvents(
+    runId: string,
+    options?: RequestOptions,
+  ): Promise<EventList> {
+    await this.waitForRefresh();
+    return super.listRunEvents(runId, options);
+  }
+
+  holdRefresh(): void {
+    this.refreshError = undefined;
+    this.refreshGate = deferred();
+  }
+
+  failRefresh(error: Error): void {
+    this.refreshError = error;
+    this.refreshGate?.resolve();
+    this.refreshGate = undefined;
   }
 
   invalidateRun(id: string): void {
@@ -212,6 +584,17 @@ class LiveFixtureClient extends FixtureDaemonClient {
       type: "invalidate",
       data: { cursor: id, models: ["run"] },
     });
+  }
+
+  private async waitForRefresh(): Promise<void> {
+    const gate = this.refreshGate;
+    if (!gate) {
+      return;
+    }
+    await gate.promise;
+    if (this.refreshError) {
+      throw this.refreshError;
+    }
   }
 }
 
@@ -253,4 +636,17 @@ class PushEventStream implements DaemonEventStream {
       },
     };
   }
+}
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }

@@ -37,6 +37,36 @@ type check struct {
 	capture      bool
 	expectEmpty  bool
 	windowsBatch bool
+	// group names the parallel CI job that owns this check. The full merge
+	// tier (`go run ./test/ci`) runs every check regardless; `go run ./test/ci
+	// group <name>` runs only the checks in one group so the workflow can fan
+	// the sequential merge gate across independent runners. See ci.yml.
+	group string
+}
+
+// Check groups. Each maps to one parallel job in .github/workflows/ci.yml.
+// Membership is disjoint and exhaustive: every merge-tier check belongs to
+// exactly one group (asserted by TestEveryMergeCheckHasAGroup).
+const (
+	// groupChecks is the fast fan-in: formatting, module hygiene, vet, the
+	// command builds, config validation, and the portal build/test/contract
+	// chain — everything except the three heavyweight steps below.
+	groupChecks = "checks"
+	// groupLint is golangci-lint (staticcheck/govet/revive/...) on its own runner.
+	groupLint = "lint"
+	// groupUnit is the race/coverage unit suite — the long pole.
+	groupUnit = "unit"
+	// groupShipped is the shipped-workflow contract suite.
+	groupShipped = "shipped"
+)
+
+// knownGroups is the set of valid `group NAME` selectors, used to reject a
+// mistyped group before any work runs (independent of working directory).
+var knownGroups = map[string]bool{
+	groupChecks:  true,
+	groupLint:    true,
+	groupUnit:    true,
+	groupShipped: true,
 }
 
 type executor interface {
@@ -54,10 +84,17 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fast := false
+	group := ""
 	switch {
 	case len(args) == 0:
 	case len(args) == 1 && args[0] == "fast":
 		fast = true
+	case len(args) == 2 && args[0] == "group" && strings.TrimSpace(args[1]) != "":
+		group = args[1]
+		if !knownGroups[group] {
+			_, _ = fmt.Fprintf(stderr, "ci: unknown check group %q\n", group)
+			return 2
+		}
 	case len(args) == 2 && args[0] == "full" && strings.TrimSpace(args[1]) != "":
 		exec := processExecutor{stdout: stdout, stderr: stderr}
 		if err := executeChecks(exec, fullChecks(args[1]), stdout, stderr); err != nil {
@@ -66,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | full MAKE_COMMAND]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND]")
 		return 2
 	}
 
@@ -83,11 +120,95 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if fast {
 		validationChecks = fastChecks(validationChecks)
 	}
+	if group != "" {
+		selected := groupChecksOnly(validationChecks, group)
+		if len(selected) == 0 {
+			_, _ = fmt.Fprintf(stderr, "ci: unknown check group %q\n", group)
+			return 2
+		}
+		validationChecks = applyRuntimeToggles(selected, os.Getenv)
+	}
 	if err := executeChecks(exec, validationChecks, stdout, stderr); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// groupChecksOnly keeps only the checks belonging to one parallel CI job,
+// preserving their merge-gate order (dependencies such as portal-install
+// before portal-test are honoured because the source order is preserved).
+func groupChecksOnly(all []check, group string) []check {
+	var result []check
+	for _, current := range all {
+		if current.group == group {
+			result = append(result, current)
+		}
+	}
+	return result
+}
+
+// applyRuntimeToggles adapts a group's checks to the runner it executes on:
+//
+//   - GOOBERS_CI_RACE=0 strips -race from the unit and shipped-workflow suites.
+//     Data races are a source-level property, so a single -race platform
+//     (Linux) suffices; a second OS can run the same behavioural suite without
+//     the ~3-5x instrumentation cost while preserving OS-specific coverage.
+//   - GOOBERS_CI_SHARD=i/n splits the unit suite across n runners (1-based i),
+//     dropping the coverage profile (partial per shard; the coverage *gate* is
+//     the separate full-tier cover-check). Timing capture stays with the
+//     unsharded owner (it only emits when GOOBERS_TEST_TIMING_FILE is set).
+func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
+	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
+	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
+	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
+	// Linux runner. It sets GOOS for the golangci-lint *subprocess* only — never
+	// as an ambient GOOS, which would make `go run ./test/ci` build this tool
+	// for the target OS and then fail to exec it on the host.
+	lintGOOS := strings.TrimSpace(getenv("GOOBERS_LINT_GOOS"))
+	result := make([]check, 0, len(checks))
+	for _, current := range checks {
+		if !raceEnabled {
+			current.args = withoutArg(current.args, "-race")
+		}
+		if shard != "" && current.label == "test" {
+			current.args = shardUnitArgs(current.args, shard)
+		}
+		if lintGOOS != "" && current.label == "lint" {
+			current.env = append(append([]string(nil), current.env...), "GOOS="+lintGOOS)
+		}
+		result = append(result, current)
+	}
+	return result
+}
+
+func withoutArg(args []string, drop string) []string {
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == drop {
+			continue
+		}
+		result = append(result, arg)
+	}
+	return result
+}
+
+// shardUnitArgs injects `--shard i/n` into the hermetic runner invocation
+// (before the `--` that separates hermetic flags from go-test arguments) and
+// drops the coverage profile, which is only meaningful over the whole tree.
+func shardUnitArgs(args []string, shard string) []string {
+	result := make([]string, 0, len(args)+2)
+	for _, arg := range args {
+		switch arg {
+		case "--":
+			result = append(result, "--shard", shard, "--")
+		case "-covermode=atomic", "-coverprofile=coverage.out":
+			// Partial coverage per shard is meaningless; skip it.
+		default:
+			result = append(result, arg)
+		}
+	}
+	return result
 }
 
 func configuredToolchain(getenv func(string) string) toolchain {
@@ -166,9 +287,10 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			args:        []string{"-l", "."},
 			capture:     true,
 			expectEmpty: true,
+			group:       groupChecks,
 		},
-		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}},
-		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}},
+		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
+		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
 	}
 
 	portalPrepared := false
@@ -191,12 +313,14 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 				"-o", output,
 				"./cmd/" + command,
 			},
+			group: groupChecks,
 		})
 		if command == "goobers" {
 			result = append(result, check{
 				label:   "validate-configs",
 				command: tools.goCommand,
 				args:    []string{"run", "./test/configvalidate", output},
+				group:   groupChecks,
 			})
 		}
 	}
@@ -255,28 +379,40 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			append([]string(nil), testEnvironment...),
 			"GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1",
 		),
+		group: groupUnit,
+	}
+	schemaDescriptionCoverageCheck := check{
+		label:   "schema-description-coverage",
+		command: tools.goCommand,
+		args:    []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"},
+		env:     testEnvironment,
+		group:   groupUnit,
 	}
 	shippedWorkflowCheck := check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
 		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
 		env:     testEnvironment,
+		group:   groupShipped,
 	}
 
 	result = append(result,
 		shippedWorkflowCheck,
+		schemaDescriptionCoverageCheck,
 		testCheck,
-		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},
+		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}, group: groupLint},
 		check{
 			label:        "portal-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "test"},
 			windowsBatch: true,
+			group:        groupChecks,
 		},
 		check{
 			label:   "portal-contract-generate",
 			command: tools.goCommand,
 			args:    []string{"generate", "./internal/apicontract"},
+			group:   groupChecks,
 		},
 		check{
 			label:   "portal-contract-diff",
@@ -286,18 +422,21 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 				"portal/src/api/contract.generated.ts",
 				"portal/src/api/wire.generated.ts",
 			},
+			group: groupChecks,
 		},
 		check{
 			label:        "portal-contract-typecheck",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "typecheck"},
 			windowsBatch: true,
+			group:        groupChecks,
 		},
 		check{
 			label:        "portal-contract-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "test:contract"},
 			windowsBatch: true,
+			group:        groupChecks,
 		},
 	)
 	return result
@@ -345,12 +484,14 @@ func portalPreparationChecks(tools toolchain) []check {
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "ci", "--no-audit", "--no-fund"},
 			windowsBatch: true,
+			group:        groupChecks,
 		},
 		{
 			label:        "portal-build",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "build"},
 			windowsBatch: true,
+			group:        groupChecks,
 		},
 		// portal-build writes the production bundle into cmd/goobers/portal-dist,
 		// the //go:embed-ed and committed directory the daemon serves. Nothing
@@ -367,6 +508,7 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:   "portal-dist-diff",
 			command: tools.gitCommand,
 			args:    []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"},
+			group:   groupChecks,
 		},
 	}
 }

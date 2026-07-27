@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +119,128 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 	}
 	if errs[0].ErrorClass != string(telemetry.ErrorClassProviderRateLimit) {
 		t.Fatalf("run_error ErrorClass = %q, want provider-rate-limit", errs[0].ErrorClass)
+	}
+}
+
+func TestIngestRunPreservesParallelBranches(t *testing.T) {
+	tmp := t.TempDir()
+	runID := "1111111111111111bbbbbbbbbbbbbbbb"
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLineForBranch(2, 1, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(3, 2, fixtureStart.Add(2*time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(4, 1, fixtureStart.Add(3*time.Second), `"type":"gate.evaluated","gate":"review","verdict":"pass","target":"join"`),
+		eventLineForBranch(5, 1, fixtureStart.Add(4*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"success"`),
+		eventLineForBranch(6, 2, fixtureStart.Add(5*time.Second), `"type":"gate.evaluated","gate":"review","verdict":"needs-changes","target":"research"`),
+		eventLineForBranch(7, 2, fixtureStart.Add(6*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"failure"`),
+		eventLine(8, fixtureStart.Add(7*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, "")
+	db := openTestDB(t, tmp)
+
+	if err := db.IngestRun(runDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	attempts, err := db.StageAttempts(runID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 ||
+		attempts[0].Branch != 1 || attempts[0].Status != "success" ||
+		attempts[1].Branch != 2 || attempts[1].Status != "failure" {
+		t.Fatalf("parallel stage attempts = %#v", attempts)
+	}
+	verdicts, err := db.GateVerdicts(runID)
+	if err != nil {
+		t.Fatalf("GateVerdicts: %v", err)
+	}
+	if len(verdicts) != 2 ||
+		verdicts[0].Branch != 1 || verdicts[0].Verdict != "pass" ||
+		verdicts[1].Branch != 2 || verdicts[1].Verdict != "needs-changes" {
+		t.Fatalf("parallel gate verdicts = %#v", verdicts)
+	}
+}
+
+func TestIngestRunMatchesOverlappingBranchSpans(t *testing.T) {
+	tmp := t.TempDir()
+	runID := "1111111111111111cccccccccccccccc"
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLineForBranch(2, 1, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(3, 2, fixtureStart.Add(2*time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(4, 1, fixtureStart.Add(5*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"success"`),
+		eventLineForBranch(5, 2, fixtureStart.Add(6*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"success"`),
+		eventLine(6, fixtureStart.Add(7*time.Second), `"type":"run.finished","status":"completed"`),
+	}, "\n") + "\n"
+	spanRecords := []telemetry.SpanRecord{
+		{
+			Schema: telemetry.SpanSchema, TraceID: runID, SpanID: "1111111111111111",
+			Name: "task/research", Kind: telemetry.SpanKindTask,
+			StartTime: fixtureStart.Add(500 * time.Millisecond), EndTime: fixtureStart.Add(5 * time.Second),
+			Status: "ok",
+			Attributes: map[string]string{
+				telemetry.AttrStage: "research", telemetry.AttrAttemptNumber: "1", telemetry.AttrBranch: "1",
+				telemetry.AttrModel: "model", telemetry.AttrHarnessVersion: "harness", telemetry.AttrUsageCostUSD: "1.25",
+			},
+		},
+		{
+			Schema: telemetry.SpanSchema, TraceID: runID, SpanID: "2222222222222222",
+			Name: "task/research", Kind: telemetry.SpanKindTask,
+			StartTime: fixtureStart.Add(1500 * time.Millisecond), EndTime: fixtureStart.Add(6 * time.Second),
+			Status: "ok",
+			Attributes: map[string]string{
+				telemetry.AttrStage: "research", telemetry.AttrAttemptNumber: "1", telemetry.AttrBranch: "2",
+				telemetry.AttrModel: "model", telemetry.AttrHarnessVersion: "harness", telemetry.AttrUsageCostUSD: "2.50",
+			},
+		},
+	}
+	var spans strings.Builder
+	for _, record := range spanRecords {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("marshal span: %v", err)
+		}
+		spans.Write(line)
+		spans.WriteByte('\n')
+	}
+	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, spans.String())
+	db := openTestDB(t, tmp)
+
+	if err := db.IngestRun(runDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	rows, err := db.sql.Query(`
+		SELECT branch, traversal, cost_usd
+		FROM stage_usage
+		WHERE run_id = ?
+		ORDER BY branch`, runID)
+	if err != nil {
+		t.Fatalf("query stage usage: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for i, want := range []struct {
+		branch    int
+		traversal int
+		cost      float64
+	}{{1, 1, 1.25}, {2, 2, 2.50}} {
+		if !rows.Next() {
+			t.Fatalf("stage usage rows ended at %d", i)
+		}
+		var branch, traversal int
+		var cost float64
+		if err := rows.Scan(&branch, &traversal, &cost); err != nil {
+			t.Fatalf("scan stage usage: %v", err)
+		}
+		if branch != want.branch || traversal != want.traversal || cost != want.cost {
+			t.Fatalf("stage usage row %d = {%d %d %.2f}, want {%d %d %.2f}",
+				i, branch, traversal, cost, want.branch, want.traversal, want.cost)
+		}
+	}
+	if rows.Next() {
+		t.Fatal("stage usage contains unexpected extra rows")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate stage usage: %v", err)
 	}
 }
 
@@ -628,6 +751,78 @@ func TestTraversalMigrationOrdersLegacyAttemptsByStartTime(t *testing.T) {
 	}
 }
 
+func TestBranchMigrationPreservesLegacyRowsAsUnknown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	legacy, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create legacy schema metadata: %v", err)
+	}
+	for i := 0; i < 15; i++ {
+		if _, err := legacy.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", i+1, err)
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO schema_meta (version) VALUES (15)`); err != nil {
+		t.Fatalf("set legacy schema version: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
+		VALUES ('legacy-run', 'quality-sprint', 1, 'web', '2026-07-13T00:00:00.000000000Z');
+		INSERT INTO stage_attempts (run_id, stage, traversal, attempt)
+		VALUES ('legacy-run', 'research', 1, 1);
+		INSERT INTO stage_usage (run_id, stage, traversal, attempt, cost_usd)
+		VALUES ('legacy-run', 'research', 1, 1, 1.25);
+		INSERT INTO gate_verdicts (run_id, seq, gate)
+		VALUES ('legacy-run', 4, 'review')`); err != nil {
+		t.Fatalf("insert legacy branchless rows: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade Open: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	for _, table := range []string{"stage_attempts", "stage_usage", "gate_verdicts"} {
+		var branch sql.NullInt64
+		if err := upgraded.sql.QueryRow(`SELECT branch FROM ` + table + ` WHERE run_id = 'legacy-run'`).Scan(&branch); err != nil {
+			t.Fatalf("query %s branch: %v", table, err)
+		}
+		if branch.Valid {
+			t.Fatalf("%s legacy branch = %d, want unknown NULL", table, branch.Int64)
+		}
+	}
+	attempts, err := upgraded.StageAttempts("legacy-run")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("StageAttempts after upgrade: %v, %#v", err, attempts)
+	}
+	if attempts[0].BranchKnown {
+		t.Fatalf("legacy attempt branch = %#v, want unknown", attempts[0])
+	}
+	verdicts, err := upgraded.GateVerdicts("legacy-run")
+	if err != nil || len(verdicts) != 1 {
+		t.Fatalf("GateVerdicts after upgrade: %v, %#v", err, verdicts)
+	}
+	if verdicts[0].BranchKnown {
+		t.Fatalf("legacy gate branch = %#v, want unknown", verdicts[0])
+	}
+	if _, err := upgraded.Stats(StatsRequest{}); err != nil {
+		t.Fatalf("ordinary stats with unknown branch attribution: %v", err)
+	}
+	branch := 0
+	if _, err := upgraded.Stats(StatsRequest{Branch: &branch}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+		t.Fatalf("branch-filtered stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
+	}
+	if _, err := upgraded.Stats(StatsRequest{GroupByBranch: true}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+		t.Fatalf("branch-grouped stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
+	}
+}
+
 func TestTranscriptSchemaMigrationPreservesLegacyRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
 	db, err := Open(path)
@@ -679,6 +874,10 @@ func minimalRunYAML(runID string, startedAt time.Time) string {
 
 func eventLine(seq int, ts time.Time, rest string) string {
 	return `{"schema":"goobers.dev/journal/event/v1","seq":` + strconv.Itoa(seq) + `,"branch":0,"time":"` + ts.UTC().Format(time.RFC3339Nano) + `",` + rest + "}"
+}
+
+func eventLineForBranch(seq, branch int, ts time.Time, rest string) string {
+	return `{"schema":"goobers.dev/journal/event/v1","seq":` + strconv.Itoa(seq) + `,"branch":` + strconv.Itoa(branch) + `,"time":"` + ts.UTC().Format(time.RFC3339Nano) + `",` + rest + "}"
 }
 
 func mustMkdirAll(t *testing.T, dir string) {

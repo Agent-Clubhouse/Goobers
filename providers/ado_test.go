@@ -6,10 +6,27 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/labelpredicate"
 )
+
+func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
+	t.Helper()
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Done", "category": "Completed"},
+		}})
+	})
+}
 
 func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
@@ -45,6 +62,7 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListWorkItems returned error: %v", err)
 	}
+
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d", len(items))
 	}
@@ -60,10 +78,208 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
+	getRequests := 0
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "" {
+			t.Fatalf("$top = %q, want no raw candidate limit", got)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"workItems": []map[string]int{{"id": 1}, {"id": 2}},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		getRequests++
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		tags := "other"
+		numericID := 1
+		if id == "2" {
+			tags = "wanted"
+			numericID = 2
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        id,
+				"System.State":        "New",
+				"System.Tags":         tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Labels:     []string{"wanted"},
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
+		t.Fatalf("items = %#v, GET requests = %d; want matching second work item", items, getRequests)
+	}
+}
+
+func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	getRequests := 0
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "1" {
+			t.Fatalf("$top = %q, want 1", got)
+		}
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		id := 1
+		if strings.Contains(body["query"], "[System.Id] > 1") {
+			id = 2
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": id}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		getRequests++
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		tags := "other"
+		numericID := 1
+		if id == "2" {
+			tags = "wanted"
+			numericID = 2
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        id,
+				"System.State":        "New",
+				"System.Tags":         tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+
+	firstPage := &ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, LabelPredicate: predicate, Limit: 1, PageInfo: firstPage,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems page 1: %v", err)
+	}
+	if len(items) != 0 || getRequests != 1 || !firstPage.HasNext || firstPage.NextCursor != "1" {
+		t.Fatalf(
+			"items = %#v, GET requests = %d, page info = %+v; want one nonmatching raw candidate",
+			items, getRequests, firstPage,
+		)
+	}
+	pageInfo := &ListWorkItemsPageInfo{}
+	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, LabelPredicate: predicate, Limit: 1, Cursor: "1", PageInfo: pageInfo,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems page 2: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
+		t.Fatalf("items = %#v, GET requests = %d; want matching second candidate", items, getRequests)
+	}
+}
+
+func TestADOListWorkItemsProjectsAndFiltersNativeFields(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["Microsoft.VSTS.Common.Priority"] <= 2`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		numericID := 1
+		priority := 3
+		if id == "2" {
+			numericID = 2
+			priority = 1
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.Title":                   "item " + id,
+				"System.WorkItemType":            "Issue",
+				"System.State":                   "Active",
+				"Microsoft.VSTS.Common.Priority": priority,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Name: "repo", Project: "project"},
+		FieldPredicate: predicate,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("items = %#v, want work item 2", items)
+	}
+	if got := items[0].Fields["Microsoft.VSTS.Common.Priority"]; got != float64(1) {
+		t.Fatalf("priority = %#v, want float64(1)", got)
+	}
+}
+
+func TestADOListWorkItemsUnavailableNativeFieldFails(t *testing.T) {
+	predicate, err := fieldpredicate.Compile(`fields["Custom.Risk"] == "high"`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/1", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"id": 1,
+			"fields": map[string]interface{}{
+				"System.Title":        "item",
+				"System.WorkItemType": "Issue",
+				"System.State":        "Active",
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	_, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:     RepositoryRef{Name: "repo", Project: "project"},
+		FieldPredicate: predicate,
+	})
+	if err == nil || !strings.Contains(err.Error(), `field "Custom.Risk" is unavailable`) {
+		t.Fatalf("ListWorkItems error = %v, want unavailable-field error", err)
+	}
+}
+
 func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	var patchBody []adoPatchOperation
 	var reviewerPath string
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/refs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -174,7 +390,11 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	if item.Status != WorkItemStatusInProgress {
 		t.Fatalf("updated item status = %q", item.Status)
 	}
-	if len(patchBody) == 0 || patchBody[0].Path != "/fields/System.Tags" || patchBody[0].Value != "route/backend; goobers/status:in-progress" {
+	if len(patchBody) != 2 ||
+		patchBody[0].Op != "test" ||
+		patchBody[0].Path != "/rev" ||
+		patchBody[1].Path != "/fields/System.Tags" ||
+		patchBody[1].Value != "route/backend; goobers/status:in-progress" {
 		t.Fatalf("patch body = %#v", patchBody)
 	}
 }
@@ -324,6 +544,7 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	var wiqlCalls int
 	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		var patch []adoPatchOperation

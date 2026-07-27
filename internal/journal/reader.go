@@ -182,6 +182,10 @@ type RecoverReport struct {
 // event so even the repair leaves a trace (§4, append-only). The returned Run is
 // ready to continue the run from where it left off.
 func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
+	return recover(dir, false, opts...)
+}
+
+func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverReport, error) {
 	cfg := newConfig(opts...)
 	rd, err := OpenRead(dir)
 	if err != nil {
@@ -195,6 +199,15 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	eventsPath := filepath.Join(dir, fileEvents)
 	if _, _, err := readEvents(eventsPath); err != nil {
 		return nil, RecoverReport{}, err
+	}
+
+	var publicationLock *journalLock
+	if !publicationLocked {
+		publicationLock, err = acquireRunPublicationLock(dir)
+		if err != nil {
+			return nil, RecoverReport{}, err
+		}
+		defer releaseJournalLock(publicationLock)
 	}
 
 	// Acquire the per-run-dir lock (#243) before any write below, including
@@ -255,9 +268,30 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	if len(events) > 0 {
 		r.lastActivity = events[len(events)-1].Time
 	}
+	needsBranchCheckpoint := false
 	diskSt, diskErr := rd.State()
 	if diskErr == nil {
 		r.machineState = diskSt.MachineState
+		r.branches = diskSt.Branches
+	}
+
+	// Branch cursors are reconstructed from the log rather than trusted from
+	// the checkpoint. state.json is a derived convenience and the crash window
+	// it can be stranded in is exactly the one that matters here: a
+	// branch.finished can be fsynced while the crash lands before the
+	// checkpoint rename. The log is the source of truth (§4), so where the two
+	// disagree the log wins.
+	if logCursors, ok := reconstructBranchCursors(events); ok {
+		if !equalBranchCursors(r.branches, logCursors) {
+			r.branches = logCursors
+			needsBranchCheckpoint = true
+		}
+	} else if len(r.branches) > 0 {
+		// The log shows no live parallel (it never started, or it finished and
+		// the run is single-cursor again) but the checkpoint still carries
+		// cursors — a stranded checkpoint. Clear them.
+		r.branches = nil
+		needsBranchCheckpoint = true
 	}
 
 	// Heal state.json if it disagrees with what the log durably shows
@@ -275,7 +309,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	// non-terminal case the journal can heal exactly because it durably names
 	// the chosen MachineState; other running checkpoints still require the
 	// workflow Machine and remain the caller's responsibility.
-	needsCheckpoint := tornBytes > 0
+	needsCheckpoint := tornBytes > 0 || needsBranchCheckpoint
 	if r.phase != PhaseRunning {
 		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" || diskSt.Reason != r.reason {
 			r.machineState = ""

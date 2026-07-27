@@ -54,6 +54,30 @@ const (
 	// EventRunnerAnnotation records local-runner lifecycle bookkeeping. Its
 	// payload lives entirely under Runner and is excluded from conformance.
 	EventRunnerAnnotation EventType = "runner.annotation"
+	// EventRunnerIsolationPosture records the isolation posture the runner
+	// applied to a stage (#1305) — which sandbox posture was in effect and
+	// how it was satisfied. Like runner.annotation its payload lives entirely
+	// under Runner and it is excluded from conformance: posture is a property
+	// of the runner substrate, so the same workflow definition must produce
+	// identical conformance views sandboxed or not.
+	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
+
+	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
+	// All four are conformance-normative: they and the completeness record are
+	// what a parallel MEANS, as distinct from the interleaving, which is a
+	// scheduling artefact.
+
+	// EventParallelStarted opens a parallel state, naming its declared branch
+	// set. Recorded on the root branch.
+	EventParallelStarted EventType = "parallel.started"
+	// EventBranchStarted opens one branch, carrying its Branch id and name.
+	EventBranchStarted EventType = "branch.started"
+	// EventBranchFinished closes one branch with its terminal BranchStatus.
+	EventBranchFinished EventType = "branch.finished"
+	// EventParallelFinished closes a parallel with the branch completeness
+	// record and the routing decision the failure policy produced. Recorded on
+	// the root branch.
+	EventParallelFinished EventType = "parallel.finished"
 
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
@@ -61,6 +85,8 @@ const (
 	// above are reused there to announce a run's start/end at the instance
 	// level (with Workflow/RunID set); these are scheduler-only concepts.
 
+	// EventInitCompleted records a successful fresh `goobers init` completion.
+	EventInitCompleted EventType = "init.completed"
 	// EventTriggerFired records a cron/manual trigger firing for a workflow.
 	EventTriggerFired EventType = "trigger.fired"
 	// EventTickSkipped records a tick that did not start a run, with Reason set
@@ -132,13 +158,21 @@ const (
 type Event struct {
 	// Schema is the envelope version. Normative (readers branch on it).
 	Schema string `json:"schema"`
-	// Seq is the monotonic per-run sequence number (from 1). Normative — the
-	// ordering key; at tier 3, events order by (Branch, Seq).
+	// Seq is the monotonic per-run sequence number (from 1). The ordering key;
+	// events order by (Branch, Seq) at every tier. Normative WITHIN a branch —
+	// including the root branch and every run that never forks. Its absolute
+	// value is EXCLUDED from conformance ACROSS distinct non-zero branches,
+	// because branch interleaving is a scheduling artefact: two conformant
+	// runners may interleave differently and still be equivalent (ARCHITECTURE
+	// §3.3, design/static-fan-out-fan-in.md §6.2).
 	Seq uint64 `json:"seq"`
 	// Type is the event kind. Normative.
 	Type EventType `json:"type"`
-	// Branch is the parallel-branch id. 0 at tiers 1–2; reserved for tier-3
-	// parallel branches. Normative (secondary ordering key).
+	// Branch is the parallel-branch id, normative at every tier as the primary
+	// ordering key. 0 is the run's ROOT branch — every run that never forks
+	// carries 0 on every event. Declared parallel branches number from 1 in
+	// declaration order, so a branch id is deterministic and reproducible across
+	// runs and runners.
 	Branch int `json:"branch"`
 	// Time is when the event was recorded. EXCLUDED from conformance.
 	Time time.Time `json:"time"`
@@ -214,6 +248,24 @@ type Event struct {
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
 
+	// --- parallel/branch payload (§6.2) ---
+
+	// Parallel is the name of the parallel state a branch belongs to, set on
+	// parallel.started/finished and branch.started/finished. Normative.
+	Parallel string `json:"parallel,omitempty"`
+	// BranchName is the declared name of the branch this event concerns. The
+	// numeric id lives in Branch; the name is what an author wrote and what
+	// branch-qualified references use. Normative.
+	BranchName string `json:"branchName,omitempty"`
+	// BranchStatus is the terminal status of a branch on branch.finished.
+	// Normative.
+	BranchStatus BranchStatus `json:"branchStatus,omitempty"`
+	// Completeness is the branch completeness record on parallel.finished: one
+	// entry per DECLARED branch, in declaration order, so "did every branch
+	// report?" is answerable from the journal alone. Normative — it, and not
+	// the interleaving, is what a parallel means.
+	Completeness []BranchOutcome `json:"completeness,omitempty"`
+
 	// --- instance-journal payload (scheduler/events.jsonl only; not used in a
 	// run's own events.jsonl, since a run event's identity is implicit from its
 	// directory) ---
@@ -231,6 +283,43 @@ type Event struct {
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
 	SkipCount int `json:"skipCount,omitempty"`
+}
+
+// BranchStatus is the terminal status of one parallel branch.
+type BranchStatus string
+
+const (
+	// BranchSucceeded means the branch reached @join with work done.
+	BranchSucceeded BranchStatus = "succeeded"
+	// BranchFailed means a stage in the branch failed terminally after its
+	// retry policy was exhausted.
+	BranchFailed BranchStatus = "failed"
+	// BranchTimedOut means the branch exceeded branchTimeoutSeconds and was
+	// terminated at its next stage boundary.
+	BranchTimedOut BranchStatus = "timed-out"
+	// BranchCancelled means a sibling's failure (or a whole-run exit) stopped
+	// this branch before it settled, under fail_fast.
+	BranchCancelled BranchStatus = "cancelled"
+	// BranchNoOutput means the branch settled without producing anything — a
+	// branch-scoped no-work, or one whose only substantive stage carried
+	// continueOnError. It is deliberately distinct from succeeded, which the
+	// other four statuses could not express: a join must be able to tell "ran
+	// and found nothing" from "ran and produced findings".
+	BranchNoOutput BranchStatus = "no-output"
+)
+
+// BranchOutcome is one entry in a parallel's completeness record.
+type BranchOutcome struct {
+	// Branch is the numeric branch id (from 1; 0 is the run's root).
+	Branch int `json:"branch"`
+	// Name is the declared branch name.
+	Name string `json:"name"`
+	// Status is the branch's terminal status.
+	Status BranchStatus `json:"status"`
+	// Artifacts is how many artifacts the branch recorded. It lets a join
+	// distinguish a branch that settled empty from one that produced work
+	// without resolving every pointer.
+	Artifacts int `json:"artifacts"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR
@@ -269,13 +358,14 @@ func (e Event) IsConformanceNormative() bool {
 	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
-		EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
+		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
 		return false
-	case EventRunnerAnnotation:
-		// Local-runner lifecycle bookkeeping lives under runner.* only.
+	case EventRunnerAnnotation, EventRunnerIsolationPosture:
+		// Local-runner lifecycle/substrate bookkeeping lives under runner.*
+		// only; isolation posture must never split the conformance surface.
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

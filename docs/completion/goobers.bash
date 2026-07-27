@@ -1,0 +1,258 @@
+# bash completion for goobers
+_goobers_completion()
+{
+    local cur command candidates flags dynamic
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    dynamic=0
+
+    if (( COMP_CWORD == 1 )); then
+        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
+        return
+    fi
+
+    command="${COMP_WORDS[1]}"
+    flags="-h --help"
+    case "${command}" in
+        init)
+            flags+=" --demo --guided --template --source-tree --json"
+            ;;
+        preflight)
+            flags+=" --distro --launch-wsl"
+            ;;
+        onboarding)
+            case "${COMP_WORDS[2]:-}" in
+                stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
+                stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
+            esac
+            ;;
+        scaffold)
+            case "${COMP_WORDS[2]:-}" in
+                goober) flags+=" --force" ;;
+                workflow) flags+=" --force" ;;
+            esac
+            ;;
+        agent-kit)
+            case "${COMP_WORDS[2]:-}" in
+                install) flags+=" --harness" ;;
+                update) flags+=" --dry-run --write --replace-modified" ;;
+            esac
+            ;;
+        validate)
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            ;;
+        lint)
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            ;;
+        config)
+            case "${COMP_WORDS[2]:-}" in
+                diff) flags+=" --against" ;;
+                show) flags+=" --json" ;;
+            esac
+            ;;
+        speech)
+            case "${COMP_WORDS[2]:-}" in
+                preflight) flags+=" --json" ;;
+                test) flags+=" --json" ;;
+            esac
+            ;;
+        up)
+            flags+=" --quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs"
+            ;;
+        dashboard)
+            flags+=" --port --no-open --dev-assets"
+            ;;
+        run)
+            flags+=" --no-wait"
+            ;;
+        workflow)
+            case "${COMP_WORDS[2]:-}" in
+                show) flags+=" --dot" ;;
+            esac
+            ;;
+        runs)
+            case "${COMP_WORDS[2]:-}" in
+                list) flags+=" --json --phase --workflow --limit" ;;
+                du) flags+=" --json" ;;
+            esac
+            ;;
+        status)
+            flags+=" --daemon --json --phase --workflow --limit --watch --interval"
+            ;;
+        stats)
+            flags+=" --since --json"
+            ;;
+        features)
+            flags+=" --json --dsl-version --used"
+            ;;
+        blocked)
+            case "${COMP_WORDS[2]:-}" in
+                list) flags+=" --json" ;;
+            esac
+            ;;
+        claims)
+            case "${COMP_WORDS[2]:-}" in
+                list) flags+=" --json --stale --gaggle --provider" ;;
+                release) flags+=" --gaggle --provider --force" ;;
+            esac
+            ;;
+        trace)
+            flags+=" --json --follow --transcripts --transcript"
+            ;;
+        escalations)
+            flags+=" --json"
+            ;;
+        telemetry)
+            case "${COMP_WORDS[2]:-}" in
+                stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
+                errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
+                prune-orphans) flags+=" --delete --min-age" ;;
+            esac
+            ;;
+        journal)
+            case "${COMP_WORDS[2]:-}" in
+                redact) flags+=" --run --path --reason --secret-file" ;;
+            esac
+            ;;
+        backlog-query)
+            flags+=" --claim --release"
+            ;;
+        reconcile-branches)
+            flags+=" --delete --max --min-age --after"
+            ;;
+        telemetry-query)
+            flags+=" --window --aggregate --threshold --format"
+            ;;
+        docs-churn)
+            flags+=" --repo --workflow --gaggle --since --buffer-multiplier --format"
+            ;;
+        gather-sibling-context)
+            flags+=" --no-cache --no-verdict-cache"
+            ;;
+        apply-verdict)
+            flags+=" --gate"
+            ;;
+        elect-lander)
+            flags+=" --gate"
+            ;;
+        remediation-checkpoint)
+            flags+=" --budget --escalate"
+            ;;
+    esac
+    if [[ "${cur}" == -* ]]; then
+        COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
+        return
+    fi
+
+    candidates=""
+    case "${command}" in
+        onboarding)
+            if (( COMP_CWORD == 2 )); then
+                candidates="stub-agent-instructions stub-sample"
+            fi
+            ;;
+        examples)
+            if (( COMP_CWORD == 2 )); then
+                candidates="list show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete examples 2>/dev/null)"
+            fi
+            ;;
+        scaffold)
+            if (( COMP_CWORD == 2 )); then
+                candidates="goober workflow"
+            fi
+            ;;
+        agent-kit)
+            if (( COMP_CWORD == 2 )); then
+                candidates="install check update"
+            fi
+            ;;
+        config)
+            if (( COMP_CWORD == 2 )); then
+                candidates="diff materialize show"
+            fi
+            ;;
+        speech)
+            if (( COMP_CWORD == 2 )); then
+                candidates="preflight test"
+            fi
+            ;;
+        service)
+            if (( COMP_CWORD == 2 )); then
+                candidates="install uninstall status"
+            fi
+            ;;
+        run)
+            if (( COMP_CWORD == 2 )); then
+                dynamic=1
+                candidates="abort cancel approve override rerun $(command goobers __complete workflows 2>/dev/null)"
+            elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        workflow)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete workflows 2>/dev/null)"
+            fi
+            ;;
+        runs)
+            if (( COMP_CWORD == 2 )); then
+                candidates="list du"
+            fi
+            ;;
+        blocked)
+            if (( COMP_CWORD == 2 )); then
+                candidates="list clear"
+            fi
+            ;;
+        claims)
+            if (( COMP_CWORD == 2 )); then
+                candidates="list release"
+            fi
+            ;;
+        trace)
+            if (( COMP_CWORD == 2 )); then
+                dynamic=1
+                candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        escalations)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete escalations 2>/dev/null)"
+            fi
+            ;;
+        completion)
+            if (( COMP_CWORD == 2 )); then
+                candidates="bash zsh fish powershell"
+            fi
+            ;;
+        telemetry)
+            if (( COMP_CWORD == 2 )); then
+                candidates="stats errors export prune prune-orphans compact"
+            fi
+            ;;
+        journal)
+            if (( COMP_CWORD == 2 )); then
+                candidates="redact"
+            fi
+            ;;
+    esac
+
+    if (( dynamic == 1 )) || [[ -n "${candidates}" ]]; then
+        COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
+        return
+    fi
+
+    compopt -o default
+}
+
+complete -F _goobers_completion goobers

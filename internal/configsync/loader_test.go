@@ -44,10 +44,11 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 	}
 
 	// config-examples ships two Gaggles (acme-web + the dotnet-service polyglot
-	// reference, #1093), seven Goobers (acme-web: coder, curator, implementer,
-	// nominator, reviewer; dotnet-service: dotnet-implementer, dotnet-reviewer),
-	// and seven Workflows (acme-web's six + dotnet-implementation).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 7, "Workflow": 7}
+	// reference, #1093), eight Goobers (acme-web: coder, curator, docs,
+	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
+	// dotnet-reviewer), and nine Workflows (acme-web's eight +
+	// dotnet-implementation).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 8, "Workflow": 9}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {
@@ -124,6 +125,46 @@ spec:
 	}
 }
 
+// TestLoadRejectsUnsupportedDSLVersion proves the daemon load path enforces
+// the DVL-3 (#863) version support lifecycle exactly like `goobers validate`
+// does — both route through the same api/validate.Validator.ValidateDir, so
+// an unsupported dslVersion pin fails Load here with the same DVL030 code
+// the offline CLI check emits, not a generic compile error discovered later.
+func TestLoadRejectsUnsupportedDSLVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "manifest.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata: {name: inst, annotations: {goobers.dev/allow-preview-features: "true"}}
+spec:
+  instance: {name: acme, environment: dev}
+  gaggles: [web]
+`)
+	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
+	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"9.9\"\n", 1)
+	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
+
+	l, err := NewLoader("")
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	set, report, err := l.Load(dir)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Load: err = %v, want ErrInvalidConfig for an unrecognized dslVersion", err)
+	}
+	if set != nil {
+		t.Error("RenderSet should be nil on invalid config")
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if string(issue.Code) == "DVL030" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("report issues = %+v, want a DVL030 error", report.Issues)
+	}
+}
+
 func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {
@@ -149,7 +190,7 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 7 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 8 {
 		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
 	}
 }

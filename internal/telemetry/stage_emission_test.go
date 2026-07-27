@@ -212,7 +212,7 @@ func assertSpanEventAttribute(t *testing.T, attrs []attribute.KeyValue, key, wan
 	t.Helper()
 	for _, attr := range attrs {
 		if string(attr.Key) == key {
-			if got := attr.Value.Emit(); got != want {
+			if got := attr.Value.String(); got != want {
 				t.Fatalf("attribute %q = %q, want %q", key, got, want)
 			}
 			return

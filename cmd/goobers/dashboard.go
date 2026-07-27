@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -150,7 +151,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: load dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
 	}
-	handler, err := newDashboardHandler(assets, api.handler, api.mode)
+	handler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
 	if err != nil {
 		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
@@ -259,7 +260,17 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 		return dashboardAPI{}, err
 	}
 	if running {
-		target, err := waitForDashboardDaemon(ctx, layout, config.APIListenAddress())
+		// The attach proxy has no bearer-token source yet, so an authenticated
+		// daemon is refused up front with the real reason instead of a probe
+		// loop that times out on 401s (#640, #644).
+		if config.API.Auth != nil {
+			return dashboardAPI{}, fmt.Errorf(
+				"daemon API at %s requires a bearer token (api.auth is configured) and `goobers dashboard` cannot supply one yet; "+
+					"query the daemon API directly, or stop the daemon to serve the standalone read-only dashboard",
+				config.APIListenAddress(),
+			)
+		}
+		target, err := waitForDashboardDaemon(ctx, layout, daemonAPIScheme(config), config.APIListenAddress())
 		if err != nil {
 			return dashboardAPI{}, err
 		}
@@ -274,18 +285,27 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 	return standaloneDashboardAPI(layout, config, errorLog)
 }
 
-func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configuredAddress string) (*url.URL, error) {
+// daemonAPIScheme mirrors httpapi.Server.Scheme for the attach probe and
+// proxy: the daemon serves HTTPS exactly when api.tls is configured.
+func daemonAPIScheme(config *instance.Config) string {
+	if config.API.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme, configuredAddress string) (*url.URL, error) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.NewTimer(dashboardAttachTimeout)
 	defer deadline.Stop()
 	var lastErr error
-	lastLocation := configuredAddress
+	lastLocation := scheme + "://" + configuredAddress
 	for {
 		address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
 		if addressErr != nil {
 			lastErr = addressErr
 		} else {
-			target, parseErr := url.Parse("http://" + address)
+			target, parseErr := url.Parse(scheme + "://" + address)
 			if parseErr != nil {
 				return nil, fmt.Errorf("parse daemon API address %q: %w", address, parseErr)
 			}
@@ -319,6 +339,14 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configu
 					return target, nil
 				}
 			} else {
+				// An untrusted api.tls certificate cannot heal within the
+				// attach window; fail fast with the cause instead of spinning
+				// to the timeout.
+				var certErr *tls.CertificateVerificationError
+				if errors.As(requestErr, &certErr) {
+					return nil, fmt.Errorf("daemon API at %s presented a TLS certificate this host does not trust: %w; "+
+						"make the api.tls certificate's issuing CA trusted on this host and retry", lastLocation, certErr)
+				}
 				lastErr = requestErr
 			}
 		}
@@ -416,7 +444,7 @@ func dashboardAssetFS(devAssets string) (fs.FS, error) {
 	return os.DirFS(devAssets), nil
 }
 
-func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (http.Handler, error) {
+func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, instanceRoot string) (http.Handler, error) {
 	if assets == nil {
 		return nil, errors.New("dashboard asset filesystem is required")
 	}
@@ -432,9 +460,23 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 		return nil, err
 	}
 	files := http.FileServer(http.FS(assets))
-	mux := http.NewServeMux()
-	mux.Handle("/api/", api)
-	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
+	// A manual dispatcher rather than http.ServeMux: ServeMux redirects any
+	// non-canonical path (e.g. a "/assets/../x" traversal) to its cleaned form
+	// with a 3xx before dispatching, which both leaks routing behavior and
+	// prevents the asset handlers' own containment checks from returning 404.
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/") {
+			api.ServeHTTP(response, request)
+			return
+		}
+		// Co-brand assets: an operator-supplied file in the instance's assets/
+		// dir overrides the embedded bundle at the same /assets/ path; anything
+		// not present there (notably the portal's own /assets/index-*.js|css)
+		// falls through to the embedded file server below.
+		if strings.HasPrefix(request.URL.Path, "/assets/") &&
+			serveInstanceAsset(response, request, instanceRoot) {
+			return
+		}
 		name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
 		if name == "" || name == "." || name == "index.html" {
 			serveDashboardIndex(response, request, index)
@@ -447,7 +489,33 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode) (ht
 		}
 		http.NotFound(response, request)
 	})
-	return mux, nil
+	return handler, nil
+}
+
+// serveInstanceAsset serves a co-branding file from the instance's assets/ dir
+// when the cleaned request path resolves to an existing regular file inside
+// that dir, and reports whether it did. On any miss — traversal outside the
+// dir, a directory, or a nonexistent file — it serves nothing and returns
+// false so the caller falls through to the embedded bundle.
+func serveInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot string) bool {
+	assetsDir := filepath.Join(instanceRoot, "assets")
+	name := strings.TrimPrefix(r.URL.Path, "/assets/")
+	name = filepath.FromSlash(path.Clean("/" + name))
+	name = strings.TrimPrefix(name, string(filepath.Separator))
+	if name == "" {
+		return false
+	}
+	full := filepath.Join(assetsDir, name)
+	rel, err := filepath.Rel(assetsDir, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Stat(full)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	http.ServeFile(w, r, full)
+	return true
 }
 
 func dashboardIndex(index []byte, mode dashboardMode) ([]byte, error) {

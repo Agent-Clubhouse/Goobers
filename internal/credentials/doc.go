@@ -2,13 +2,14 @@
 // credential injection seam (issue #14, docs/ARCHITECTURE.md §9, security.md
 // SEC-041/042/045/046).
 //
-// It resolves named token refs (env var or file, per instance.yaml) into
-// secret values, and hands them out only for the capabilities a stage
-// declared — nothing is materialized for a capability that was not declared,
-// so undeclared use fails closed because there is simply no credential to
-// use. Every resolved value is registered with a SecretRegistrar (the run
-// journal's scrubber, wired in by the caller) before it is handed out, so it
-// can never land at rest in a journal, span, snapshot, or artifact.
+// It resolves named token refs (env var, file, macOS Keychain, or external
+// store, per instance.yaml) into secret values, and hands them out only for the
+// capabilities a stage declared — nothing is materialized for a capability
+// that was not declared, so undeclared use fails closed because there is simply
+// no credential to use. Every resolved value is registered with a
+// SecretRegistrar (the run journal's scrubber, wired in by the caller) before
+// it is handed out, so it can never land at rest in a journal, span, snapshot,
+// or artifact.
 //
 // This package deliberately does not import providers or journal: it defines
 // the shape it needs (SecretRegistrar) and returns values that satisfy the

@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
@@ -33,6 +34,22 @@ const DefaultMaxSteps = 10000
 // `failed` run's FailureStage reads as the preflight rather than mis-attributing
 // the missing toolchain to the workflow's first stage.
 const toolchainPreflightState = "runtime-preflight"
+
+// ciCommandPreflightState is the synthetic failing-state name recorded when a
+// run fails the #1380 ciCommand preflight — the local-ci stage's configured
+// command names an executable that PATH cannot resolve on this host (a
+// missing `make` on a bring-your-own Windows runner, most commonly). Same
+// shape as toolchainPreflightState: a distinct FailureStage so a `failed` run
+// reads as "this could never have started" rather than a buried, repeatedly
+// retried stage failure.
+const ciCommandPreflightState = "ci-command-preflight"
+
+// localCIStageName is the well-known deterministic stage name that runs a
+// gaggle's local CI-equivalent (instance.LocalCIStageName's runtime-side
+// twin — duplicated as a literal here rather than imported, matching the
+// existing local-ci literal-string convention already used by
+// cmd/goobers/openprbody.go and this package's own tests).
+const localCIStageName = "local-ci"
 
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
@@ -214,7 +231,11 @@ type Config struct {
 	Automated invoke.Automated
 	// MaxRepasses bounds gate repass loops before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
+	// Deprecated: use StartInput.RunControls for per-run policy.
 	MaxRepasses int
+	// RunControls supplies fallback policy for callers that do not pass
+	// StartInput.RunControls. Production dispatch passes fully resolved controls.
+	RunControls apiv1.RunControls
 	// Escalation notifies the driving backlog item's provider when a gate or
 	// stage escalates the run (internal/gate.EscalationNotifier). Optional —
 	// nil is a no-op.
@@ -254,6 +275,22 @@ type Config struct {
 	// RequiredCapabilities never invokes it, so the default is inert until a
 	// gaggle/stage opts in.
 	ToolchainVerifier ToolchainVerifier
+	// LookPathFunc resolves an executable name to a full path, exactly like
+	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
+	// separator is tried directly, PATH is not consulted, matching what
+	// exec.Command itself does when the stage later actually runs it).
+	// Optional — nil disables the preflight entirely (no behavior change),
+	// matching this Config's other optional hooks (Failed, NotifyTerminal,
+	// etc: nil is a no-op). Unlike ToolchainVerifier, this cannot default to
+	// a real implementation: a compiled machine's local-ci stage is a
+	// near-universal fixture shape across this package's own tests (and any
+	// embedder's), so defaulting to exec.LookPath would preflight a real
+	// host PATH lookup on every such test regardless of whether its executor
+	// is even real — exactly the #1600 regression this doc guards against.
+	// The production daemon wiring (cmd/goobers/runnerwiring.go) sets this
+	// to exec.LookPath explicitly; tests set it only when they mean to
+	// exercise the preflight.
+	LookPathFunc func(string) (string, error)
 	// Failed handles the instance-level consequence of a run reaching terminal
 	// PhaseFailed (#1054): leaving a human-visible trace (a comment carrying the
 	// terminal cause + run id) on the driving item, so a systematic infra fault
@@ -310,6 +347,15 @@ type Config struct {
 	// RepoRef. Defaults to defaultRepoCloneURL. Tests
 	// override this to point at a local fixture repo without network access.
 	RepoCloneURL func(apiv1.RepoRef) (string, error)
+	// AdditionalRepos are the gaggle's read-only reference repos
+	// (GaggleSpec.AdditionalRepos, MGV-11 #1286). For a repo-workspace stage the
+	// runner provisions a read-only checkout of each alongside the primary
+	// worktree and hands the stage their paths via InvocationEnvelope
+	// AdditionalWorkspaces. Empty (the default) leaves stage provisioning
+	// byte-identical to before. The worktree Manager's git-auth resolver backs
+	// each reference-repo clone with that repo's contents:read token (MGV-10);
+	// no push credential is ever provisioned for them.
+	AdditionalRepos []apiv1.RepoRef
 	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
 	// disables span emission — every telemetry.Span zero-value method no-ops,
 	// so call sites below need no nil checks beyond the one guard in each
@@ -341,6 +387,7 @@ type Runner struct {
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
 	toolchains           ToolchainVerifier
+	lookPath             func(string) (string, error)
 }
 
 // New validates cfg and returns a ready Runner.
@@ -366,6 +413,7 @@ func New(cfg Config) (*Runner, error) {
 		cfg:               cfg,
 		maxSteps:          maxSteps,
 		toolchains:        toolchains,
+		lookPath:          cfg.LookPathFunc,
 		heartbeatInterval: StageHeartbeatInterval,
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
@@ -397,6 +445,9 @@ type StartInput struct {
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
+	// RunControls is the effective instance -> gaggle -> workflow policy pinned
+	// into run.yaml. Zero values inherit Runner.Config's compatibility defaults.
+	RunControls apiv1.RunControls
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// run declares (its gaggle's + its stages', RRQ-1/#1101). They are
 	// preflight-verified on the host before any stage executes (#735): a token
@@ -478,6 +529,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	effectiveControls, err := r.resolveRunControls(&in.RunControls)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: resolve run controls: %w", err)
+	}
+	in.RunControls = effectiveControls
 
 	inputs := map[string][]byte{}
 	graph, err := json.Marshal(in.Machine.Graph())
@@ -502,6 +558,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	// itself authors (e.g. an executor_error message), not only the
 	// artifacts an executor scrubs and commits itself.
 	registrar, scrubber := journal.DefaultScrubber()
+	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		RunID:           in.RunID,
 		Workflow:        in.Machine.Def.Name,
@@ -509,11 +566,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		WorkflowDigest:  in.Machine.Digest(),
 		GooberDigest:    in.GooberDigest,
 		Gaggle:          in.Gaggle,
+		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
 	}, inputs, journal.WithScrubber(scrubber))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
+
 	defer func() { _ = jr.Close() }()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
@@ -536,6 +595,21 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			}
 		}
 
+		// #1380: fail fast when the local-ci stage's configured ciCommand names
+		// an executable PATH cannot resolve on this host (e.g. no GNU Make on a
+		// bring-your-own Windows runner) — before any stage executes, and before
+		// a repass/remediation cycle burns its budget repeatedly rediscovering
+		// an environment gap no code change can fix. r.lookPath is nil unless
+		// the caller explicitly opted in (Config.LookPathFunc's doc comment) —
+		// a compiled machine's local-ci stage is too common a fixture shape
+		// across this package's own tests to preflight by default (#1600).
+		if r.lookPath != nil {
+			if err := checkCICommandPreflight(r.lookPath, in.Machine); err != nil {
+				span.Fail(err)
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, ciCommandPreflightState, 0, err)
+			}
+		}
+
 		seed := walkSeed{}
 		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
 			if err := r.recordRunBranch(jr, in); err != nil {
@@ -553,6 +627,18 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		completeRunSpan(span, result)
 		return result, nil
 	})
+}
+
+func (r *Runner) resolveRunControls(overrides *apiv1.RunControls) (apiv1.RunControls, error) {
+	base := r.cfg.RunControls
+	if base.MaxRepasses == 0 && r.cfg.MaxRepasses > 0 {
+		base.MaxRepasses = int32(r.cfg.MaxRepasses)
+	}
+	effective, err := runcontrol.Resolve(base, nil, overrides)
+	if err != nil {
+		return apiv1.RunControls{}, err
+	}
+	return effective.Overrides(), nil
 }
 
 func completeRunSpan(span telemetry.Span, result Result) {
@@ -663,13 +749,19 @@ type resumeContext struct {
 	recorded bool
 }
 
+// BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
+// conflict surfaces under (#813). Exported so the Temporal engine's activity
+// host reports the identical normative error code instead of a string copy
+// that can drift (the #624 shared-constant pattern).
+const BaseSyncConflictErrorCode = "base_sync_conflict"
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
-	baseSyncConflictErrorCode   = "base_sync_conflict"
+	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
 
 type baseSyncConflictArtifact struct {
@@ -691,11 +783,19 @@ type baseSyncConflictArtifact struct {
 // (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
 // provenance across a resume without duplicating ref.touched.
 type walkSeed struct {
-	pointers        []apiv1.ContextPointer
-	lastStage       string
-	lastResult      apiv1.ResultEnvelope
-	workspaceBranch string
-	branchRecorded  bool
+	pointers   []apiv1.ContextPointer
+	lastStage  string
+	lastResult apiv1.ResultEnvelope
+	// stageOutputs is every completed stage's journaled Outputs, so a
+	// stage-qualified inputsFrom reference can reach past the immediately
+	// preceding stage (#562).
+	stageOutputs         stageOutputs
+	parallel             *parallelExec
+	parallelRootPointers []apiv1.ContextPointer
+	fanIn                *parallelExec
+	workspaceBranch      string
+	branchRecorded       bool
+	humanDecision        *HumanGateDecision
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -836,7 +936,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	gateEval := &gate.Evaluator{
 		Automated:      r.cfg.Automated,
 		Journal:        jr,
-		MaxRepasses:    r.cfg.MaxRepasses,
+		MaxRepasses:    int(in.RunControls.MaxRepasses),
 		Attempts:       gateAttempts,
 		LastDiffDigest: gateDiffDigests,
 	}
@@ -845,18 +945,159 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
 	lastStage := seed.lastStage
 	lastResult := seed.lastResult
+	completed := seed.stageOutputs
+	if completed == nil {
+		completed = stageOutputs{}
+	}
 	// The branch every stage's worktree is provisioned against, rebindable
 	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
 	// "the run's own branch", resolved per stage in createStageWorkspace.
 	workspaceBranch := seed.workspaceBranch
 	branchRecorded := seed.branchRecorded
+	humanDecision := seed.humanDecision
+	// Live parallel state. nil whenever the run is single-cursor, which is
+	// every run that never forks — so the sequential path is untouched.
+	par := seed.parallel
+	fanIn := seed.fanIn
+	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
 	steps := 0
+	if par != nil {
+		jr.SetBranchCursors(par.cursors())
+		if current := par.current(); current != nil {
+			if !current.started {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: current.id,
+					Parallel: par.spec.Name, BranchName: current.name, Stage: current.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, startState, steps, err)
+				}
+				current.started = true
+			}
+			jr.SetBranch(current.id)
+		}
+	}
 
 	for {
 		steps++
 		if steps > r.maxSteps {
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
+		// A branch reached @join: settle it and move to the next declared
+		// branch, or close the parallel and continue at its join state.
+		if state == workflow.TargetJoin {
+			if par == nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: reached %q outside a parallel branch", workflow.TargetJoin))
+			}
+			settling := par.current()
+			status := par.currentStatus()
+			if !settling.settled {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchFinished, Branch: settling.id,
+					Parallel: par.spec.Name, BranchName: settling.name,
+					BranchStatus: status,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
+			}
+			next, more := par.advance(status)
+			// fail_fast abandons the branches that have not started. At
+			// maxConcurrentBranches=1 that is all cancellation can mean —
+			// nothing is in flight to interrupt — and each abandonment is
+			// journaled so the record shows why a branch never ran.
+			if more && par.spec.FailurePolicy == apiv1.BranchFailFast && par.anyFailed() {
+				for _, cancelled := range par.cancelRemaining() {
+					if err := jr.Append(journal.Event{
+						Type: journal.EventBranchFinished, Branch: cancelled.id,
+						Parallel: par.spec.Name, BranchName: cancelled.name,
+						BranchStatus: journal.BranchCancelled,
+					}); err != nil {
+						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+					}
+				}
+				next, more = nil, false
+			}
+			jr.SetBranchCursors(par.cursors())
+			if more {
+				if err := jr.Append(journal.Event{
+					Type: journal.EventBranchStarted, Branch: next.id,
+					Parallel: par.spec.Name, BranchName: next.name, Stage: next.start,
+				}); err != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				}
+				next.started = true
+				jr.SetBranch(next.id)
+				state = next.start
+				continue
+			}
+			joined := par
+			par = nil
+			jr.SetBranch(0)
+			jr.SetBranchCursors(nil)
+			target, runJoin := joined.route()
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelFinished, Parallel: joined.spec.Name,
+				Completeness: joined.completeness(), Target: target,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			if !runJoin {
+				// The failure policy routed past the join. onFailure is a
+				// state name or a reserved terminal, never nothing — the
+				// compiler requires it for exactly these two policies, so a
+				// branch failure is always a DEFINED branch (GT-002's rule).
+				switch target {
+				case workflow.TargetAbort:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseAborted, joined.spec.Name, steps)
+					return res, ferr
+				case workflow.TargetEscalate:
+					res, ferr := r.finish(in.RunID, jr, journal.PhaseEscalated, joined.spec.Name, steps)
+					return res, ferr
+				}
+				fanIn = nil
+			} else {
+				pointers = joined.joinPointers(parallelRootPointers)
+				fanIn = joined
+			}
+			state = target
+			continue
+		}
+
+		// Entering a parallel: fan out into its declared branches.
+		if p, ok := in.Machine.Parallel(state); ok {
+			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
+			}
+			if p.MaxConcurrentBranches > 1 {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+					fmt.Errorf("runner: parallel %q: maxConcurrentBranches %d is declared but concurrent branch execution is not yet implemented; branches run sequentially",
+						p.Name, p.MaxConcurrentBranches))
+			}
+			par = newParallelExec(p)
+			fanIn = nil
+			parallelRootPointers = append([]apiv1.ContextPointer(nil), pointers...)
+			jr.SetMachineState(state)
+			if err := jr.Append(journal.Event{
+				Type: journal.EventParallelStarted, Parallel: p.Name,
+				Completeness: par.completeness(),
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			first := par.current()
+			jr.SetBranchCursors(par.cursors())
+			if err := jr.Append(journal.Event{
+				Type: journal.EventBranchStarted, Branch: first.id,
+				Parallel: p.Name, BranchName: first.name, Stage: first.start,
+			}); err != nil {
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+			}
+			first.started = true
+			jr.SetBranch(first.id)
+			state = first.start
+			continue
+		}
+
 		jr.SetMachineState(state)
 
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
@@ -952,7 +1193,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if resumedResult != nil {
 				result = *resumedResult
 			} else {
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				branch := 0
+				if par != nil && par.current() != nil {
+					branch = par.current().id
+				}
+				upstreamPointers := pointers
+				if par != nil {
+					upstreamPointers = par.currentPointers(parallelRootPointers)
+				}
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -963,8 +1212,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
 			}
-			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
+			outputs := result.Outputs
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				outputs = nil
+			}
+			if par != nil {
+				par.recordCurrent(outputs, produced)
+			} else {
+				pointers = append(pointers, produced...)
+			}
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				completed.clear(t.Name)
+			} else {
+				completed.record(t.Name, outputs)
+			}
 			// Sticky for the rest of the run, and only ever set by a stage
 			// that actually emitted the key — see WorkspaceBranchOutput. This
 			// runs AFTER the stage that emits it, so that stage itself still
@@ -974,6 +1236,24 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
 				if b := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(in.Gaggle)); b != "" {
 					workspaceBranch = b
+				}
+			}
+
+			if par != nil {
+				switch result.Status {
+				case apiv1.ResultFailure:
+					if !t.ContinueOnError {
+						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
+							par.markCurrentFailed()
+							lastResult.Outputs = nil
+							state = workflow.TargetJoin
+							continue
+						}
+					}
+				case apiv1.ResultNoWork:
+					par.markCurrentNoOutput()
+					state = workflow.TargetJoin
+					continue
 				}
 			}
 
@@ -992,6 +1272,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if !advance {
 				return res, nil
 			}
+			if fanIn != nil && t.Name == fanIn.spec.Join {
+				fanIn = nil
+			}
 			state = next
 			continue
 		}
@@ -1003,14 +1286,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 				branchRecorded = true
 			}
-			// The machine remains at this gate until its evaluator records a
-			// verdict. Persist that wait before dispatch so observers can
-			// distinguish it from an active stage.
-			if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
-				return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
-			}
-			if g.Evaluator == apiv1.EvaluatorHuman {
+			if g.Evaluator == apiv1.EvaluatorHuman && humanDecision == nil {
+				// A human gate executes nothing. Its durable pause is the
+				// checkpoint an external decision must explicitly resolve.
+				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+					return Result{}, fmt.Errorf("runner: journal pause at human gate %q: %w", g.Name, err)
+				}
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
+			}
+			if g.Evaluator != apiv1.EvaluatorHuman {
+				// The machine remains at this gate until its evaluator records
+				// a verdict. Persist that wait before dispatch so observers can
+				// distinguish it from an active stage.
+				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+					return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
+				}
 			}
 
 			var instructionAddendum string
@@ -1019,7 +1309,28 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				rerun = nil
 			}
 			retryClass, knownOutcome, retryable := retryFailureClass(g, lastResult)
-			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch, knownOutcome)
+			var gr gate.Result
+			var err, removeErr error
+			if g.Evaluator == apiv1.EvaluatorHuman {
+				if humanDecision.Gate != g.Name {
+					return Result{}, fmt.Errorf("runner: human decision for gate %q reached gate %q", humanDecision.Gate, g.Name)
+				}
+				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision, humanDecision.Actor)
+				humanDecision = nil
+			} else {
+				gatePointers := pointers
+				if par != nil {
+					gatePointers = par.currentPointers(parallelRootPointers)
+				}
+				gateSubject := lastResult
+				if fanIn != nil && g.Name == fanIn.spec.Join {
+					// gatePointers already contains the declaration-ordered,
+					// branch-qualified artifact union. ReviewerInvocation must
+					// not append the final branch's artifacts a second time.
+					gateSubject.Artifacts = nil
+				}
+				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, gateSubject, gatePointers, fanIn, instructionAddendum, workspaceBranch, knownOutcome)
+			}
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
 				return stalledResult, stalledErr
 			}
@@ -1048,7 +1359,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
 			} else if retry {
 				if gr.VerdictArtifact != nil {
-					pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+					pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+					if par != nil {
+						par.recordCurrentPointer(pointer)
+					} else {
+						pointers = append(pointers, pointer)
+					}
 				}
 				state = retryTarget
 				continue
@@ -1070,10 +1386,30 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// this, that promise was never kept, so a repass regenerated
 				// the same diff and tripped the #316 identical-diff guard
 				// for lack of anything new to act on.
-				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+				pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+				if par != nil {
+					par.recordCurrentPointer(pointer)
+				} else {
+					pointers = append(pointers, pointer)
+				}
+			}
+			if par != nil && next == workflow.TargetJoin && lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
+				par.markCurrentFailed()
+			}
+			if fanIn != nil && g.Name == fanIn.spec.Join {
+				fanIn = nil
 			}
 			state = next
 			continue
+		}
+
+		// A parallel state compiles and validates (FO-2) but the walk is still
+		// single-cursor, so executing one is not yet possible. Fail closed with
+		// a message that names the reason rather than the generic
+		// unknown-state error a reader would otherwise take for a config bug.
+		if _, ok := in.Machine.Parallel(state); ok {
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+				fmt.Errorf("runner: workflow state %q is a parallel; executing parallel branches is not yet implemented", state))
 		}
 
 		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
@@ -1100,9 +1436,11 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 		return "", res, false, err
 	case workflow.TerminalComplete:
 		// #849: a non-pass gate must not hide an unresolved stage failure,
-		// while a passing gate has affirmatively cleared that same result.
+		// while a passing gate or explicit human decision has affirmatively
+		// cleared that same result.
 		subject, _ := machine.Task(lastStage)
-		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
+		gateDef, _ := machine.Gate(gr.Gate)
+		if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && !gateClearsFailure(gr, gateDef) {
 			res, err := r.finishStageFailure(ctx, runID, jr, repoRef, lastStage, steps, lastResult.Error)
 			return "", res, false, err
 		}
@@ -1111,6 +1449,10 @@ func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID stri
 	default:
 		return gr.Target, Result{}, true, nil
 	}
+}
+
+func gateClearsFailure(gr gate.Result, gateDef apiv1.Gate) bool {
+	return gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
 }
 
 func terminalGateNotificationReason(gr gate.Result) (string, bool) {
@@ -1922,7 +2264,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -1990,7 +2332,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if class != journal.AttemptInfra || attempt == startAttempt {
 			policyAttempts++
 		}
-		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, int(attempt), string(class))
+		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
@@ -2006,7 +2348,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2189,7 +2531,7 @@ func routeRetryDecision(jr *journal.Run, result gate.Result, stage string, subje
 
 // startTaskSpan opens one task-attempt span under the run's trace, if telemetry is
 // configured. A zero telemetry.Span is safe to use (its methods no-op).
-func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task, attempt int, attemptKind string) (context.Context, telemetry.Span) {
+func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task, branch, attempt int, attemptKind string) (context.Context, telemetry.Span) {
 	if r.cfg.Telemetry == nil {
 		return ctx, telemetry.Span{}
 	}
@@ -2201,6 +2543,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 		GooberDigest:    in.GooberDigest,
 		RunID:           in.RunID,
 		TaskID:          t.Name,
+		Branch:          branch,
 		TaskType:        string(t.Type),
 		GooberID:        t.Goober,
 		Attempt:         attempt,
@@ -2253,11 +2596,8 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
-	workspaceMode := apiv1.WorkspaceRepo
-	if t.Run != nil && t.Run.Workspace != "" {
-		workspaceMode = t.Run.Workspace
-	}
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
@@ -2338,11 +2678,25 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	}
 
 	for inputKey, outputKey := range t.InputsFrom {
-		v, ok := upstreamResult.Outputs[outputKey]
+		if v, ok, branchRef, absent := resolveBranchInput(outputKey, in.Machine, completed, fanIn); branchRef {
+			if ok {
+				env.Inputs[inputKey] = v
+			} else if absent {
+				delete(env.Inputs, inputKey)
+			} else {
+				return apiv1.ResultEnvelope{}, nil, branchInputsFromError(t.Name, inputKey, outputKey), nil
+			}
+			continue
+		}
+		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
+		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
 		if !ok {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey), nil
+			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
 		}
 		env.Inputs[inputKey] = v
+	}
+	if fanIn != nil && t.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
 	}
 
 	switch t.Type {
@@ -2589,7 +2943,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
@@ -2642,7 +2996,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			Gaggle:          in.Gaggle,
 			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
 			Goal:            "gate: " + g.Name,
-			RepoRef:         in.RepoRef,
+			RepoRef:         in.RepoRef.EnvelopeRef(),
 			Item:            in.Item,
 			Limits:          gateLimits,
 		}
@@ -2657,7 +3011,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, apiv1.WorkspaceRepo, false, workspaceBranch)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, gateWorkspaceMode(g), false, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -2776,6 +3130,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			}}
 		}
 	}
+	if fanIn != nil && g.Name == fanIn.spec.Join {
+		if env.Inputs == nil {
+			env.Inputs = map[string]interface{}{}
+		}
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
 
 	if knownOutcome != "" {
 		result, err = gateEval.EvaluateKnownOutcome(g, knownOutcome)
@@ -2863,6 +3223,32 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+	// additional are read-only reference-repo checkouts (MGV-11 #1286) provisioned
+	// alongside the primary worktree; torn down with it. Each carries its name for
+	// the invocation envelope's AdditionalWorkspaces.
+	additional []additionalCheckout
+}
+
+// additionalWorkspaces projects a stage workspace's provisioned reference
+// checkouts into the invocation envelope's AdditionalWorkspaces (MGV-11 #1286).
+func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
+	if w == nil || len(w.additional) == 0 {
+		return nil
+	}
+	out := make([]apiv1.AdditionalWorkspace, 0, len(w.additional))
+	for _, a := range w.additional {
+		if a.worktree == nil {
+			continue
+		}
+		out = append(out, apiv1.AdditionalWorkspace{Name: a.name, Path: a.worktree.Path})
+	}
+	return out
+}
+
+// additionalCheckout is one provisioned read-only reference-repo worktree.
+type additionalCheckout struct {
+	name     string
+	worktree *worktree.Worktree
 }
 
 func (w *stageWorkspace) ActivateAssetPathGuard() error {
@@ -2880,10 +3266,28 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
-	if w.worktree != nil {
-		return w.worktree.Remove(ctx, worktree.RemoveOptions{})
+	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
+	// independent worktrees off their own mirrors, so a failure to remove one must
+	// not block removing the primary worktree. Best-effort: collect the first error.
+	var firstErr error
+	for _, a := range w.additional {
+		if a.worktree == nil {
+			continue
+		}
+		if err := a.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return os.RemoveAll(w.path)
+	if w.worktree != nil {
+		if err := w.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	if err := os.RemoveAll(w.path); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // buildEnvelope provisions an isolated repository worktree or empty scratch
@@ -2899,20 +3303,21 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		inputs[k] = v
 	}
 	env := apiv1.InvocationEnvelope{
-		TaskID:          in.RunID + ":" + stageName,
-		WorkflowID:      in.Machine.Def.Name,
-		RunID:           in.RunID,
-		TriggerRef:      in.Trigger.Ref,
-		Gaggle:          in.Gaggle,
-		BranchNamespace: r.branchNamespaceFor(in.Gaggle),
-		Goal:            goal,
-		Workspace:       workspace.path,
-		RepoRef:         in.RepoRef,
-		Item:            in.Item,
-		ContextPointers: upstream,
-		Capabilities:    capabilities,
-		Limits:          limits,
-		Inputs:          inputs,
+		TaskID:               in.RunID + ":" + stageName,
+		WorkflowID:           in.Machine.Def.Name,
+		RunID:                in.RunID,
+		TriggerRef:           in.Trigger.Ref,
+		Gaggle:               in.Gaggle,
+		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
+		Goal:                 goal,
+		Workspace:            workspace.path,
+		RepoRef:              in.RepoRef.EnvelopeRef(),
+		AdditionalWorkspaces: additionalWorkspaces(workspace),
+		Item:                 in.Item,
+		ContextPointers:      upstream,
+		Capabilities:         capabilities,
+		Limits:               limits,
+		Inputs:               inputs,
 	}
 	return env, workspace, nil
 }
@@ -2937,6 +3342,45 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create scratch workspace: %w", err)
 		}
 		return &stageWorkspace{path: path}, nil
+	case apiv1.WorkspaceRepoReadOnly:
+		// A detached checkout at the pinned base revision: no branch name, so
+		// two of these can coexist for one run. That is the whole point —
+		// every writable repo workspace is created on ONE run branch and git
+		// refuses to check one branch out in two worktrees, so concurrent
+		// repo-backed branch stages would otherwise collide outright
+		// (docs/design/static-fan-out-fan-in.md §6.5).
+		if syncBase {
+			return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
+		}
+		if workspaceBranch != "" {
+			return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+		}
+		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+		if err != nil {
+			return nil, err
+		}
+		baseRef := in.RepoRef.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
+			RepoURL:    repoURL,
+			RunID:      in.RunID + "-" + stageName,
+			OwnerRunID: in.RunID,
+			BaseRef:    baseRef,
+			// Branch deliberately empty — a detached checkout, the same shape
+			// provisionAdditionalCheckouts already uses for reference repos.
+			Branch: "",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create read-only worktree: %w", err)
+		}
+		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	case "", apiv1.WorkspaceRepo:
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
@@ -2965,10 +3409,92 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt}, nil
+		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			// Best-effort teardown of the primary worktree so a failed
+			// reference-repo checkout doesn't leak the stage's main worktree.
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+// provisionAdditionalCheckouts materializes a read-only checkout of each of the
+// gaggle's reference repos (Config.AdditionalRepos, MGV-11 #1286) for a
+// repo-workspace stage. Each is a detached worktree (Branch:"") off its own
+// mirror at the repo's default branch — the stage may READ it, but the worktree
+// Manager's git-auth resolver only ever holds that repo's contents:read token
+// (MGV-10), so there is no credential to push. A gaggle with no AdditionalRepos
+// returns nil and provisions nothing (byte-identical to prior behavior). A
+// failure to provision any reference repo tears down the ones already created
+// and fails the stage — a stage must not start with a partial reference set.
+func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput, stageName string) ([]additionalCheckout, error) {
+	if len(r.cfg.AdditionalRepos) == 0 {
+		return nil, nil
+	}
+	checkouts := make([]additionalCheckout, 0, len(r.cfg.AdditionalRepos))
+	for _, repo := range r.cfg.AdditionalRepos {
+		repoURL, err := r.cfg.RepoCloneURL(repo)
+		if err != nil {
+			r.teardownCheckouts(ctx, checkouts)
+			return nil, fmt.Errorf("resolve reference repo %q clone URL: %w", repo.Name, err)
+		}
+		baseRef := repo.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
+			RepoURL:    repoURL,
+			RunID:      in.RunID + "-" + stageName + "-ref-" + sanitizeRefName(repo.Name),
+			OwnerRunID: in.RunID,
+			BaseRef:    baseRef,
+			// Detached, read-only: no run branch, never pushed.
+			Branch: "",
+		})
+		if err != nil {
+			r.teardownCheckouts(ctx, checkouts)
+			return nil, fmt.Errorf("checkout reference repo %q: %w", repo.Name, err)
+		}
+		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt})
+	}
+	return checkouts, nil
+}
+
+// teardownCheckouts best-effort removes already-provisioned reference checkouts
+// after a mid-provision failure, so a partial reference set never leaks.
+func (r *Runner) teardownCheckouts(ctx context.Context, checkouts []additionalCheckout) {
+	for _, c := range checkouts {
+		if c.worktree != nil {
+			_ = c.worktree.Remove(ctx, worktree.RemoveOptions{})
+		}
+	}
+}
+
+// sanitizeRefName reduces a reference repo's name to a single safe path segment
+// for use in the worktree RunID (which must be one segment, no "/" or ".."). Any
+// run of non-alphanumeric characters collapses to a single '-'.
+func sanitizeRefName(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+			continue
+		}
+		if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "ref"
+	}
+	return out
 }
 
 // worktreeWarningEvent builds the runner.annotation journal event that surfaces
@@ -2989,6 +3515,50 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 	}, true
 }
 
+// MachineUsesRepo reports whether any stage of the compiled workflow touches a
+// repository workspace — the predicate behind lazy run-branch provenance.
+// Exported so the Temporal engine's journal projection (#629) applies the
+// identical rule instead of a copy that can drift (the #624 shared-constant
+// pattern).
+func MachineUsesRepo(machine *workflow.Machine) bool {
+	return machineUsesRepo(machine)
+}
+
+// ciCommandExecutable returns the configured local-ci stage's command
+// executable (Command[0]) — the effective gaggle ciCommand, already resolved
+// into the compiled machine by instance.ApplyGaggleCICommand — or "" if the
+// machine declares no local-ci stage or that stage carries no command.
+func ciCommandExecutable(machine *workflow.Machine) string {
+	for _, task := range machine.Def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Name != localCIStageName {
+			continue
+		}
+		if task.Run == nil || len(task.Run.Command) == 0 {
+			return ""
+		}
+		return task.Run.Command[0]
+	}
+	return ""
+}
+
+// checkCICommandPreflight resolves the local-ci stage's configured executable
+// through lookPath before any stage runs (#1380). A workflow with no local-ci
+// stage, or one whose command is empty, has nothing to check. A name
+// containing a path separator is tried directly by lookPath (exec.LookPath's
+// own documented behavior) — matching exactly what exec.Command does when
+// the stage later actually executes it, so this preflight can never diverge
+// from the real run.
+func checkCICommandPreflight(lookPath func(string) (string, error), machine *workflow.Machine) error {
+	name := ciCommandExecutable(machine)
+	if name == "" {
+		return nil
+	}
+	if _, err := lookPath(name); err != nil {
+		return fmt.Errorf("ciCommand executable %q not found: %w — install it on this runner, or configure a different ciCommand in the gaggle's spec", name, err)
+	}
+	return nil
+}
+
 func machineUsesRepo(machine *workflow.Machine) bool {
 	for _, task := range machine.Def.Spec.Tasks {
 		if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
@@ -2996,7 +3566,7 @@ func machineUsesRepo(machine *workflow.Machine) bool {
 		}
 	}
 	for _, g := range machine.Def.Spec.Gates {
-		if g.Evaluator != apiv1.EvaluatorAutomated {
+		if g.Evaluator == apiv1.EvaluatorAgentic {
 			return true
 		}
 	}
@@ -3047,6 +3617,16 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 		out[i] = apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType}
 	}
 	return out
+}
+
+// DefaultRepoCloneURL derives the git remote URL worktree.Manager clones from a
+// RepoRef — the same derivation Config.RepoCloneURL defaults to. Exported so
+// both the tier-3 worker host's workspace provisioner (#632) and the composition
+// root (cmd/goobers) — which keys the worktree Manager's per-repo git-auth
+// resolver on the identical URLs the runner will hand WorkingCopy (MGV-11 #1286) —
+// share the derivation instead of duplicating the provider URL rules.
+func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
+	return defaultRepoCloneURL(ref)
 }
 
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from

@@ -1,0 +1,62 @@
+# Goobers operator (k8s-infra-shape.md §2: Deployment, 1 replica, leader-elect;
+# reconciles Goobers CRDs -> runtime, DEP-012). The image is the shared goobers
+# image (packaging/docker/Dockerfile) with the operator entrypoint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-operator
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: goobers-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: goobers # rewritten by the kustomization images: transformer
+          command: ["goobers-operator"]
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # §7 control-plane sizing band (2-4 vCPU / 8-16GB across all
+          # control-plane components) — the operator is the lightest of them.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

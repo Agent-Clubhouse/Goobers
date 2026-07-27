@@ -2,8 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -57,15 +60,17 @@ func (s ScheduleTrigger) Watch(ctx context.Context, out chan<- Event) error {
 }
 
 // BacklogPollTrigger lists matching backlog items on each tick and emits one
-// Event per item. Label matching is the routing mechanism: only items carrying
-// all of Labels are considered for this workflow.
+// Event per item. LabelPredicate is evaluated exactly after the provider query;
+// Labels remain a provider-side optimization and legacy configuration surface.
 type BacklogPollTrigger struct {
-	WorkflowName string
-	Provider     providers.BacklogProvider
-	Repo         providers.RepositoryRef
-	Labels       []string
-	Ticks        <-chan time.Time
-	Limit        int
+	WorkflowName   string
+	Provider       providers.BacklogProvider
+	Repo           providers.RepositoryRef
+	Labels         []string
+	LabelPredicate *labelpredicate.Predicate
+	FieldPredicate *fieldpredicate.Predicate
+	Ticks          <-chan time.Time
+	Limit          int
 }
 
 // Name identifies the trigger.
@@ -73,6 +78,11 @@ func (b BacklogPollTrigger) Name() string { return "backlog-poll:" + b.WorkflowN
 
 // Watch polls the backlog on each tick and emits an Event per open item.
 func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
+	cursor := ""
+	limit := b.Limit
+	if limit <= 0 {
+		limit = 100
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -81,17 +91,40 @@ func (b BacklogPollTrigger) Watch(ctx context.Context, out chan<- Event) error {
 			if !ok {
 				return nil
 			}
+			pageInfo := &providers.ListWorkItemsPageInfo{}
 			items, err := b.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-				Repository: b.Repo,
-				Labels:     b.Labels,
-				State:      "open",
-				Limit:      b.Limit,
+				Repository:  b.Repo,
+				Labels:      b.Labels,
+				State:       "open",
+				Limit:       limit,
+				Cursor:      cursor,
+				PageInfo:    pageInfo,
+				OldestFirst: true,
 			})
 			if err != nil {
 				return err
 			}
+			if pageInfo.HasNext {
+				cursor = pageInfo.NextCursor
+			} else {
+				cursor = ""
+			}
 			for i := range items {
 				item := items[i]
+				matched, err := b.LabelPredicate.Matches(item.Labels)
+				if err != nil {
+					return fmt.Errorf("evaluate backlog label predicate: %w", err)
+				}
+				if !matched {
+					continue
+				}
+				matched, err = b.FieldPredicate.Matches(item.Fields)
+				if err != nil {
+					return fmt.Errorf("evaluate backlog field predicate: %w", err)
+				}
+				if !matched {
+					continue
+				}
 				ev := Event{WorkflowName: b.WorkflowName, Item: &item, Reason: "backlog-item", DedupeKey: dedupeKey(item)}
 				if err := send(ctx, out, ev); err != nil {
 					return err

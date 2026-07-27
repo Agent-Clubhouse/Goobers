@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -66,5 +67,25 @@ func TestExecProcessRunnerSpawnsChildInNewSession(t *testing.T) {
 	pid, _ := strconv.Atoi(m[2])
 	if sid != pid {
 		t.Fatalf("spawned harness child sid=%d != pid=%d — it is not a session leader, so it was spawned with Setpgid, not Setsid; terminal job control can freeze it (#845 regression)", sid, pid)
+	}
+}
+
+func TestExecProcessRunnerCapturesStdoutBeyondTranscriptLimit(t *testing.T) {
+	var captured bytes.Buffer
+	runner := ExecProcessRunner{}
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command:            []string{os.Args[0], "-test.run=^TestHelperReportsSession$", "-test.v"},
+		Timeout:            30 * time.Second,
+		MaxTranscriptBytes: 16,
+		StdoutCapture:      &captured,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.TranscriptTruncated {
+		t.Fatal("transcript was not truncated")
+	}
+	if !harnessSessionMarkerRE.Match(captured.Bytes()) {
+		t.Fatalf("stdout capture %q did not retain the complete marker", captured.Bytes())
 	}
 }

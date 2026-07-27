@@ -75,7 +75,11 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	provider := newCachedGitHubProvider(root, token)
 
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace()+"implementation/")
+	rawHeadPrefixes := providerInput("headPrefixes", "")
+	headPrefixes := splitLabelList(rawHeadPrefixes)
+	if strings.TrimSpace(rawHeadPrefixes) == "" {
+		headPrefixes = []string{providerInput("headPrefix", providerBranchNamespace()+"implementation/")}
+	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
 	ctx, cancel := providerCommandContext()
@@ -87,7 +91,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefix, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -110,7 +114,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	var couplingDependents []providers.PullRequestSummary
 	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && strings.HasPrefix(pr.Head, headPrefix) {
+		if pr.State == "open" && pr.Base == base && hasAnyHeadPrefix(pr.Head, headPrefixes) {
 			couplingDependents = append(couplingDependents, pr)
 		}
 	}
@@ -142,7 +146,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base || !strings.HasPrefix(pr.Head, headPrefix) {
+		if pr.State != "open" || pr.Base != base || !hasAnyHeadPrefix(pr.Head, headPrefixes) {
 			continue
 		}
 		if pr.Draft {
@@ -153,6 +157,19 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		}
 		if hasAnyLabel(pr.Labels, excludeLabels) {
 			continue
+		}
+		if isTutorBranch(pr.Head, providerBranchNamespace()) {
+			classification, classifyErr := classifyRemoteTutorChanges(
+				ctx, provider, repo, strconv.Itoa(pr.Number), pr.BaseSHA, pr.HeadSHA,
+			)
+			if classifyErr != nil {
+				pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, classifyErr)
+				continue
+			}
+			if classification.RequiresHumanSignoff() {
+				pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
+				continue
+			}
 		}
 		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 		if err != nil {
@@ -263,7 +280,7 @@ func pullRequestsForSelection(
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	base string,
-	headPrefix string,
+	headPrefixes []string,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
@@ -288,7 +305,7 @@ func pullRequestsForSelection(
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
-		if !strings.HasPrefix(pr.Head, headPrefix) {
+		if !hasAnyHeadPrefix(pr.Head, headPrefixes) {
 			continue
 		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
@@ -298,6 +315,15 @@ func pullRequestsForSelection(
 		prs = append(prs, pr)
 	}
 	return prs, openPRs, nil
+}
+
+func hasAnyHeadPrefix(head string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if prefix = strings.TrimSpace(prefix); prefix != "" && strings.HasPrefix(head, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitLabelList(value string) []string {

@@ -1,0 +1,8 @@
+# Control-plane namespace (k8s-infra-shape.md §3): operator, workers, API live
+# here; per-gaggle resources do NOT — see ../gaggle-namespace/.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goobers-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted

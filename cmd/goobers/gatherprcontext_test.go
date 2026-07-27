@@ -338,7 +338,7 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		},
 	}
 
-	if verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("sibling PR #480's substantive finding counted for selected PR #485")
 	}
 
@@ -346,7 +346,7 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		Class:    apiv1.FindingSubstantive,
 		Location: "cmd/goobers/foo.go:42",
 	})
-	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's file-scoped substantive finding was not counted")
 	}
 
@@ -355,8 +355,37 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		Class:    apiv1.FindingSubstantive,
 		Location: "PR #485",
 	})
-	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's substantive finding was not counted")
+	}
+}
+
+// TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor is #941/PRR-6's
+// gate-time severity-floor coverage: a finding below the declared minSeverity
+// does not count, one at or above it does, and an unset Severity (verdicts
+// recorded before this field existed) always counts regardless of the
+// floor — the liberal default must reproduce pre-#941 behavior exactly.
+func TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor(t *testing.T) {
+	infoFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityInfo, Location: "PR #485"}
+	warningFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityWarning, Location: "PR #485"}
+	unsetSeverityFinding := apiv1.Finding{Class: apiv1.FindingSubstantive, Location: "PR #485"}
+
+	below := &apiv1.Verdict{Findings: []apiv1.Finding{infoFinding}}
+	if verdictHasSubstantiveFindingForPR(below, 485, apiv1.SeverityWarning) {
+		t.Fatal("an info finding counted against a warning floor")
+	}
+	if !verdictHasSubstantiveFindingForPR(below, 485, apiv1.SeverityInfo) {
+		t.Fatal("an info finding did not count against the liberal info floor")
+	}
+
+	atFloor := &apiv1.Verdict{Findings: []apiv1.Finding{warningFinding}}
+	if !verdictHasSubstantiveFindingForPR(atFloor, 485, apiv1.SeverityWarning) {
+		t.Fatal("a warning finding did not count at the warning floor")
+	}
+
+	unset := &apiv1.Verdict{Findings: []apiv1.Finding{unsetSeverityFinding}}
+	if !verdictHasSubstantiveFindingForPR(unset, 485, apiv1.SeverityCritical) {
+		t.Fatal("an unset-severity finding was filtered by a severity floor — must always count")
 	}
 }
 
@@ -378,7 +407,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 					"Reconcile its shared run-table implementation with #597's runs list --json row shape and ordering.",
 			}},
 		}
-		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if !verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted (its Location references only the sibling)")
 		}
 	})
@@ -392,7 +421,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #538 concurrently evolves cmd/goobers/trace.go. Ensure the combined trace contract retains PR #597's JSON events.",
 			}},
 		}
-		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if !verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted")
 		}
 	})
@@ -406,7 +435,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #480's new table-alignment test asserts on locale-dependent width output and fails on CI runners.",
 			}},
 		}
-		if verdictHasSubstantiveFindingForPR(verdict, 597) {
+		if verdictHasSubstantiveFindingForPR(verdict, 597, apiv1.SeverityInfo) {
 			t.Fatal("a sibling's own substantive finding (never mentioning the selected PR) counted for selected PR #597")
 		}
 	})
@@ -423,7 +452,7 @@ func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
 				Message:  "PR #598 directly rewrites the same status/runs behavior. Reconcile its shared run-table implementation with #597's runs list --json row shape.",
 			}},
 		}
-		if verdictHasSubstantiveFindingForPR(verdict, 595) {
+		if verdictHasSubstantiveFindingForPR(verdict, 595, apiv1.SeverityInfo) {
 			t.Fatal("a finding about the #597/#598 conflict counted for uninvolved PR #595")
 		}
 	})
@@ -517,29 +546,34 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 }
 
 // TestSelectRemediationPRPriority is #596's headline acceptance:
-// selectRemediationCandidates prioritizes needs-remediation, then failing
-// CI, and only falls back to "merely behind its base" when neither
-// stronger signal is present anywhere in the PR set. Unlike a single-winner
-// selector, it returns every PR at the winning tier (see the "multiple
-// needs-remediation PRs" case below) — claimEligiblePullRequest needs the
-// whole tier to preserve exactly-once selection across concurrent runs;
-// see selectRemediationCandidates' own doc comment.
+// selectRemediationCandidates orders needs-remediation before failing CI and
+// returns both strong tiers so concurrent runs can claim through the whole
+// eligible set. It only falls back to a crowned lander behind its base when
+// neither stronger signal is present anywhere in the PR set.
 func TestSelectRemediationPRPriority(t *testing.T) {
 	tests := []struct {
-		name         string
-		prs          []providers.PullRequestSummary
-		behind       map[int]bool
-		wantNumbers  []int
-		wantPriority remediationPriority
-		wantProbes   int
+		name              string
+		prs               []providers.PullRequestSummary
+		blockedDependents map[int]int
+		behind            map[int]bool
+		wantNumbers       []int
+		wantPriority      remediationPriority
+		wantProbes        int
 	}{
 		{
-			name:         "behind base is fallback",
+			name:         "unelected behind base is not eagerly rebased",
 			prs:          []providers.PullRequestSummary{{Number: 12}},
 			behind:       map[int]bool{12: true},
-			wantNumbers:  []int{12},
-			wantPriority: remediationPriorityBehindBase,
-			wantProbes:   1,
+			wantPriority: remediationPriorityNone,
+		},
+		{
+			name:              "crowned lander behind base is fallback",
+			prs:               []providers.PullRequestSummary{{Number: 12}},
+			blockedDependents: map[int]int{12: 2},
+			behind:            map[int]bool{12: true},
+			wantNumbers:       []int{12},
+			wantPriority:      remediationPriorityBehindBase,
+			wantProbes:        1,
 		},
 		{
 			name: "failing CI wins over behind base",
@@ -552,14 +586,14 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantPriority: remediationPriorityFailingCI,
 		},
 		{
-			name: "needs remediation wins over failing CI and behind base",
+			name: "needs remediation precedes failing CI and behind base",
 			prs: []providers.PullRequestSummary{
 				{Number: 10},
 				{Number: 20, CheckState: providers.CheckStateFailing},
 				{Number: 30, Labels: []string{needsRemediationLabel}},
 			},
 			behind:       map[int]bool{10: true},
-			wantNumbers:  []int{30},
+			wantNumbers:  []int{30, 20},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{
@@ -568,19 +602,20 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 				{Number: 40, Labels: []string{needsRemediationLabel}},
 				{Number: 20, Labels: []string{needsRemediationLabel}},
 			},
-			wantNumbers:  []int{40, 20},
+			wantNumbers:  []int{20, 40},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{
-			name: "multiple behind-base PRs all returned as candidates",
+			name: "only crowned behind-base PRs are returned",
 			prs: []providers.PullRequestSummary{
 				{Number: 50},
 				{Number: 30},
 			},
-			behind:       map[int]bool{50: true, 30: true},
-			wantNumbers:  []int{50, 30},
-			wantPriority: remediationPriorityBehindBase,
-			wantProbes:   2,
+			blockedDependents: map[int]int{30: 1},
+			behind:            map[int]bool{50: true, 30: true},
+			wantNumbers:       []int{30},
+			wantPriority:      remediationPriorityBehindBase,
+			wantProbes:        1,
 		},
 		{
 			// #716: escalation exclusion moved upstream of this function —
@@ -599,17 +634,18 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 				{Number: 10, Labels: []string{remediationEscalatedLabel}},
 				{Number: 20},
 			},
-			behind:       map[int]bool{10: true, 20: true},
-			wantNumbers:  []int{10, 20},
-			wantPriority: remediationPriorityBehindBase,
-			wantProbes:   2,
+			blockedDependents: map[int]int{10: 1, 20: 1},
+			behind:            map[int]bool{10: true, 20: true},
+			wantNumbers:       []int{10, 20},
+			wantPriority:      remediationPriorityBehindBase,
+			wantProbes:        2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			probes := 0
-			candidates, priority, err := selectRemediationCandidates(tt.prs, func(pr providers.PullRequestSummary) (bool, error) {
+			candidates, priority, err := selectRemediationCandidates(tt.prs, tt.blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
 				probes++
 				return tt.behind[pr.Number], nil
 			})
@@ -642,7 +678,7 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 // set where nothing clears any tier) reports remediationPriorityNone with
 // no candidates, rather than a spurious behind-base match.
 func TestSelectRemediationCandidatesNoneEligible(t *testing.T) {
-	candidates, priority, err := selectRemediationCandidates(nil, func(providers.PullRequestSummary) (bool, error) {
+	candidates, priority, err := selectRemediationCandidates(nil, nil, func(providers.PullRequestSummary) (bool, error) {
 		t.Fatal("behindBase probe should not run against an empty PR set")
 		return false, nil
 	})
@@ -651,6 +687,45 @@ func TestSelectRemediationCandidatesNoneEligible(t *testing.T) {
 	}
 	if len(candidates) != 0 || priority != remediationPriorityNone {
 		t.Fatalf("candidates = %v, priority = %d, want none", candidates, priority)
+	}
+}
+
+func TestRemediationCandidatesFillClaimCapacity(t *testing.T) {
+	prs := []providers.PullRequestSummary{
+		{Number: 30, CheckState: providers.CheckStatePassing},
+		{Number: 20, CheckState: providers.CheckStateFailing},
+		{Number: 10, Labels: []string{needsRemediationLabel}},
+	}
+	candidates, priority, err := selectRemediationCandidates(prs, nil, func(providers.PullRequestSummary) (bool, error) {
+		t.Fatal("behind-base probe should not run when strong candidates exist")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priority != remediationPriorityNeedsRemediation {
+		t.Fatalf("priority = %d, want %d", priority, remediationPriorityNeedsRemediation)
+	}
+
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	first, err := claimPullRequestInOrder(root, candidates, "run-1", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := claimPullRequestInOrder(root, candidates, "run-2", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := claimPullRequestInOrder(root, candidates, "run-3", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.Number != 10 || second == nil || second.Number != 20 {
+		t.Fatalf("claims = first %+v second %+v, want priority-ordered PRs 10 then 20", first, second)
+	}
+	if third != nil {
+		t.Fatalf("third claim = %+v, want passing PR #30 excluded", third)
 	}
 }
 
@@ -666,7 +741,7 @@ func TestFilterRemediationPullRequestsExcludesNeedsHuman(t *testing.T) {
 		},
 	}
 
-	filtered, err := filterRemediationPullRequests(
+	filtered, blockedDependents, err := filterRemediationPullRequests(
 		context.Background(),
 		nil,
 		providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
@@ -676,7 +751,7 @@ func TestFilterRemediationPullRequestsExcludesNeedsHuman(t *testing.T) {
 	if err != nil {
 		t.Fatalf("filterRemediationPullRequests: %v", err)
 	}
-	candidates, priority, err := selectRemediationCandidates(filtered, func(providers.PullRequestSummary) (bool, error) {
+	candidates, priority, err := selectRemediationCandidates(filtered, blockedDependents, func(providers.PullRequestSummary) (bool, error) {
 		t.Fatal("behindBase probe should not run for a needs-remediation candidate")
 		return false, nil
 	})
@@ -756,14 +831,11 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	}
 }
 
-func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
-	const prBranch = "goobers/impl/run-behind"
-	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
-
+func TestGatherPRContextDoesNotSelectUnelectedBehindBaseOnlyPR(t *testing.T) {
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
-		prNumber: 58, head: prBranch, base: "main",
-		headSHA: headSHA, baseSHA: baseSHA,
+		prNumber: 58, head: "goobers/impl/run-behind", base: "main",
+		headSHA: "head-sha", baseSHA: "base-sha",
 	}
 	server := srv.start(t)
 
@@ -771,65 +843,23 @@ func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
 	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = prev })
 
-	mgr, err := worktree.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
-		RepoURL: origin, RunID: "run-behind", BaseRef: "main",
-		Branch: "goobers/pr-remediation/run-behind",
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-
 	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-behind")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
-	t.Chdir(wt.Path)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
 		t.Fatalf("gather-pr-context code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-
-	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
-	if err != nil {
-		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
+	if !strings.Contains(stdout, "no work") || stderr != "" {
+		t.Fatalf("stdout = %q, stderr = %q, want clean no-work before merge-review election", stdout, stderr)
 	}
-	var contextResult struct {
-		SelectedNumber         string `json:"selectedNumber"`
-		Head                   string `json:"head"`
-		Base                   string `json:"base"`
-		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
-		HasFailingCI           string `json:"hasFailingCI"`
-	}
-	if err := json.Unmarshal(data, &contextResult); err != nil {
-		t.Fatalf("unmarshal %s: %v", remediationBriefResultFile, err)
-	}
-	if contextResult.SelectedNumber != "58" {
-		t.Fatalf("selectedNumber = %q, want 58", contextResult.SelectedNumber)
-	}
-
-	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", contextResult.SelectedNumber)
-	t.Setenv("GOOBERS_INPUT_HEAD", contextResult.Head)
-	t.Setenv("GOOBERS_INPUT_BASE", contextResult.Base)
-	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", contextResult.HasSubstantiveFindings)
-	t.Setenv("GOOBERS_INPUT_HASFAILINGCI", contextResult.HasFailingCI)
-	code, stdout, stderr = runArgs(t, "rebase-pr", instanceRoot)
-	if code != 0 {
-		t.Fatalf("rebase-pr code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
-	}
-
-	verify := t.TempDir()
-	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
-	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
-		t.Fatalf("origin's %s branch was not rebased onto advanced main: %v", prBranch, err)
-	}
+	assertNoWorkProviderStageResult(t, filepath.Join(workDir, remediationBriefResultFile))
 }
 
 func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
@@ -869,7 +899,7 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
-	if _, err := claimPullRequest(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("claim PR: %v", err)
 	}
 	t.Chdir(wt.Path)

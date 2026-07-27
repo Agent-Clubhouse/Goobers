@@ -45,6 +45,23 @@ func Digest(b []byte) string {
 	return DigestAlgo + ":" + hex.EncodeToString(sum[:])
 }
 
+// ArtifactRef computes the Ref RecordArtifact would return for data without
+// writing anything: Path, Digest, and Size are pure functions of the bytes.
+// Callers that need an artifact's eventual journal address before a writer
+// commits it — the engine workflow computing a verdict ContextPointer while
+// the blob itself is written later by the history→journal projection (#629/
+// #412) — derive it here so the content-address layout stays in one place.
+// The digest commits to data exactly as given; RecordArtifact scrubs first,
+// so the two agree only when data carries nothing registered for scrubbing.
+func ArtifactRef(data []byte) (Ref, error) {
+	digest := Digest(data)
+	path, err := artifactPath(digest)
+	if err != nil {
+		return Ref{}, err
+	}
+	return Ref{Path: path, Digest: digest, Size: int64(len(data))}, nil
+}
+
 // digestHex returns the hex portion of a "sha256:<hex>" digest.
 func digestHex(digest string) (string, error) {
 	algo, hexPart, ok := strings.Cut(digest, ":")

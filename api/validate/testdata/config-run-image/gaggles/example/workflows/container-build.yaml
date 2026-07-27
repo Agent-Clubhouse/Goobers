@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: container-build
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: Build in a requested container.
+      run:
+        command: ["make", "build"]
+        image: alpine:3.20

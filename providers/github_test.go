@@ -16,6 +16,60 @@ import (
 	"time"
 )
 
+// spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
+type spyGitRegistrar struct{ secrets [][]byte }
+
+func (s *spyGitRegistrar) Register(secret []byte) {
+	s.secrets = append(s.secrets, append([]byte(nil), secret...))
+}
+
+func (s *spyGitRegistrar) saw(v string) bool {
+	for _, b := range s.secrets {
+		if string(b) == v {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGitHubGitAuthEnvironmentScopesReadTokenAndRegistersSecret covers the
+// exported worktree-layer read-auth builder (MGV-11 #1286): it URL-scopes an
+// x-access-token http.extraheader, disables terminal prompts, and registers the
+// token (and its base64 auth form) for scrubbing. An empty token yields a
+// hardened env with no auth header (anonymous clone of a public repo still works).
+func TestGitHubGitAuthEnvironmentScopesReadTokenAndRegistersSecret(t *testing.T) {
+	reg := &spyGitRegistrar{}
+	const token = "read-token-xyz-000"
+	const url = "https://github.com/example/goobers.git"
+	env := GitHubGitAuthEnvironment(token, url, reg)
+	joined := strings.Join(env, "\n")
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+
+	if !strings.Contains(joined, "GIT_CONFIG_KEY_1=http."+url+"/.extraheader") {
+		t.Errorf("missing URL-scoped extraheader in %#v", env)
+	}
+	if !strings.Contains(joined, "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+auth) {
+		t.Errorf("missing x-access-token auth header in %#v", env)
+	}
+	if !strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") {
+		t.Errorf("missing terminal-prompt guard in %#v", env)
+	}
+	// The raw token never appears except inside the base64 auth value.
+	for _, e := range env {
+		if strings.Contains(e, token) {
+			t.Errorf("raw token leaked into env entry %q", e)
+		}
+	}
+	if !reg.saw(token) || !reg.saw(auth) {
+		t.Errorf("token/auth not registered for scrubbing: %#v", reg.secrets)
+	}
+
+	anon := GitHubGitAuthEnvironment("", "https://github.com/example/pub.git", reg)
+	if strings.Contains(strings.Join(anon, "\n"), "extraheader") {
+		t.Errorf("empty token should produce no auth header: %#v", anon)
+	}
+}
+
 func TestGitHubProviderUpdateBranchUsesExpectedHeadLease(t *testing.T) {
 	var requestBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +194,46 @@ func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 	if item.Parent == nil || item.Parent.Type != "milestone" {
 		t.Fatalf("expected hierarchy parent to be preserved: %#v", item.Parent)
+	}
+}
+
+func TestGitHubProviderEnsureWorkItemLabelsCreatesOnlyMissing(t *testing.T) {
+	var created map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/labels", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, []map[string]string{{"name": "existing"}})
+		case http.MethodPost:
+			decodeJSON(t, r, &created)
+			writeJSON(t, w, created)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.EnsureWorkItemLabels(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		[]WorkItemLabel{
+			{Name: "Existing", Color: "ffffff", Description: "leave unchanged"},
+			{Name: "goobers:ready", Color: "#1D76DB", Description: "ready for work"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Created, []string{"goobers:ready"}) ||
+		!reflect.DeepEqual(result.Skipped, []string{"Existing"}) {
+		t.Fatalf("result = %+v", result)
+	}
+	if created["name"] != "goobers:ready" ||
+		created["color"] != "1D76DB" ||
+		created["description"] != "ready for work" {
+		t.Fatalf("created label = %#v", created)
 	}
 }
 
@@ -1754,6 +1848,115 @@ func TestGitHubProviderDetectMergePolicyRequiresBranch(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderGetRepoPolicyReportsLiveSettings proves the three
+// declared-manifest facts issue #916 needs: the repo-level allowed merge
+// methods (squash-only here, the #877 scenario), the merge-queue requirement
+// from the same rules-for-branch response DetectMergePolicy reads, and the
+// required-status-checks contexts from a "required_status_checks"-typed
+// rule's Parameters — none of which DetectMergePolicy itself parses.
+func TestGitHubProviderGetRepoPolicyReportsLiveSettings(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		w.Header().Set("X-OAuth-Scopes", "repo, workflow")
+		writeJSON(t, w, map[string]interface{}{
+			"allow_merge_commit": false,
+			"allow_squash_merge": true,
+			"allow_rebase_merge": false,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, []map[string]interface{}{
+			{"type": "merge_queue"},
+			{
+				"type": "required_status_checks",
+				"parameters": map[string]interface{}{
+					"required_status_checks": []map[string]interface{}{
+						{"context": "make ci"},
+						{"context": "lint"},
+					},
+				},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("GetRepoPolicy returned error: %v", err)
+	}
+	if len(result.AllowedMergeMethods) != 1 || result.AllowedMergeMethods[0] != MergeMethodSquash {
+		t.Fatalf("AllowedMergeMethods = %v, want [squash]", result.AllowedMergeMethods)
+	}
+	if result.MergeQueuePolicy != MergePolicyMergeQueue {
+		t.Fatalf("MergeQueuePolicy = %q, want %q", result.MergeQueuePolicy, MergePolicyMergeQueue)
+	}
+	if len(result.RequiredStatusChecks) != 2 || result.RequiredStatusChecks[0] != "lint" || result.RequiredStatusChecks[1] != "make ci" {
+		t.Fatalf("RequiredStatusChecks = %v, want [lint, make ci] (sorted)", result.RequiredStatusChecks)
+	}
+	if result.TokenScope != TokenScopeAvailable {
+		t.Fatalf("TokenScope = %q, want %q", result.TokenScope, TokenScopeAvailable)
+	}
+	if len(result.TokenScopes) != 2 || result.TokenScopes[0] != "repo" || result.TokenScopes[1] != "workflow" {
+		t.Fatalf("TokenScopes = %v, want [repo workflow]", result.TokenScopes)
+	}
+}
+
+// TestGitHubProviderGetRepoPolicyTokenScopeUnavailable proves the accepted
+// V1 contract's fail-closed half: when GitHub sends no X-OAuth-Scopes header
+// (fine-grained PAT / GitHub App installation tokens never send it), scope
+// is reported unavailable — never inferred from the header's absence being
+// treated as "no scopes granted".
+func TestGitHubProviderGetRepoPolicyTokenScopeUnavailable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"allow_merge_commit": true,
+			"allow_squash_merge": true,
+			"allow_rebase_merge": true,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("GetRepoPolicy returned error: %v", err)
+	}
+	if result.TokenScope != TokenScopeUnavailable {
+		t.Fatalf("TokenScope = %q, want %q", result.TokenScope, TokenScopeUnavailable)
+	}
+	if len(result.TokenScopes) != 0 {
+		t.Fatalf("TokenScopes = %v, want none", result.TokenScopes)
+	}
+	if len(result.AllowedMergeMethods) != 3 {
+		t.Fatalf("AllowedMergeMethods = %v, want all three allowed", result.AllowedMergeMethods)
+	}
+	if result.MergeQueuePolicy != MergePolicyDirect {
+		t.Fatalf("MergeQueuePolicy = %q, want %q", result.MergeQueuePolicy, MergePolicyDirect)
+	}
+}
+
+func TestGitHubProviderGetRepoPolicyRequiresBranch(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	if _, err := provider.GetRepoPolicy(context.Background(), RepoPolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+	}); err == nil {
+		t.Fatal("expected an error for a missing branch")
+	}
+}
+
 // graphQLStub serves the /graphql endpoint the enqueue path uses, routing
 // by whether the request carries the mutation or the lookup query, and
 // recording every request body so a test can assert what went on the wire.
@@ -2065,9 +2268,11 @@ func TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress(t *testing.T) {
 // repository because a fork PR's branch does not live in the base repository.
 func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	mux := http.NewServeMux()
+	mergedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
-			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
+			"number": 9, "state": "closed", "merged": true, "merged_at": mergedAt.Format(time.RFC3339),
+			"draft": true, "html_url": "https://github.com/acme/app/pull/9",
 			"title": "Improve merge history",
 			"body":  "Implements the thing.\n\nFixes #42",
 			"head": map[string]interface{}{
@@ -2107,6 +2312,9 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	}
 	if result.Title != "Improve merge history" {
 		t.Fatalf("Title = %q, want Improve merge history", result.Title)
+	}
+	if result.MergedAt == nil || !result.MergedAt.Equal(mergedAt) {
+		t.Fatalf("MergedAt = %v, want %s", result.MergedAt, mergedAt)
 	}
 	if result.HeadSHA != "headsha123" {
 		t.Fatalf("HeadSHA = %q, want headsha123", result.HeadSHA)

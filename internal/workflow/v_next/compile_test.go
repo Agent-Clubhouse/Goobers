@@ -56,48 +56,89 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsPreviewFeaturesWhenOptionOmitted(t *testing.T) {
-	// A container-image stage is the DSL feature that remains preview (#1102);
-	// standard fields are GA (#1196), so the gate must fire on the image, not on
-	// ordinary fields like workflow.spec.gaggle.
-	def := Definition{Name: "image-build", Version: 1, Spec: apiv1.WorkflowSpec{
+func TestCompilePreservesRunScriptForShellExecutor(t *testing.T) {
+	script := "set -eu\nprintf 'ok\\n'"
+	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
-		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    "build",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
 		Tasks: []apiv1.Task{{
-			Name: "build",
+			Name: "check",
 			Type: apiv1.TaskDeterministic,
-			Goal: "build",
-			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Script:    script,
+				Env:       map[string]string{"LC_ALL": "C"},
+				Workspace: apiv1.WorkspaceScratch,
+			},
 		}},
-	}}
-
-	_, err := Compile(def)
-	if err == nil || !strings.Contains(err.Error(), `DSL feature "stage.run.image" is preview and requires explicit instance opt-in`) {
-		t.Fatalf("Compile error = %v, want stage.run.image preview opt-in diagnostic", err)
 	}
-	// The same workflow compiles once the instance opts into preview features.
-	if _, err := Compile(def, WithPreviewFeatures(true)); err != nil {
-		t.Fatalf("Compile with preview opt-in must succeed, got: %v", err)
+
+	machine, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	task, ok := machine.Task("check")
+	if !ok {
+		t.Fatal("compiled machine has no check task")
+	}
+	if task.Run.Command != nil {
+		t.Fatalf("compiled command = %#v, want nil", task.Run.Command)
+	}
+	if task.Run.Script != script {
+		t.Fatalf("compiled script = %q, want %q", task.Run.Script, script)
+	}
+	if task.Run.Env["LC_ALL"] != "C" || task.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Fatalf("compiled run lost options: %+v", task.Run)
 	}
 }
 
-func TestCompileRejectsHumanGate(t *testing.T) {
+func TestCompileRejectsRunCommandAndScript(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "check",
+		Tasks: []apiv1.Task{{
+			Name: "check",
+			Type: apiv1.TaskDeterministic,
+			Goal: "check",
+			Run: &apiv1.DeterministicRun{
+				Command: []string{"true"},
+				Script:  "printf 'ok\n'",
+			},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "run.command and run.script are mutually exclusive") {
+		t.Fatalf("Compile error = %v, want mutual-exclusion rejection", err)
+	}
+}
+
+func TestCompileAllowsHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Start:  "approval",
 		Gates: []apiv1.Gate{{
 			Name:      "approval",
 			Evaluator: apiv1.EvaluatorHuman,
-			Human:     &apiv1.HumanGate{Approvers: []string{"maintainers"}},
+			Human:     &apiv1.HumanGate{},
 			Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
 		}},
 	}
 
-	_, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec})
-	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("expected actionable human-gate rejection, got %v", err)
+	if _, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("compile human gate: %v", err)
+	}
+	spec.Gates[0].Human.Approvers = []string{"maintainers"}
+	if _, err := compileAcknowledged(Definition{Name: "restricted-human-approval", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("compile restricted human gate: %v", err)
+	}
+	spec.Gates[0].Human.TimeoutSeconds = 60
+	spec.Gates[0].Human.OnTimeout = "reject"
+	if _, err := compileAcknowledged(Definition{Name: "timed-human-approval", Version: 1, Spec: spec}); err == nil ||
+		!strings.Contains(err.Error(), "human timeout behavior is not supported yet") {
+		t.Fatalf("timed human gate error = %v, want fail-closed timeout rejection", err)
 	}
 }
 
@@ -235,7 +276,7 @@ func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
 	}
 }
 
-func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
+func TestCheckWarningsAcceptedButInertField(t *testing.T) {
 	def := Definition{Name: "inert-fields", Version: 1, Spec: apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
@@ -244,7 +285,7 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 			Name:            "build",
 			Type:            apiv1.TaskDeterministic,
 			Goal:            "build",
-			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}},
 			ExpectedOutputs: []string{"artifact"},
 		}},
 	}}
@@ -253,17 +294,12 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 		t.Fatalf("warnings must not fail compilation: %v", err)
 	}
 	warnings := CheckWarnings(def)
-	if len(warnings) != 2 {
-		t.Fatalf("warnings = %v, want expectedOutputs and run.image warnings", warnings)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want expectedOutputs warning", warnings)
 	}
-	all := strings.Join(warnings, "\n")
-	for _, want := range []string{
-		"expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
-		"run.image is not honored by the local runner",
-	} {
-		if !strings.Contains(all, want) {
-			t.Errorf("warnings = %v, want warning containing %q", warnings, want)
-		}
+	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
+	if !strings.Contains(warnings[0], want) {
+		t.Errorf("warnings = %v, want warning containing %q", warnings, want)
 	}
 }
 
@@ -499,7 +535,7 @@ func TestCompileRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 		},
 	}
 	_, err := compileAcknowledged(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), "syncBase requires a repo workspace") {
+	if err == nil || !strings.Contains(err.Error(), "syncBase requires a writable repo workspace") {
 		t.Fatalf("Compile error = %v, want syncBase repo-workspace requirement", err)
 	}
 }
@@ -558,6 +594,45 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), `uses capability "repo:push" not granted to goober "coder"`) {
 		t.Fatalf("expected undeclared-capability error, got %v", err)
+	}
+}
+
+func TestCompileRequiresTaskMCPCredentialCapabilities(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
+		}},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Capabilities: []string{"contents:read"},
+			MCPServers: []apiv1.MCPServer{{
+				Name: "context",
+				URL:  "https://mcp.example.test",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Header:     "Authorization",
+				}},
+			}},
+		},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "mcp-capability", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	)
+	if err == nil || !strings.Contains(err.Error(), `task "implement" must declare MCP credential capability "contents:read" required by goober "coder"`) {
+		t.Fatalf("Compile error = %v, want missing MCP credential capability", err)
+	}
+
+	spec.Tasks[0].Capabilities = []string{"contents:read"}
+	if _, err := compileAcknowledged(
+		Definition{Name: "mcp-capability", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("declared MCP credential capability should compile: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@
 export const apiRoutes = {
   "health": { method: "GET", path: "/api/v1/health", actionClass: "read-only-navigation" },
   "instance": { method: "GET", path: "/api/v1/instance", actionClass: "read-only-navigation" },
+  "portalConfig": { method: "GET", path: "/api/v1/portal/config", actionClass: "read-only-navigation" },
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },
@@ -16,11 +17,14 @@ export const apiRoutes = {
   "telemetryErrorSignatures": { method: "GET", path: "/api/v1/telemetry/error-signatures", actionClass: "read-only-navigation" },
   "telemetryErrors": { method: "GET", path: "/api/v1/telemetry/errors", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
+  "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
+  "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
+  "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];
 
-export const runtimeMutationCapabilities = [] as const;
+export const runtimeMutationCapabilities = ["approve", "override", "rerun"] as const;
 
 export type RuntimeMutationCapabilityId =
   (typeof runtimeMutationCapabilities)[number];

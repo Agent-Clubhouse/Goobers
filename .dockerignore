@@ -1,0 +1,10 @@
+# Keep the image build context lean: the Dockerfile compiles from committed
+# source only (portal-dist is committed, version metadata arrives via build
+# args), so VCS state and local build artifacts never belong in the context.
+.git
+.clubhouse
+bin/
+dist/
+stress-results/
+coverage.out
+portal/node_modules/

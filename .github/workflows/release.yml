@@ -18,12 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -106,9 +106,53 @@ jobs:
           test -x dist/install.sh
           sh -n dist/install.sh
           grep --fixed-strings "  install.sh" dist/SHA256SUMS
+          grep --fixed-strings "  goobers-onboarding_${TAG}.zip" dist/SHA256SUMS
           mkdir smoke
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
-          smoke/goobers --version | grep --fixed-strings "$TAG"
+          export PATH="$PWD/smoke:$PATH"
+          goobers --version | grep --fixed-strings "$TAG"
+          grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
+          grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers-${TAG} init --guided ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "GOOBERS_RELEASE_ROOT=\"\${GOOBERS_RELEASE_ROOT:-\${GOOBERS_DATA_ROOT}/${TAG}}\"" smoke/docs/guides/quickstart.md
+          ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
+          ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
+          test -f smoke/onboarding/manifest.json
+          test -f smoke/onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml
+          test -f smoke/onboarding/templates/quickstart@v1/gaggles/example/workflows/quickstart.yaml
+          test -f smoke/onboarding/samples/getting-started-task-api@1.0.0/sample.json
+          test -f smoke/onboarding/samples/getting-started-task-api@1.0.0/seed-issues.json
+          grep --fixed-strings "\"version\": \"${TAG}\"" smoke/onboarding/manifest.json
+          mkdir onboarding-asset
+          unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
+          diff --recursive smoke/onboarding onboarding-asset
+          printf '%s\n' \
+            'new-local' \
+            'smoke/quickstart-config' \
+            'Agent-Clubhouse/Goobers' \
+            '' \
+            'implementation' \
+            '' \
+            '' \
+            '' \
+            '' \
+            '' \
+            '' \
+            'no' \
+            'yes' |
+            goobers init --guided smoke/quickstart-instance
+          goobers validate smoke/quickstart-instance
+          test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
+          test -f smoke/quickstart-config/instance.yaml.example
+          test -f smoke/quickstart-config/manifest.yaml
+          test -f smoke/quickstart-config/gaggles/goobers/workflows/implementation.yaml
+          test ! -e smoke/quickstart-config/telemetry.db
+          mkdir generated-docs
+          goobers __generate-docs generated-docs
+          diff --recursive smoke/docs/cli generated-docs/cli
+          diff --recursive smoke/docs/man generated-docs/man
+          diff --recursive smoke/docs/completion generated-docs/completion
 
       - name: Publish GitHub Release
         env:

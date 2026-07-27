@@ -11,7 +11,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
+backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
@@ -26,6 +26,18 @@ gather-implement-context uses the same deterministic stage contract to supply
 first-pass review and hot-file evidence.
 .fi
 .SH COMMANDS
+.TP
+\fBgoobers agent-kit\fR
+install, inspect, or update the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit check\fR
+report agent toolkit version and drift
+.TP
+\fBgoobers agent-kit install\fR
+install the release-matched agent toolkit
+.TP
+\fBgoobers agent-kit update\fR
+review or explicitly apply an agent toolkit update
 .TP
 \fBgoobers apply-verdict\fR
 publish a merge-review verdict as a native review (a workflow stage)
@@ -47,6 +59,9 @@ safely remove one blocked-item record, under claims.lock
 .TP
 \fBgoobers blocked list\fR
 print the learned blocked-item ledger (scheduler/blocked.json)
+.TP
+\fBgoobers check-fail-first\fR
+enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
@@ -73,10 +88,13 @@ generate a PowerShell completion script
 generate a zsh completion script
 .TP
 \fBgoobers config\fR
-inspect instance configuration and compare workflow definitions
+inspect, materialize, and compare instance configuration
 .TP
 \fBgoobers config diff\fR
 compare active workflows with canonical definitions
+.TP
+\fBgoobers config materialize\fR
+apply the recorded checked-in source to the runtime instance
 .TP
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
@@ -87,6 +105,9 @@ serve and open the local operations portal
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
 .TP
+\fBgoobers doctor\fR
+preflight a Kubernetes cluster against the documented infra shape
+.TP
 \fBgoobers elect-lander\fR
 elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
@@ -96,8 +117,23 @@ list escalated runs newest first
 \fBgoobers escalations show\fR
 show escalation cause + per-stage artifact timeline
 .TP
+\fBgoobers examples\fR
+browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers examples list\fR
+list canonical embedded workflow examples
+.TP
+\fBgoobers examples show\fR
+print a canonical embedded workflow example
+.TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
+.TP
+\fBgoobers fix\fR
+mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+.TP
+\fBgoobers gate-removal-guard\fR
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 .TP
 \fBgoobers gather-ci-failures\fR
 add failing CI diagnostics to a remediation brief (a workflow stage)
@@ -120,6 +156,9 @@ load other open PRs as review evidence (a workflow stage)
 \fBgoobers init\fR
 scaffold an instance root
 .TP
+\fBgoobers ios-simulator-test\fR
+run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
+.TP
 \fBgoobers issue-close-out\fR
 comment + close out the claimed issue (a workflow stage)
 .TP
@@ -138,6 +177,15 @@ conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 \fBgoobers merge-queue-poll\fR
 watch an enqueued PR until merged or evicted (a workflow stage)
 .TP
+\fBgoobers onboarding\fR
+run non-interactive onboarding actions
+.TP
+\fBgoobers onboarding stub-agent-instructions\fR
+install agent-instruction assets into a config source
+.TP
+\fBgoobers onboarding stub-sample\fR
+materialize and optionally seed the disposable Getting Started target
+.TP
 \fBgoobers open-pr\fR
 open or update the run's PR (a workflow stage)
 .TP
@@ -146,6 +194,9 @@ post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
 \fBgoobers pr-select\fR
 select one eligible open PR for merge-review (a workflow stage)
+.TP
+\fBgoobers preflight\fR
+check WSL full-isolation readiness and optionally hand off a command
 .TP
 \fBgoobers push-branch\fR
 push the worktree's checked-out branch to origin (a workflow stage)
@@ -180,8 +231,17 @@ trigger a run manually (still honors run conditions)
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
+\fBgoobers run approve\fR
+approve an escalated gate (not yet implemented, HITL-7/#469)
+.TP
 \fBgoobers run cancel\fR
 cancel a live in-flight run via the daemon
+.TP
+\fBgoobers run override\fR
+force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
+.TP
+\fBgoobers run rerun\fR
+rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
 .TP
 \fBgoobers runs\fR
 list runs and report per-run disk usage
@@ -219,6 +279,15 @@ assign an existing milestone to an issue (a workflow stage)
 \fBgoobers signal\fR
 fire an external signal to subscribed workflows
 .TP
+\fBgoobers speech\fR
+preflight and test local speech notifications
+.TP
+\fBgoobers speech preflight\fR
+check the configured local speech engine without emitting sound
+.TP
+\fBgoobers speech test\fR
+speak the fixed local readiness phrase
+.TP
 \fBgoobers stats\fR
 show the instance lifetime summary card
 .TP
@@ -239,6 +308,9 @@ re-emit a span-start-time window from journaled OTLP/JSON
 .TP
 \fBgoobers telemetry prune\fR
 remove terminal runs outside configured retention bounds
+.TP
+\fBgoobers telemetry prune-orphans\fR
+report or delete old orphan and unfinished run directories
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
@@ -264,12 +336,19 @@ print build version, commit, and date (--json for structured output)
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
 .TP
+\fBgoobers worker\fR
+host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+.TP
 \fBgoobers workflow\fR
 inspect workflows
 .TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .SH SEE ALSO
+\fBgoobers-agent-kit\fR(1),
+\fBgoobers-agent-kit-check\fR(1),
+\fBgoobers-agent-kit-install\fR(1),
+\fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply-verdict\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
@@ -277,6 +356,7 @@ show a workflow as a text DAG
 \fBgoobers-blocked\fR(1),
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
+\fBgoobers-check-fail-first\fR(1),
 \fBgoobers-claims\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),
@@ -287,13 +367,20 @@ show a workflow as a text DAG
 \fBgoobers-completion-zsh\fR(1),
 \fBgoobers-config\fR(1),
 \fBgoobers-config-diff\fR(1),
+\fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),
+\fBgoobers-doctor\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
+\fBgoobers-examples\fR(1),
+\fBgoobers-examples-list\fR(1),
+\fBgoobers-examples-show\fR(1),
 \fBgoobers-features\fR(1),
+\fBgoobers-fix\fR(1),
+\fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
 \fBgoobers-gather-issue-context\fR(1),
@@ -301,15 +388,20 @@ show a workflow as a text DAG
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
 \fBgoobers-init\fR(1),
+\fBgoobers-ios-simulator-test\fR(1),
 \fBgoobers-issue-close-out\fR(1),
 \fBgoobers-journal\fR(1),
 \fBgoobers-journal-redact\fR(1),
 \fBgoobers-lint\fR(1),
 \fBgoobers-merge-pr\fR(1),
 \fBgoobers-merge-queue-poll\fR(1),
+\fBgoobers-onboarding\fR(1),
+\fBgoobers-onboarding-stub-agent-instructions\fR(1),
+\fBgoobers-onboarding-stub-sample\fR(1),
 \fBgoobers-open-pr\fR(1),
 \fBgoobers-post-merge\fR(1),
 \fBgoobers-pr-select\fR(1),
+\fBgoobers-preflight\fR(1),
 \fBgoobers-push-branch\fR(1),
 \fBgoobers-push-remediated\fR(1),
 \fBgoobers-rebase-pr\fR(1),
@@ -321,7 +413,10 @@ show a workflow as a text DAG
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
+\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
+\fBgoobers-run-override\fR(1),
+\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),
@@ -334,6 +429,9 @@ show a workflow as a text DAG
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),
+\fBgoobers-speech\fR(1),
+\fBgoobers-speech-preflight\fR(1),
+\fBgoobers-speech-test\fR(1),
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
@@ -341,6 +439,7 @@ show a workflow as a text DAG
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
+\fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),
@@ -349,5 +448,6 @@ show a workflow as a text DAG
 \fBgoobers-validate\fR(1),
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
+\fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
 \fBgoobers-workflow-show\fR(1)

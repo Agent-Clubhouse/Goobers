@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PREFLIGHT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers preflight \- check WSL full-isolation readiness and optionally hand off a command
+.SH SYNOPSIS
+\fBgoobers preflight\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+
+On Windows, verify that the selected or default WSL distro can run the full
+isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
+goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
+
+With --launch-wsl, run the trailing Goobers command through that distro after
+the checks pass. Arguments are forwarded directly without shell evaluation,
+the WSL process starts in the current Windows directory, and its exit code is
+returned. Use paths relative to that directory or Linux paths in forwarded
+arguments.
+
+Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
+command failed, 2 = usage error. A forwarded command's non-zero exit code is
+preserved.
+.fi
+.SH EXAMPLES
+.nf
+goobers preflight
+goobers preflight --distro Ubuntu-24.04
+goobers preflight --launch-wsl -- run implementation .
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

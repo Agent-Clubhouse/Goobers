@@ -22,6 +22,18 @@ const RemediationBrief = "remediation-brief-v2.schema.json"
 // RemediationBriefV1 is retained because remediation brief wire versions are immutable.
 const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 
+// AgentToolkitManifest inventories the portable repository-side agent toolkit.
+const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
+
+// Diagnostics is the validate/lint machine-readable findings envelope.
+const Diagnostics = "diagnostics.schema.json"
+
+// Features is the workflow-DSL feature discovery envelope.
+const Features = "features.schema.json"
+
+// ConfigSourceAction is the versioned config-source onboarding result envelope.
+const ConfigSourceAction = "config-source-action.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",
@@ -32,7 +44,9 @@ var Kind = map[string]string{
 
 // Envelope maps an envelope name to its schema file name. "artifact" names the
 // shared ArtifactPointer schema that invocation/result/verdict $ref and that the
-// journal (#8) imports directly.
+// journal (#8) imports directly. Every v1alpha1 runtime type represented here,
+// plus standalone schema-backed artifacts such as RemediationBrief, must have a
+// fully populated round-trip case in api/validate/envelope_completeness_test.go.
 var Envelope = map[string]string{
 	"invocation": "invocation.schema.json",
 	"result":     "result.schema.json",
@@ -64,5 +78,9 @@ func Files() []string {
 		RemediationBrief,
 		"journal-event.schema.json",
 		"journal-run.schema.json",
+		AgentToolkitManifest,
+		Diagnostics,
+		Features,
+		ConfigSourceAction,
 	}
 }

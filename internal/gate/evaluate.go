@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -14,15 +15,17 @@ import (
 // evaluate to a non-"pass" outcome this many times before Evaluator overrides
 // its own configured branch and routes to workflow.TargetEscalate instead —
 // "bounded repass loops (loop budget journaled and enforced)" (issue #20).
-// There is no per-gate budget field in the workflow DSL yet (api/v1alpha1
-// Gate/AutomatedGate/AgenticGate); this is a run-wide default, overridable via
-// Evaluator.MaxRepasses.
-const DefaultMaxRepasses = 3
+// Inherited run policy may override this default, and Gate.MaxRepasses may
+// override the inherited value for one automated or agentic gate.
+const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 
 // Result is the outcome of one gate evaluation.
 type Result struct {
 	// Gate is the evaluated gate's name.
 	Gate string
+	// Actor identifies the human principal that supplied a human-gate
+	// decision. Empty for automated and agentic gates.
+	Actor string
 	// Outcome is the evaluator outcome (a check's "pass"/"fail", or an
 	// agentic Verdict's Decision string), or the synthesized fail-closed
 	// outcome for an interrupted-budget escalation.
@@ -73,12 +76,12 @@ type Result struct {
 	VerdictArtifact *apiv1.ArtifactPointer
 }
 
-// Evaluator dispatches a gate to its configured evaluator (automated or
-// agentic — human gates are V1, GT-003), resolves the outcome to a branch via
-// the compiled machine, enforces the bounded-repass budget, and journals the
-// verdict. It is safe for reuse across every gate evaluation within a single
-// run; it is NOT safe for concurrent use (a run advances one state at a time)
-// and MUST NOT be shared across runs (repass counts are per-run state).
+// Evaluator dispatches automated and agentic gates and resolves explicit human
+// decisions, maps outcomes to branches via the compiled machine, enforces the
+// bounded-repass budget, and journals the verdict. It is safe for reuse across
+// every gate evaluation within a single run; it is NOT safe for concurrent use
+// (a run advances one state at a time) and MUST NOT be shared across runs
+// (repass counts are per-run state).
 type Evaluator struct {
 	// Automated evaluates automated gates. Required if any gate in the
 	// workflow is evaluator=automated.
@@ -89,7 +92,7 @@ type Evaluator struct {
 	// Journal records gate verdicts. Optional — nil disables journaling
 	// (e.g. in unit tests that only care about branch resolution).
 	Journal Journal
-	// MaxRepasses overrides DefaultMaxRepasses when non-zero.
+	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
 	// Attempts holds each gate's current consecutive non-pass count, keyed by
@@ -189,7 +192,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		}
 	case apiv1.EvaluatorHuman:
-		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
+		return Result{}, fmt.Errorf("gate %q: human evaluator requires an explicit decision", g.Name)
 	default:
 		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
@@ -278,6 +281,54 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
 }
 
+// EvaluateHuman applies an explicit human decision to a human gate. The
+// actor must match a configured approver when the gate restricts approvers, and
+// the decision must exactly match a configured branch. Human gates execute
+// nothing, so there is no pre-dispatch gate.started marker.
+func (e *Evaluator) EvaluateHuman(g apiv1.Gate, decision, actor string) (Result, error) {
+	if err := ValidateHumanDecision(g, decision, actor); err != nil {
+		return Result{}, err
+	}
+	target, _ := wf.BranchTarget(g, decision)
+	r := Result{Gate: g.Name, Actor: actor, Outcome: decision, Target: target}
+	if _, err := recordVerdict(e.Journal, r, ""); err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
+	}
+	return r, nil
+}
+
+// ValidateHumanDecision verifies a human-gate decision without mutating its
+// journal. The runner uses it before resuming so invalid external input cannot
+// fail an otherwise healthy paused run.
+func ValidateHumanDecision(g apiv1.Gate, decision, actor string) error {
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		return fmt.Errorf("gate %q: only human gates accept a human decision", g.Name)
+	}
+	if g.Human != nil && len(g.Human.Approvers) > 0 {
+		if actor == "" {
+			return fmt.Errorf("gate %q: human decision actor is required by approver restrictions", g.Name)
+		}
+		authorized := false
+		for _, approver := range g.Human.Approvers {
+			if actor == approver {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return fmt.Errorf("gate %q: actor %q is not an authorized approver", g.Name, actor)
+		}
+	}
+	if decision == "" {
+		return fmt.Errorf("gate %q: human decision is required", g.Name)
+	}
+	_, ok := wf.BranchTarget(g, decision)
+	if !ok {
+		return fmt.Errorf("gate %q: decision %q has no defined branch (never a silent pass, GT-002)", g.Name, decision)
+	}
+	return nil
+}
+
 // EvaluateKnownOutcome applies the gate's branch and repass policy to an
 // outcome already established by the runner without dispatching an evaluator.
 func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, error) {
@@ -306,7 +357,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, exceeded := e.trackRepass(g.Name, outcome)
+	attempt, exceeded := e.trackRepass(g, outcome)
 	escalated := exceeded || duplicateDiff
 	if escalated {
 		target = escalationTarget(g)
@@ -327,7 +378,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 // evaluator; Evaluate also checks it as a fail-safe for direct callers.
 func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result, bool, error) {
 	attempt := e.Attempts[g.Name]
-	if attempt <= e.maxRepasses() {
+	if attempt <= e.maxRepasses(g) {
 		return Result{}, false, nil
 	}
 	r := Result{
@@ -357,24 +408,21 @@ func escalationTarget(g apiv1.Gate) string {
 // resets it to 0; any other outcome increments it. It returns the post-update
 // count and whether that count exceeds the repass budget (in which case the
 // caller must escalate instead of following the gate's own branch).
-func (e *Evaluator) trackRepass(gateName, outcome string) (attempt int, exceeded bool) {
+func (e *Evaluator) trackRepass(g apiv1.Gate, outcome string) (attempt int, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
 	if outcome == OutcomePass {
-		e.Attempts[gateName] = 0
+		e.Attempts[g.Name] = 0
 		return 0, false
 	}
-	e.Attempts[gateName]++
-	attempt = e.Attempts[gateName]
-	return attempt, attempt > e.maxRepasses()
+	e.Attempts[g.Name]++
+	attempt = e.Attempts[g.Name]
+	return attempt, attempt > e.maxRepasses(g)
 }
 
-func (e *Evaluator) maxRepasses() int {
-	if e.MaxRepasses > 0 {
-		return e.MaxRepasses
-	}
-	return DefaultMaxRepasses
+func (e *Evaluator) maxRepasses(g apiv1.Gate) int {
+	return runcontrol.MaxRepassesForGate(g, e.MaxRepasses)
 }
 
 // gateRetryPolicy returns the gate's declared evaluator retry policy, read off

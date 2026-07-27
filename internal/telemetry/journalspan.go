@@ -3,7 +3,9 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +53,8 @@ type JournalSpanExporter struct {
 // scrubber before write. Pass a Chain(registry, PatternScrubber) so
 // resolver-issued secrets registered for a run are caught in that run's spans,
 // not only pattern-shaped ones (#117 Piece B). A nil scrubber defaults to the
-// shared pattern net (pattern-only, no registry). runsDir is created if missing.
+// shared pattern net (pattern-only, no registry). The exporter never creates a
+// run directory; spans are discarded until run.yaml has been published.
 func NewJournalSpanExporter(runsDir string, scrubber journal.Scrubber) *JournalSpanExporter {
 	if scrubber == nil {
 		scrubber = journal.NewPatternScrubber()
@@ -115,23 +118,47 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 			return fmt.Errorf("telemetry: inspect retained journal for run %s: %w", traceID, err)
 		}
 	}
-	dir := filepath.Join(runsDir, traceID, spansDirName)
+	runDir := filepath.Join(runsDir, traceID)
+	info, err := os.Stat(filepath.Join(runDir, "run.yaml"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("telemetry: inspect journal for run %s: %w", traceID, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("telemetry: run %s journal identity is not a regular file", traceID)
+	}
+	dir := filepath.Join(runDir, spansDirName)
 	otlpRecord, err := e.marshalOTLP(spans)
 	if err != nil {
 		return fmt.Errorf("telemetry: encode OTLP spans for run %s: %w", traceID, err)
 	}
 
-	if err := e.writeSpans(dir, "run "+traceID, spans); err != nil {
+	if err := e.appendSpans(dir, "run "+traceID, spans); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
 
-	return e.writeOTLP(filepath.Join(dir, otlpFileName), otlpRecord)
+	if err := e.writeOTLP(filepath.Join(dir, otlpFileName), otlpRecord); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *JournalSpanExporter) writeSpans(dir, owner string, spans []sdktrace.ReadOnlySpan) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("telemetry: create spans dir for %s: %w", owner, err)
 	}
+	return e.appendSpans(dir, owner, spans)
+}
+
+func (e *JournalSpanExporter) appendSpans(dir, owner string, spans []sdktrace.ReadOnlySpan) error {
 	path := filepath.Join(dir, spanFileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -286,7 +313,7 @@ func (e *JournalSpanExporter) stringifyAttrs(kvs []attribute.KeyValue) map[strin
 	}
 	out := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		out[redactWith(e.scrubber, string(kv.Key))] = redactWith(e.scrubber, kv.Value.Emit())
+		out[redactWith(e.scrubber, string(kv.Key))] = redactWith(e.scrubber, kv.Value.String())
 	}
 	return out
 }

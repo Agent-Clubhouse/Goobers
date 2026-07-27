@@ -5,11 +5,17 @@ interface InspectorProps {
   children: React.ReactNode;
   className: string;
   label: string;
+  rootRef?: React.Ref<HTMLElement>;
 }
 
-export function Inspector({ children, className, label }: InspectorProps) {
+export function Inspector({ children, className, label, rootRef }: InspectorProps) {
   return (
-    <aside aria-label={label} className={className}>
+    <aside
+      aria-label={label}
+      className={className}
+      ref={rootRef}
+      tabIndex={rootRef ? -1 : undefined}
+    >
       {children}
     </aside>
   );

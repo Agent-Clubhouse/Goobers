@@ -163,6 +163,14 @@ describe("workflow and gaggle inventory", () => {
     });
     expect(coreLink).toHaveAttribute("href", "#/workflow/core/implementation");
     expect(toolsLink).toHaveAttribute("href", "#/workflow/tools/implementation");
+    expect(screen.getByRole("link", { name: "Core product" })).toHaveAttribute(
+      "href",
+      "#/gaggle/core",
+    );
+    expect(screen.getByRole("link", { name: "Developer tools" })).toHaveAttribute(
+      "href",
+      "#/gaggle/tools",
+    );
     expect(screen.getByText("Escalated")).toBeInTheDocument();
     expect(screen.getByText("Aborted")).toBeInTheDocument();
 
@@ -180,6 +188,60 @@ describe("workflow and gaggle inventory", () => {
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/The daemon is ready/)).toBeInTheDocument();
+  });
+
+  it("shows one gaggle's workflows as topology boxes with workflow drill-through", async () => {
+    window.location.hash = "#/gaggle/core";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+    const topology = screen.getByRole("list", { name: "Core product workflows" });
+    const workflowLink = within(topology).getByRole("link", {
+      name: "Open workflow Implementation for gaggle Core product",
+    });
+    expect(workflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
+    expect(within(topology).getByText("Implement approved core backlog items.")).toBeInTheDocument();
+    expect(
+      within(topology).queryByText("Implement approved tools backlog items."),
+    ).not.toBeInTheDocument();
+    expect(within(topology).getByText("Escalated")).toBeInTheDocument();
+
+    await userEvent.click(workflowLink);
+    await waitFor(() =>
+      expect(window.location.hash).toBe("#/workflow/core/implementation"),
+    );
+  });
+
+  it("shows an empty topology for a gaggle without workflows", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.gaggles.items = fixtures.gaggles.items.map((gaggle) =>
+      gaggle.name === "core" ? { ...gaggle, workflowCount: 0 } : gaggle,
+    );
+    if (!fixtures.workflows) {
+      throw new Error("Populated fixtures must include workflows.");
+    }
+    fixtures.workflows.core = {
+      items: [],
+      page: { limit: 100, total: 0, hasMore: false, nextCursor: "" },
+    };
+    window.location.hash = "#/gaggle/core";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("No workflows are provisioned for this gaggle."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Core product workflows" })).not.toBeInTheDocument();
+  });
+
+  it("reports an unknown gaggle without substituting another inventory", async () => {
+    window.location.hash = "#/gaggle/missing";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Gaggle unavailable" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No gaggle named "missing"/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Core product" })).not.toBeInTheDocument();
   });
 });
 

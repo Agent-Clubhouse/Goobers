@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -20,6 +21,34 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+// TestNewDoesNotMutateGlobalOTelState guards against #1557: New used to call
+// otel.SetTracerProvider/SetMeterProvider, leaking a process-global pointer at
+// a client's exporter target that could outlive the client (e.g. a dead
+// ephemeral collector port from a prior test's incompletely-shutdown
+// provider) and blow the export deadline for spans from an unrelated later
+// client in the same process.
+func TestNewDoesNotMutateGlobalOTelState(t *testing.T) {
+	wantTracerProvider := otel.GetTracerProvider()
+	wantMeterProvider := otel.GetMeterProvider()
+
+	ctx := context.Background()
+	client, err := New(ctx, Config{
+		ServiceName:  "telemetry-test",
+		SpanExporter: NewMemoryExporter(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Errorf("New changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Errorf("New changed the global meter provider: got %v, want %v", got, wantMeterProvider)
+	}
+}
 
 func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	ctx := context.Background()
@@ -58,6 +87,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		GooberDigest:   "sha256:goobers",
 		RunID:          runID,
 		TaskID:         "implement",
+		Branch:         3,
 		TaskType:       "agentic",
 		GooberID:       "coder",
 		Model:          "gpt-5.6-sol",
@@ -135,6 +165,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	taskAttrs := attrMap(task)
 	assertAttr(t, taskAttrs, AttrGooberDigest, "sha256:goobers")
 	assertAttr(t, taskAttrs, AttrStage, "implement")
+	assertAttr(t, taskAttrs, AttrBranch, "3")
 	assertAttr(t, taskAttrs, AttrStageType, "agentic")
 	assertAttr(t, taskAttrs, AttrGoober, "coder")
 	assertAttr(t, taskAttrs, AttrModel, "gpt-5.6-sol")
@@ -739,7 +770,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	}
 	for _, event := range exported.Events() {
 		for _, attr := range event.Attributes {
-			if strings.Contains(attr.Value.Emit(), secret) {
+			if strings.Contains(attr.Value.String(), secret) {
 				t.Fatalf("registered credential leaked into span event: %+v", event)
 			}
 		}
@@ -833,6 +864,7 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.model",
 		"goobers.harness.version",
 		"goobers.stage",
+		"goobers.branch",
 		"goobers.stage.type",
 		"goobers.attempt.n",
 		"goobers.attempt.kind",
@@ -926,7 +958,7 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 func attrMap(span sdktrace.ReadOnlySpan) map[string]string {
 	attrs := map[string]string{}
 	for _, attr := range span.Attributes() {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	return attrs
 }

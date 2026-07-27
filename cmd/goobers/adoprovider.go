@@ -58,7 +58,7 @@ func newADOProviderForStage(root string, routed providers.RepositoryRef) (*provi
 	if err != nil {
 		return nil, err
 	}
-	return adoauth.Provider(repo, nil, nil, nil)
+	return adoauth.Provider(repo, nil, nil, nil, nil)
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)

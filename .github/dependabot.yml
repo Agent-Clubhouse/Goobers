@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # One grouped PR per ecosystem per week. Ungrouped, the first run opened 26
+  # PRs at once: every gomod PR edits go.mod/go.sum, every npm PR edits
+  # portal/package-lock.json, and every actions PR edits the same workflow
+  # files, so they conflict pairwise and cascade into rebase churn through the
+  # 5-wide merge queue. Grouping also lets coordinated bumps land together --
+  # @azure/msal-react 5 peer-requires @azure/msal-browser 5, which is
+  # unmergeable as two separate PRs.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      gomod:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/portal"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      portal-npm:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"

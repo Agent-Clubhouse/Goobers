@@ -3,7 +3,10 @@ import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
-import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
+import {
+  WorkflowTopologyGraph,
+  type WorkflowGraphFullscreenMode,
+} from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
   eventHeading,
@@ -61,19 +64,38 @@ export function RunPage({
       </section>
     );
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 
   return (
-    <RunDetailWorkspace
-      client={client}
-      events={query.state.data.events}
-      key={query.state.data.run.id}
-      navigate={navigate}
-      run={query.state.data.run}
-      runId={runId}
-    />
+    <>
+      {query.state.status === "stale" &&
+        (query.state.error ? (
+          <div className="run-stale-state run-stale-state-error" role="alert">
+            <span>
+              <strong>Run detail may be stale</strong>
+              <small>{query.state.error.message}</small>
+            </span>
+            <button className="text-button" onClick={query.retry} type="button">
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div aria-live="polite" className="run-stale-state" role="status">
+            <span aria-hidden="true" className="loading-mark" />
+            <span>Refreshing run detail…</span>
+          </div>
+        ))}
+      <RunDetailWorkspace
+        client={client}
+        events={query.state.data.events}
+        key={query.state.data.run.id}
+        navigate={navigate}
+        run={query.state.data.run}
+        runId={runId}
+      />
+    </>
   );
 }
 
@@ -97,10 +119,23 @@ function RunDetailWorkspace({
     eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
   );
   const [followingLatest, setFollowingLatest] = useState(true);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const fullscreenRootRef = useRef<HTMLDivElement>(null);
+  const [fullscreenMode, setFullscreenMode] =
+    useState<WorkflowGraphFullscreenMode>("none");
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
+
+  const revealInspector = () => {
+    const inspector = inspectorRef.current;
+    if (!inspector) {
+      return;
+    }
+    inspector.scrollIntoView?.({ block: "start", inline: "nearest" });
+    inspector.focus({ preventScroll: true });
+  };
 
   useEffect(() => {
     if (!followingLatest) {
@@ -110,10 +145,20 @@ function RunDetailWorkspace({
     setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
   }, [events, followingLatest, initialSeq, run.currentStage]);
 
-  const selectEvent = (event: RunEvent) => {
+  const selectNode = (nodeId: string, shouldRevealInspector = false) => {
+    setSelectedNodeId(nodeId);
+    if (shouldRevealInspector) {
+      revealInspector();
+    }
+  };
+
+  const selectEvent = (event: RunEvent, shouldRevealInspector = false) => {
     setSelectedSeq(event.seq);
     setSelectedNodeId(eventNodeAtSequence(events, event.seq));
     setFollowingLatest(event.seq === initialSeq);
+    if (shouldRevealInspector) {
+      revealInspector();
+    }
   };
 
   const replaySeek = (seq: number) => {
@@ -199,50 +244,75 @@ function RunDetailWorkspace({
 
       <section
         className="run-detail-workspace"
+        data-scroll-owner="page"
         data-responsive-layout="stack-under-820"
       >
-        <GraphFrame
-          action={
-            <span aria-live="polite" className="graph-legend">
-              State at sequence {selectedSeq || "—"}
-            </span>
+        <div
+          aria-label={
+            fullscreenMode === "fallback" ? "Run graph fullscreen view" : undefined
           }
-          className="run-graph-panel"
+          aria-modal={fullscreenMode === "fallback" ? "true" : undefined}
+          className={[
+            "run-graph-fullscreen-root",
+            "workflow-graph-fullscreen-target",
+            fullscreenMode === "fallback" ? "workflow-graph-shell-expanded" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          data-fullscreen={fullscreenMode}
+          ref={fullscreenRootRef}
+          role={fullscreenMode === "fallback" ? "dialog" : undefined}
         >
-          {run.graphStatus === "pinned" && run.graph ? (
-            <WorkflowTopologyGraph
-              causalNodeId={causalNodeId}
-              graph={run.graph}
-              nodeStates={nodeStates}
-              onSelectStage={setSelectedNodeId}
-              selectedStageId={selectedNodeId}
-              stateSeq={selectedSeq}
+          <GraphFrame
+            action={
+              <span aria-live="polite" className="graph-legend">
+                State at sequence {selectedSeq || "—"}
+              </span>
+            }
+            className="run-graph-panel"
+          >
+            {run.graphStatus === "pinned" && run.graph ? (
+              <WorkflowTopologyGraph
+                causalNodeId={causalNodeId}
+                fullscreenTargetRef={fullscreenRootRef}
+                graph={run.graph}
+                nodeStates={nodeStates}
+                onFullscreenModeChange={setFullscreenMode}
+                onSelectStage={selectNode}
+                selectedStageId={selectedNodeId}
+                stateSeq={selectedSeq}
+              />
+            ) : (
+              <div className="empty-detail" role="status">
+                <strong>Pinned graph unavailable</strong>
+                <span>
+                  This historic run predates graph snapshots. Its event ledger remains
+                  available.
+                </span>
+              </div>
+            )}
+          </GraphFrame>
+
+          {events.length > 0 && (
+            <ReplayScrubber
+              events={events}
+              onSeek={replaySeek}
+              selectedSeq={selectedSeq}
+              terminal={run.finishedAt != null}
             />
-          ) : (
-            <div className="empty-detail" role="status">
-              <strong>Pinned graph unavailable</strong>
-              <span>This historic run predates graph snapshots. Its event ledger remains available.</span>
-            </div>
           )}
-        </GraphFrame>
 
-        {events.length > 0 && (
-          <ReplayScrubber
-            events={events}
-            onSeek={replaySeek}
-            selectedSeq={selectedSeq}
-            terminal={run.finishedAt != null}
-          />
-        )}
-
-        {run.graphStatus === "pinned" && run.graph && (
-          <RunStageInspector
-            client={client}
-            node={selectedNode}
-            runId={runId}
-            selectedSeq={selectedSeq}
-          />
-        )}
+          {run.graphStatus === "pinned" && run.graph && (
+            <RunStageInspector
+              client={client}
+              events={events}
+              inspectorRef={inspectorRef}
+              node={selectedNode}
+              runId={runId}
+              selectedSeq={selectedSeq}
+            />
+          )}
+        </div>
 
         <EventLedger
           events={events}
@@ -262,7 +332,7 @@ function EventLedger({
   selectedSeq,
 }: {
   events: RunEvent[];
-  onSelect: (event: RunEvent) => void;
+  onSelect: (event: RunEvent, revealInspector?: boolean) => void;
   run: RunDetail;
   selectedSeq: number;
 }) {
@@ -302,7 +372,7 @@ function EventLedger({
                   aria-current={selected ? "true" : undefined}
                   aria-label={`Select sequence ${event.seq}: ${heading}. ${summary}`}
                   className="run-ledger-button"
-                  onClick={() => onSelect(event)}
+                  onClick={() => onSelect(event, true)}
                   onKeyDown={(keyboardEvent) => {
                     let targetIndex: number | undefined;
                     if (keyboardEvent.key === "ArrowDown" || keyboardEvent.key === "ArrowRight") {
@@ -349,4 +419,3 @@ function EventLedger({
     </section>
   );
 }
-

@@ -380,17 +380,21 @@ const (
 	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
 	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
 	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
+	featureGaggleSandbox                  FeatureID = "gaggle.spec.sandbox"
+	featureGaggleCheckoutSparse           FeatureID = "gaggle.spec.project.checkout.sparse"
 	featureGooberGaggle                   FeatureID = "goober.spec.gaggle"
 	featureGooberRole                     FeatureID = "goober.spec.role"
 	featureGooberDisplayName              FeatureID = "goober.spec.displayName"
 	featureGooberInstructions             FeatureID = "goober.spec.instructions"
 	featureGooberHarnessCopilot           FeatureID = "goober.spec.harness.copilot"
+	featureGooberHarnessClaudeCode        FeatureID = "goober.spec.harness.claude-code"
 	featureGooberModel                    FeatureID = "goober.spec.model"
 	featureGooberHarnessOptions           FeatureID = "goober.spec.harnessOptions"
 	featureGooberTimeoutSeconds           FeatureID = "goober.spec.timeoutSeconds"
 	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
 	featureGooberSkills                   FeatureID = "goober.spec.skills"
 	featureGooberTools                    FeatureID = "goober.spec.tools"
+	featureGooberMCPServers               FeatureID = "goober.spec.mcpServers"
 	featureGooberScaleFactor              FeatureID = "goober.spec.scaleFactor"
 	featureGooberWorkflows                FeatureID = "goober.spec.workflows"
 	featureTriggerManual                  FeatureID = "trigger.manual"
@@ -424,7 +428,6 @@ const (
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageCommand                   FeatureID = "stage.run.command"
 	featureStageEnv                       FeatureID = "stage.run.env"
-	featureStageImage                     FeatureID = "stage.run.image"
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
 	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
@@ -497,17 +500,21 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTerminalComplete,
 		featureWorkflowTerminalAbort,
 		featureWorkflowTerminalEscalate,
+		featureGaggleSandbox,
+		featureGaggleCheckoutSparse,
 		featureGooberGaggle,
 		featureGooberRole,
 		featureGooberDisplayName,
 		featureGooberInstructions,
 		featureGooberHarnessCopilot,
+		featureGooberHarnessClaudeCode,
 		featureGooberModel,
 		featureGooberHarnessOptions,
 		featureGooberTimeoutSeconds,
 		featureGooberCapabilities,
 		featureGooberSkills,
 		featureGooberTools,
+		featureGooberMCPServers,
 		featureGooberScaleFactor,
 		featureGooberWorkflows,
 		featureTriggerManual,
@@ -541,7 +548,6 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageCIPoll,
 		featureStageCommand,
 		featureStageEnv,
-		featureStageImage,
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
 		featureStageWorkspaceScratch,
@@ -611,11 +617,13 @@ func currentFeatures(sinceVersion string) []Feature {
 // and config-examples model, which must validate without a preview
 // acknowledgement (an earlier placeholder marked *every* field preview, so
 // guided-init tripped VER002 on every standard field, #1196). Only genuinely
-// unproven features stay preview — here, container-image stages, whose
-// execution path is deferred (#1102) and is exercised by nothing in the
-// canonical set. Promoting a feature to GA is a one-line removal from this map.
+// unproven features stay preview: sparse checkout, accepted but inert on the
+// local runner (#649), and the per-gaggle sandbox posture override, whose
+// enforcement is landing behind the default-off instance opt-in (#1305).
+// Promoting a feature to GA is a one-line removal from this map.
 var previewFeatures = map[FeatureID]struct{}{
-	featureStageImage: {},
+	featureGaggleSandbox:        {},
+	featureGaggleCheckoutSparse: {},
 }
 
 type featureSet map[FeatureID]struct{}
@@ -706,6 +714,9 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	if spec.Harness == "" || spec.Harness == apiv1.HarnessCopilot {
 		used.add(featureGooberHarnessCopilot)
 	}
+	if spec.Harness == apiv1.HarnessClaudeCode {
+		used.add(featureGooberHarnessClaudeCode)
+	}
 	if spec.Model != "" {
 		used.add(featureGooberModel)
 	}
@@ -723,6 +734,9 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	}
 	if spec.Tools != nil {
 		used.add(featureGooberTools)
+	}
+	if spec.MCPServers != nil {
+		used.add(featureGooberMCPServers)
 	}
 	used.add(featureGooberScaleFactor)
 	if spec.Workflows != nil {
@@ -826,9 +840,6 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageShell)
 	case "ci-poll":
 		used.add(featureStageCIPoll)
-	}
-	if task.Run.Image != "" {
-		used.add(featureStageImage)
 	}
 	if task.Run.Network == apiv1.NetworkNone {
 		used.add(featureStageNetworkNone)

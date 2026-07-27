@@ -9,17 +9,21 @@ import (
 	"strconv"
 	"text/tabwriter"
 
+	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	buildversion "github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-const featuresHelp = "Usage: goobers features [--dsl-version <version>] [--used] [path]\n\n" +
+const featuresHelp = "Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]\n\n" +
 	"List the workflow-DSL features this build understands by DSL version,\n" +
 	"including each feature's support level (preview/ga/deprecated/removed).\n" +
 	"Use --dsl-version to scope the matrix to one declared version. This reads\n" +
 	"the same registry and SupportMatrix the committed\n" +
 	"docs/feature-matrix.md is generated from, so the two never disagree.\n\n" +
+	"With --json, emit a versioned feature-discovery envelope instead of the\n" +
+	"human-readable table. " +
 	"With --used, list only the features the instance at path (default \".\")\n" +
 	"actually references across its workflows and goobers — the subset that\n" +
 	"instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance\n" +
@@ -28,6 +32,7 @@ const featuresHelp = "Usage: goobers features [--dsl-version <version>] [--used]
 func runFeatures(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("features", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit a versioned machine-readable feature-discovery envelope")
 	usedOnly := fs.Bool("used", false, "list only the features the instance at path references")
 	dslVersion := fs.String("dsl-version", "", "list only features contained in this DSL version")
 	fs.Usage = helpUsage(stderr, "features")
@@ -56,8 +61,66 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if *asJSON {
+		if err := encodeSchemaJSON(stdout, schemas.Features, newFeaturesEnvelope(rows, *dslVersion, *usedOnly)); err != nil {
+			pf(stderr, "error: encode features: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	writeFeatureTable(stdout, rows)
 	return 0
+}
+
+type featureJSON struct {
+	Name         string `json:"name"`
+	Stability    string `json:"stability"`
+	SinceVersion string `json:"sinceVersion"`
+	Used         *bool  `json:"used,omitempty"`
+}
+
+type featuresEnvelope struct {
+	SchemaVersion string        `json:"schemaVersion"`
+	Version       string        `json:"version"`
+	Commit        string        `json:"commit"`
+	DSLVersion    string        `json:"dslVersion"`
+	Features      []featureJSON `json:"features"`
+}
+
+func newFeaturesEnvelope(rows []featureMatrixRow, dslVersion string, usedOnly bool) featuresEnvelope {
+	info := buildversion.Get()
+	if dslVersion == "" {
+		dslVersion = "all"
+	}
+	byName := make(map[string]featureJSON, len(rows))
+	for _, row := range rows {
+		name := string(row.Feature.ID)
+		if _, exists := byName[name]; exists {
+			continue
+		}
+		feature := featureJSON{
+			Name:         name,
+			Stability:    string(row.Feature.Level),
+			SinceVersion: row.Feature.SinceVersion,
+		}
+		if usedOnly {
+			used := true
+			feature.Used = &used
+		}
+		byName[name] = feature
+	}
+	features := make([]featureJSON, 0, len(byName))
+	for _, feature := range byName {
+		features = append(features, feature)
+	}
+	sort.Slice(features, func(i, j int) bool { return features[i].Name < features[j].Name })
+	return featuresEnvelope{
+		SchemaVersion: featuresSchemaVersion,
+		Version:       info.Version,
+		Commit:        info.Commit,
+		DSLVersion:    dslVersion,
+		Features:      features,
+	}
 }
 
 type featureMatrixRow struct {

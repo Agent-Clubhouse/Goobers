@@ -13,14 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // defaultPromptFlag is the flag CopilotAdapter passes before the rendered
@@ -236,7 +232,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		command := resolveCopilotCommand(c.Command)
+		command := resolveHarnessCommand(c.Command)
 		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
@@ -282,6 +278,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
 	}
+	if len(req.MCPServers) > 0 {
+		if err := c.requireMCPModelCredential(ctx, req); err != nil {
+			return Outcome{}, err
+		}
+	}
 
 	prompt := renderPrompt(req)
 	// Also write the rendered prompt to the workspace for human debugging —
@@ -303,7 +304,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	baseCommand := resolveCopilotCommand(c.Command)
+	baseCommand := resolveHarnessCommand(c.Command)
 	argv := append(baseCommand, flag, prompt)
 	promptArg := len(baseCommand) + 1
 	if req.Model != "" {
@@ -321,9 +322,32 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, err
 	}
+	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
+	// into the workspace so the sandbox policy needs no writable root beyond
+	// the worktree (plus its narrowed linked git directories) — the exact recipe the
+	// sandbox package's live Copilot probe codified (ADR-0001). The overrides
+	// happen before the session-id block below so the native transcript path
+	// derives from the confined COPILOT_HOME.
+	var confinement *copilotConfinement
+	if req.Sandbox != nil {
+		confinement, err = prepareCopilotConfinement(req.Workspace)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
+		}
+		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
+		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
+		argv = append(argv, "--log-dir", confinement.logDir)
+	}
+	if len(req.MCPServers) > 0 {
+		env, err = prepareCopilotMCP(ctx, req, env)
+		if err != nil {
+			return Outcome{}, err
+		}
+		argv = append(argv, "--disable-builtin-mcps")
+	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
-		captureID, err := newCopilotCaptureID()
+		captureID, err := newHarnessSessionID()
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
 		}
@@ -333,6 +357,18 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if copilotHome, ok := copilotConfigHome(env); ok {
 			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
 		}
+	}
+
+	if req.Sandbox != nil {
+		// Wrap last, once argv is final (session id included), so the whole
+		// invocation runs inside the sandbox. promptArg shifts by the wrapper
+		// prefix so the contract-recovery turn below still swaps the prompt.
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
+		}
+		argv = wrapped
+		promptArg += shift
 	}
 
 	runner := c.runner()
@@ -407,6 +443,25 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 }
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
+	firstTranscript, secondTranscript, dropped := retainedProcessTranscripts(first, second, limit)
+
+	transcript := append([]byte(nil), firstTranscript...)
+	if len(firstTranscript) > 0 && len(secondTranscript) > 0 {
+		transcript = append(transcript, '\n')
+	}
+	transcript = append(transcript, secondTranscript...)
+	if dropped > 0 {
+		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
+	}
+	return ProcessResult{
+		Transcript:             transcript,
+		ExitCode:               second.ExitCode,
+		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
+		TranscriptDroppedBytes: dropped,
+	}
+}
+
+func retainedProcessTranscripts(first, second ProcessResult, limit int64) ([]byte, []byte, int64) {
 	if limit <= 0 {
 		limit = DefaultMaxTranscriptBytes
 	}
@@ -429,20 +484,7 @@ func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult
 		int64(len(firstTranscript)) - firstRetained +
 		int64(len(secondTranscript)) - secondRetained
 
-	transcript := append([]byte(nil), firstTranscript[:firstRetained]...)
-	if firstRetained > 0 && secondRetained > 0 {
-		transcript = append(transcript, '\n')
-	}
-	transcript = append(transcript, secondTranscript[:secondRetained]...)
-	if dropped > 0 {
-		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
-	}
-	return ProcessResult{
-		Transcript:             transcript,
-		ExitCode:               second.ExitCode,
-		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
-		TranscriptDroppedBytes: dropped,
-	}
+	return firstTranscript[:firstRetained], secondTranscript[:secondRetained], dropped
 }
 
 func processTranscriptBytes(result ProcessResult) []byte {
@@ -450,16 +492,6 @@ func processTranscriptBytes(result ProcessResult) []byte {
 		return result.Transcript
 	}
 	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
-}
-
-// baseEnv returns the minimal, explicit env every harness process starts
-// with — internal/procenv.BaseEnvWith, the allowlist internal/executor's
-// baseEnv() shares (#248, closing the #98/#122 drift for good: one
-// definition instead of two hand-kept-in-sync copies). extra carries the
-// instance-config-declared passthrough names (RunnerConfig.EnvPassthrough,
-// #736), additively and still default-deny.
-func baseEnv(extra []string) []string {
-	return procenv.BaseEnvWith(extra)
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
@@ -470,57 +502,26 @@ func baseEnv(extra []string) []string {
 // A configured capability that fails to resolve is a hard stop — the harness
 // never runs half-credentialed.
 func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
-	env := baseEnv(c.ExtraEnvAllowlist)
-	telemetryDir := req.TelemetryDir
-	if telemetryDir == "" {
-		telemetryDir = telemetry.PrepareStageTelemetryDir(req.Workspace)
+	return buildCredentialEnv(ctx, credentialEnvConfig{
+		adapterName:                    c.Name(),
+		envCapabilities:                c.EnvCapabilities,
+		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
+		extraEnvAllowlist:              c.ExtraEnvAllowlist,
+		instanceRoot:                   c.InstanceRoot,
+		selfBin:                        c.SelfBin,
+	}, req)
+}
+
+func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunRequest) error {
+	modelCapability := string(capability.AgentModel)
+	if c.EnvCapabilities[modelCapability] == "" {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require an environment binding for %s", modelCapability)
 	}
-	if telemetryDir != "" {
-		env = append(env, telemetry.StageTelemetryEnv+"="+telemetryDir)
+	if req.Credentials == nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential", modelCapability)
 	}
-	if c.InstanceRoot != "" {
-		env = append(env, executor.InstanceRootEnvVar+"="+c.InstanceRoot)
+	if _, err := req.Credentials.Token(ctx, modelCapability); err != nil {
+		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential: %w", modelCapability, err)
 	}
-	if c.SelfBin != "" {
-		env = append(env, executor.GoobersBinEnvVar+"="+c.SelfBin)
-	}
-	if repo := req.Envelope.RepoRef; repo.Provider != "" {
-		env = append(env,
-			executor.RepoProviderEnvVar+"="+string(repo.Provider),
-			executor.RepoOwnerEnvVar+"="+repo.Owner,
-			executor.RepoNameEnvVar+"="+repo.Name,
-		)
-		if repo.Project != "" {
-			env = append(env, executor.RepoProjectEnvVar+"="+repo.Project)
-		}
-	}
-	for _, capability := range req.Envelope.Capabilities {
-		envVar, ok := c.EnvCapabilities[capability]
-		if !ok {
-			continue
-		}
-		token, err := req.Credentials.Token(ctx, capability)
-		if err != nil {
-			// A missing grant is tolerated in two cases: an explicitly optional
-			// capability (the CLI can fall back to an existing user session,
-			// e.g. agent:model), or an Azure DevOps repo. ADO repo credentials
-			// are provisioned dynamically per stage through adoauth (azure-cli/
-			// workload/managed-identity shell out to `az` — providers.
-			// ADOGitAuthEnvironment / newADOProviderForStage), NOT through the
-			// static capability→token grant map, so azure-cli auth deliberately
-			// configures no repo:push grant. The agent commits locally under the
-			// modify-repository policy action; the deterministic push-branch
-			// stage publishes the branch with an az-derived credential. A
-			// PAT-configured ADO repo still has a grant and injects normally —
-			// only the absence of one is tolerated, so GitHub stays fail-closed.
-			if errors.Is(err, credentials.ErrNoCredentialForCapability) &&
-				(c.OptionalCredentialCapabilities[capability] ||
-					req.Envelope.RepoRef.Provider == apiv1.ProviderADO) {
-				continue
-			}
-			return nil, fmt.Errorf("harness: copilot-cli: resolve %s: %w", capability, err)
-		}
-		env = append(env, envVar+"="+token)
-	}
-	return env, nil
+	return nil
 }

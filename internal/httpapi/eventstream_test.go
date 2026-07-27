@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -724,5 +725,205 @@ func TestShutdownAbandonsQueuedReplayForSlowClient(t *testing.T) {
 	}
 	if got := writer.writeCount(); got >= backlog {
 		t.Fatalf("handler wrote %d of %d queued events, want the replay abandoned", got, backlog)
+	}
+}
+
+// seedFinishedRun writes a run journal and backdates it, so the stream treats it
+// as long-idle history rather than an active run.
+func seedFinishedRun(t *testing.T, layout instance.Layout, id string, age time.Duration) string {
+	t.Helper()
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:    id,
+		Workflow: "implementation",
+		Gaggle:   "core",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(layout.RunsDir(), id, "events.jsonl")
+	stamp := time.Now().Add(-age)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func newIdleTestStream(t *testing.T, layout instance.Layout, opts ...eventStreamOption) *EventStream {
+	t.Helper()
+	stream, err := newEventStream(layout, log.New(io.Discard, "", 0), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stream.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := stream.Wait(ctx); err != nil {
+			t.Errorf("wait for event stream: %v", err)
+		}
+	})
+	return stream
+}
+
+func observeJournalReads(t *testing.T) *[]string {
+	t.Helper()
+	var mu sync.Mutex
+	read := make([]string, 0)
+	journalReadObserver = func(path string) {
+		mu.Lock()
+		defer mu.Unlock()
+		read = append(read, path)
+	}
+	t.Cleanup(func() { journalReadObserver = nil })
+	return &read
+}
+
+// TestScanPollsOnlyActiveRunsNotEveryRunInHistory locks the #1738 bound. Every
+// tick used to rebuild the whole source list and open and read every run journal
+// ever written; on the live instance that was ~20k opens against a 100ms ticker,
+// so scans ran back-to-back and starved every HTTP handler in the daemon. A
+// finished run's journal never changes again, so it must not be polled at all.
+func TestScanPollsOnlyActiveRunsNotEveryRunInHistory(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
+
+	const history = 25
+	for i := 0; i < history; i++ {
+		seedFinishedRun(t, layout, fmt.Sprintf("run-%03d", i), time.Hour)
+	}
+
+	stream := newIdleTestStream(
+		t, layout,
+		withEventSession("test"),
+		withEventPollInterval(time.Hour),
+		withEventSweepInterval(time.Hour),
+	)
+	read := observeJournalReads(t)
+
+	if err := stream.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the instance journal is active; none of the finished runs are opened.
+	if len(*read) != 1 {
+		t.Fatalf("scan opened %d journals over a %d-run history, want 1 (instance journal only): %v",
+			len(*read), history, *read)
+	}
+}
+
+// TestScanDiscoversRunCreatedAfterStartup guards the bound above against
+// over-reach: skipping idle history must not stop a brand-new run from
+// streaming.
+func TestScanDiscoversRunCreatedAfterStartup(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		seedFinishedRun(t, layout, fmt.Sprintf("old-%03d", i), time.Hour)
+	}
+	stream := newIdleTestStream(
+		t, layout,
+		withEventSession("test"),
+		withEventPollInterval(time.Hour),
+		withEventSweepInterval(time.Hour),
+	)
+
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:    "fresh-run",
+		Workflow: "implementation",
+		Gaggle:   "core",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	read := observeJournalReads(t)
+	if err := stream.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := filepath.Join(layout.RunsDir(), "fresh-run", "events.jsonl")
+	found := false
+	for _, path := range *read {
+		if path == fresh {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("scan did not poll the newly created run; polled %v", *read)
+	}
+}
+
+// TestSweepReArmsIdleRunThatResumes covers the one behaviour the idle bound
+// trades away lag on: a finished run that is resumed starts writing again, and
+// the periodic sweep must notice and put it back in the fast poll.
+func TestSweepReArmsIdleRunThatResumes(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedFinishedRun(t, layout, "resumable", time.Hour)
+
+	stream := newIdleTestStream(
+		t, layout,
+		withEventSession("test"),
+		withEventPollInterval(time.Hour),
+		// Sweep on every scan: the two scans below run microseconds apart, so any
+		// realistic interval would skip the sweep and mask the behaviour.
+		withEventSweepInterval(time.Nanosecond),
+	)
+
+	resumed := filepath.Join(layout.RunsDir(), "resumable", "events.jsonl")
+	// Idle to begin with: not polled.
+	read := observeJournalReads(t)
+	if err := stream.scan(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range *read {
+		if path == resumed {
+			t.Fatal("idle run was polled before it changed")
+		}
+	}
+
+	// The run writes again; the sweep must re-arm it.
+	file, err := os.OpenFile(resumed, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Add(time.Second)
+	if err := os.Chtimes(resumed, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	*read = (*read)[:0]
+	if err := stream.scan(); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, path := range *read {
+		if path == resumed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sweep did not re-arm the resumed run; polled %v", *read)
 	}
 }

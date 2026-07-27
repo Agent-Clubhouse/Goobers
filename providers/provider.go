@@ -89,6 +89,15 @@ type PullRequestStatusPublisher interface {
 	PublishPullRequestStatus(context.Context, PullRequestStatusRequest) (PullRequestStatusResult, error)
 }
 
+// PolicyProvider reports a repo's live forge-conformance settings (issue
+// #916, Tier 4 of #903) for `goobers doctor --repo` to diff against a
+// declared instance-config manifest. It is separate from RepoProvider, like
+// BranchDeleter/BranchReconciliationProvider, so the GitHub-only V1 scope
+// does not widen every RepoProvider backend (e.g. ADO).
+type PolicyProvider interface {
+	GetRepoPolicy(context.Context, RepoPolicyRequest) (RepoPolicyResult, error)
+}
+
 // PullRequestReviewSubmitter publishes provider-native review verdicts. It is
 // separate from RepoProvider because V1's native-review protocol is currently
 // implemented only for GitHub.

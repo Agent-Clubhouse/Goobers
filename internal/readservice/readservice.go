@@ -31,6 +31,7 @@ const (
 // journals, definitions, or SQLite from their handlers.
 type Reader interface {
 	Health(context.Context) (Health, error)
+	PortalConfig(context.Context) (PortalConfig, error)
 	TelemetryReader
 	ListRuns(context.Context, RunListOptions) (RunList, error)
 	GetRun(context.Context, string) (RunDetail, error)
@@ -95,11 +96,21 @@ type Local struct {
 	// scan instead of one per request. See reconcileIndex.
 	reconcileMu   sync.Mutex
 	lastReconcile time.Time
-	// reconcileWatermark is the newest run-parent-directory mtime observed by the
-	// last successful reconcile. It bounds the per-scan cost: a parent whose mtime
-	// has not advanced past it cannot have gained or lost a run directory, so the
-	// next reconcile skips reading it entirely. Zero forces a full scan.
-	reconcileWatermark time.Time
+	// reconcileWatermarks records, per run-parent directory, the mtime observed
+	// when that parent was last scanned to completion. It bounds the per-scan
+	// cost: a parent whose mtime has not advanced past its watermark cannot have
+	// gained or lost a run directory, so the next reconcile skips reading it
+	// entirely. A parent with no entry has never been scanned and is walked in
+	// full.
+	//
+	// Keyed per parent rather than held as one global high-water mark so that
+	// progress is durable against cancellation: reconcile runs on the caller's
+	// request context, and a client that gives up mid-scan must not discard the
+	// parents already finished. A single global watermark advanced only after
+	// every parent completed meant a scan that was always cancelled never
+	// recorded anything, so every subsequent reconcile restarted from scratch as
+	// a full scan (#1708).
+	reconcileWatermarks map[string]time.Time
 }
 
 type definitionSnapshot struct {

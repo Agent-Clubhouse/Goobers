@@ -1,0 +1,103 @@
+# Deny-first networking for a gaggle namespace (k8s-infra-shape.md §5, the
+# tier-3 resolution of SEC-Q5):
+#   - default: everything denied, both directions;
+#   - stage pods: egress ONLY to the git/backlog provider, the model endpoint,
+#     the gaggle's sandbox targets, and DNS. Journal/artifact access is a
+#     volume mount, not a network path;
+#   - no pod-to-pod chatter across gaggles (nothing here selects another
+#     namespace);
+#   - NO INBOUND TO STAGE PODS. EVER. (No Ingress rule exists for them.)
+# NetworkPolicy is IP/label-based: FQDN allowlists need the provider CIDRs
+# below (CHANGE-ME documentation CIDRs) or a CNI with FQDN policy support.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  # Every pod in the gaggle namespace: no ingress, no egress, unless a more
+  # specific policy below opens it.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  # Name resolution for the allowed egress targets (§5).
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-stage-egress
+spec:
+  # Stage pods (ephemeral per-attempt pods/Jobs, §2) carry
+  # goobers.dev/role=stage. Egress list per §5 — replace the documentation
+  # CIDRs with your provider/model/sandbox endpoints.
+  podSelector:
+    matchLabels:
+      goobers.dev/role: stage
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        # CHANGE-ME: git/backlog provider (github.com or ADO) egress CIDRs.
+        - ipBlock:
+            cidr: 198.51.100.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        # CHANGE-ME: model/agent endpoint the harness uses.
+        - ipBlock:
+            cidr: 203.0.113.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        # CHANGE-ME: this gaggle's sandbox/provisioner targets
+        # (v2-cloud-scale C4). Remove if the gaggle uses none.
+        - ipBlock:
+            cidr: 192.0.2.0/24
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-temporal
+spec:
+  # Dedicated per-gaggle worker mode only (G2, #656): the gaggle's worker may
+  # reach the Temporal frontend (§2/§5 — Temporal is reachable from workers
+  # and operator only; the ingress half lives in
+  # ../../temporal/networkpolicy-temporal.yaml). Delete this policy for
+  # gaggles served by the shared goobers-system workers.
+  podSelector:
+    matchLabels:
+      goobers.dev/role: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: goobers-temporal
+      ports:
+        - protocol: TCP
+          port: 7233

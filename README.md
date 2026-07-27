@@ -29,10 +29,11 @@ clustered orchestration over a large monorepo.
 | `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — tier-3 (CRD-apply path), revived in V2 |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
-| `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
+| `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
-| `skills/` | Portable agent skills for authoring Goobers config | Active |
+| `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
+| `skills/` | Canonical portable skills used by the agent toolkit | Active |
 | `test/` | CI + e2e harness | Active |
 
 Quarantined paths stay in-tree, compiling, and status-bannered — they are the
@@ -89,15 +90,21 @@ $HOME/.local/bin/goobers escalations show <run-id> ./my-instance # inspect cause
 
 The checksummed installer and reproducibility details are documented in
 [Releases & packaging](docs/guides/releases.md#install-a-pinned-release).
-`goobers init --guided` scaffolds the instance root described in
-`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/` (seeded with a starter
-gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
-`telemetry.db` placeholder — using the canonical config embedded in that
-release, and is safe to re-run (existing pieces are left untouched). Edit
-`instance.yaml` to point at your own repo and set the referenced token env var
-or file; edit `config/` to shape your workforce. The `quickstart@v1` template is
-intentionally limited to a disposable first success and omits production
-remediation, escalation, CI, and merge policy.
+`goobers init --guided` is a first-run flow that separately selects the
+configuration source and target application repository. It creates or reuses a
+checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
+`gaggles/`), then materializes the runtime instance described in
+`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/`, `runs/`, `scheduler/`,
+`workcopies/`, and `telemetry.db`. Populated source and instance destinations
+are never overwritten. Set the referenced credential environment variables at
+runtime and author the workforce in the selected configuration source; the
+instance records that source in `workflowSource` while runtime state remains
+outside it. After later source edits, stop the daemon and run
+`goobers config materialize ./my-instance` before restarting; this validates
+and reapplies the recorded desired state without touching runtime state. The
+`quickstart@v1` template is intentionally limited to a
+disposable first success and omits production remediation, escalation, CI, and
+merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts
 any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
@@ -105,21 +112,25 @@ SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
 without a daemon running. Full walkthrough:
 [`docs/guides/quickstart.md`](docs/guides/quickstart.md). Platform-specific
 setup: [Linux quickstart](docs/guides/quickstart-linux.md),
-[Windows quickstart](docs/guides/quickstart-windows.md) (install & verify); run
+[Windows quickstart](docs/guides/quickstart-windows.md); run
 the daemon as a supervised service via
 [Daemon supervision](docs/guides/supervision.md)
 (systemd · launchd · Windows Service). How binaries are built, packaged, and
 verified for distribution: [Releases & packaging](docs/guides/releases.md).
+Before making the daemon API reachable beyond loopback, follow the
+[tier-2 OIDC authentication guide](docs/guides/oidc-authentication.md).
 Azure DevOps instances can use
 [Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
 
-## Authoring workflow DSL with an agent
+## Repository assistance with an agent
 
-Use the portable
-[`goobers-dsl-author` skill](skills/goobers-dsl-author/SKILL.md) from your own
-agent harness to find the canonical DSL docs, learn the core terms, and turn a
-plain-English process into schema-valid gaggle, goober, and workflow YAML. It
-does not require a running Goobers daemon. See the
+Each release publishes a portable
+[Goobers agent toolkit](agent-toolkit/README.md) for an external coding agent
+working in a config repository. Its canonical Agent Skills cover environment
+resolution, [DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run
+inspection, and workflow upgrades. Release-matched docs, schemas, examples, and
+thin Copilot, Claude, and `AGENTS.md` adapters let it work without a source
+checkout or running daemon. See the
 [installation and usage guide](docs/guides/dsl-authoring-skill.md).
 
 ## Shell completion
@@ -144,6 +155,14 @@ make ci          # merge gate (Go + config + portal)
 make verify-full # merge plus integration, platform, and coverage gates
 make vulncheck   # scan reachable Go code for known vulnerabilities
 ```
+
+Portal builders can append `?portal-diagnostics=1` before the hash route (for
+example, `http://localhost:5173/?portal-diagnostics=1#/runs`) to enable an
+ephemeral `console.debug` stream with daemon request timing/status and the
+initiating page, overlapping-request burst counts and elapsed time, and SSE
+connect/disconnect/reconnect causes. This is default-off development tooling
+for diagnosing the portal itself, not partner-facing workflow telemetry, and
+it does not persist or send the events anywhere.
 
 CI runs the same merge-tier implementation on every PR to `main`. See the
 [`validation tier contract`](CONTRIBUTING.md#validation-tier-contract) for

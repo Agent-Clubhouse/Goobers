@@ -82,26 +82,6 @@ func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 		}
 	})
 
-	t.Run("preview features", func(t *testing.T) {
-		def := Definition{
-			Name:       "preview",
-			Version:    1,
-			DSLVersion: vcurrent.DSLVersion,
-			Spec: apiv1.WorkflowSpec{
-				Start: "build",
-				Tasks: []apiv1.Task{{
-					Name: "build",
-					Type: apiv1.TaskDeterministic,
-					Goal: "build",
-					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
-				}},
-			},
-		}
-
-		if _, err := Compile(def, WithPreviewFeatures(true)); err != nil {
-			t.Fatalf("Compile with preview opt-in: %v", err)
-		}
-	})
 }
 
 func TestCompileUnpinnedUsesCurrentInterpreterWithoutChangingDefinition(t *testing.T) {

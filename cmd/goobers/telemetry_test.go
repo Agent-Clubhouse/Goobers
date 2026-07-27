@@ -221,9 +221,10 @@ func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 	started := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	for i, fixture := range []struct {
 		runID, model, version string
+		branch                int
 	}{
-		{"agent-run-1", "gpt-5.6-sol", "copilot version 1.2.3"},
-		{"agent-run-2", "claude-sonnet-5", "copilot version 1.2.3"},
+		{"agent-run-1", "gpt-5.6-sol", "copilot version 1.2.3", 1},
+		{"agent-run-2", "claude-sonnet-5", "copilot version 1.2.3", 2},
 	} {
 		if _, err := raw.Exec(`
 			INSERT INTO runs (
@@ -234,9 +235,9 @@ func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 		}
 		if _, err := raw.Exec(`
 			INSERT INTO stage_attempts (
-				run_id, stage, traversal, attempt, status, started_at, finished_at, duration_ms
-			) VALUES (?, 'implement', 1, 1, 'success', ?, ?, 10)`,
-			fixture.runID, started, started); err != nil {
+				run_id, stage, traversal, attempt, status, started_at, finished_at, duration_ms, branch
+			) VALUES (?, 'implement', 1, 1, 'success', ?, ?, 10, ?)`,
+			fixture.runID, started, started, fixture.branch); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := raw.Exec(`
@@ -250,8 +251,9 @@ func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 
 	code, stdout, stderr := runArgs(
 		t, "telemetry", "stats", "--json",
+		"--branch=1",
 		"--model=gpt-5.6-sol", "--harness-version=copilot version 1.2.3",
-		"--group-by=model", "--group-by=harness-version", root,
+		"--group-by=branch", "--group-by=model", "--group-by=harness-version", root,
 	)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
@@ -262,8 +264,20 @@ func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 	}
 	if len(result.Runs) != 1 || result.Runs[0].Model != "gpt-5.6-sol" ||
 		result.Runs[0].HarnessVersion != "copilot version 1.2.3" ||
-		len(result.Stages) != 1 || result.Stages[0].Model != "gpt-5.6-sol" {
+		len(result.Stages) != 1 || result.Stages[0].Branch == nil || *result.Stages[0].Branch != 1 ||
+		result.Stages[0].Model != "gpt-5.6-sol" {
 		t.Fatalf("provenance stats = %#v", result)
+	}
+}
+
+func TestTelemetryStatsRejectsInvalidBranch(t *testing.T) {
+	for _, value := range []string{"-1", "", "research"} {
+		t.Run(value, func(t *testing.T) {
+			code, _, stderr := runArgs(t, "telemetry", "stats", "--branch="+value)
+			if code != 2 || !strings.Contains(stderr, "--branch must be a non-negative integer") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+		})
 	}
 }
 
@@ -322,6 +336,10 @@ type telemetryParityReader struct {
 
 func (r *telemetryParityReader) Health(context.Context) (readservice.Health, error) {
 	return readservice.Health{Ready: true}, nil
+}
+
+func (r *telemetryParityReader) PortalConfig(context.Context) (readservice.PortalConfig, error) {
+	return readservice.PortalConfig{}, nil
 }
 
 func (r *telemetryParityReader) ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error) {

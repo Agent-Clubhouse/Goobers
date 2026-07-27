@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type { QueryState } from "./api/queryState";
 import type { DaemonClient, RunSummary, WorkflowDetail } from "./api/types";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 
 const RECENT_RUN_LIMIT = 20;
@@ -21,14 +22,18 @@ export function useWorkflowDetail(
   gaggle: string,
   workflowName: string,
 ): WorkflowDetailQuery {
-  const [state, setState] = useState<QueryState<WorkflowDetailSnapshot>>({
-    status: "loading",
+  const { cache, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("workflow-detail", gaggle, workflowName);
+  const [state, setState] = useState<QueryState<WorkflowDetailSnapshot>>(() => {
+    const cached = cache.get<WorkflowDetailSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
   const request = useRef<AbortController | undefined>(undefined);
-  const { subscribe } = useLiveData();
 
   const refresh = useCallback((): Promise<boolean> => {
     request.current?.abort();
+    const dependencies = workflowDetailDependencies(gaggle, workflowName);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
     setState((current) =>
@@ -45,6 +50,7 @@ export function useWorkflowDetail(
         if (request.current === controller) {
           request.current = undefined;
         }
+        cache.set(cacheKey, data, dependencies, cacheRevision);
         setState({ status: "ready", data });
         return true;
       },
@@ -65,23 +71,47 @@ export function useWorkflowDetail(
         return false;
       },
     );
-  }, [client, gaggle, workflowName]);
+  }, [cache, cacheKey, client, gaggle, workflowName]);
 
   useEffect(() => {
-    setState({ status: "loading" });
-    const unsubscribe = subscribe(["workflow", "run"], refresh);
+    const cached = cache.get<WorkflowDetailSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["workflow", "run"],
+      (_models, reason) => {
+        const current =
+          reason === "initial" ? cache.get<WorkflowDetailSnapshot>(cacheKey) : undefined;
+        if (current) {
+          setState({ status: "ready", data: current });
+          return true;
+        }
+        return refresh();
+      },
+      { gaggle, workflow: workflowName },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
       request.current = undefined;
     };
-  }, [refresh, subscribe]);
+  }, [cache, cacheKey, refresh, subscribe]);
 
   const retry = useCallback(() => {
+    cache.remove(cacheKey);
     setState({ status: "loading" });
     void refresh();
-  }, [refresh]);
+  }, [cache, cacheKey, refresh]);
   return { retry, state };
+}
+
+function workflowDetailDependencies(
+  gaggle: string,
+  workflow: string,
+): readonly DataCacheDependency[] {
+  return [
+    { model: "workflow", gaggle, workflow },
+    { model: "run", gaggle, workflow },
+  ];
 }
 
 export async function loadWorkflowDetail(

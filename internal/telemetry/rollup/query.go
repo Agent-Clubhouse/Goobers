@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,8 @@ type RunSummary struct {
 // StageAttempt is a queryable row from the stage_attempts table.
 type StageAttempt struct {
 	Stage                  string
+	Branch                 int
+	BranchKnown            bool
 	Traversal              int
 	Attempt                int
 	Model                  string
@@ -63,12 +66,14 @@ type AgentInvocation struct {
 // json.Unmarshal it; kept as text here rather than parsed, matching
 // stage_attempts'/provider_mutations' runner_json convention.
 type GateVerdict struct {
-	Seq        uint64
-	Gate       string
-	Verdict    string
-	Target     string
-	OccurredAt time.Time
-	RunnerJSON string
+	Seq         uint64
+	Branch      int
+	BranchKnown bool
+	Gate        string
+	Verdict     string
+	Target      string
+	OccurredAt  time.Time
+	RunnerJSON  string
 }
 
 // ProviderMutation is a queryable row from the provider_mutations table.
@@ -177,6 +182,14 @@ type RunListFilter struct {
 	TriggerKind string
 	Since       time.Time // inclusive lower bound on started_at; zero = unbounded
 	Until       time.Time // inclusive upper bound on started_at; zero = unbounded
+	// Statuses, when non-nil, narrows the page to rows whose runs.status
+	// matches one of these values; "" matches a run with no recorded status
+	// (not yet terminal — see insertRun). This is a candidate-selection
+	// optimization only (DASH-18 callers always re-verify against the
+	// hydrated journal), so a stale or not-yet-reconciled index row can only
+	// cost the caller an extra journal open, never hide a run: an empty,
+	// non-nil slice deliberately matches nothing.
+	Statuses []string
 }
 
 // RunRefPage returns up to limit run references matching filter, ordered by
@@ -207,6 +220,21 @@ func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursor
 	if !filter.Until.IsZero() {
 		query += " AND started_at <= ?"
 		args = append(args, formatTime(filter.Until).String)
+	}
+	if filter.Statuses != nil {
+		if len(filter.Statuses) == 0 {
+			return nil, nil
+		}
+		clauses := make([]string, len(filter.Statuses))
+		for i, status := range filter.Statuses {
+			if status == "" {
+				clauses[i] = "(status IS NULL OR status = '')"
+				continue
+			}
+			clauses[i] = "status = ?"
+			args = append(args, status)
+		}
+		query += " AND (" + strings.Join(clauses, " OR ") + ")"
 	}
 	if cursorRunID != "" {
 		cursorText := formatTime(cursorStartedAt).String
@@ -264,12 +292,12 @@ func (db *DB) IndexedRunIDs() (map[string]struct{}, error) {
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	rows, err := db.sql.Query(`
-		SELECT sa.stage, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
+		SELECT sa.stage, sa.branch, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
 		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
 		FROM stage_attempts sa
 		LEFT JOIN stage_usage su
-			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal AND su.branch IS sa.branch
 		LEFT JOIN agent_invocations ai
 			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
 			AND ai.kind = 'task'
@@ -283,15 +311,16 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	for rows.Next() {
 		var s StageAttempt
 		var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
-		var durationMs, inputTokens, outputTokens sql.NullInt64
+		var branch, durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
 		if err := rows.Scan(
-			&s.Stage, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
+			&s.Stage, &branch, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
 			&class, &status, &startedAt, &finishedAt, &durationMs,
 			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
 		); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)
 		}
+		s.Branch, s.BranchKnown = int(branch.Int64), branch.Valid
 		s.AttemptClass, s.Status, s.ErrorCode, s.ErrorClass = class.String, status.String, errCode.String, errClass.String
 		if s.StartedAt, err = parseTime(startedAt); err != nil {
 			return nil, err
@@ -353,7 +382,7 @@ func optionalFloat64(value sql.NullFloat64) *float64 {
 // GateVerdicts returns every gate evaluation for runID, in seq order.
 func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	rows, err := db.sql.Query(`
-		SELECT seq, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
+		SELECT seq, branch, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gate_verdicts: %w", err)
@@ -364,9 +393,11 @@ func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	for rows.Next() {
 		var g GateVerdict
 		var verdict, target, occurredAt, runnerJSON sql.NullString
-		if err := rows.Scan(&g.Seq, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
+		var branch sql.NullInt64
+		if err := rows.Scan(&g.Seq, &branch, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
+		g.Branch, g.BranchKnown = int(branch.Int64), branch.Valid
 		g.Verdict, g.Target, g.RunnerJSON = verdict.String, target.String, runnerJSON.String
 		if g.OccurredAt, err = parseTime(occurredAt); err != nil {
 			return nil, err

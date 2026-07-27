@@ -67,12 +67,12 @@ func TestPerGaggleRoutingIsolatesRepoTokens(t *testing.T) {
 
 	declared := []string{pushCap, "agent:model"}
 	aEnv, err := buildStageEnv(context.Background(), aInj, declared, reg,
-		"run-a", gaggleAName, "implementation", nsA, "/inst", true, nil, nil, nil)
+		"run-a", gaggleAName, "implementation", nsA, "/inst", true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("assemble gaggle A env: %v", err)
 	}
 	bEnv, err := buildStageEnv(context.Background(), bInj, declared, reg,
-		"run-b", gaggleBName, "implementation", nsB, "/inst", true, nil, nil, nil)
+		"run-b", gaggleBName, "implementation", nsB, "/inst", true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("assemble gaggle B env: %v", err)
 	}

@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SPEECH TEST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers speech test \- speak the fixed local readiness phrase
+.SH SYNOPSIS
+\fBgoobers speech test\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers speech test [--json] [path]
+
+Run preflight, then speak the fixed phrase "Goobers speech notifications are ready." using
+the configured local engine. Arbitrary text is not accepted. The delivery
+receipt is appended under scheduler/speech-receipts.jsonl.
+Exit codes: 0 = delivered, 1 = unavailable or failed, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers speech test
+goobers speech test --json ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

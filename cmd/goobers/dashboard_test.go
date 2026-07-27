@@ -49,7 +49,7 @@ func TestDashboardHandlerServesStandalonePortalAndAPI(t *testing.T) {
 	api := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(response, "api")
 	})
-	handler, err := newDashboardHandler(assets, api, dashboardModeStandalone)
+	handler, err := newDashboardHandler(assets, api, dashboardModeStandalone, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +182,68 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	}
 }
 
+func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.Auth = &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "api://goobers",
+		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
+	}}
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// The refusal must name the cause up front — not probe a 401ing health
+	// endpoint until the attach timeout.
+	start := time.Now()
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err == nil || !strings.Contains(err.Error(), "bearer token") {
+		t.Fatalf("prepareDashboardAPI error = %v, want bearer-token refusal", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("authenticated-daemon refusal took %s, want fail-fast", elapsed)
+	}
+}
+
+func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	daemon := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "https://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.TLS = &instance.APITLSConfig{CertFile: "cert.pem", KeyFile: "key.pem"}
+	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	originalTimeout := dashboardAttachTimeout
+	dashboardAttachTimeout = 3 * time.Second
+	defer func() { dashboardAttachTimeout = originalTimeout }()
+
+	// The probe speaks HTTPS (a plain http:// probe against a TLS listener
+	// would report a protocol error, never a certificate one) and fails fast
+	// on the untrusted test certificate instead of spinning to the attach
+	// timeout, whose message says "unavailable" rather than "does not trust".
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err == nil || !strings.Contains(err.Error(), "does not trust") {
+		t.Fatalf("prepareDashboardAPI error = %v, want fail-fast certificate trust error", err)
+	}
+}
+
 func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -238,6 +300,7 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 		fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(dashboardTestIndex)}},
 		api.handler,
 		api.mode,
+		root,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -261,6 +324,51 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 	}
 	if health.Freshness.LastTickAgeMillis == nil || *health.Freshness.LastTickAgeMillis != lastTickAgeMillis {
 		t.Fatalf("last tick age = %v, want %d", health.Freshness.LastTickAgeMillis, lastTickAgeMillis)
+	}
+}
+
+func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
+	root := t.TempDir()
+	assetsDir := filepath.Join(root, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logoPath := filepath.Join(assetsDir, "logo.svg")
+	if err := os.WriteFile(logoPath, []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newDashboardHandler(
+		fstest.MapFS{
+			"index.html":       &fstest.MapFile{Data: []byte(dashboardTestIndex)},
+			"assets/bundle.js": &fstest.MapFile{Data: []byte("//embedded-bundle")},
+		},
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		dashboardModeStandalone,
+		root,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/logo.svg", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "<svg/>" {
+		t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+	}
+
+	// An /assets/ path with no instance-root override must fall through to the
+	// embedded bundle — the portal ships its own /assets/index-*.js|css there,
+	// so instance co-branding must not shadow it.
+	bundle := httptest.NewRecorder()
+	handler.ServeHTTP(bundle, httptest.NewRequest(http.MethodGet, "/assets/bundle.js", nil))
+	if bundle.Code != http.StatusOK || bundle.Body.String() != "//embedded-bundle" {
+		t.Fatalf("embedded bundle response = %d %q, want 200 %q", bundle.Code, bundle.Body.String(), "//embedded-bundle")
+	}
+
+	traversal := httptest.NewRecorder()
+	handler.ServeHTTP(traversal, httptest.NewRequest(http.MethodGet, "/assets/../dashboard.go", nil))
+	if traversal.Code != http.StatusNotFound {
+		t.Fatalf("traversal status = %d, want 404", traversal.Code)
 	}
 }
 

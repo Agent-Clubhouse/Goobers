@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -76,9 +78,15 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
 	}
-	prs, err = filterRemediationPullRequests(ctx, provider, repo, prs, nil)
+	prs, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, nil)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
+	}
+	prs, err = filterClaimAvailablePullRequests(
+		layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
+	)
+	if err != nil {
+		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
 	}
 
 	baseTips := map[string]string{}
@@ -90,7 +98,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		}
 		return behind, err
 	}
-	candidates, _, err := selectRemediationCandidates(prs, behindBase)
+	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
 	if err != nil {
 		return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
 	}
@@ -98,7 +106,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequest(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -107,7 +115,8 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	candidate := *claimed
-	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR)
+	minSeverity := resolveMinSeverity(stderr)
+	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
@@ -142,7 +151,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool) (updateBehindAction, error) {
+func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		return updateBehindRouteFull, nil
 	}
@@ -172,7 +181,7 @@ func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProv
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number) {
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number, minSeverity) {
 		return updateBehindRouteFull, nil
 	}
 	if behind {

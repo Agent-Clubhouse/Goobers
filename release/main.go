@@ -49,6 +49,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	ldflags := fmt.Sprintf("-s -w -X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
 		versionPkg, opts.version, versionPkg, opts.commit, versionPkg, opts.date)
 
+	releaseDocsDir, cleanupReleaseDocs, err := stageReleaseDocs(opts.version, opts.commit, ldflags)
+	if err != nil {
+		return err
+	}
+	defer cleanupReleaseDocs()
+
 	var archives []string
 	var skipped []string
 	for _, t := range opts.targets {
@@ -63,7 +69,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 				"target to compile (windows is gated on the #633 CI leg going green); "+
 				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
 		}
-		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir)
+		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
 		if err != nil {
 			return err
 		}
@@ -80,6 +86,28 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		checksumAssets = append(checksumAssets, installerPath)
 		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(installerPath))
+
+		repoRoot, err := findAgentToolkitRepositoryRoot()
+		if err != nil {
+			return err
+		}
+		toolkitPath, err := packageAgentToolkit(repoRoot, opts.version, opts.commit, opts.outDir)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, toolkitPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(toolkitPath))
+
+		onboardingPath, err := packageOnboardingArchive(
+			filepath.Join(releaseDocsDir, onboardingRoot),
+			opts.version,
+			opts.outDir,
+		)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, onboardingPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(onboardingPath))
 
 		notesPath, snapshotPaths, err := writeReleaseMetadata(
 			opts.version,

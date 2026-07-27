@@ -1,12 +1,25 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
   window.location.hash = "#/insight";
+  // populatedDaemonFixtures() is anchored to 2026-07-18, but the Insight page
+  // filters telemetry by a window relative to the current time. Pin the clock to
+  // the fixtures' "now" (their observedAt) so those windows include the fixture
+  // data deterministically. Faking only Date leaves setTimeout/microtasks real,
+  // so userEvent and findBy* still resolve. Without this the suite is a time
+  // bomb: it passes at authoring time, then fails once wall-clock drifts past
+  // the window (it began failing ~24h after landing).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-18T20:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Insight page", () => {
@@ -279,6 +292,21 @@ describe("Insight page", () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+
+    const errorsHash = window.location.hash;
+    await user.click(screen.getByRole("link", { name: "Back to Insight" }));
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    const callsBeforeRevisit = listTelemetryErrors.mock.calls.length;
+    listTelemetryErrors.mockImplementation(() => new Promise(() => {}));
+
+    await act(async () => {
+      window.location.hash = errorsHash;
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+
+    expect(await screen.findByRole("heading", { name: "Matching errors" })).toBeInTheDocument();
+    expect(screen.getByText("Harness process exited unexpectedly.")).toBeInTheDocument();
+    expect(listTelemetryErrors).toHaveBeenCalledTimes(callsBeforeRevisit);
   });
 
   it("provides an inspectable drill-through for instance errors", async () => {

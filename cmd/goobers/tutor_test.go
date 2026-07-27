@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,12 @@ spec:
       run:
         command: ["goobers", "validate", "--source-tree", "selfhost"]
       next: config-valid
+    - name: check-fail-first
+      type: deterministic
+      goal: Enforce the fail-first validation-authorship contract (#1214).
+      run:
+        command: ["goobers", "check-fail-first"]
+      next: fail-first-valid
     - name: push-branch
       type: deterministic
       goal: Push the run branch.
@@ -93,9 +100,37 @@ spec:
       automated:
         check: status-equals
       branches:
+        pass: check-fail-first
+        fail: "@abort"
+    - name: fail-first-valid
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
         pass: push-branch
         fail: "@abort"
 `
+
+// tutorDraftMode selects what config-author's fake commits in
+// tutorFixtureCommit, exercising validate-config's config-valid gate and (#1214)
+// check-fail-first's fail-first-valid gate independently.
+type tutorDraftMode int
+
+const (
+	// tutorDraftValid changes only a display-name string: valid config, no new
+	// gate, so check-fail-first must pass trivially with no evidence required.
+	tutorDraftValid tutorDraftMode = iota
+	// tutorDraftInvalidYAML corrupts the YAML so validate-config's config-valid
+	// gate fails and the run aborts before check-fail-first ever runs.
+	tutorDraftInvalidYAML
+	// tutorDraftNewGateNoEvidence adds a new gate to the drafted tutor.yaml
+	// (TUT-A2's "workflow-level validation stage") without committing the
+	// required fail-first evidence file — check-fail-first must abort.
+	tutorDraftNewGateNoEvidence
+	// tutorDraftNewGateWithEvidence adds the same new gate plus a valid
+	// fail-first-evidence.json — check-fail-first must pass.
+	tutorDraftNewGateWithEvidence
+)
 
 // initTutorDemo scaffolds an instance via `goobers init`, swaps the starter
 // workflow for the trimmed tutor fixture above, and installs the analyst +
@@ -105,7 +140,7 @@ spec:
 // both agentic stages. config-author's fake writes and commits a valid or
 // malformed selfhost config change in the run's real worktree, leaving
 // validation and publication to the later deterministic stages.
-func initTutorDemo(t *testing.T, invalidDraft bool) string {
+func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	t.Helper()
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_tutor_fixture_dummy_token")
 	root := initDemo(t)
@@ -154,7 +189,7 @@ func initTutorDemo(t *testing.T, invalidDraft bool) string {
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				if gooberName == "config-author" {
-					if err := tutorFixtureCommit(req.Workspace, invalidDraft); err != nil {
+					if err := tutorFixtureCommit(req.Workspace, mode); err != nil {
 						return err
 					}
 				}
@@ -180,23 +215,105 @@ func newTutorFixtureRepo(t *testing.T) string {
 	if err := os.CopyFS(filepath.Join(work, "selfhost"), os.DirFS(filepath.Join("..", "..", "selfhost"))); err != nil {
 		t.Fatal(err)
 	}
-	runFixtureGit(t, work, "add", "selfhost")
+	writeFixture(t, filepath.Join(work, "docs", "fixture.md"), "# Fixture documentation\n")
+	runFixtureGit(t, work, "add", "selfhost", "docs")
 	runFixtureGit(t, work, "commit", "-m", "add selfhost config fixture")
 	runFixtureGit(t, work, "push", "origin", "main")
 	return bare
 }
 
+// tutorGateFixtureRelPath is the file config-author's fake edits — the same
+// path the real Tutor's draft-change stage would touch, and the path
+// check-fail-first's IsWorkflowFile match must recognize as a workflows/*.yaml.
+const tutorGateFixtureRelPath = "selfhost/gaggles/goobers/workflows/tutor.yaml"
+
+// tutorFailFirstValidGateBlock is the fail-first-valid gate exactly as landed
+// in the real selfhost/gaggles/goobers/workflows/tutor.yaml (#1214). The
+// new-gate fixture modes rewrite its "fail" branch (never exercised by these
+// tests' successful runs) to route through a fixture-only extra task+gate,
+// making the newly added gate reachable without disturbing the traversed path.
+const tutorFailFirstValidGateBlock = `    - name: fail-first-valid
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: push-branch
+        fail: "@abort"
+`
+
+// tutorFailFirstValidGateBlockWithExtraGate is the same block with its "fail"
+// branch rewired to a new fixture-only task, plus a second, newly authored
+// gate ("extra-diagnostic-valid") — the "workflow-level validation stage" #1214
+// requires fail-first evidence for.
+const tutorFailFirstValidGateBlockWithExtraGate = `    - name: fail-first-valid
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: push-branch
+        fail: extra-diagnostic
+    - name: extra-diagnostic-valid
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: push-branch
+        fail: "@abort"
+`
+
+// tutorExtraDiagnosticTaskBlock is the fixture-only task the rewired
+// fail-first-valid "fail" branch above reaches, feeding the new
+// extra-diagnostic-valid gate. Inserted directly before the tasks list's
+// "gates:" sibling key.
+const tutorExtraDiagnosticTaskBlock = `    - name: extra-diagnostic
+      type: deterministic
+      goal: Fixture-only diagnostic task exercising a newly authored gate (#1214 test).
+      run:
+        command: ["true"]
+      next: extra-diagnostic-valid
+`
+
+// tutorNewGateKey is the Evidence map key check-fail-first expects for the
+// fixture's newly authored gate: "<file>#<gate>" (failfirst.GateRef.Key()).
+const tutorNewGateKey = tutorGateFixtureRelPath + "#extra-diagnostic-valid"
+
 // tutorFixtureCommit simulates config-author's real job: write and commit the
-// drafted change, leaving publication to the later deterministic stage.
-func tutorFixtureCommit(workspace string, invalidDraft bool) error {
-	path := filepath.Join(workspace, "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+// drafted change, leaving validation and publication to the later
+// deterministic stages.
+func tutorFixtureCommit(workspace string, mode tutorDraftMode) error {
+	path := filepath.Join(workspace, tutorGateFixtureRelPath)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if invalidDraft {
+
+	extraFiles := []string{tutorGateFixtureRelPath}
+	switch mode {
+	case tutorDraftInvalidYAML:
 		data = append(data, []byte("\nmalformed: [\n")...)
-	} else {
+
+	case tutorDraftNewGateNoEvidence, tutorDraftNewGateWithEvidence:
+		changed := []byte(strings.Replace(string(data), tutorFailFirstValidGateBlock, tutorFailFirstValidGateBlockWithExtraGate, 1))
+		if bytes.Equal(data, changed) {
+			return errors.New("tutor fixture fail-first-valid gate sentinel not found")
+		}
+		const gatesKey = "  gates:\n"
+		withTask := strings.Replace(string(changed), gatesKey, tutorExtraDiagnosticTaskBlock+gatesKey, 1)
+		if withTask == string(changed) {
+			return errors.New("tutor fixture gates: sentinel not found")
+		}
+		data = []byte(withTask)
+
+		if mode == tutorDraftNewGateWithEvidence {
+			evidence := fmt.Sprintf(`{"gates":{%q:{"preFix":"fail","postFix":"pass","runEvidence":"fixture-run-1214"}}}`, tutorNewGateKey)
+			evidencePath := filepath.Join(workspace, "fail-first-evidence.json")
+			if err := os.WriteFile(evidencePath, []byte(evidence), 0o644); err != nil {
+				return err
+			}
+			extraFiles = append(extraFiles, "fail-first-evidence.json")
+		}
+
+	default:
 		changed := []byte(strings.Replace(
 			string(data),
 			"displayName: Tutor (self-improvement loop)",
@@ -208,10 +325,11 @@ func tutorFixtureCommit(workspace string, invalidDraft bool) error {
 		}
 		data = changed
 	}
+
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return err
 	}
-	for _, args := range [][]string{
+	commitArgs := [][]string{
 		// Explicit, worktree-local identity (matching daemon_test.go's
 		// newDaemonFixtureRepo pattern) rather than relying on a global
 		// ~/.gitconfig existing in whatever environment this test runs in —
@@ -221,9 +339,12 @@ func tutorFixtureCommit(workspace string, invalidDraft bool) error {
 		// every time.
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "test"},
-		{"add", "selfhost/gaggles/goobers/workflows/tutor.yaml"},
-		{"commit", "-m", "tutor: fixture config change"},
-	} {
+	}
+	for _, f := range extraFiles {
+		commitArgs = append(commitArgs, []string{"add", f})
+	}
+	commitArgs = append(commitArgs, []string{"commit", "-m", "tutor: fixture config change"})
+	for _, args := range commitArgs {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = workspace
 		var out bytes.Buffer
@@ -287,7 +408,7 @@ func TestTutorScheduleParsesAndFires(t *testing.T) {
 }
 
 func TestTutorValidDraftReachesOpenPR(t *testing.T) {
-	root := initTutorDemo(t, false)
+	root := initTutorDemo(t, tutorDraftValid)
 
 	code, stdout, stderr := runArgs(t, "run", "tutor", root)
 	if code != 0 {
@@ -310,21 +431,15 @@ func TestTutorValidDraftReachesOpenPR(t *testing.T) {
 		t.Fatalf("event sequence must start with run.started and end with run.finished")
 	}
 	if got := tutorStartedStages(events); !slices.Equal(got, []string{
-		"gather-signals", "analyze", "draft-change", "validate-config", "push-branch", "open-pr",
+		"gather-signals", "analyze", "draft-change", "validate-config", "check-fail-first", "push-branch", "open-pr",
 	}) {
 		t.Errorf("started stages = %v, want the full Tutor path through open-pr", got)
 	}
-	var validationPassed bool
-	for _, event := range events {
-		if event.Type == journal.EventGateEvaluated &&
-			event.Gate == "config-valid" &&
-			event.Verdict == "pass" &&
-			event.Target == "push-branch" {
-			validationPassed = true
-		}
+	if !tutorGateEvaluatedPass(events, "config-valid", "check-fail-first") {
+		t.Fatal("journal has no config-valid pass verdict targeting check-fail-first")
 	}
-	if !validationPassed {
-		t.Fatal("journal has no config-valid pass verdict targeting push-branch")
+	if !tutorGateEvaluatedPass(events, "fail-first-valid", "push-branch") {
+		t.Fatal("journal has no fail-first-valid pass verdict targeting push-branch (no new gate on this branch, so it must pass trivially)")
 	}
 
 	st, err := rd.State()
@@ -337,7 +452,7 @@ func TestTutorValidDraftReachesOpenPR(t *testing.T) {
 }
 
 func TestTutorInvalidDraftAbortsBeforePush(t *testing.T) {
-	root := initTutorDemo(t, true)
+	root := initTutorDemo(t, tutorDraftInvalidYAML)
 
 	code, stdout, stderr := runArgs(t, "run", "tutor", root)
 	if code != 1 {
@@ -356,7 +471,7 @@ func TestTutorInvalidDraftAbortsBeforePush(t *testing.T) {
 	if got := tutorStartedStages(events); !slices.Equal(got, []string{
 		"gather-signals", "analyze", "draft-change", "validate-config",
 	}) {
-		t.Fatalf("started stages = %v, push/open-pr must not run after invalid config", got)
+		t.Fatalf("started stages = %v, check-fail-first/push/open-pr must not run after invalid config", got)
 	}
 	var failedClosed bool
 	for _, event := range events {
@@ -379,6 +494,93 @@ func TestTutorInvalidDraftAbortsBeforePush(t *testing.T) {
 	}
 }
 
+// TestTutorNewGateWithoutFailFirstEvidenceAbortsBeforePush is TUT-A2's (#1214)
+// core acceptance case: a branch that adds a new workflow gate — a
+// workflow-level validation stage — without committed fail-first evidence
+// must never reach push-branch/open-pr. A vacuously-passing "closes the
+// finding" check must not be publishable.
+func TestTutorNewGateWithoutFailFirstEvidenceAbortsBeforePush(t *testing.T) {
+	root := initTutorDemo(t, tutorDraftNewGateNoEvidence)
+
+	code, stdout, stderr := runArgs(t, "run", "tutor", root)
+	if code != 1 {
+		t.Fatalf("goobers run tutor: code = %d, want 1; stderr = %q", code, stderr)
+	}
+
+	runID := runIDFromRunStdout(t, stdout)
+	rd, err := journal.OpenRead(filepath.Join(root, "runs", runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tutorStartedStages(events); !slices.Equal(got, []string{
+		"gather-signals", "analyze", "draft-change", "validate-config", "check-fail-first",
+	}) {
+		t.Fatalf("started stages = %v, push/open-pr must not run when a new gate lacks fail-first evidence", got)
+	}
+	var failedClosed bool
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated &&
+			event.Gate == "fail-first-valid" &&
+			event.Verdict == "fail" &&
+			event.Target == "@abort" {
+			failedClosed = true
+		}
+	}
+	if !failedClosed {
+		t.Fatal("journal has no fail-first-valid fail verdict targeting @abort")
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Phase != journal.PhaseAborted {
+		t.Fatalf("state.json phase = %q, want aborted", st.Phase)
+	}
+}
+
+// TestTutorNewGateWithFailFirstEvidenceReachesOpenPR is TUT-A2's (#1214)
+// positive case: the same new-gate diff as
+// TestTutorNewGateWithoutFailFirstEvidenceAbortsBeforePush, but with a
+// committed fail-first-evidence.json asserting the required red-then-green
+// result — the run must publish normally.
+func TestTutorNewGateWithFailFirstEvidenceReachesOpenPR(t *testing.T) {
+	root := initTutorDemo(t, tutorDraftNewGateWithEvidence)
+
+	code, stdout, stderr := runArgs(t, "run", "tutor", root)
+	if code != 0 {
+		t.Fatalf("goobers run tutor: code = %d, stderr = %q", code, stderr)
+	}
+
+	runID := runIDFromRunStdout(t, stdout)
+	rd, err := journal.OpenRead(filepath.Join(root, "runs", runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tutorStartedStages(events); !slices.Equal(got, []string{
+		"gather-signals", "analyze", "draft-change", "validate-config", "check-fail-first", "push-branch", "open-pr",
+	}) {
+		t.Fatalf("started stages = %v, want the full Tutor path through open-pr with valid fail-first evidence", got)
+	}
+	if !tutorGateEvaluatedPass(events, "fail-first-valid", "push-branch") {
+		t.Fatal("journal has no fail-first-valid pass verdict targeting push-branch")
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Phase != journal.PhaseCompleted {
+		t.Fatalf("state.json phase = %q, want completed", st.Phase)
+	}
+}
+
 func tutorStartedStages(events []journal.Event) []string {
 	var names []string
 	for _, event := range events {
@@ -387,4 +589,18 @@ func tutorStartedStages(events []journal.Event) []string {
 		}
 	}
 	return names
+}
+
+// tutorGateEvaluatedPass reports whether events records gate evaluating to a
+// pass verdict targeting target.
+func tutorGateEvaluatedPass(events []journal.Event, gate, target string) bool {
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated &&
+			event.Gate == gate &&
+			event.Verdict == "pass" &&
+			event.Target == target {
+			return true
+		}
+	}
+	return false
 }

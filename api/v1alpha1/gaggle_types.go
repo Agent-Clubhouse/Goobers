@@ -60,6 +60,26 @@ type GaggleSpec struct {
 	// if it had one. Most gaggles omit it and share the default.
 	// +optional
 	BranchNamespace string `json:"branchNamespace,omitempty" yaml:"branchNamespace,omitempty"`
+	// RunControls overrides instance run-control defaults for every workflow in
+	// this gaggle. A workflow may override either value again.
+	// +optional
+	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// Sandbox overrides the instance-wide isolation posture for this gaggle's
+	// agentic stages (#1305). Effective posture is gaggle override, else the
+	// instance.yaml sandbox block, else disabled — sandboxing is strictly
+	// opt-in, so a gaggle that omits this behaves exactly as before.
+	// +optional
+	Sandbox *GaggleSandbox `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+}
+
+// GaggleSandbox mirrors instance.yaml's sandbox block as a per-gaggle
+// override: a posture declaration, never a mechanism selection.
+type GaggleSandbox struct {
+	// Agentic is the posture for agentic stages: "disabled" or "enforced".
+	// Empty inherits the instance-wide posture.
+	// +kubebuilder:validation:Enum=disabled;enforced
+	// +optional
+	Agentic string `json:"agentic,omitempty" yaml:"agentic,omitempty"`
 }
 
 // GaggleIsolation captures the isolation boundary for a gaggle: its Kubernetes

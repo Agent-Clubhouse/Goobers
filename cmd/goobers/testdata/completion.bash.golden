@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version versions init scaffold validate lint config up service dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch open-pr report-pr-status issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -15,7 +15,16 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         init)
-            flags+=" --demo --guided --template"
+            flags+=" --demo --guided --template --source-tree --json"
+            ;;
+        preflight)
+            flags+=" --distro --launch-wsl"
+            ;;
+        onboarding)
+            case "${COMP_WORDS[2]:-}" in
+                stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
+                stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
+            esac
             ;;
         scaffold)
             case "${COMP_WORDS[2]:-}" in
@@ -23,13 +32,28 @@ _goobers_completion()
                 workflow) flags+=" --force" ;;
             esac
             ;;
+        agent-kit)
+            case "${COMP_WORDS[2]:-}" in
+                install) flags+=" --harness" ;;
+                update) flags+=" --dry-run --write --replace-modified" ;;
+            esac
+            ;;
         validate)
-            flags+=" --check-harness --check-repos --source-tree"
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            ;;
+        lint)
+            flags+=" --json --check-harness --check-repos --source-tree --strict"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
                 diff) flags+=" --against" ;;
                 show) flags+=" --json" ;;
+            esac
+            ;;
+        speech)
+            case "${COMP_WORDS[2]:-}" in
+                preflight) flags+=" --json" ;;
+                test) flags+=" --json" ;;
             esac
             ;;
         up)
@@ -58,6 +82,9 @@ _goobers_completion()
         stats)
             flags+=" --since --json"
             ;;
+        features)
+            flags+=" --json --dsl-version --used"
+            ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in
                 list) flags+=" --json" ;;
@@ -79,6 +106,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
+                prune-orphans) flags+=" --delete --min-age" ;;
             esac
             ;;
         journal)
@@ -118,14 +146,37 @@ _goobers_completion()
 
     candidates=""
     case "${command}" in
+        onboarding)
+            if (( COMP_CWORD == 2 )); then
+                candidates="stub-agent-instructions stub-sample"
+            fi
+            ;;
+        examples)
+            if (( COMP_CWORD == 2 )); then
+                candidates="list show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete examples 2>/dev/null)"
+            fi
+            ;;
         scaffold)
             if (( COMP_CWORD == 2 )); then
                 candidates="goober workflow"
             fi
             ;;
+        agent-kit)
+            if (( COMP_CWORD == 2 )); then
+                candidates="install check update"
+            fi
+            ;;
         config)
             if (( COMP_CWORD == 2 )); then
-                candidates="diff show"
+                candidates="diff materialize show"
+            fi
+            ;;
+        speech)
+            if (( COMP_CWORD == 2 )); then
+                candidates="preflight test"
             fi
             ;;
         service)
@@ -136,7 +187,7 @@ _goobers_completion()
         run)
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
-                candidates="abort cancel $(command goobers __complete workflows 2>/dev/null)"
+                candidates="abort cancel approve override rerun $(command goobers __complete workflows 2>/dev/null)"
             elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
@@ -186,7 +237,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors export prune compact"
+                candidates="stats errors export prune prune-orphans compact"
             fi
             ;;
         journal)

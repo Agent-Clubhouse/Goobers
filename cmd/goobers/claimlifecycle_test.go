@@ -228,7 +228,13 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Type != journal.EventClaimLockTimeout || events[0].RunID != runID {
+	var timeoutEvents []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventClaimLockTimeout {
+			timeoutEvents = append(timeoutEvents, event)
+		}
+	}
+	if len(timeoutEvents) != 1 || timeoutEvents[0].RunID != runID {
 		t.Fatalf("deferred finalization event = %+v, want timeout attributed to %s", events, runID)
 	}
 

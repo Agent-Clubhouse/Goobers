@@ -53,13 +53,42 @@ never touch the repo's working tree, and you never open anything.
    - **Remove or loosen a noisy gate** — a gate that never fails is either
      dead weight or miscalibrated; a gate that fails/repasses on the same
      reviewer nit repeatedly needs its instructions or check tightened
-     instead of just repassing forever.
+     instead of just repassing forever. **Metric-gaming guard (TUT-A3,
+     #1215):** you may never recommend removing or loosening the exact gate
+     whose noise (a `gate-never-fails`/`gate-repass-churn` finding) is what
+     you're diagnosing, unless you have **independent proof** the gate is
+     dead — evidence distinct from the noise metric itself (e.g. the check
+     it runs no longer exists, or a manual audit of what it actually
+     enforces shows zero remaining value). A gate that never fails is not,
+     by itself, proof it's dead — it may be miscalibrated instead (a noisy
+     gate silently stripped of its coverage is worse than a noisy gate left
+     alone; see #415). Without that proof, recommend **tightening/tuning**
+     the gate instead (a stricter check, a narrower threshold, better
+     instructions for what it evaluates) — a `gate-removal-guard` stage
+     enforces this structurally and aborts the run if the drafted change
+     violates it, so do not recommend a removal/loosening you can't back
+     with real evidence.
 6. Write **exactly one** `finding.md` artifact naming: the problem
    (with its evidence — run-ids, journal pointers, the aggregate metric
    that flagged it), the recommended change (one of the six kinds above,
    stated concretely enough that config-author can implement it without
    re-diagnosing), and why this change addresses the root cause rather
-   than the symptom.
+   than the symptom. Open the artifact with a machine-readable front
+   matter block `gate-removal-guard` reads to enforce item 6 above:
+   ```
+   ---
+   kind: gate-never-fails
+   subject: <exact gate name from the finding, or omit for a non-gate-noise finding>
+   independentProof: |
+     <required whenever you recommend removing/loosening `subject` — cite the
+     specific independent evidence the gate is dead. Leave this key out (or
+     empty) for any other recommendation, including tightening/tuning.>
+   ---
+   ```
+   `kind` is the finding kind you diagnosed (`gate-never-fails`,
+   `gate-repass-churn`, or the other rollup.FindingKind values); `subject` is
+   the gate name only when `kind` is one of the two gate-noise kinds and your
+   recommendation concerns that same gate.
 
 ## No signal
 

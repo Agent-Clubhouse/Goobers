@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -39,6 +39,12 @@
         "error",
         "redaction",
         "repaired",
+        "runner.isolation.posture",
+        "parallel.started",
+        "branch.started",
+        "branch.finished",
+        "parallel.finished",
+        "init.completed",
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
@@ -54,7 +60,7 @@
         "daemon.clean_shutdown",
         "daemon.dirty_restart"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, and daemon.* are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -171,6 +177,34 @@
     "redaction": {
       "description": "Old->new digest remediation for redaction events.",
       "$ref": "#/$defs/redactionInfo"
+    },
+    "parallel": {
+      "description": "Name of the parallel state a branch belongs to. Normative.",
+      "type": "string"
+    },
+    "branchName": {
+      "description": "Declared name of the branch this event concerns; the numeric id is in `branch`. Normative.",
+      "type": "string"
+    },
+    "branchStatus": {
+      "description": "Terminal status of a branch on branch.finished. Normative.",
+      "type": "string",
+      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"]
+    },
+    "completeness": {
+      "description": "Branch completeness record on parallel.finished: one entry per DECLARED branch, in declaration order (which is what assigns branch ids). Normative — it, not the interleaving, is what a parallel means.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["branch", "name", "status"],
+        "properties": {
+          "branch": { "type": "integer", "minimum": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"] },
+          "artifacts": { "type": "integer", "minimum": 0 }
+        }
+      }
     },
     "runner": {
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",

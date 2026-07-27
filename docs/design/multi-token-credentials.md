@@ -170,6 +170,16 @@ own isolated credential(s)" goal:
 - **Later (V1+):** per-*stage* grants and multiple tokens per stage as workflows need them
   (the general `{stage → [capability → ref]}` mapping), plus the secret-resolver seam (#38)
   that lets refs come from Key Vault / managed identity instead of files.
+- **Minting rung (#686, shipped):** a GitHub repo may declare `auth.kind: github-app`
+  (`appId` + `installationId` + `privateKey` token ref) instead of a static `token`. The
+  runner then mints short-lived installation tokens behind the same resolver ref name the
+  static token would have used, so every consumer — capability grants, ci-poll, worktree
+  clone/fetch, `push-branch` — receives minted tokens with no other config. Bootstrap reuses
+  this design's machinery: the App private key is an ordinary token ref (env/file/store).
+  **No implicit fallback**: a repo is either PAT-backed or minting-backed, never both —
+  validation rejects `token` alongside `github-app`, and a failed mint is an unresolvable
+  ref (the stage fails per capability semantics), never a silent downgrade to a PAT.
+  The key and every minted token are registered with the journal scrubber at mint time.
 
 No V2 scope (Temporal, cloud identity) is pulled in here.
 

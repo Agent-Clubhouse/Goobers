@@ -132,11 +132,15 @@ func TestContextPointerValidate(t *testing.T) {
 		ok   bool
 	}{
 		{"artifact-only", ContextPointer{Name: "a", Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, true},
+		{"branch-artifact", ContextPointer{Name: "a", Branch: 1, BranchName: "security", Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, true},
 		{"external-only", ContextPointer{Name: "b", External: &ExternalRef{Kind: "url", URI: "https://x"}}, true},
 		{"no-name", ContextPointer{Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, false},
 		{"neither", ContextPointer{Name: "c"}, false},
 		{"both", ContextPointer{Name: "d", Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}, External: &ExternalRef{Kind: "url", URI: "https://x"}}, false},
 		{"external-no-uri", ContextPointer{Name: "e", External: &ExternalRef{Kind: "url"}}, false},
+		{"branch-without-name", ContextPointer{Name: "f", Branch: 1, Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, false},
+		{"branch-name-without-id", ContextPointer{Name: "g", BranchName: "security", Artifact: &ArtifactPointer{Path: "artifacts/x", Digest: good}}, false},
+		{"branch-external", ContextPointer{Name: "h", Branch: 1, BranchName: "security", External: &ExternalRef{Kind: "url", URI: "https://x"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

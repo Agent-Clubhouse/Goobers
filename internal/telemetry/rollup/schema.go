@@ -409,4 +409,149 @@ CREATE TABLE IF NOT EXISTS scheduler_ingest_cursor (
 	last_seq    INTEGER NOT NULL
 );
 `,
+	// v14 (issue #1358): preserve the lifetime first-run success milestone
+	// outside per-run rows so retention cannot erase or move time-to-first-PR.
+	// Upgrade existing stores from retained instance and run projections, then
+	// update the singleton transactionally during future journal ingestion.
+	`
+CREATE TABLE IF NOT EXISTS first_success_milestones (
+	id                INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	init_completed_at TEXT,
+	first_pr_open_at  TEXT
+);
+
+INSERT OR IGNORE INTO first_success_milestones (id, init_completed_at, first_pr_open_at)
+VALUES (
+	1,
+	(
+		SELECT occurred_at
+		FROM scheduler_events
+		WHERE type = 'init.completed'
+			AND julianday(occurred_at) IS NOT NULL
+		ORDER BY julianday(occurred_at), occurred_at
+		LIMIT 1
+	),
+	(
+		SELECT occurred_at
+		FROM provider_mutations
+		WHERE kind = 'pr' AND operation = 'open'
+			AND julianday(occurred_at) >= (
+				SELECT MIN(julianday(occurred_at))
+				FROM scheduler_events
+				WHERE type = 'init.completed'
+			)
+		ORDER BY julianday(occurred_at), occurred_at
+		LIMIT 1
+	)
+);
+`,
+	// v15 (issue #1358): early versions of the first-success milestone selected
+	// init and PR timestamps independently. Replace a pre-init endpoint with the
+	// earliest retained PR open that follows the anchor, or clear it when
+	// retention has removed every valid source event.
+	`
+UPDATE first_success_milestones
+SET first_pr_open_at = (
+	SELECT occurred_at
+	FROM provider_mutations
+	WHERE kind = 'pr'
+		AND operation = 'open'
+		AND julianday(occurred_at) >= julianday(first_success_milestones.init_completed_at)
+	ORDER BY julianday(occurred_at), occurred_at
+	LIMIT 1
+)
+WHERE first_pr_open_at IS NOT NULL
+	AND (
+		init_completed_at IS NULL
+		OR julianday(first_pr_open_at) < julianday(init_completed_at)
+	);
+`,
+	// v16 (issue #1699): journal events already carry the deterministic
+	// parallel-branch id. Preserve it on the attempt, usage, and gate projections
+	// that consumers use for branch-level outcome, duration, and cost queries.
+	// Existing rows have unknown attribution until their journals are re-ingested;
+	// NULL keeps them distinct from events that actually ran on root branch 0.
+	`
+ALTER TABLE stage_attempts RENAME TO stage_attempts_v15;
+ALTER TABLE stage_usage RENAME TO stage_usage_v15;
+ALTER TABLE gate_verdicts RENAME TO gate_verdicts_v15;
+
+CREATE TABLE stage_attempts (
+	run_id        TEXT NOT NULL,
+	stage         TEXT NOT NULL,
+	traversal     INTEGER NOT NULL,
+	attempt       INTEGER NOT NULL,
+	attempt_class TEXT,
+	status        TEXT,
+	started_at    TEXT,
+	finished_at   TEXT,
+	duration_ms   INTEGER,
+	error_code    TEXT,
+	error_class   TEXT,
+	runner_json   TEXT,
+	branch        INTEGER,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_attempts (
+	run_id, stage, traversal, attempt, attempt_class, status, started_at,
+	finished_at, duration_ms, error_code, error_class, runner_json
+)
+SELECT
+	run_id, stage, traversal, attempt, attempt_class, status, started_at,
+	finished_at, duration_ms, error_code, error_class, runner_json
+FROM stage_attempts_v15;
+
+CREATE TABLE stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	branch                   INTEGER,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_usage (
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+)
+SELECT
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+FROM stage_usage_v15;
+
+CREATE TABLE gate_verdicts (
+	run_id      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	gate        TEXT NOT NULL,
+	verdict     TEXT,
+	target      TEXT,
+	occurred_at TEXT,
+	runner_json TEXT,
+	branch      INTEGER,
+	PRIMARY KEY (run_id, seq)
+);
+
+INSERT INTO gate_verdicts (
+	run_id, seq, gate, verdict, target, occurred_at, runner_json
+)
+SELECT
+	run_id, seq, gate, verdict, target, occurred_at, runner_json
+FROM gate_verdicts_v15;
+
+DROP TABLE stage_attempts_v15;
+DROP TABLE stage_usage_v15;
+DROP TABLE gate_verdicts_v15;
+
+CREATE INDEX idx_stage_attempts_run ON stage_attempts(run_id);
+CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
+CREATE INDEX idx_gate_verdicts_run ON gate_verdicts(run_id);
+CREATE INDEX idx_stage_attempts_branch ON stage_attempts(branch, run_id);
+CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
+CREATE INDEX idx_gate_verdicts_branch ON gate_verdicts(branch, run_id);
+`,
 }

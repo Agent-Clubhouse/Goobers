@@ -58,9 +58,18 @@ func TestGaggleRoundTrip(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "acme-web"},
 		Spec: GaggleSpec{
 			DisplayName: "Acme Web",
-			Project:     RepoRef{Provider: ProviderGitHub, Owner: "acme", Name: "web", Branch: "main", ConnectionRef: "github-main"},
-			Backlog:     BacklogRef{Provider: ProviderGitHub, Project: "acme/web", Labels: []string{"goobers"}, ConnectionRef: "github-backlog"},
-			Isolation:   GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
+			Project: RepoRef{
+				Provider: ProviderGitHub, Owner: "acme", Name: "web", Branch: "main", ConnectionRef: "github-main",
+				Checkout: &CheckoutSpec{Sparse: []string{"services/web", "docs"}},
+			},
+			Backlog: BacklogRef{
+				Provider: ProviderGitHub, Project: "acme/web", Labels: []string{"goobers"},
+				LabelPredicate: `"area:web" in labels && !("platform:windows" in labels)`,
+				FieldPredicate: `fields["milestone.title"] == "V1"`,
+				ConnectionRef:  "github-backlog",
+			},
+			Isolation: GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
+			Sandbox:   &GaggleSandbox{Agentic: "enforced"},
 		},
 	}
 	roundTripStable(t, g)
@@ -102,9 +111,11 @@ func TestWorkflowRoundTrip(t *testing.T) {
 			Gaggle:      "acme-web",
 			DisplayName: "Implement then review",
 			Triggers: []Trigger{{
-				Type:     TriggerBacklogItem,
-				Selector: map[string]string{"goobers": "true"},
-				Priority: 10,
+				Type:           TriggerBacklogItem,
+				Selector:       map[string]string{"goobers": "true"},
+				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
+				FieldPredicate: `fields["number"] >= 100`,
+				Priority:       10,
 			}},
 			Readiness: ReadinessConditions{MaxConcurrentRuns: 2, MaxRunsPerHour: 10, MaxChainDepth: 3},
 			Start:     "implement",

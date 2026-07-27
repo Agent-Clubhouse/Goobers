@@ -61,6 +61,13 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
+		// Runner-scoped isolation posture record (#1305): payload entirely
+		// under runner.*, proving the schema keeps pace with the type. The
+		// payload mirrors the harness executor's actual emission shape
+		// (posture + mechanism + worktree scope).
+		{Type: EventRunnerIsolationPosture, Stage: "impl", Attempt: 1, Runner: map[string]any{
+			"posture": "enforced", "mechanism": "seatbelt", "workspace": "/work/run-1/impl",
+		}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
 	} {
 		if err := run.Append(ev); err != nil {
@@ -115,6 +122,7 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build validator: %v", err)
 	}
+
 	bad := [][]byte{
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"not.a.real.type"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z"}`), // missing type
@@ -124,5 +132,25 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
 			t.Errorf("case %d: schema accepted malformed event: %s", i, b)
 		}
+	}
+}
+
+func TestSchemaRejectsPartialPinnedRunControls(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := []byte(`{
+		"schema":"goobers.dev/journal/run/v1",
+		"runId":"0123456789abcdef0123456789abcdef",
+		"workflow":"build",
+		"workflowVersion":1,
+		"gaggle":"web",
+		"runControls":{"maxRepasses":3},
+		"trigger":{"kind":"manual"},
+		"startedAt":"2026-07-20T20:00:00Z"
+	}`)
+	if err := v.ValidateJSON("journal-run.schema.json", run); err == nil {
+		t.Fatal("journal schema accepted partially pinned runControls")
 	}
 }

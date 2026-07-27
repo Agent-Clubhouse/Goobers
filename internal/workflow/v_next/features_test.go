@@ -17,6 +17,7 @@ func TestFeatureRegistryLookup(t *testing.T) {
 		"gate.evaluator.human",
 		"task.retry.backoff",
 		"goober.spec.model",
+		"stage.run.script",
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -110,9 +111,9 @@ func TestPreviewFeatureRequiresOptIn(t *testing.T) {
 
 // TestCurrentFeatureClassification pins the #1196 fix: the canonical DSL
 // surface is GA (so guided-init and config-examples validate without a preview
-// opt-in), while only genuinely-unproven features (container-image stages,
-// deferred per #1102) remain preview. An earlier placeholder marked every
-// field preview, which made VER002 blanket-flag every standard field.
+// opt-in), while only genuinely-unproven features remain preview. An earlier
+// placeholder marked every field preview, which made VER002 blanket-flag every
+// standard field.
 func TestCurrentFeatureClassification(t *testing.T) {
 	features := AllFeatures()
 	if len(features) == 0 {
@@ -121,7 +122,19 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	previewSeen := 0
 	for _, feature := range features {
 		wantLevel := SupportGA
-		if feature.ID == featureStageImage {
+		switch feature.ID {
+		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+			featureTaskInputsFromQualified,
+			featureStageWorkspaceRepoReadOnly,
+			featureStageWorkspace,
+			featureGateAgenticWorkspace,
+			featureWorkflowParallels,
+			featureParallelFailurePolicy,
+			featureParallelBranches,
+			featureParallelJoin,
+			featureParallelOnFailure,
+			featureParallelBranchTimeout,
+			featureParallelMaxConcurrentBranches:
 			wantLevel = SupportPreview
 			previewSeen++
 		}
@@ -152,7 +165,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 func TestStandardFeaturesAreGA(t *testing.T) {
 	for _, id := range []FeatureID{
 		featureTaskAgentic, featureGooberRole, featureGooberCapabilities,
-		featureWorkflowTriggers, featureStageShell, featureTaskRetry,
+		featureWorkflowTriggers, featureStageShell, featureTaskRetry, featureStageScript,
 	} {
 		feature, ok := LookupFeature(id)
 		if !ok {
@@ -483,21 +496,29 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			},
 			{
 				Name: "agent-salvage", Type: apiv1.TaskAgentic, Goal: "salvage",
-				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage, Next: "shell-repo",
+				Goober: "coder", OnTimeout: apiv1.TaskOnTimeoutSalvage,
+				// The agentic seam: a task-level workspace, which an agentic
+				// stage has no Run to express.
+				Workspace: apiv1.WorkspaceRepoReadOnly,
+				Next:      "shell-repo",
 			},
 			{
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
 				Run: &apiv1.DeterministicRun{
-					Command: []string{"true"}, Image: "example/image",
-					Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone,
+					Command: []string{"true"}, Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone,
 					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
-				InputsFrom: map[string]string{"input": "output"}, Next: "shell-scratch",
+				InputsFrom: map[string]string{"input": "output", "qualified": "agent-fail.result"}, Next: "shell-scratch",
 			},
 			{
 				Name: "shell-scratch", Type: apiv1.TaskDeterministic, Goal: "scratch",
 				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "shell-script",
+			},
+			{
+				Name: "shell-script", Type: apiv1.TaskDeterministic, Goal: "inline",
+				Run:  &apiv1.DeterministicRun{Script: "true"},
 				Next: "ci-poll",
 			},
 			{
@@ -521,7 +542,8 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "agentic", Evaluator: apiv1.EvaluatorAgentic,
 				Agentic: &apiv1.AgenticGate{
 					Goober: "reviewer", TimeoutSeconds: 30,
-					Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+					Workspace: apiv1.WorkspaceRepoReadOnly,
+					Retry:     &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
 				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
@@ -529,6 +551,18 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			humanFeatureGate("human-escalate", "escalate", "human-reject"),
 			humanFeatureGate("human-reject", "reject", TerminalComplete),
 		},
+		Parallels: []apiv1.Parallel{{
+			Name:                  "fan",
+			FailurePolicy:         apiv1.BranchAllOrNothing,
+			Join:                  "collate",
+			OnFailure:             TargetEscalate,
+			BranchTimeoutSeconds:  900,
+			MaxConcurrentBranches: 2,
+			Branches: []apiv1.Branch{
+				{Name: "a", Start: "agent-fail"},
+				{Name: "b", Start: "agent-fail"},
+			},
+		}},
 	}}
 	goober := apiv1.GooberSpec{
 		Gaggle: "example", Role: "coder", DisplayName: "Coder", Instructions: "instructions.md",
@@ -536,6 +570,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		HarnessOptions: map[string]apiextensionsv1.JSON{"effort": {Raw: []byte(`"high"`)}},
 		TimeoutSeconds: 3600,
 		Capabilities:   []string{"repo:push"}, Skills: []string{"go"}, Tools: []string{"shell"},
+		MCPServers:  []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
 		ScaleFactor: 2, Workflows: []string{"all-features"},
 	}
 
@@ -547,14 +582,27 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FeaturesForGoober: %v", err)
 	}
-	got := featureIDs(append(workflowFeatures, gooberFeatures...))
+	claudeGoober := goober
+	claudeGoober.Harness = apiv1.HarnessClaudeCode
+	claudeGoober.Model = ""
+	claudeGoober.HarnessOptions = nil
+	claudeFeatures, err := FeaturesForGoober(claudeGoober)
+	if err != nil {
+		t.Fatalf("FeaturesForGoober (claude-code): %v", err)
+	}
+	got := featureIDs(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...))
 	want := expectedCurrentDSLFeatureIDs()
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
 	}
+	// Gaggle-scoped features are registered (they appear in `goobers features`
+	// and the feature matrix) but have no workflow/goober resolution path, so
+	// only the registered comparison includes them.
+	wantRegistered := append(want, gaggleOnlyFeatureIDs()...)
+	slices.Sort(wantRegistered)
 	registered := featureIDs(AllFeatures())
-	if !slices.Equal(registered, want) {
-		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
+	if !slices.Equal(registered, wantRegistered) {
+		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(wantRegistered, registered), difference(registered, wantRegistered))
 	}
 }
 
@@ -711,6 +759,13 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.start",
 		"workflow.spec.tasks",
 		"workflow.spec.gates",
+		"workflow.spec.parallels",
+		"workflow.spec.parallels.failurePolicy",
+		"workflow.spec.parallels.branches",
+		"workflow.spec.parallels.join",
+		"workflow.spec.parallels.onFailure",
+		"workflow.spec.parallels.branchTimeoutSeconds",
+		"workflow.spec.parallels.maxConcurrentBranches",
 		"workflow.terminal.complete",
 		"workflow.terminal.abort",
 		"workflow.terminal.escalate",
@@ -718,6 +773,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.role",
 		"goober.spec.displayName",
 		"goober.spec.instructions",
+		"goober.spec.harness.claude-code",
 		"goober.spec.harness.copilot",
 		"goober.spec.model",
 		"goober.spec.harnessOptions",
@@ -725,6 +781,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.capabilities",
 		"goober.spec.skills",
 		"goober.spec.tools",
+		"goober.spec.mcpServers",
 		"goober.spec.scaleFactor",
 		"goober.spec.workflows",
 		"trigger.manual",
@@ -740,6 +797,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.goober",
 		"task.inputs",
 		"task.inputsFrom",
+		"task.inputsFrom.stageQualified",
 		"task.capabilities",
 		"task.retry",
 		"task.retry.maxAttempts",
@@ -757,12 +815,15 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.shell",
 		"stage.ci-poll",
 		"stage.run.command",
+		"stage.run.script",
 		"stage.run.env",
-		"stage.run.image",
 		"stage.run.network.none",
 		"stage.run.syncBase",
 		"stage.run.workspace.repo",
 		"stage.run.workspace.scratch",
+		"stage.workspace",
+		"stage.workspace.repo-readonly",
+		"gate.evaluator.agentic.workspace",
 		"stage.resultFile",
 		"gate.name",
 		"gate.branches",
@@ -800,6 +861,12 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// gaggleOnlyFeatureIDs are registered DSL features declared on Gaggle objects,
+// which FeaturesForWorkflow/FeaturesForGoober cannot resolve.
+func gaggleOnlyFeatureIDs() []FeatureID {
+	return []FeatureID{featureGaggleSandbox, featureGaggleCheckoutSparse}
 }
 
 func featureIDs(features []Feature) []FeatureID {

@@ -4,6 +4,7 @@
 # budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "1.4"
 metadata:
   name: pr-remediation
 spec:
@@ -42,8 +43,11 @@ spec:
   # past) so the two decider/executor cycles don't contend for the same PR
   # mid-read; this instance's open-PR volume is low, so hourly is ample.
   triggers:
+    # A due tick is sized to the unclaimed PRs that pass update-behind-pr's
+    # eligibility policy, then bounded by readiness below.
     - type: schedule
       schedule: "37 * * * *"
+      priority: 100
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 2
@@ -52,9 +56,12 @@ spec:
     # Cheap API-only lane (#720): this scratch stage selects by the same
     # priority rules as gather-pr-context and uses GitHub's update-branch
     # endpoint when the candidate is behind, mergeable, CI-clean, and carries
-    # no substantive finding. It terminates after that provider mutation, so no
-    # repository worktree or rebase stage is provisioned for the dominant
-    # mechanical-update case. Anything non-trivial falls through unchanged.
+    # no substantive finding. The behind-base fallback is lazy: only a crowned
+    # lander with live parked dependents is eligible, so siblings retain their
+    # blocker markers until their predecessor lands. It terminates after the
+    # provider mutation, so no repository worktree or rebase stage is
+    # provisioned for the mechanical-update case. Anything non-trivial falls
+    # through unchanged.
     - name: update-behind-pr
       type: deterministic
       goal: Update a clean behind-base PR through the provider API, or route it to full remediation.
@@ -63,6 +70,12 @@ spec:
         workspace: scratch
       inputs:
         resultFile: "update-behind-result.json"
+        # #941/PRR-6: the severity floor a finding must meet to count as
+        # substantive, shared with gather-pr-context's own minSeverity below
+        # so the two lanes agree on what "substantive" means. "info" is the
+        # liberal default (every substantive-classed finding counts,
+        # reproducing today's behavior).
+        minSeverity: "info"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -90,6 +103,12 @@ spec:
         command: ["goobers", "gather-pr-context"]
       inputs:
         resultFile: "remediation-brief.json"
+        # #941/PRR-6: applied at gate time (rebase-pr's decision reads the
+        # already-thresholded hasSubstantiveFindings this stage emits) — a
+        # sub-threshold finding stays visible in the full verdict this stage
+        # attaches to the brief, it just cannot by itself trigger the
+        # agentic chain. "info" is the liberal default.
+        minSeverity: "info"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -173,6 +192,12 @@ spec:
         hasFailingCI: hasFailingCI
       inputs:
         resultFile: "rebase-result.json"
+        # #941/PRR-6: which detected causes may trigger the agentic chain.
+        # The shipped default is fully liberal — every cause this stage can
+        # detect fires remediation, reproducing today's behavior exactly.
+        # behind-base and sibling-overlap are accepted vocabulary but cannot
+        # fire yet (see rebasepr.go's defaultRemediatePolicy doc comment).
+        remediate: "conflict,substantive,failing-ci,behind-base,sibling-overlap"
       capabilities:
         - repo:push
         - github:issues:write
@@ -187,6 +212,12 @@ spec:
         - conflictLocations
         - attemptedHeadSha
         - rebaseBaseSha
+        # #941/PRR-6: set when a detected cause exists but every one is
+        # excluded by the declared remediate policy — remediation-checkpoint
+        # reads these to escalate immediately instead of spending a repass
+        # budget on a cause the policy declined to touch.
+        - policyExcluded
+        - policyExcludedReason
       next: rebase-gate
 
     # D4/D5 loop-control (issue #364, design doc §6): runs only when
@@ -212,8 +243,17 @@ spec:
         conflictLocations: conflictLocations
         attemptedHeadSha: attemptedHeadSha
         rebaseBaseSha: rebaseBaseSha
+        # #941/PRR-6: rebase-pr's declared-policy exclusion — escalates this
+        # cycle immediately (like an explicit --escalate) instead of running
+        # the normal budget/no-progress checks, since no agent ever ran.
+        policyExcluded: policyExcluded
+        policyExcludedReason: policyExcludedReason
       inputs:
         resultFile: "checkpoint-result.json"
+        # #941/PRR-6: overrides D4's liberal per-PR repass budget
+        # (DefaultRemediationBudget=10). Unset/invalid falls back to that
+        # default.
+        maxCycles: "10"
       capabilities:
         - github:pr:write
         - github:issues:write

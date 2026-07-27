@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/config-source-action.schema.json",
+  "title": "ConfigSourceActionEnvelope",
+  "description": "Machine-readable result of a non-interactive action that changes a checked-in Goobers config source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "version", "created", "skipped", "path", "nextCommand"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["seed-config-source", "stub-agent-instructions"],
+      "description": "Which config-source action produced this envelope."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Envelope version, incremented when the payload shape changes."
+    },
+    "created": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Config-source paths or logical asset roots installed by the action."
+    },
+    "skipped": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Config-source paths or logical asset roots left untouched because they were already current."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the config source tree."
+    },
+    "nextCommand": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Ready-to-run command that checks or validates the action result."
+    }
+  }
+}

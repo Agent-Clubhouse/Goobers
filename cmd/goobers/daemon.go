@@ -12,10 +12,13 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
@@ -69,6 +72,11 @@ type schedulerSetup struct {
 	SharedRegistry   *journal.RegistryScrubber
 	TerminalNotifier runner.TerminalNotifier
 	RunnerRegistry   *daemonRunnerRegistry
+	// SecretStores resolves store-backed token refs (#683). Built once per
+	// setup from cfg.SecretStores so every consumer shares one TTL cache;
+	// never nil — an instance with no declared stores gets a registry that
+	// fails every store ref closed.
+	SecretStores *secretstore.Registry
 }
 
 type schedulerDefinitions struct {
@@ -106,6 +114,13 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		apply(&options)
 	}
 	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	// One store registry per setup (#683): every store-backed token ref below
+	// — repo tokens, per-capability credentials, webhook secret, OTLP headers
+	// — resolves through this single TTL-cached registry.
+	secretStores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +181,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// keyed by digest, so many runs feeding it is fine.
 	sharedReg := journal.NewRegistryScrubber()
 	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
-	terminalNotifier := buildTerminalNotifier(l, cfg, sharedScrubber, options)
+	terminalNotifier, err := buildTerminalNotifier(ctx, l, cfg, sharedScrubber, options)
+	if err != nil {
+		return nil, err
+	}
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
@@ -190,7 +208,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if cfg.Telemetry.OTLP != nil {
 			otlpConfig = *cfg.Telemetry.OTLP
 		}
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig, secretStores)
 		if err != nil {
 			return nil, err
 		}
@@ -239,13 +257,13 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
 	if err != nil {
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight,
+		l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
@@ -283,6 +301,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		SharedRegistry:    sharedReg,
 		TerminalNotifier:  terminalNotifier,
 		RunnerRegistry:    runnerRegistry,
+		SecretStores:      secretStores,
 	}, nil
 }
 
@@ -334,13 +353,14 @@ func buildSchedulerDefinitions(
 	wtManagers map[string]*worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
+	stores credentials.StoreResolver,
 ) (*schedulerDefinitions, error) {
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachinesWithGooberDigests(set, goobers, instructions)
+	machines, gooberDigests, err := compiledMachinesWithGooberDigests(l.ConfigDir(), set, goobers, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -362,15 +382,19 @@ func buildSchedulerDefinitions(
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
+	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
+		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
 	}
+	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], harnessInfo,
+			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
+			stores, sandboxPostures[gaggle],
 		)
 		if err != nil {
 			return nil, err
@@ -379,7 +403,7 @@ func buildSchedulerDefinitions(
 		runners[gaggle] = rn
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir())
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +411,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg, "", "")
+	credResolver, _, err := buildCredentials(cfg, stores, "", "", nil, sharedReg)
 	if err != nil {
 		return nil, err
 	}
@@ -431,9 +455,11 @@ func buildSchedulerDefinitions(
 					sigs = append(sigs, webhookhttp.SignalName(event))
 				}
 			}
-			if trigger.Type == apiv1.TriggerBacklogItem && !pollPrioritySet {
-				pollPriority = trigger.Priority
-				pollPrioritySet = true
+			if trigger.Type == apiv1.TriggerBacklogItem || trigger.Type == apiv1.TriggerSchedule {
+				if !pollPrioritySet || trigger.Priority > pollPriority {
+					pollPriority = trigger.Priority
+					pollPrioritySet = true
+				}
 			}
 		}
 		pollFallbackCause := ""
@@ -453,6 +479,18 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		controls, err := runcontrol.Resolve(
+			cfg.RunConditions.RunControls(),
+			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
+			wf.Spec.RunControls,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
+		}
+		backlogCounter, err := buildBacklogCounter(cfg, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:          wf.Name,
 			WorkflowVersion:   machine.Def.Version,
@@ -462,12 +500,16 @@ func buildSchedulerDefinitions(
 			Schedules:         scheds,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota),
-			// buildBacklogCounter currently uses GitHub; charge the provider
-			// actually called rather than a future configured adapter.
+			BacklogCounter:    backlogCounter,
+			ScheduleDemandCounter: buildScheduleDemandCounter(
+				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
+				branchNamespaces[wf.Spec.Gaggle], providerQuota,
+			),
+			// The current provider-backed demand counters use GitHub; charge the
+			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
-			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
@@ -508,6 +550,7 @@ func buildRetainedLegacyRunner(
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
 	harnessInfo harnessPreflightInfo,
+	stores credentials.StoreResolver,
 ) (*runner.Runner, *worktree.Manager, error) {
 	retained, err := retainedLegacyRuntimeExists(l)
 	if err != nil || !retained {
@@ -522,7 +565,10 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, harnessInfo,
+		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		// Legacy retained runtime is not gaggle-scoped, so only the
+		// instance-wide posture can apply (no gaggle override to consult).
+		instance.EffectiveAgenticSandbox(cfg, nil),
 	)
 }
 
@@ -555,15 +601,18 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	additionalRepos []apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
+	stores credentials.StoreResolver,
+	sandboxPosture instance.SandboxPosture,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, harnessInfo,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture,
 	)
 	if err != nil {
 		return nil, nil, err
 	}
-	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg)
+	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -667,6 +716,7 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 type trackedStarter struct {
 	r            *runner.Runner
 	machine      *workflow.Machine
+	runControls  apiv1.RunControls
 	requiredCaps []string
 	wg           *sync.WaitGroup
 	l            instance.Layout
@@ -689,6 +739,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,
 		Item:                 req.Item,
+		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})
 	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)

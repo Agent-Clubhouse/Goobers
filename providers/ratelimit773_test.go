@@ -14,7 +14,13 @@ import (
 func TestADORateLimitHonorsRetryAfter(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/workitemtypes/") {
+			writeJSON(t, w, map[string]any{"value": []map[string]string{
+				{"name": "Active", "category": "InProgress"},
+			}})
+			return
+		}
 		mu.Lock()
 		calls++
 		call := calls
@@ -94,7 +100,13 @@ func TestRateLimitFallbackIsJitteredAndBounded(t *testing.T) {
 
 func TestADORateLimitUsesFallbackWithoutServerDelay(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/workitemtypes/") {
+			writeJSON(t, w, map[string]any{"value": []map[string]string{
+				{"name": "Active", "category": "InProgress"},
+			}})
+			return
+		}
 		calls++
 		if calls == 1 {
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
@@ -280,6 +292,12 @@ func TestRateLimitRetryDoesNotBlockUnrelatedOperation(t *testing.T) {
 	var mu sync.Mutex
 	limitedCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/workitemtypes/") {
+			writeJSON(t, w, map[string]any{"value": []map[string]string{
+				{"name": "Active", "category": "InProgress"},
+			}})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/1") {
 			mu.Lock()
 			limitedCalls++

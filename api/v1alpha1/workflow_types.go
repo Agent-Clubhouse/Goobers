@@ -31,10 +31,21 @@ type Trigger struct {
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
 	// Selector configures backlog-item filtering. Keys are required labels and
-	// values are ignored; full k8s-style selector matching remains V1
-	// (WF-040, SCH-010).
+	// values are ignored.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// LabelPredicate is a CEL expression over the item's label set. The only
+	// supported operations are string membership in `labels` and boolean
+	// composition with &&, ||, and !. It is ANDed with Selector.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
+	// FieldPredicate is a CEL expression over the provider's typed native-field
+	// projection. It is ANDed with Selector and fails when a referenced field is
+	// unavailable.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
 	// Priority orders provider-backed polling when a quota window cannot cover
 	// every due poll. Higher values are preserved first; equal values use the
 	// scheduler's deterministic workflow ordering.
@@ -213,9 +224,12 @@ type Task struct {
 	// discarded so downstream tasks cannot consume partial results.
 	// +optional
 	ContinueOnError bool `json:"continueOnError,omitempty" yaml:"continueOnError,omitempty"`
-	// InputsFrom declares an explicit, small output->input handoff from the
-	// immediately preceding task's ResultEnvelope.Outputs into this task's
-	// Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
+	// InputsFrom declares an explicit, small output->input handoff into this
+	// task's Inputs: InputsFrom[inputKey] = outputKey. A bare outputKey reads the
+	// immediately preceding task. DSL 2.0 also admits <stage>.<outputKey> and,
+	// on a parallel join, <parallel>.<branch>.<stage>.<outputKey>; the stage may
+	// be omitted only when that branch has one @join-terminal stage.
+	// Unlike a gate (which receives
 	// every upstream Output key flattened automatically, per
 	// internal/gate/automated.go's runner-contract convention — a gate never
 	// mutates run state, so a wide-open read is safe), a task-to-task handoff
@@ -227,6 +241,17 @@ type Task struct {
 	// contract, not a hint).
 	// +optional
 	InputsFrom map[string]string `json:"inputsFrom,omitempty" yaml:"inputsFrom,omitempty"`
+	// Workspace selects the filesystem workspace for this stage, for stages
+	// that cannot express it through Run — i.e. AGENTIC tasks, which have no
+	// DeterministicRun and were previously hardcoded to the writable repo
+	// worktree. A deterministic task should keep using Run.Workspace, which
+	// takes precedence when both are set.
+	//
+	// The motivating case is repo-readonly for an agentic research stage
+	// inside a parallel branch (docs/design/static-fan-out-fan-in.md §6.5).
+	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
+	// +optional
+	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
@@ -248,21 +273,38 @@ type RetryPolicy struct {
 	BackoffSeconds int32 `json:"backoffSeconds,omitempty" yaml:"backoffSeconds,omitempty"`
 }
 
+// RunControls tunes runner-level safety budgets. An omitted field inherits from
+// the next broader scope: workflow, then gaggle, then instance defaults.
+type RunControls struct {
+	// MaxRepasses bounds consecutive non-pass evaluations before escalation.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// StalledRunTimeout is the maximum period a running journal may remain
+	// silent before the watchdog escalates it. It uses Go duration syntax.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+}
+
 // DeterministicRun describes the code a deterministic task runs.
+// +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
-	// +kubebuilder:validation:Required
-	Command []string `json:"command" yaml:"command"`
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	Command []string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Script is an inline script executed by the host's native command
+	// interpreter: sh on Unix and cmd.exe on Windows. It is mutually exclusive
+	// with Command.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Script string `json:"script,omitempty" yaml:"script,omitempty"`
 	// Env is the explicit environment supplied to the command in addition to
 	// the runner's minimal base environment and capability-scoped credentials.
 	// +optional
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
-	// Image optionally selects the command's container image. The V0 local
-	// runner executes commands directly and does not honor this field;
-	// validation emits VER003 when set.
-	// +optional
-	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 	// Network selects the command's network access. Empty inherits the host
 	// network. "none" denies network access to the command and its descendants.
 	// +kubebuilder:validation:Enum=none
@@ -292,11 +334,34 @@ const (
 type WorkspaceMode string
 
 const (
-	// WorkspaceRepo provisions a fresh worktree from the target repository.
+	// WorkspaceRepo provisions a fresh worktree from the target repository on
+	// the run branch, which the stage may commit to and push.
 	WorkspaceRepo WorkspaceMode = "repo"
 	// WorkspaceScratch provisions an empty disposable directory.
 	WorkspaceScratch WorkspaceMode = "scratch"
+	// WorkspaceRepoReadOnly provisions a worktree at the run's pinned base
+	// revision in DETACHED HEAD — no branch name, so no branch-name collision
+	// and nothing to merge afterwards.
+	//
+	// This exists because every ordinary repo workspace is created on ONE run
+	// branch, and git refuses to check one branch out in two worktrees
+	// simultaneously: two concurrently-executing repo-backed stages collide
+	// outright. Read-only research fan-out (the quality-sprint shape) needs
+	// repo content without needing to write it, so detaching removes the
+	// collision entirely rather than inventing a per-branch naming and merge
+	// policy (docs/design/static-fan-out-fan-in.md §6.5).
+	WorkspaceRepoReadOnly WorkspaceMode = "repo-readonly"
 )
+
+// IsRepoBacked reports whether a workspace mode materialises the target
+// repository, whether or not the stage may write to it.
+func (m WorkspaceMode) IsRepoBacked() bool {
+	return m == WorkspaceRepo || m == WorkspaceRepoReadOnly
+}
+
+// IsWritableRepo reports whether a workspace mode puts the stage on the run
+// branch with the intent that it commit there.
+func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
@@ -314,6 +379,7 @@ const (
 // Gate is a validation state that evaluates a condition and branches the flow. A
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
+// +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -337,6 +403,11 @@ type Gate struct {
 	// workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
+	// MaxRepasses overrides the inherited workflow repass budget for this gate.
+	// It is valid only for automated and agentic gates.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.
@@ -376,6 +447,11 @@ type AgenticGate struct {
 	// implemented separately from this declarative contract.
 	// +optional
 	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// Workspace selects the filesystem workspace the reviewer evaluates in.
+	// Unset preserves the historical behaviour (a writable repo worktree).
+	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
+	// +optional
+	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 }
 
 // HumanGate pauses for an explicit human decision, surfaced in the portal.
@@ -410,6 +486,11 @@ type WorkflowSpec struct {
 	// Readiness bounds when a run may start (WF-011).
 	// +optional
 	Readiness ReadinessConditions `json:"readiness,omitempty" yaml:"readiness,omitempty"`
+	// RunControls overrides this workflow's gaggle and instance run-control
+	// budgets. Individual automated or agentic gates may further override
+	// MaxRepasses.
+	// +optional
+	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`
@@ -428,12 +509,135 @@ type WorkflowSpec struct {
 	// rejects a root that does not exist in the repository.
 	// +optional
 	DocsRoots []string `json:"docsRoots,omitempty" yaml:"docsRoots,omitempty"`
+	// TutorScope declares this workflow as a Tutor-role definition and names
+	// its topology tier (TUT-A4, Tutor v2 design doc §4.3): every tutor is
+	// already confined to one gaggle via Gaggle above (the hard silo — there
+	// is no cross-gaggle tutor), and TutorScope additionally states whether
+	// this particular tutor's config-write is further confined to one target
+	// workflow's own subtree (Tier=per-workflow, persona/gate/wiring) or
+	// spans the whole gaggle's shared config (Tier=per-gaggle, shared
+	// skills/validation/structure). Unset means this workflow is not a
+	// tutor.
+	// +optional
+	TutorScope *TutorScope `json:"tutorScope,omitempty" yaml:"tutorScope,omitempty"`
 	// Tasks are the work states of the machine.
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
 	// Gates are the validation/branching states of the machine.
 	// +optional
 	Gates []Gate `json:"gates,omitempty" yaml:"gates,omitempty"`
+	// Parallels are the fan-out/fan-in states of the machine: a parallel forks
+	// the run into a statically-declared set of named branches and joins them at
+	// a single successor once every branch has settled
+	// (docs/design/static-fan-out-fan-in.md).
+	// +optional
+	Parallels []Parallel `json:"parallels,omitempty" yaml:"parallels,omitempty"`
+}
+
+// BranchFailurePolicy declares what a parallel does when one of its branches
+// fails. It is required — there is no default — because parallelism without an
+// explicit failure policy bakes ambiguity in permanently (#1310).
+type BranchFailurePolicy string
+
+const (
+	// BranchFailFast abandons not-yet-started branches and cancels started
+	// siblings at their next stage boundary, skips the join, and routes to
+	// OnFailure.
+	BranchFailFast BranchFailurePolicy = "fail_fast"
+	// BranchAllOrNothing lets every branch finish, then skips the join and
+	// routes to OnFailure if any branch failed.
+	BranchAllOrNothing BranchFailurePolicy = "all_or_nothing"
+	// BranchContinueOnError always runs the join, which owns the decision via
+	// the branch completeness record.
+	BranchContinueOnError BranchFailurePolicy = "continue_on_error"
+)
+
+// Branch is one statically-declared arm of a Parallel. Its body is ordinary
+// tasks and gates declared in the same Tasks/Gates lists; a branch is not a
+// nested scope but a named entry point into a subgraph the compiler proves is
+// disjoint from every other branch's.
+type Branch struct {
+	// Name identifies the branch in journal events, the completeness record,
+	// and branch-qualified inputsFrom references. Unique within its parallel.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// Start is the name of the branch's first state (task or gate).
+	// +kubebuilder:validation:Required
+	Start string `json:"start" yaml:"start"`
+}
+
+// Parallel is a fan-out/fan-in state. Branch width is fixed at author time;
+// dynamic (data-driven) width is deliberately not supported (#817).
+type Parallel struct {
+	// Name identifies this state; it is a valid next/branches target like any
+	// other state name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// FailurePolicy declares what happens when a branch fails. Required.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=fail_fast;all_or_nothing;continue_on_error
+	FailurePolicy BranchFailurePolicy `json:"failurePolicy" yaml:"failurePolicy"`
+	// Branches are the statically-declared arms, at least two. Branch ids are
+	// assigned by declaration order (from 1; 0 is the run's root branch), so
+	// they are deterministic and reproducible across runs and runners.
+	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:Required
+	Branches []Branch `json:"branches" yaml:"branches"`
+	// Join is the state that runs exactly once, after every branch has settled.
+	// It may only be entered through this parallel.
+	// +kubebuilder:validation:Required
+	Join string `json:"join" yaml:"join"`
+	// OnFailure is the transition target when the policy is fail_fast or
+	// all_or_nothing and a branch failed — a state name or a reserved terminal
+	// target, so failure is always a defined branch and never a silent stop
+	// (mirroring GT-002). Required for those two policies and FORBIDDEN under
+	// continue_on_error, where the join always runs and owns the decision;
+	// declaring both would name two contradictory owners of the same failure.
+	// +optional
+	OnFailure string `json:"onFailure,omitempty" yaml:"onFailure,omitempty"`
+	// BranchTimeoutSeconds bounds one branch. A branch exceeding it terminates
+	// at its next stage boundary, is recorded timed-out, and is then handled as
+	// a failure under the declared policy — so a branch that never settles is a
+	// defined outcome rather than a hang.
+	// +optional
+	BranchTimeoutSeconds int32 `json:"branchTimeoutSeconds,omitempty" yaml:"branchTimeoutSeconds,omitempty"`
+	// MaxConcurrentBranches bounds how many branches execute at once. Unset
+	// means 1 — deterministic sequential execution unless the author opts into
+	// concurrency. Concurrent repo-backed branches additionally require the
+	// read-only workspace mode, because every stage worktree is otherwise
+	// created on one run branch and git forbids two worktrees on one branch.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxConcurrentBranches int32 `json:"maxConcurrentBranches,omitempty" yaml:"maxConcurrentBranches,omitempty"`
+}
+
+// TutorScopeTier is the topology tier of a Tutor-role workflow (TUT-A4).
+type TutorScopeTier string
+
+const (
+	// TutorScopePerWorkflow confines the tutor's config-write to one target
+	// workflow's own subtree (persona/gate/wiring) — local, cheap, frequent,
+	// low-blast.
+	TutorScopePerWorkflow TutorScopeTier = "per-workflow"
+	// TutorScopePerGaggle spans the whole gaggle's shared config (shared
+	// skills, workflow-level tests, workflow structure, capability
+	// declarations, shared gate calibration) — higher-blast, stronger
+	// governance.
+	TutorScopePerGaggle TutorScopeTier = "per-gaggle"
+)
+
+// TutorScope names a Tutor-role workflow's topology tier and, for a
+// per-workflow tutor, the single workflow it is scoped to.
+type TutorScope struct {
+	// Tier is per-workflow or per-gaggle.
+	// +kubebuilder:validation:Enum=per-workflow;per-gaggle
+	// +kubebuilder:validation:Required
+	Tier TutorScopeTier `json:"tier" yaml:"tier"`
+	// Target names the workflow this per-workflow tutor is scoped to. It
+	// must reference a workflow in the same gaggle. Required when Tier is
+	// per-workflow; must be empty when Tier is per-gaggle.
+	// +optional
+	Target string `json:"target,omitempty" yaml:"target,omitempty"`
 }
 
 // +kubebuilder:object:root=true

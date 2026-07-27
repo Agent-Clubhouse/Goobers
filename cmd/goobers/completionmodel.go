@@ -36,7 +36,7 @@ type completionCommand struct {
 	desc    string               // registry short help (renders as the zsh description)
 	subs    []completionCommand  // nested subcommands, from the registry
 	flags   []completionFlagSpec // annotated flags (completionFlagSpecs[id])
-	argKind string               // dynamic positional arg kind (workflows|runs|escalations)
+	argKind string               // dynamic positional arg kind (workflows|runs|escalations|examples)
 }
 
 // completionFlagSpec annotates one flag for completion. takesArg mirrors
@@ -59,6 +59,7 @@ var completionPositionalArgKinds = map[string]string{
 	"run abort":        "runs",
 	"trace":            "runs",
 	"escalations show": "escalations",
+	"examples show":    "examples",
 	"workflow show":    "workflows",
 }
 
@@ -71,6 +72,24 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
+		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
+		{name: "json", desc: "Emit the config-source action result as JSON"},
+	},
+	"preflight": {
+		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
+		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
+	},
+	"onboarding stub-sample": {
+		{name: "destination", takesArg: true, desc: "Sample destination"},
+		{name: "work-tracking", takesArg: true, desc: "GitHub owner/repo to seed"},
+		{name: "token-env", takesArg: true, desc: "Issue token environment variable"},
+		{name: "force", desc: "Replace conflicting regular files"},
+		{name: "json", desc: "Emit the versioned action envelope"},
+	},
+	"onboarding stub-agent-instructions": {
+		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
+		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
+		{name: "json", desc: "Emit the versioned config-source action envelope"},
 	},
 	"scaffold goober": {
 		{name: "force", desc: "Replace generated files that already exist"},
@@ -78,10 +97,27 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"scaffold workflow": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},
+	"agent-kit install": {
+		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
+	},
+	"agent-kit update": {
+		{name: "dry-run", desc: "Show the update diff without writing"},
+		{name: "write", desc: "Apply product-owned changes"},
+		{name: "replace-modified", desc: "Acknowledge replacement of modified owned files"},
+	},
 	"validate": {
+		{name: "json", desc: "Emit a versioned findings envelope"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
+		{name: "strict", desc: "Treat config warnings as validation errors"},
+	},
+	"lint": {
+		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
+		{name: "check-repos", desc: "Verify target repositories are reachable"},
+		{name: "source-tree", desc: "Lint a checked-in config source tree"},
+		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"up": {
 		{name: "quiet", desc: "Suppress liveness heartbeats"},
@@ -89,6 +125,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
+	},
+	"speech preflight": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"speech test": {
+		{name: "json", desc: "Emit JSON"},
 	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
@@ -122,6 +164,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
 		{name: "json", desc: "Emit JSON"},
+	},
+	"features": {
+		{name: "json", desc: "Emit a versioned feature-discovery envelope"},
+		{name: "dsl-version", takesArg: true, desc: "Scope features to one DSL version"},
+		{name: "used", desc: "List only features referenced by the instance"},
 	},
 	"blocked list": {
 		{name: "json", desc: "Emit JSON"},
@@ -175,6 +222,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Include errors at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include errors at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
+	},
+	"telemetry prune-orphans": {
+		{name: "delete", desc: "Delete eligible orphan directories (opt-in; default dry-run)"},
+		{name: "min-age", takesArg: true, desc: "Minimum inactivity age (at least 24h)"},
 	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},

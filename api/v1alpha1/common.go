@@ -51,6 +51,31 @@ type RepoRef struct {
 	// this repo. It resolves to a Connection declared in the Manifest.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
+	// Checkout narrows how much of the repository run workspaces materialize
+	// (B2, #649). Accepted but not honored by the local runner yet: declaring
+	// it is inert and surfaces a VER003 compatibility warning at validate time.
+	// +optional
+	Checkout *CheckoutSpec `json:"checkout,omitempty" yaml:"checkout,omitempty"`
+}
+
+// CheckoutSpec declares partial-checkout behavior for a repository reference.
+type CheckoutSpec struct {
+	// Sparse lists repo-relative path cones a sparse checkout materializes;
+	// paths outside every cone are absent from run workspaces. Empty means a
+	// full checkout.
+	// +optional
+	Sparse []string `json:"sparse,omitempty" yaml:"sparse,omitempty"`
+}
+
+// EnvelopeRef is the projection of this reference that rides a stage
+// invocation envelope: repository identity and connection fields only.
+// Checkout is workspace-materialization config the runner consumes before a
+// stage ever runs; it stays off the wire so declaring it never changes the
+// closed stage contract (invocation.schema.json's repoRef,
+// docs/stage-contract.md).
+func (r RepoRef) EnvelopeRef() RepoRef {
+	r.Checkout = nil
+	return r
 }
 
 // BacklogRef points at the singleton backlog a gaggle draws work from.
@@ -65,6 +90,18 @@ type BacklogRef struct {
 	// item to a specific workflow is handled by workflow selectors (SCH-010).
 	// +optional
 	Labels []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	// LabelPredicate is a CEL expression over the item's label set. The only
+	// supported operations are string membership in `labels` and boolean
+	// composition with &&, ||, and !. It is ANDed with Labels.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	LabelPredicate string `json:"labelPredicate,omitempty" yaml:"labelPredicate,omitempty"`
+	// FieldPredicate is a CEL expression over the provider's typed native-field
+	// projection. It is ANDed with Labels and fails when a referenced field is
+	// unavailable.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
 	// +optional
 	Query string `json:"query,omitempty" yaml:"query,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.

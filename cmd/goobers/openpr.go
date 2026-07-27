@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -138,6 +139,52 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Per-target-action-root write-boundary (TUT-A5/#1217). The Tutor's
+	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
+	// by default. When set, every file this run's branch changes must resolve
+	// into the SAME single declared action root (the comma/newline
+	// `actionRoots` input, e.g. "selfhost,skills") — a skill-authoring action
+	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
+	// CLOSED before the PR opens (configboundary.ConfineExclusive).
+	if providerInput("confineToActionRoots", "") == "true" {
+		if err := confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))); err != nil {
+			pf(stderr, "error: action write-boundary: %v\n", err)
+			return 1
+		}
+	}
+
+	var tutorHoldout *tutorHoldoutRecord
+	recordTutorLiveVerification := false
+	if isTutorWorkflow(workflow) {
+		changes, err := localTutorChanges(base)
+		if err != nil {
+			pf(stderr, "error: classify Tutor change: %v\n", err)
+			return 1
+		}
+		classification, err := classifyTutorChanges(changes)
+		if err != nil {
+			pf(stderr, "error: classify Tutor change: %v\n", err)
+			return 1
+		}
+		body = strings.TrimRight(body, "\n") + "\n\n" + tutorClassificationPRSection(classification)
+		recordTutorLiveVerification = providerInput("recordLiveVerification", "") == "true"
+		if recordTutorLiveVerification {
+			tutorHoldout, err = prepareTutorHoldout(
+				root,
+				os.Getenv("GOOBERS_GAGGLE"),
+				runID,
+				providerInput("tutorConfigSource", ""),
+				classification,
+				changes,
+				time.Now().UTC(),
+			)
+			if err != nil {
+				pf(stderr, "error: prepare Tutor live verification: %v\n", err)
+				return 1
+			}
+		}
+	}
+
 	resultFile := providerInput("resultFile", "pr-result.json")
 
 	// Mid-flight staleness re-check (#947). The claimed issue was validated
@@ -169,6 +216,22 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Persist the mandatory finding before the external mutation. If the
+	// process crashes after GitHub accepts the PR, the prepared record still
+	// survives for a later exact-cohort verification pass. Repasses atomically
+	// replace this run-keyed file; optional final classifications remove it.
+	if recordTutorLiveVerification {
+		if tutorHoldout == nil {
+			if err := clearTutorHoldoutsForRun(root, os.Getenv("GOOBERS_GAGGLE"), runID); err != nil {
+				pf(stderr, "error: replace Tutor live verification: %v\n", err)
+				return 1
+			}
+		} else if err := writeTutorHoldout(root, *tutorHoldout); err != nil {
+			pf(stderr, "error: prepare Tutor live verification: %v\n", err)
+			return 1
+		}
+	}
+
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
@@ -178,12 +241,42 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
+		if tutorHoldout != nil {
+			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
+				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
+				return 1
+			}
+		}
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+
+	if recordTutorLiveVerification {
+		if tutorHoldout != nil {
+			tutorHoldout.PRNumber = result.Number
+			tutorHoldout.PRURL = result.URL
+			if err := writeTutorHoldout(root, *tutorHoldout); err != nil {
+				pf(stderr, "error: record Tutor live verification: %v\n", err)
+				return 1
+			}
+		}
 	}
 
 	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+
+	// Gate-edit review routing (TUT-A3, #1215): a tutor run whose
+	// gate-removal-guard stage classified this diff as removing or loosening
+	// its own flagged gate gets the stricter-review label; ordinary gate
+	// tuning gets the lighter one. Best-effort — labeling failures never fail
+	// an already-opened PR, same posture as flagScopeDrift.
+	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
+		if gh, ok := provider.(*providers.GitHubProvider); ok {
+			if lerr := labelGateEdit(ctx, gh, repo, result.Number, kind, subject); lerr != nil {
+				pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+			}
+		}
 	}
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)

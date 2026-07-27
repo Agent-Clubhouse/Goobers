@@ -11,8 +11,10 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// Source builds the configured Azure DevOps credential source.
-func Source(repo instance.RepoRef, runner providers.CommandRunner) (providers.ADOCredentialSource, error) {
+// Source builds the configured Azure DevOps credential source. stores
+// resolves a store-backed PAT ref (#683); it may be nil only when the PAT is
+// env/file-backed — a store ref without it fails closed at construction.
+func Source(repo instance.RepoRef, runner providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 	if repo.Provider != "ado" {
 		return nil, fmt.Errorf("ADO credential source requires provider %q, got %q", "ado", repo.Provider)
 	}
@@ -23,11 +25,9 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner) (providers.AD
 	switch kind {
 	case instance.ADOAuthPAT:
 		const refName = "ado-repository"
-		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
-			Name: refName,
-			Env:  repo.Token.Env,
-			File: repo.Token.File,
-		}})
+		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
+			repo.Token.CredentialTokenRef(refName),
+		}, stores)
 		if err != nil {
 			return nil, fmt.Errorf("configure ADO PAT source: %w", err)
 		}
@@ -46,8 +46,8 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner) (providers.AD
 }
 
 // Provider constructs an ADO provider from one validated instance repository.
-func Provider(repo instance.RepoRef, runner providers.CommandRunner, registrar providers.SecretRegistrar, observer providers.RateLimitObserver) (*providers.ADOProvider, error) {
-	source, err := Source(repo, runner)
+func Provider(repo instance.RepoRef, runner providers.CommandRunner, registrar providers.SecretRegistrar, observer providers.RateLimitObserver, stores credentials.StoreResolver) (*providers.ADOProvider, error) {
+	source, err := Source(repo, runner, stores)
 	if err != nil {
 		return nil, err
 	}

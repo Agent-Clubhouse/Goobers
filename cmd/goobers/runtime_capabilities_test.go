@@ -48,6 +48,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "completion fish", apicontract.ActionConfigTime)
 	assertActionClass(t, cliSurfaceActions(), "telemetry stats", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "telemetry errors", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "telemetry prune-orphans", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "claims list", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "claims release", apicontract.ActionMaintenance)
@@ -59,7 +60,16 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	if len(apiActions) != len(apicontract.V1Routes()) {
 		t.Fatalf("API actions = %d, want one for each of %d registered routes", len(apiActions), len(apicontract.V1Routes()))
 	}
+	// Every route is read-only except the tier-2 mutation stubs (HITL-7/#469):
+	// approve/override/rerun are the only intentional runtime-mutation routes.
+	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	for _, action := range apiActions {
+		if runtimeMutationRoutes[action.ID] {
+			if action.Class != apicontract.ActionRuntimeMutation {
+				t.Fatalf("API action %q class = %q, want runtime-mutation", action.ID, action.Class)
+			}
+			continue
+		}
 		if action.Class != apicontract.ActionReadOnlyNavigation {
 			t.Fatalf("API action %q class = %q, want read-only", action.ID, action.Class)
 		}

@@ -7,6 +7,7 @@ import type {
   WorkflowGraph,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
+import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 
 export type RunNodeState =
@@ -30,14 +31,25 @@ export interface RunDetailQuery {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const [state, setState] = useState<QueryState<RunDetailSnapshot>>({ status: "loading" });
+  const { cache, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("run-detail", runId);
+  const [state, setState] = useState<QueryState<RunDetailSnapshot>>(() => {
+    const cached = cache.get<RunDetailSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
   const request = useRef<AbortController | undefined>(undefined);
-  const { subscribe } = useLiveData();
 
   const refresh = useCallback((): Promise<boolean> => {
     request.current?.abort();
+    const dependencies = runDetailDependencies(runId);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
+    setState((current) =>
+      current.status === "ready" || current.status === "stale"
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
 
     return loadRunDetail(client, runId, controller.signal).then(
       (data) => {
@@ -47,6 +59,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         if (request.current === controller) {
           request.current = undefined;
         }
+        cache.set(cacheKey, data, dependencies, cacheRevision);
         setState({ status: "ready", data });
         return true;
       },
@@ -57,30 +70,53 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         if (request.current === controller) {
           request.current = undefined;
         }
-        setState({
-          status: "error",
-          error: error instanceof Error ? error : new Error("Unable to read run detail."),
-        });
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read run detail.");
+        setState((current) =>
+          current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
         return false;
       },
     );
-  }, [client, runId]);
+  }, [cache, cacheKey, client, runId]);
 
   useEffect(() => {
-    setState({ status: "loading" });
-    const unsubscribe = subscribe(["run"], refresh);
+    const cached = cache.get<RunDetailSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const current = reason === "initial" ? cache.get<RunDetailSnapshot>(cacheKey) : undefined;
+        if (current) {
+          setState({ status: "ready", data: current });
+          return true;
+        }
+        return refresh();
+      },
+      { runId },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
       request.current = undefined;
     };
-  }, [refresh, subscribe]);
+  }, [cache, cacheKey, refresh, subscribe]);
 
   const retry = useCallback(() => {
-    setState({ status: "loading" });
+    // Evict the cached snapshot so a retry refetches rather than re-serving the
+    // entry that just failed — but do NOT reset to "loading". Blanking the page
+    // to a full skeleton on retry is the regression #1684 fixed; refresh() already
+    // moves ready/stale data to "stale" and keeps it visible while the refetch runs.
+    cache.remove(cacheKey);
     void refresh();
-  }, [refresh]);
+  }, [cache, cacheKey, refresh]);
   return { retry, state };
+}
+
+function runDetailDependencies(runId: string): readonly DataCacheDependency[] {
+  return [{ model: "run", runId }];
 }
 
 export async function loadRunDetail(
@@ -228,6 +264,14 @@ export function eventSummary(event: RunEvent): string {
     }
     case "artifact.recorded":
       return `${event.artifact?.name || event.name || "An artifact"} was recorded.`;
+    case "ref.touched": {
+      const reference = event.externalRef;
+      if (!reference) {
+        return "An external reference was recorded.";
+      }
+      const kind = reference.kind === "pr" ? "Pull request" : humanize(reference.kind);
+      return `${kind} ${reference.id} was recorded on ${humanize(reference.provider)}.`;
+    }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
     default:
