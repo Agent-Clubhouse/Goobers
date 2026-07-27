@@ -89,7 +89,31 @@ Audit against expected operator verbs; the confirmed gaps and their owners:
 4. Land the CI parity/regen-diff guard (#650 + C-2/C-3 checks) so the surfaces can never
    re-drift.
 
-## 5. Open questions (PO)
+## 5. CLI-first onboarding action contract
+
+The interactive Getting Started guide (#437) is a presentation layer over the
+binary, not a second scaffolder. Its prompts or portal controls may collect
+inputs, invoke these commands, and render their parsed results:
+
+- `goobers onboarding stub-sample`
+- `goobers init --template=quickstart --source-tree`
+- `goobers onboarding stub-agent-instructions`
+- `goobers validate --source-tree --json`
+
+The three write actions return the same versioned envelope:
+`{action, version, created[], skipped[], path, nextCommand}`. They are
+non-interactive, idempotent, no-clobber, and schema-validated before JSON is
+emitted. `init --guided` uses the same seed-config action core after prompts
+collect the repository-specific values.
+
+Portal onboarding write-actions MUST be thin process/API wrappers over these
+commands. They MUST NOT copy template files, install agent assets, seed provider
+items, or maintain a portal-only result shape. This onboarding guide is distinct
+from the operational portal, which remains configuration-read-only under
+PORT-010; desired state is still written as files in the config source by the
+CLI action and remains subject to normal review.
+
+## 6. Open questions (PO)
 - **OQ-1 — `docs`/`man` command name and scope:** ship a `goobers docs` subcommand, or a
   build-time generator only (no runtime command)? *(Recommend: a build-time generator wired
   into CI + committed `docs/cli/`; a thin `goobers docs` wrapper is optional.)*

@@ -35,8 +35,8 @@ type InitResult struct {
 	Skipped []string
 }
 
-// ConfigSourceSeedResult reports the quickstart source files that were created
-// or preserved.
+// ConfigSourceSeedResult reports the config source files that were created or
+// preserved.
 type ConfigSourceSeedResult struct {
 	Root    string
 	Created []string
@@ -73,11 +73,6 @@ func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
 	if root == "" {
 		return nil, errors.New("config source path is required")
 	}
-	root = filepath.Clean(root)
-	if err := prepareConfigSourceRoot(root); err != nil {
-		return nil, err
-	}
-
 	config, err := marshalConfig(defaultConfig())
 	if err != nil {
 		return nil, err
@@ -91,7 +86,14 @@ func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
 		return nil, fmt.Errorf("load quickstart template: %w", err)
 	}
 	files = append(files, templateFiles...)
+	return seedConfigSource(root, files, "quickstart template")
+}
 
+func seedConfigSource(root string, files []configSeedFile, templateName string) (*ConfigSourceSeedResult, error) {
+	root = filepath.Clean(root)
+	if err := prepareConfigSourceRoot(root); err != nil {
+		return nil, err
+	}
 	result := &ConfigSourceSeedResult{
 		Root:    root,
 		Created: []string{},
@@ -99,7 +101,8 @@ func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
 	}
 	existing := make([]bool, len(files))
 	for i, file := range files {
-		existing[i], err = inspectConfigSeedFile(root, file)
+		var err error
+		existing[i], err = inspectConfigSeedFile(root, file, templateName)
 		if err != nil {
 			return nil, fmt.Errorf("seed config source %s: %w", root, err)
 		}
@@ -297,7 +300,7 @@ func prepareConfigSourceRoot(root string) error {
 	return nil
 }
 
-func inspectConfigSeedFile(root string, file configSeedFile) (bool, error) {
+func inspectConfigSeedFile(root string, file configSeedFile, templateName string) (bool, error) {
 	rel := filepath.FromSlash(file.path)
 	if !filepath.IsLocal(rel) {
 		return false, fmt.Errorf("managed path %s is not relative to the config source", file.path)
@@ -324,7 +327,7 @@ func inspectConfigSeedFile(root string, file configSeedFile) (bool, error) {
 		return false, fmt.Errorf("read %s: %w", file.path, err)
 	}
 	if !bytes.Equal(data, file.data) {
-		return false, fmt.Errorf("managed file %s differs from the quickstart template; refusing to overwrite", file.path)
+		return false, fmt.Errorf("managed file %s differs from the %s; refusing to overwrite", file.path, templateName)
 	}
 	return true, nil
 }

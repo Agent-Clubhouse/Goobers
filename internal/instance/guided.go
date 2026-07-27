@@ -96,16 +96,31 @@ func InitGuidedSource(root string, opts GuidedOptions) error {
 	if err := CheckGuidedSourceTarget(root); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return fmt.Errorf("create config source %s: %w", root, err)
+	_, err := SeedGuidedConfigSource(root, opts)
+	return err
+}
+
+// SeedGuidedConfigSource applies prompt-selected guided configuration through
+// the same idempotent, no-clobber source seeder as the non-interactive action.
+func SeedGuidedConfigSource(root string, opts GuidedOptions) (*ConfigSourceSeedResult, error) {
+	opts = normalizeGuidedOptions(opts)
+	if err := validateGuidedOptions(opts); err != nil {
+		return nil, err
 	}
-	if err := WriteConfig(filepath.Join(root, GuidedSourceInstanceFile), guidedConfig(opts)); err != nil {
-		return err
+	config, err := marshalConfig(guidedConfig(opts))
+	if err != nil {
+		return nil, err
 	}
-	if err := copyGuidedConfig(root, opts); err != nil {
-		return fmt.Errorf("seed config source: %w", err)
+	files := []configSeedFile{{
+		path: GuidedSourceInstanceFile,
+		data: config,
+	}}
+	definitions, err := guidedConfigFiles(opts)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	files = append(files, definitions...)
+	return seedConfigSource(root, files, "guided template")
 }
 
 // CheckGuidedSourceTarget rejects any populated path so guided setup never
@@ -580,17 +595,26 @@ func guidedConfig(opts GuidedOptions) *Config {
 }
 
 func copyGuidedConfig(dir string, opts GuidedOptions) error {
-	if err := os.MkdirAll(filepath.Join(dir, "gaggles", opts.GaggleName), 0o755); err != nil {
+	files, err := guidedConfigFiles(opts)
+	if err != nil {
 		return err
 	}
-	if err := writeGuidedFile(filepath.Join(dir, "manifest.yaml"), guidedManifest(opts)); err != nil {
-		return err
+	for _, file := range files {
+		if err := writeGuidedFile(filepath.Join(dir, filepath.FromSlash(file.path)), file.data); err != nil {
+			return err
+		}
 	}
-	gagglePath := filepath.Join(dir, "gaggles", opts.GaggleName, "gaggle.yaml")
-	if err := writeGuidedFile(gagglePath, guidedGaggle(opts)); err != nil {
-		return err
-	}
+	return nil
+}
 
+func guidedConfigFiles(opts GuidedOptions) ([]configSeedFile, error) {
+	files := []configSeedFile{
+		{path: "manifest.yaml", data: guidedManifest(opts)},
+		{
+			path: filepath.ToSlash(filepath.Join("gaggles", opts.GaggleName, "gaggle.yaml")),
+			data: guidedGaggle(opts),
+		},
+	}
 	selected := make(map[string]bool, len(opts.Workflows))
 	goobers := make(map[string]bool)
 	for _, workflow := range opts.Workflows {
@@ -598,9 +622,11 @@ func copyGuidedConfig(dir string, opts GuidedOptions) error {
 		for _, goober := range guidedWorkflowGoobers[workflow] {
 			goobers[goober] = true
 		}
-		if err := copyGuidedWorkflow(dir, workflow, opts); err != nil {
-			return err
+		file, err := guidedWorkflowFile(workflow, opts)
+		if err != nil {
+			return nil, err
 		}
+		files = append(files, file)
 	}
 	names := make([]string, 0, len(goobers))
 	for name := range goobers {
@@ -608,22 +634,24 @@ func copyGuidedConfig(dir string, opts GuidedOptions) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := copyGuidedGoober(dir, name, selected, opts); err != nil {
-			return err
+		gooberFiles, err := guidedGooberFiles(name, selected, opts)
+		if err != nil {
+			return nil, err
 		}
+		files = append(files, gooberFiles...)
 	}
-	return nil
+	return files, nil
 }
 
-func copyGuidedWorkflow(dir, name string, opts GuidedOptions) error {
+func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error) {
 	source := guidedExampleRoot + "/workflows/" + name + ".yaml"
 	data, err := configexamples.Files.ReadFile(source)
 	if err != nil {
-		return err
+		return configSeedFile{}, err
 	}
 	var workflow apiv1.Workflow
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		return fmt.Errorf("decode canonical workflow %s: %w", name, err)
+		return configSeedFile{}, fmt.Errorf("decode canonical workflow %s: %w", name, err)
 	}
 	workflow.Spec.Gaggle = opts.GaggleName
 	for i := range workflow.Spec.Tasks {
@@ -634,21 +662,23 @@ func copyGuidedWorkflow(dir, name string, opts GuidedOptions) error {
 	}
 	data, err = yaml.Marshal(workflow)
 	if err != nil {
-		return fmt.Errorf("encode guided workflow %s: %w", name, err)
+		return configSeedFile{}, fmt.Errorf("encode guided workflow %s: %w", name, err)
 	}
-	target := filepath.Join(dir, "gaggles", opts.GaggleName, "workflows", name+".yaml")
-	return writeGuidedFile(target, data)
+	return configSeedFile{
+		path: filepath.ToSlash(filepath.Join("gaggles", opts.GaggleName, "workflows", name+".yaml")),
+		data: data,
+	}, nil
 }
 
-func copyGuidedGoober(dir, name string, selected map[string]bool, opts GuidedOptions) error {
+func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions) ([]configSeedFile, error) {
 	sourceDir := guidedExampleRoot + "/goobers/" + name
 	data, err := configexamples.Files.ReadFile(sourceDir + "/goober.yaml")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var goober apiv1.Goober
 	if err := yaml.Unmarshal(data, &goober); err != nil {
-		return fmt.Errorf("decode canonical goober %s: %w", name, err)
+		return nil, fmt.Errorf("decode canonical goober %s: %w", name, err)
 	}
 	goober.Spec.Gaggle = opts.GaggleName
 	goober.Spec.Capabilities = prependCapability(goober.Spec.Capabilities, string(capability.AgentModel))
@@ -661,18 +691,24 @@ func copyGuidedGoober(dir, name string, selected map[string]bool, opts GuidedOpt
 	goober.Spec.Workflows = workflows
 	data, err = yaml.Marshal(goober)
 	if err != nil {
-		return fmt.Errorf("encode guided goober %s: %w", name, err)
-	}
-	targetDir := filepath.Join(dir, "gaggles", opts.GaggleName, "goobers", name)
-	if err := writeGuidedFile(filepath.Join(targetDir, "goober.yaml"), data); err != nil {
-		return err
+		return nil, fmt.Errorf("encode guided goober %s: %w", name, err)
 	}
 	instructions, err := configexamples.Files.ReadFile(sourceDir + "/instructions.md")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	instructions = []byte(strings.ReplaceAll(string(instructions), guidedExampleDisplayName, opts.DisplayName))
-	return writeGuidedFile(filepath.Join(targetDir, "instructions.md"), instructions)
+	targetDir := filepath.Join("gaggles", opts.GaggleName, "goobers", name)
+	return []configSeedFile{
+		{
+			path: filepath.ToSlash(filepath.Join(targetDir, "goober.yaml")),
+			data: data,
+		},
+		{
+			path: filepath.ToSlash(filepath.Join(targetDir, "instructions.md")),
+			data: instructions,
+		},
+	}, nil
 }
 
 func prependCapability(capabilities []string, name string) []string {

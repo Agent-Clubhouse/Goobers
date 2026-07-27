@@ -79,14 +79,14 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 				test.check(t, root)
 			}
 
-			var envelope configSourceActionEnvelope
+			var envelope onboardingActionResult
 			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
 				t.Fatalf("decode result: %v\n%s", err, stdout)
 			}
 			envelope.Path = "$SOURCE"
 			envelope.NextCommand = strings.ReplaceAll(envelope.NextCommand, absolutePath(root), "$SOURCE")
 			var normalized bytes.Buffer
-			if err := encodeSchemaJSON(&normalized, schemas.ConfigSourceAction, envelope); err != nil {
+			if err := encodeSchemaJSON(&normalized, schemas.OnboardingAction, envelope); err != nil {
 				t.Fatal(err)
 			}
 			assertGoldenFile(
@@ -175,7 +175,7 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	var envelope configSourceActionEnvelope
+	var envelope onboardingActionResult
 	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
 		t.Fatalf("decode result: %v\n%s", err, stdout)
 	}
@@ -205,7 +205,7 @@ func TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath(t *testing.T) {
 	if code != 0 || stderr.String() != "" {
 		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var envelope configSourceActionEnvelope
+	var envelope onboardingActionResult
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode result: %v\n%s", err, stdout.String())
 	}

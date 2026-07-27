@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -117,7 +118,7 @@ func runGuidedInit(
 		if err := confirmGuidedMapping(p, root, result); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
-		if err := instance.InitGuidedSource(source.Root, opts); err != nil {
+		if _, err := executeSeedConfigSourceAction(source.Root, &opts, runtime.GOOS); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
 		if code := validateGuidedSource(source.Root, stdout, stderr); code != 0 {
