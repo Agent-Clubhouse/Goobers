@@ -137,6 +137,24 @@ func TestValidateJSONRoundTripRepair(t *testing.T) {
 	}
 }
 
+func TestEncodeSchemaJSONRejectsUndeclaredFieldBeforeWrite(t *testing.T) {
+	type diagnosticsWithFutureField struct {
+		diagnosticsEnvelope
+		FutureField string `json:"futureField"`
+	}
+	var stdout strings.Builder
+	err := encodeSchemaJSON(&stdout, schemas.Diagnostics, diagnosticsWithFutureField{
+		diagnosticsEnvelope: (&diagnosticCollector{}).envelope(true),
+		FutureField:         "not declared in diagnostics.schema.json",
+	})
+	if err == nil {
+		t.Fatal("schema-invalid diagnostics envelope was accepted")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("schema-invalid envelope wrote %q before validation", stdout.String())
+	}
+}
+
 func TestValidateJSONMultiDocumentYAMLLocation(t *testing.T) {
 	root := initIntrospectionInstance(t)
 	path := defaultWorkflowPath(root)

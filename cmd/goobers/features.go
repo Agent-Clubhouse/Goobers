@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"text/tabwriter"
 
+	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	buildversion "github.com/goobers/goobers/internal/version"
@@ -61,7 +62,7 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *asJSON {
-		if err := encodeIndentedJSON(stdout, newFeaturesEnvelope(rows, *dslVersion, *usedOnly)); err != nil {
+		if err := encodeSchemaJSON(stdout, schemas.Features, newFeaturesEnvelope(rows, *dslVersion, *usedOnly)); err != nil {
 			pf(stderr, "error: encode features: %v\n", err)
 			return 1
 		}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -344,7 +345,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			return writeJSONArtifact(result, stdout, stderr)
 		}
 		result := newCandidateFindingsArtifact(*window, since, nil, telemetryQueryNoRollupNote)
-		return writeJSONArtifact(result, stdout, stderr)
+		return writeCandidateFindingsArtifact(result, stdout, stderr)
 	}
 	db, err := openRollup(l, false)
 	if err != nil {
@@ -387,7 +388,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
 	}
-	return writeJSONArtifact(result, stdout, stderr)
+	return writeCandidateFindingsArtifact(result, stdout, stderr)
 }
 
 func detectCandidateFindings(
@@ -438,10 +439,24 @@ func newCandidateFindingsArtifact(window time.Duration, since time.Time, finding
 }
 
 func writeJSONArtifact(result any, stdout, stderr io.Writer) int {
+	return writeJSONArtifactWithSchema(result, "", stdout, stderr)
+}
+
+func writeCandidateFindingsArtifact(result candidateFindingsArtifact, stdout, stderr io.Writer) int {
+	return writeJSONArtifactWithSchema(result, schemas.CandidateFindings, stdout, stderr)
+}
+
+func writeJSONArtifactWithSchema(result any, schemaFile string, stdout, stderr io.Writer) int {
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		pf(stderr, "error: encode telemetry-query artifact: %v\n", err)
 		return 1
+	}
+	if schemaFile != "" {
+		if err := validateSchemaJSON(schemaFile, out); err != nil {
+			pf(stderr, "error: validate telemetry-query artifact: %v\n", err)
+			return 1
+		}
 	}
 	out = append(out, '\n')
 
