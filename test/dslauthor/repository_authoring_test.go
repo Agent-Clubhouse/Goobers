@@ -1,6 +1,7 @@
 package dslauthor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -33,18 +34,45 @@ type fixtureDocument struct {
 }
 
 type fixtureScenario struct {
-	Name             string            `json:"name"`
-	Request          string            `json:"request"`
-	Identity         string            `json:"identity"`
-	Access           string            `json:"access"`
-	DefaultBranch    string            `json:"defaultBranch"`
-	ProviderRefs     map[string]string `json:"providerRefs"`
-	ExistingConfig   bool              `json:"existingConfig"`
-	ExistingFiles    map[string]string `json:"existingFiles"`
-	RepositoryFiles  map[string]string `json:"repositoryFiles"`
-	EvidencePaths    []string          `json:"evidencePaths"`
-	GuidancePaths    []string          `json:"guidancePaths"`
-	RecordedResponse recordedResponse  `json:"recordedResponse"`
+	Name            string            `json:"name"`
+	Request         string            `json:"request"`
+	Identity        string            `json:"identity"`
+	Access          string            `json:"access"`
+	DefaultBranch   string            `json:"defaultBranch"`
+	ProviderRefs    map[string]string `json:"providerRefs"`
+	ExistingConfig  bool              `json:"existingConfig"`
+	ExistingFiles   map[string]string `json:"existingFiles"`
+	RepositoryFiles map[string]string `json:"repositoryFiles"`
+	EvidencePaths   []string          `json:"evidencePaths"`
+	GuidancePaths   []string          `json:"guidancePaths"`
+	Capture         recordedResponse  `json:"recordedResponse"`
+}
+
+type recordingDocument struct {
+	Recordings []invocationRecording `json:"recordings"`
+}
+
+type invocationRecording struct {
+	Name           string                `json:"name"`
+	CapturedWith   string                `json:"capturedWith"`
+	CapturedAt     string                `json:"capturedAt"`
+	Model          string                `json:"model"`
+	SessionID      string                `json:"sessionId"`
+	SkillSHA256    string                `json:"skillSHA256"`
+	PromptSHA256   string                `json:"promptSHA256"`
+	ResponseSHA256 string                `json:"responseSHA256"`
+	DiffSHA256     string                `json:"diffSHA256"`
+	Interactions   []recordedInteraction `json:"interactions"`
+}
+
+type recordedInteraction struct {
+	Action   string   `json:"action"`
+	Tool     string   `json:"tool,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	Source   string   `json:"source,omitempty"`
+	Contains string   `json:"contains,omitempty"`
+	WantOK   *bool    `json:"wantOK,omitempty"`
 }
 
 type recordedResponse struct {
@@ -135,9 +163,10 @@ type selectedBinary struct {
 	calls       []string
 }
 
-type recordedCopilotRunner struct {
+type copilotReplayRunner struct {
 	t                 *testing.T
 	scenario          fixtureScenario
+	recording         invocationRecording
 	response          recordedResponse
 	binary            *selectedBinary
 	target            resolvedTarget
@@ -145,6 +174,9 @@ type recordedCopilotRunner struct {
 	events            []string
 	providerCalls     []string
 	validationResults []bool
+	skillReads        []string
+	writtenFinal      map[string]bool
+	writtenDraft      map[string]bool
 }
 
 func TestRepositoryAwareGoldenScenarios(t *testing.T) {
@@ -182,14 +214,17 @@ func TestRepositoryAwareFixturesCoverAcceptanceMatrix(t *testing.T) {
 
 func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenario) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	binary := openSelectedBinary(t, binaryPath)
 	root, target := prepareWorkspace(t, scenario, &binary)
 	loadedPaths, skillDigest := loadPackagedAuthoringPath(t, root)
 	if skillDigest != recordedAuthoringPathSHA256 {
 		t.Fatalf("installed authoring path digest = %s; update the recorded agent responses intentionally", skillDigest)
 	}
+	recording := loadRecording(t, scenario.Name)
+	assertRecordingProvenance(t, recording, scenario.Capture)
 	dslVersion := binary.selectDSL(t)
-	response := expandRecordedResponse(t, scenario.RecordedResponse, map[string]string{
+	response := expandRecordedResponse(t, scenario.Capture, map[string]string{
 		"{binaryPath}":    binary.path,
 		"{binaryVersion}": binary.version,
 		"{binaryCommit}":  binary.commit,
@@ -198,12 +233,15 @@ func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 		"{targetCommit}":  target.Commit,
 		"{skillDigest}":   recordedAuthoringPathSHA256,
 	})
-	runner := &recordedCopilotRunner{
-		t:        t,
-		scenario: scenario,
-		response: response,
-		binary:   &binary,
-		target:   target,
+	runner := &copilotReplayRunner{
+		t:            t,
+		scenario:     scenario,
+		recording:    recording,
+		response:     response,
+		binary:       &binary,
+		target:       target,
+		writtenFinal: map[string]bool{},
+		writtenDraft: map[string]bool{},
 	}
 	adapter := &harness.CopilotAdapter{
 		Command:   []string{"copilot"},
@@ -225,6 +263,7 @@ func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 		},
 		Workspace:      root,
 		CompletionPath: harness.DefaultResultPath,
+		Model:          recording.Model,
 		ContextPaths: map[string]string{
 			"environment-resolver-report": ".goobers/context/environment-report.json",
 		},
@@ -243,6 +282,7 @@ func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 	if result.Outputs["reportPath"] != ".goobers/authoring-report.json" {
 		t.Fatalf("authoring report path = %v", result.Outputs["reportPath"])
 	}
+	assertRecordedTranscript(t, recording, outcome)
 
 	reportData, err := os.ReadFile(filepath.Join(root, ".goobers", "authoring-report.json"))
 	if err != nil {
@@ -260,7 +300,7 @@ func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 	evaluateAuthoringResult(t, scenario, root, target, loadedPaths, &binary, runner, report)
 }
 
-func (r *recordedCopilotRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
+func (r *copilotReplayRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
 	r.t.Helper()
 	promptIndex := slices.Index(request.Command, "-p")
 	if promptIndex < 0 || promptIndex+1 >= len(request.Command) {
@@ -271,103 +311,144 @@ func (r *recordedCopilotRunner) Run(_ context.Context, request harness.ProcessRe
 		!strings.Contains(r.prompt, ".goobers/context/environment-report.json") {
 		return harness.ProcessResult{}, fmt.Errorf("recorded Copilot prompt omitted request or resolver report")
 	}
+	if got := normalizedPromptSHA256(r.prompt, request.Dir, r.target, r.binary.path); got != r.recording.PromptSHA256 {
+		return harness.ProcessResult{}, fmt.Errorf("recorded Copilot prompt digest = %s, want %s", got, r.recording.PromptSHA256)
+	}
 
 	loadedPaths, digest := loadPackagedAuthoringPath(r.t, request.Dir)
 	if !slices.Equal(loadedPaths, r.response.Report.Contract.LoadedPaths) ||
-		digest != r.response.Report.Contract.SkillSHA256 {
+		digest != r.response.Report.Contract.SkillSHA256 ||
+		digest != r.recording.SkillSHA256 {
 		return harness.ProcessResult{}, fmt.Errorf("recorded response does not match installed authoring path")
 	}
-	check := string(r.binary.run(r.t, "agent-kit", "check", request.Dir))
-	if !strings.Contains(check, "state: current") {
-		return harness.ProcessResult{}, fmt.Errorf("installed toolkit is not current: %s", check)
-	}
-	r.inspectReleaseContract()
-	if err := r.readRepositoryEvidence(); err != nil {
+	if err := r.replayInteractions(request); err != nil {
 		return harness.ProcessResult{}, err
 	}
-
-	r.events = append(r.events, "present-proposal")
-	report := r.response.Report
-	if report.Status == "unresolved" {
-		r.events = append(r.events, "return-unresolved")
-		report.Diff = ""
-		if err := writeJSON(filepath.Join(request.Dir, ".goobers", "authoring-report.json"), report); err != nil {
-			return harness.ProcessResult{}, err
-		}
-		return r.complete(request.Dir, r.response.Summary)
-	}
-
-	writeRecordedFiles(r.t, request.Dir, r.response.Files)
-	r.events = append(r.events, "write-config")
-	if len(r.response.InitialFiles) > 0 {
-		writeRecordedFiles(r.t, request.Dir, r.response.InitialFiles)
-		r.validationResults = append(r.validationResults, r.binary.validate(r.t, request.Dir, r.scenario.ExistingConfig, false))
-		r.events = append(r.events, "validate-invalid", "repair-config")
-		for path := range r.response.InitialFiles {
-			body, ok := r.response.Files[path]
-			if !ok {
-				return harness.ProcessResult{}, fmt.Errorf("repair fixture %s has no final file", path)
-			}
-			writeFile(r.t, filepath.Join(request.Dir, filepath.FromSlash(path)), body)
-		}
-	}
-	r.validationResults = append(r.validationResults, r.binary.validate(r.t, request.Dir, r.scenario.ExistingConfig, true))
-	r.events = append(r.events, "validate-ready")
-
-	for _, path := range report.Proposal.Paths {
-		runGit(r.t, request.Dir, "add", "-N", "--", filepath.FromSlash(path))
-	}
-	report.Diff = workspaceDiff(r.t, request.Dir)
-	if err := writeJSON(filepath.Join(request.Dir, ".goobers", "authoring-report.json"), report); err != nil {
+	if err := writeReplaySessionLog(request, r.recording, r.prompt); err != nil {
 		return harness.ProcessResult{}, err
 	}
-	return r.complete(request.Dir, r.response.Summary)
+	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("Copilot invocation replay\n")}, nil
 }
 
-func (r *recordedCopilotRunner) complete(root, summary string) (harness.ProcessResult, error) {
-	err := harness.WriteCompletion(root, harness.DefaultResultPath, apiv1.ResultEnvelope{
+func (r *copilotReplayRunner) complete(root, summary string) error {
+	return harness.WriteCompletion(root, harness.DefaultResultPath, apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
 		Outputs: map[string]interface{}{"reportPath": ".goobers/authoring-report.json"},
 		Summary: summary,
 	})
-	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("recorded Copilot authoring fixture\n")}, err
 }
 
-func (r *recordedCopilotRunner) inspectReleaseContract() {
+func (r *copilotReplayRunner) replayInteractions(request harness.ProcessRequest) error {
 	r.t.Helper()
-	features := r.binary.run(r.t, "features", "--json", "--dsl-version", r.response.Report.Release.DSLVersion)
-	if !json.Valid(features) {
-		r.t.Fatal("selected binary returned invalid feature registry")
-	}
-	examples := strings.Fields(string(r.binary.run(r.t, "examples", "list")))
-	if !slices.Contains(examples, r.response.Report.Release.CanonicalExample) {
-		r.t.Fatalf("canonical example %q is not in %v", r.response.Report.Release.CanonicalExample, examples)
-	}
-	example := r.binary.run(r.t, "examples", "show", r.response.Report.Release.CanonicalExample)
-	if !strings.Contains(string(example), "kind: Workflow") {
-		r.t.Fatalf("canonical example %q is not a workflow", r.response.Report.Release.CanonicalExample)
-	}
-}
-
-func (r *recordedCopilotRunner) readRepositoryEvidence() error {
-	r.t.Helper()
-	paths := append(append([]string(nil), r.scenario.EvidencePaths...), r.scenario.GuidancePaths...)
-	sort.Strings(paths)
-	paths = slices.Compact(paths)
-	for _, path := range paths {
-		if unsafeEvidencePath(path) {
-			return fmt.Errorf("recorded authoring path requested unsafe evidence %q", path)
-		}
-		switch r.target.Access {
-		case "local":
-			runGit(r.t, r.target.Root, "show", r.target.Commit+":"+path)
-		case "remote":
-			r.providerCalls = append(r.providerCalls, "read "+r.target.Identity+"@"+r.target.Commit+":"+path)
-			if _, ok := r.scenario.RepositoryFiles[path]; !ok {
-				return fmt.Errorf("remote fixture has no evidence path %q", path)
+	presented, reported, completed := false, false, false
+	for _, interaction := range r.recording.Interactions {
+		switch interaction.Action {
+		case "skill.read":
+			if _, err := os.ReadFile(filepath.Join(request.Dir, filepath.FromSlash(interaction.Path))); err != nil {
+				return fmt.Errorf("replay skill read %q: %w", interaction.Path, err)
 			}
+			r.skillReads = append(r.skillReads, interaction.Path)
+		case "repository.read":
+			if r.target.Access != "local" {
+				return fmt.Errorf("repository read recorded for remote target")
+			}
+			if unsafeEvidencePath(interaction.Path) {
+				return fmt.Errorf("recorded authoring path requested unsafe evidence %q", interaction.Path)
+			}
+			runGit(r.t, r.target.Root, "show", r.target.Commit+":"+interaction.Path)
+		case "provider.read":
+			if r.target.Access != "remote" {
+				return fmt.Errorf("provider read recorded for local target")
+			}
+			if unsafeEvidencePath(interaction.Path) {
+				return fmt.Errorf("recorded authoring path requested unsafe evidence %q", interaction.Path)
+			}
+			if _, ok := r.scenario.RepositoryFiles[interaction.Path]; !ok {
+				return fmt.Errorf("remote fixture has no evidence path %q", interaction.Path)
+			}
+			r.providerCalls = append(r.providerCalls, "read "+r.target.Identity+"@"+r.target.Commit+":"+interaction.Path)
+		case "goobers.run":
+			args := expandInteractionArgs(interaction.Args, request.Dir, r.response)
+			output := r.binary.run(r.t, args...)
+			if interaction.Contains != "" && !strings.Contains(string(output), interaction.Contains) {
+				return fmt.Errorf("recorded command %q output omitted %q", strings.Join(args, " "), interaction.Contains)
+			}
+			if args[0] == "features" && !json.Valid(output) {
+				return fmt.Errorf("selected binary returned invalid feature registry")
+			}
+		case "proposal.present":
+			if presented {
+				return fmt.Errorf("recorded proposal was presented more than once")
+			}
+			presented = true
+			r.events = append(r.events, "present-proposal")
+		case "config.write":
+			if !presented {
+				return fmt.Errorf("recorded config write preceded proposal")
+			}
+			files, written := r.response.Files, r.writtenFinal
+			if interaction.Source == "draft" {
+				files, written = r.response.InitialFiles, r.writtenDraft
+			}
+			body, ok := files[interaction.Path]
+			if !ok {
+				return fmt.Errorf("recorded %s output has no file %q", interaction.Source, interaction.Path)
+			}
+			writeFile(r.t, filepath.Join(request.Dir, filepath.FromSlash(interaction.Path)), body)
+			written[interaction.Path] = true
+			r.events = append(r.events, "write-"+interaction.Source)
+		case "config.validate":
+			if interaction.WantOK == nil {
+				return fmt.Errorf("recorded validation omitted wantOK")
+			}
+			ok := r.binary.validate(r.t, request.Dir, r.scenario.ExistingConfig, *interaction.WantOK)
+			r.validationResults = append(r.validationResults, ok)
+			if ok {
+				r.events = append(r.events, "validate-ready")
+			} else {
+				r.events = append(r.events, "validate-invalid")
+			}
+		case "report.write":
+			report := r.response.Report
+			if report.Status == "unresolved" {
+				report.Diff = ""
+				r.events = append(r.events, "return-unresolved")
+			} else {
+				for _, path := range report.Proposal.Paths {
+					runGit(r.t, request.Dir, "add", "-N", "--", filepath.FromSlash(path))
+				}
+				report.Diff = workspaceDiff(r.t, request.Dir)
+			}
+			if got := fmt.Sprintf("%x", sha256.Sum256([]byte(report.Diff))); got != r.recording.DiffSHA256 {
+				return fmt.Errorf("replayed diff digest = %s, want %s", got, r.recording.DiffSHA256)
+			}
+			if err := writeJSON(filepath.Join(request.Dir, ".goobers", "authoring-report.json"), report); err != nil {
+				return err
+			}
+			reported = true
+		case "completion.write":
+			if !reported {
+				return fmt.Errorf("recorded completion preceded report")
+			}
+			if err := r.complete(request.Dir, r.response.Summary); err != nil {
+				return err
+			}
+			completed = true
 		default:
-			return fmt.Errorf("unsupported target access %q", r.target.Access)
+			return fmt.Errorf("unknown recorded interaction %q", interaction.Action)
+		}
+	}
+	if !reported || !completed {
+		return fmt.Errorf("recording omitted report or completion")
+	}
+	for path := range r.response.Files {
+		if !r.writtenFinal[path] {
+			return fmt.Errorf("recording did not replay final output %q", path)
+		}
+	}
+	for path := range r.response.InitialFiles {
+		if !r.writtenDraft[path] {
+			return fmt.Errorf("recording did not replay draft output %q", path)
 		}
 	}
 	return nil
@@ -380,7 +461,7 @@ func evaluateAuthoringResult(
 	target resolvedTarget,
 	loadedPaths []string,
 	binary *selectedBinary,
-	runner *recordedCopilotRunner,
+	runner *copilotReplayRunner,
 	report authoringReport,
 ) {
 	t.Helper()
@@ -392,6 +473,9 @@ func evaluateAuthoringResult(
 	if !slices.Equal(report.Contract.LoadedPaths, loadedPaths) || report.Contract.SkillSHA256 == "" {
 		t.Fatalf("report did not identify the complete packaged authoring path: %+v", report.Contract)
 	}
+	if !slices.Equal(runner.skillReads, loadedPaths) {
+		t.Fatalf("recorded skill reads = %v, want %v", runner.skillReads, loadedPaths)
+	}
 	if !report.Proposal.PresentedBeforeWrite || len(report.Terms) == 0 ||
 		report.Release.ExampleReason == "" {
 		t.Fatal("report omitted the pre-write explanation, relevant terms, or closest-example rationale")
@@ -399,6 +483,7 @@ func evaluateAuthoringResult(
 	if len(runner.events) == 0 || runner.events[0] != "present-proposal" {
 		t.Fatalf("authoring event order = %v", runner.events)
 	}
+	assertReplayOrder(t, report, runner.events)
 	assertEvidenceCitations(t, scenario, target, report.Evidence)
 	assertReleaseCalls(t, binary.calls, report.Release)
 	assertProviderAccess(t, scenario, target, runner.providerCalls)
@@ -466,6 +551,32 @@ func evaluateAuthoringResult(
 		if slices.Contains(capabilities, omitted) {
 			t.Errorf("omitted stronger capability %q was generated", omitted)
 		}
+	}
+}
+
+func assertReplayOrder(t *testing.T, report authoringReport, events []string) {
+	t.Helper()
+	hasInvalid := slices.ContainsFunc(report.Validation.Attempts, func(attempt validationAttempt) bool {
+		return attempt.Status == "invalid"
+	})
+	if !hasInvalid {
+		if slices.Contains(events, "write-draft") || slices.Contains(events, "validate-invalid") {
+			t.Fatalf("ready-only recording contains a repair loop: %v", events)
+		}
+		return
+	}
+	draft := slices.Index(events, "write-draft")
+	invalid := slices.Index(events, "validate-invalid")
+	ready := slices.Index(events, "validate-ready")
+	repaired := -1
+	for index := invalid + 1; index < len(events); index++ {
+		if events[index] == "write-final" {
+			repaired = index
+			break
+		}
+	}
+	if draft < 0 || invalid <= draft || repaired <= invalid || ready <= repaired {
+		t.Fatalf("recorded repair order = %v", events)
 	}
 }
 
@@ -651,7 +762,7 @@ func resolveFixtureTarget(t *testing.T, scenario fixtureScenario) resolvedTarget
 	t.Helper()
 	target := resolvedTarget{
 		Identity: scenario.Identity,
-		Branch:   scenario.RecordedResponse.Report.Target.Branch,
+		Branch:   scenario.Capture.Report.Target.Branch,
 		Access:   scenario.Access,
 	}
 	switch scenario.Access {
@@ -741,14 +852,217 @@ func expandRecordedResponse(t *testing.T, response recordedResponse, replacement
 	return expanded
 }
 
-func writeRecordedFiles(t *testing.T, root string, files map[string]string) {
+func loadRecording(t *testing.T, name string) invocationRecording {
 	t.Helper()
-	for path, body := range files {
-		if path == "" || filepath.IsAbs(path) || strings.Contains(filepath.ToSlash(path), "../") {
-			t.Fatalf("unsafe recorded output path %q", path)
-		}
-		writeFile(t, filepath.Join(root, filepath.FromSlash(path)), body)
+	data, err := os.ReadFile(filepath.Join("testdata", "repository-invocations.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	var document recordingDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, recording := range document.Recordings {
+		if recording.Name == name {
+			return recording
+		}
+	}
+	t.Fatalf("invocation recording %q not found", name)
+	return invocationRecording{}
+}
+
+func assertRecordingProvenance(t *testing.T, recording invocationRecording, response recordedResponse) {
+	t.Helper()
+	if recording.CapturedWith == "" || recording.CapturedAt == "" || recording.Model == "" ||
+		recording.SessionID == "" || recording.SkillSHA256 == "" ||
+		recording.PromptSHA256 == "" || recording.ResponseSHA256 == "" ||
+		recording.DiffSHA256 == "" ||
+		len(recording.Interactions) == 0 {
+		t.Fatalf("recording provenance is incomplete: %+v", recording)
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != recording.ResponseSHA256 {
+		t.Fatalf("captured response digest = %s, want %s", got, recording.ResponseSHA256)
+	}
+	for _, interaction := range recording.Interactions {
+		if interaction.Action == "" {
+			t.Fatal("recorded interaction omitted its action")
+		}
+		if interaction.Action != "proposal.present" && interaction.Tool == "" {
+			t.Fatalf("recorded interaction %q omitted its native tool", interaction.Action)
+		}
+	}
+}
+
+func normalizedPromptSHA256(prompt, workspace string, target resolvedTarget, binaryPath string) string {
+	replacements := []string{
+		workspace, "{workspace}",
+		binaryPath, "{binaryPath}",
+		target.Commit, "{targetCommit}",
+	}
+	if target.Root != "" {
+		replacements = append(replacements, target.Root, "{targetRoot}")
+	}
+	normalized := strings.NewReplacer(replacements...).Replace(prompt)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(normalized)))
+}
+
+func expandInteractionArgs(args []string, workspace string, response recordedResponse) []string {
+	replacer := strings.NewReplacer(
+		"{workspace}", workspace,
+		"{dslVersion}", response.Report.Release.DSLVersion,
+		"{canonicalExample}", response.Report.Release.CanonicalExample,
+	)
+	expanded := make([]string, len(args))
+	for index, arg := range args {
+		expanded[index] = replacer.Replace(arg)
+	}
+	return expanded
+}
+
+func assertRecordedTranscript(t *testing.T, recording invocationRecording, outcome harness.Outcome) {
+	t.Helper()
+	if outcome.TranscriptSchema == "" {
+		t.Fatal("Copilot replay did not expose captured native session events")
+	}
+	var tools []string
+	for _, line := range bytes.Split(outcome.Transcript, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Role     string `json:"role"`
+			ToolCall *struct {
+				Name string `json:"name"`
+			} `json:"tool_call"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode replay transcript: %v", err)
+		}
+		if event.Role == "assistant" && event.ToolCall != nil && event.ToolCall.Name != "" {
+			tools = append(tools, event.ToolCall.Name)
+		}
+	}
+	want := make([]string, len(recording.Interactions))
+	want = want[:0]
+	for _, interaction := range recording.Interactions {
+		if interaction.Tool != "" {
+			want = append(want, interaction.Tool)
+		}
+	}
+	if !slices.Equal(tools, want) {
+		t.Fatalf("captured tool interactions = %v, want %v", tools, want)
+	}
+}
+
+func writeReplaySessionLog(request harness.ProcessRequest, recording invocationRecording, prompt string) error {
+	path, err := replaySessionLogPath(request)
+	if err != nil {
+		return err
+	}
+	var log bytes.Buffer
+	emit := func(eventType string, data interface{}) error {
+		event := map[string]interface{}{"type": eventType, "data": data}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		log.Write(encoded)
+		log.WriteByte('\n')
+		return nil
+	}
+	if err := emit("session.start", map[string]interface{}{"sessionId": recording.SessionID}); err != nil {
+		return err
+	}
+	if err := emit("user.message", map[string]interface{}{"content": prompt}); err != nil {
+		return err
+	}
+	// The cassette normalizes machine-specific arguments but preserves the native
+	// Copilot tool sequence, which is re-emitted through the adapter's real parser.
+	for index, interaction := range recording.Interactions {
+		if interaction.Action == "proposal.present" {
+			if err := emit("assistant.message", map[string]interface{}{
+				"messageId": fmt.Sprintf("recorded-proposal-%03d", index+1),
+				"content":   "Presenting the evidence ledger, state graph, paths, and capability rationale before writing.",
+				"model":     recording.Model,
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		callID := fmt.Sprintf("recorded-%03d", index+1)
+		if err := emit("tool.execution_start", map[string]interface{}{
+			"toolCallId": callID,
+			"toolName":   interaction.Tool,
+			"arguments":  interaction,
+			"model":      recording.Model,
+		}); err != nil {
+			return err
+		}
+		success := interaction.WantOK == nil || *interaction.WantOK
+		data := map[string]interface{}{
+			"toolCallId": callID,
+			"success":    success,
+			"model":      recording.Model,
+		}
+		if success {
+			data["result"] = map[string]string{"content": "captured interaction replayed"}
+		} else {
+			data["error"] = map[string]string{"message": "captured validation returned findings"}
+		}
+		if err := emit("tool.execution_complete", data); err != nil {
+			return err
+		}
+	}
+	if err := emit("assistant.message", map[string]interface{}{
+		"messageId": "recorded-final",
+		"content":   "Repository-aware authoring capture replayed.",
+		"model":     recording.Model,
+	}); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, log.Bytes(), 0o600)
+}
+
+func replaySessionLogPath(request harness.ProcessRequest) (string, error) {
+	var copilotHome, home string
+	for _, entry := range request.Env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "COPILOT_HOME":
+			copilotHome = value
+		case "HOME":
+			home = value
+		}
+	}
+	if copilotHome == "" {
+		if home == "" {
+			return "", fmt.Errorf("recorded Copilot invocation has no home")
+		}
+		copilotHome = filepath.Join(home, ".copilot")
+	}
+	var sessionID string
+	for index, arg := range request.Command {
+		switch {
+		case arg == "--session-id" && index+1 < len(request.Command):
+			sessionID = request.Command[index+1]
+		case strings.HasPrefix(arg, "--session-id="):
+			sessionID = strings.TrimPrefix(arg, "--session-id=")
+		}
+	}
+	if sessionID == "" {
+		return "", fmt.Errorf("recorded Copilot invocation has no session id")
+	}
+	return filepath.Join(copilotHome, "session-state", sessionID, "events.jsonl"), nil
 }
 
 func unsafeEvidencePath(path string) bool {
