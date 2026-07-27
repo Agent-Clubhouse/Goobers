@@ -31,7 +31,7 @@ const Diagnostics = "diagnostics.schema.json"
 // Features is the workflow-DSL feature discovery envelope.
 const Features = "features.schema.json"
 
-// ConfigSourceAction is the `goobers init --source-tree --json` result envelope.
+// ConfigSourceAction is the versioned config-source onboarding result envelope.
 const ConfigSourceAction = "config-source-action.schema.json"
 
 // Kind maps a config object kind to its schema file name.

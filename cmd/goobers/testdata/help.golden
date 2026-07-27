@@ -8,7 +8,7 @@ Usage:
                                 scaffold an instance root or checked-in config source
   goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
                                 check WSL full-isolation readiness and optionally hand off a command
-  goobers onboarding stub-sample --destination <path> [--json]
+  goobers onboarding stub-agent-instructions|stub-sample [flags]
                                 run non-interactive onboarding actions
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
@@ -139,7 +139,7 @@ Usage:
                                 scaffold an instance root or checked-in config source
   goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
                                 check WSL full-isolation readiness and optionally hand off a command
-  goobers onboarding stub-sample --destination <path> [--json]
+  goobers onboarding stub-agent-instructions|stub-sample [flags]
                                 run non-interactive onboarding actions
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
@@ -912,16 +912,34 @@ or still-pending-timeout — see the result file's queueOutcome field),
 provider failure), 2 = usage/IO error.
 
 ### onboarding
-Usage: goobers onboarding <stub-sample> [flags]
+Usage: goobers onboarding <command> [flags]
 
 Run non-interactive, machine-readable onboarding actions. Actions never
 prompt, write secrets, create a remote, or touch a repository that was not
 explicitly named.
 
 Commands:
-  stub-sample  materialize the disposable Getting Started target
+  stub-agent-instructions  install agent assets into a config source
+  stub-sample              materialize the disposable Getting Started target
 
-Run `goobers onboarding stub-sample -h` for action flags.
+Run `goobers onboarding <command> -h` for action flags.
+
+### onboarding stub-agent-instructions
+Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]
+
+Install the release-matched Goobers agent toolkit and the selected harness
+instruction reference into a checked-in config source repository. This action
+delegates to `agent-kit install`: product-owned toolkit files are installed
+beneath `.goobers/agent-toolkit/`, existing user instructions are preserved,
+and collisions or drift fail without overwriting files.
+
+Flags:
+  --source-tree <path>  required config source repository root
+  --harness <name>      copilot, claude, or generic (default generic)
+  --json                emit the versioned config-source action envelope
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
+drift, or write error, 2 = usage error.
 
 ### onboarding stub-sample
 Usage: goobers onboarding stub-sample --destination <path> [flags]

@@ -22,6 +22,7 @@ _goobers_completion()
             ;;
         onboarding)
             case "${COMP_WORDS[2]:-}" in
+                stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
                 stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
             esac
             ;;
@@ -147,7 +148,7 @@ _goobers_completion()
     case "${command}" in
         onboarding)
             if (( COMP_CWORD == 2 )); then
-                candidates="stub-sample"
+                candidates="stub-agent-instructions stub-sample"
             fi
             ;;
         examples)

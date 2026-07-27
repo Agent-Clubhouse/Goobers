@@ -71,9 +71,7 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	switch *harness {
-	case "copilot", "claude", "generic":
-	default:
+	if !supportedAgentKitHarness(*harness) {
 		pf(stderr, "error: unsupported harness %q (want copilot, claude, or generic)\n", *harness)
 		return 2
 	}
@@ -217,6 +215,15 @@ func openAgentToolkitRepository(args []string) (*agentkit.Repository, error) {
 		target = args[0]
 	}
 	return agentkit.OpenRepository(target)
+}
+
+func supportedAgentKitHarness(harness string) bool {
+	switch harness {
+	case "copilot", "claude", "generic":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeAgentKitCheckReport(w io.Writer, report agentkit.CheckReport) {

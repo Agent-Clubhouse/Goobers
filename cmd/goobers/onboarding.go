@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/samples"
@@ -25,6 +27,7 @@ import (
 
 const (
 	onboardingActionVersion       = 1
+	stubAgentInstructionsAction   = "stub-agent-instructions"
 	stubSampleAction              = "stub-sample"
 	stubSampleRoot                = "getting-started-task-api"
 	defaultWorkTrackingTokenEnv   = "GOOBERS_GITHUB_ISSUES_TOKEN"
@@ -32,13 +35,27 @@ const (
 	stubSampleNextInstanceCommand = "goobers init --template=quickstart ./tutorial-instance"
 )
 
-const onboardingHelp = "Usage: goobers onboarding <stub-sample> [flags]\n\n" +
+const onboardingHelp = "Usage: goobers onboarding <command> [flags]\n\n" +
 	"Run non-interactive, machine-readable onboarding actions. Actions never\n" +
 	"prompt, write secrets, create a remote, or touch a repository that was not\n" +
 	"explicitly named.\n\n" +
 	"Commands:\n" +
-	"  stub-sample  materialize the disposable Getting Started target\n\n" +
-	"Run `goobers onboarding stub-sample -h` for action flags.\n"
+	"  stub-agent-instructions  install agent assets into a config source\n" +
+	"  stub-sample              materialize the disposable Getting Started target\n\n" +
+	"Run `goobers onboarding <command> -h` for action flags.\n"
+
+const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]\n\n" +
+	"Install the release-matched Goobers agent toolkit and the selected harness\n" +
+	"instruction reference into a checked-in config source repository. This action\n" +
+	"delegates to `agent-kit install`: product-owned toolkit files are installed\n" +
+	"beneath `.goobers/agent-toolkit/`, existing user instructions are preserved,\n" +
+	"and collisions or drift fail without overwriting files.\n\n" +
+	"Flags:\n" +
+	"  --source-tree <path>  required config source repository root\n" +
+	"  --harness <name>      copilot, claude, or generic (default generic)\n" +
+	"  --json                emit the versioned config-source action envelope\n\n" +
+	"Exit codes: 0 = installed or already current, 1 = unsafe target, collision,\n" +
+	"drift, or write error, 2 = usage error.\n"
 
 const stubSampleHelp = "Usage: goobers onboarding stub-sample --destination <path> [flags]\n\n" +
 	"Materialize the embedded getting-started-task-api sample at an explicitly\n" +
@@ -112,6 +129,76 @@ func runOnboarding(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stderr, "%s", onboardingHelp)
 	return 2
+}
+
+func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("onboarding stub-agent-instructions", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	sourceTree := flags.String("source-tree", "", "config source repository root")
+	harness := flags.String("harness", "generic", "harness adapter: copilot, claude, or generic")
+	jsonOutput := flags.Bool("json", false, "emit the versioned config-source action envelope")
+	flags.Usage = helpUsage(stderr, "onboarding stub-agent-instructions")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*sourceTree) == "" {
+		flags.Usage()
+		return 2
+	}
+	if !supportedAgentKitHarness(*harness) {
+		pf(stderr, "error: unsupported harness %q (want copilot, claude, or generic)\n", *harness)
+		return 2
+	}
+	absolute, err := filepath.Abs(*sourceTree)
+	if err != nil {
+		pf(stderr, "error: resolve config source path: %v\n", err)
+		return 1
+	}
+
+	bundle, err := currentAgentToolkitBundle()
+	if err != nil {
+		pf(stderr, "error: build bundled agent toolkit: %v\n", err)
+		return 1
+	}
+	repository, err := agentkit.OpenRepository(absolute)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	installed, err := repository.Install(bundle, *harness)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	result := onboardingActionResult{
+		Action:      stubAgentInstructionsAction,
+		Version:     onboardingActionVersion,
+		Created:     []string{},
+		Skipped:     []string{},
+		Path:        absolute,
+		NextCommand: "goobers agent-kit check " + quoteShellArg(absolute, runtime.GOOS),
+	}
+	if installed.Installed {
+		result.Created = append(result.Created, agentkit.InstalledRoot)
+	} else {
+		result.Skipped = append(result.Skipped, agentkit.InstalledRoot)
+	}
+	if installed.InstructionCreated || installed.InstructionUpdated {
+		result.Created = append(result.Created, installed.InstructionPath)
+	} else {
+		result.Skipped = append(result.Skipped, installed.InstructionPath)
+	}
+
+	if *jsonOutput {
+		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, result); err != nil {
+			pf(stderr, "error: encode config-source result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	printOnboardingActionResult(stdout, result)
+	return 0
 }
 
 func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {

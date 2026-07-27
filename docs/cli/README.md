@@ -59,6 +59,7 @@
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged or evicted (a workflow stage) |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
+| [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
@@ -1304,22 +1305,52 @@ $ goobers merge-queue-poll
 run non-interactive onboarding actions
 
 ~~~text
-Usage: goobers onboarding <stub-sample> [flags]
+Usage: goobers onboarding <command> [flags]
 
 Run non-interactive, machine-readable onboarding actions. Actions never
 prompt, write secrets, create a remote, or touch a repository that was not
 explicitly named.
 
 Commands:
-  stub-sample  materialize the disposable Getting Started target
+  stub-agent-instructions  install agent assets into a config source
+  stub-sample              materialize the disposable Getting Started target
 
-Run `goobers onboarding stub-sample -h` for action flags.
+Run `goobers onboarding <command> -h` for action flags.
 ~~~
 
 **Examples**
 
 ~~~console
+$ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
 $ goobers onboarding stub-sample --destination ./getting-started-task-api --json
+~~~
+
+## `goobers onboarding stub-agent-instructions`
+
+install agent-instruction assets into a config source
+
+~~~text
+Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]
+
+Install the release-matched Goobers agent toolkit and the selected harness
+instruction reference into a checked-in config source repository. This action
+delegates to `agent-kit install`: product-owned toolkit files are installed
+beneath `.goobers/agent-toolkit/`, existing user instructions are preserved,
+and collisions or drift fail without overwriting files.
+
+Flags:
+  --source-tree <path>  required config source repository root
+  --harness <name>      copilot, claude, or generic (default generic)
+  --json                emit the versioned config-source action envelope
+
+Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
+drift, or write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
 ~~~
 
 ## `goobers onboarding stub-sample`

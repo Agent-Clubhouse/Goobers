@@ -93,6 +93,16 @@ func init() {
 		groupCommand(
 			"onboarding",
 			runOnboarding,
+			subcommand(
+				"onboarding stub-agent-instructions",
+				"stub-agent-instructions",
+				apicontract.ActionConfigTime,
+				runOnboardingStubAgentInstructions,
+			).
+				withHelp("install agent-instruction assets into a config source", stubAgentInstructionsHelp).
+				withExamples(
+					"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
+				),
 			subcommand("onboarding stub-sample", "stub-sample", apicontract.ActionConfigTime, runOnboardingStubSample).
 				withHelp("materialize and optionally seed the disposable Getting Started target", stubSampleHelp).
 				withExamples(
@@ -102,7 +112,10 @@ func init() {
 		).
 			withSynopsis(synopsisByID["onboarding"]).
 			withHelp("run non-interactive onboarding actions", onboardingHelp).
-			withExamples("goobers onboarding stub-sample --destination ./getting-started-task-api --json"),
+			withExamples(
+				"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
+				"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
+			),
 		groupCommand(
 			"examples",
 			runExamples,

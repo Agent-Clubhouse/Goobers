@@ -86,6 +86,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "force", desc: "Replace conflicting regular files"},
 		{name: "json", desc: "Emit the versioned action envelope"},
 	},
+	"onboarding stub-agent-instructions": {
+		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
+		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
+		{name: "json", desc: "Emit the versioned config-source action envelope"},
+	},
 	"scaffold goober": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},

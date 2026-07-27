@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/config-source-action.schema.json",
   "title": "ConfigSourceActionEnvelope",
-  "description": "Machine-readable result of a goobers init config-source action, emitted by `goobers init --template=quickstart --source-tree <path> --json`.",
+  "description": "Machine-readable result of a non-interactive action that changes a checked-in Goobers config source.",
   "type": "object",
   "additionalProperties": false,
   "required": ["action", "version", "created", "skipped", "path", "nextCommand"],
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["seed-config-source"],
+      "enum": ["seed-config-source", "stub-agent-instructions"],
       "description": "Which config-source action produced this envelope."
     },
     "version": {
@@ -20,22 +20,22 @@
     "created": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "Paths written by the action, relative to the seeded source tree."
+      "description": "Config-source paths or logical asset roots installed by the action."
     },
     "skipped": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "Paths left untouched because they already existed."
+      "description": "Config-source paths or logical asset roots left untouched because they were already current."
     },
     "path": {
       "type": "string",
       "minLength": 1,
-      "description": "Absolute path to the seeded config source tree."
+      "description": "Absolute path to the config source tree."
     },
     "nextCommand": {
       "type": "string",
       "minLength": 1,
-      "description": "Ready-to-run command that validates the seeded source tree."
+      "description": "Ready-to-run command that checks or validates the action result."
     }
   }
 }
