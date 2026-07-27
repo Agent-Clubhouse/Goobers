@@ -8,6 +8,8 @@ Usage:
                                 scaffold an instance root or checked-in config source
   goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
                                 check WSL full-isolation readiness and optionally hand off a command
+  goobers onboarding stub-sample --destination <path> [--json]
+                                run non-interactive onboarding actions
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
@@ -137,6 +139,8 @@ Usage:
                                 scaffold an instance root or checked-in config source
   goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
                                 check WSL full-isolation readiness and optionally hand off a command
+  goobers onboarding stub-sample --destination <path> [--json]
+                                run non-interactive onboarding actions
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
   goobers scaffold goober|workflow [--force] <name> [path]
@@ -907,6 +911,40 @@ or still-pending-timeout — see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 
+### onboarding
+Usage: goobers onboarding <stub-sample> [flags]
+
+Run non-interactive, machine-readable onboarding actions. Actions never
+prompt, write secrets, create a remote, or touch a repository that was not
+explicitly named.
+
+Commands:
+  stub-sample  materialize the disposable Getting Started target
+
+Run `goobers onboarding stub-sample -h` for action flags.
+
+### onboarding stub-sample
+Usage: goobers onboarding stub-sample --destination <path> [flags]
+
+Materialize the embedded getting-started-task-api sample at an explicitly
+named destination. Existing matching files are skipped. A conflicting file
+fails the complete preflight without changing the destination unless --force
+is set; symbolic links are always refused.
+
+With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
+issues using the token named by --token-env. If the token is unset, report
+the issues pending and complete the local materialization without network
+access. No remote repository is created or pushed.
+
+Flags:
+  --destination <path>      required sample destination
+  --work-tracking <repo>    optional GitHub owner/repo to seed
+  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
+  --force                   replace conflicting regular files
+  --json                    emit the versioned action envelope
+
+Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
+
 ### open-pr
 Usage: goobers open-pr [path]
 
@@ -1373,12 +1411,13 @@ and symlinks are always preserved.
 Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 
 ### telemetry stats
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--branch=id] [--model=id] [--harness-version=version] [--group-by=branch|model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and stage, plus curation
 actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
-stage attempts; a run that used multiple grouped cohorts appears in each.
+stage attempts; --branch filters stage/usage rows by journal branch id.
+A run that used multiple grouped agent cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### telemetry-query

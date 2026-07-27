@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
+
+	"github.com/goobers/goobers/api/schemas"
 )
 
 const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
@@ -268,7 +270,7 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 		NextCommand: nextCommand,
 	}
 	if asJSON {
-		if err := encodeIndentedJSON(stdout, envelope); err != nil {
+		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, envelope); err != nil {
 			pf(stderr, "error: encode config-source result: %v\n", err)
 			return 1
 		}

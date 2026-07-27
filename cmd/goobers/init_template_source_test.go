@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+
+	"github.com/goobers/goobers/api/schemas"
 )
 
 func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
@@ -84,7 +86,7 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 			envelope.Path = "$SOURCE"
 			envelope.NextCommand = strings.ReplaceAll(envelope.NextCommand, absolutePath(root), "$SOURCE")
 			var normalized bytes.Buffer
-			if err := encodeIndentedJSON(&normalized, envelope); err != nil {
+			if err := encodeSchemaJSON(&normalized, schemas.ConfigSourceAction, envelope); err != nil {
 				t.Fatal(err)
 			}
 			assertGoldenFile(

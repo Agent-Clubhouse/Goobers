@@ -16,10 +16,11 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and test (count (commandline -opc)) -eq 2' -f -a 'stub-sample'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and test (count (commandline -opc)) -eq 2' -f -a 'list show'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_examples)'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow'
@@ -48,6 +49,11 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d '
 complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from preflight' -l distro -r -d 'Select the WSL distro to check'
 complete -c goobers -n '__fish_seen_subcommand_from preflight' -l launch-wsl -d 'Run the trailing Goobers command inside WSL'
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-sample' -l destination -r -d 'Sample destination'
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-sample' -l work-tracking -r -d 'GitHub owner/repo to seed'
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-sample' -l token-env -r -d 'Issue token environment variable'
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-sample' -l force -d 'Replace conflicting regular files'
+complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-sample' -l json -d 'Emit the versioned action envelope'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from goober' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from workflow' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from install' -l harness -r -a 'copilot claude generic' -d 'Harness adapter'
