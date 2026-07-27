@@ -71,6 +71,7 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"refuse toolkit and remote mismatch",
 		"reject matching tag with conflicting commit",
 		"reject tracked contract symlink",
+		"reject ambiguous abbreviated commit",
 	} {
 		if !runs[name] {
 			t.Errorf("resolver fixture suite is missing %q", name)
@@ -84,6 +85,8 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"known version mismatch",
 		"conflicting local release identities",
 		"tracked symlink local source",
+		"matching annotated remote release",
+		"ambiguous abbreviated commit",
 	} {
 		if !scenarios[name] {
 			t.Errorf("resolver fixture suite is missing scenario %q", name)
@@ -121,6 +124,7 @@ func TestResolverSkillMatchesFixtureContract(t *testing.T) {
 		"`dslVersions[]`",
 		"`agent-kit check` has no JSON mode",
 		"an exact tag match never overrides",
+		"Resolve an abbreviated commit",
 		"reject mode `120000`",
 		"Never query or link to `main`",
 		"`spec.additionalRepos`",
@@ -129,6 +133,137 @@ func TestResolverSkillMatchesFixtureContract(t *testing.T) {
 			t.Errorf("resolver skill is missing fixture-backed directive %q", required)
 		}
 	}
+}
+
+func TestCommitMatchRequiresUniqueObject(t *testing.T) {
+	first := "abc1000000000000000000000000000000000000"
+	second := "abc1ffffffffffffffffffffffffffffffffffff"
+	unique := "def4000000000000000000000000000000000000"
+	objects := []string{first, second, unique}
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		set   []string
+		want  bool
+	}{
+		{name: "full identity", left: first, right: first, want: true},
+		{name: "unique abbreviation", left: unique, right: "def4", set: objects, want: true},
+		{name: "ambiguous abbreviation", left: first, right: "abc1", set: objects},
+		{name: "one character abbreviation", left: unique, right: "d", set: []string{unique}},
+		{name: "abbreviation without object set", left: unique, right: "def4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commitsMatch(tt.left, tt.right, tt.set); got != tt.want {
+				t.Fatalf("commitsMatch(%q, %q) = %t, want %t", tt.left, tt.right, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemoteReleaseUsesGitHubRefWorkflow(t *testing.T) {
+	document := loadFixtureDocument(t)
+	tests := []struct {
+		scenario   string
+		version    string
+		commit     string
+		annotated  bool
+		fullCommit string
+	}{
+		{
+			scenario:   "matching remote release",
+			version:    "v2.0.0",
+			commit:     "def4560000000000000000000000000000000000",
+			fullCommit: "def4560000000000000000000000000000000000",
+		},
+		{
+			scenario:   "matching annotated remote release",
+			version:    "v2.1.0",
+			commit:     "fedcba",
+			annotated:  true,
+			fullCommit: "fedcba0000000000000000000000000000000000",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scenario, func(t *testing.T) {
+			environment := materializeScenario(t, fixtureScenarioNamed(t, document, tt.scenario))
+			contract, ok := verifyRemoteRelease(environment.provider, binaryIdentity{
+				Version: tt.version,
+				Commit:  tt.commit,
+			})
+			if !ok {
+				t.Fatal("matching remote release was unresolved")
+			}
+			if contract.Commit != tt.fullCommit {
+				t.Fatalf("remote commit = %q, want %q", contract.Commit, tt.fullCommit)
+			}
+			if got := containsSubstring(environment.provider.calls, "release-tag "); got != tt.annotated {
+				t.Fatalf("annotated tag peel call present = %t, want %t; calls = %v", got, tt.annotated, environment.provider.calls)
+			}
+			for _, path := range requiredContractPaths {
+				call := "release-content " + tt.fullCommit + " " + path
+				if !slices.Contains(environment.provider.calls, call) {
+					t.Errorf("provider calls %v do not contain %q", environment.provider.calls, call)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteReleaseProviderFailuresRemainUnresolved(t *testing.T) {
+	document := loadFixtureDocument(t)
+	tests := []struct {
+		name     string
+		scenario string
+		identity binaryIdentity
+		breakIt  func(*fakeProvider)
+	}{
+		{
+			name:     "annotated tag peel",
+			scenario: "matching annotated remote release",
+			identity: binaryIdentity{Version: "v2.1.0", Commit: "fedcba"},
+			breakIt: func(provider *fakeProvider) {
+				provider.outputs.ReleaseTags = nil
+			},
+		},
+		{
+			name:     "release tree",
+			scenario: "matching remote release",
+			identity: binaryIdentity{Version: "v2.0.0", Commit: "def4560000000000000000000000000000000000"},
+			breakIt: func(provider *fakeProvider) {
+				provider.outputs.ReleaseTree = ""
+			},
+		},
+		{
+			name:     "required content",
+			scenario: "matching remote release",
+			identity: binaryIdentity{Version: "v2.0.0", Commit: "def4560000000000000000000000000000000000"},
+			breakIt: func(provider *fakeProvider) {
+				delete(provider.outputs.ReleaseContents, requiredContractPaths[0])
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			environment := materializeScenario(t, fixtureScenarioNamed(t, document, tt.scenario))
+			tt.breakIt(environment.provider)
+			if _, ok := verifyRemoteRelease(environment.provider, tt.identity); ok {
+				t.Fatal("remote provider failure selected a contract")
+			}
+		})
+	}
+}
+
+func fixtureScenarioNamed(t *testing.T, document fixtureDocument, name string) fixtureScenario {
+	t.Helper()
+	for _, scenario := range document.Scenarios {
+		if scenario.Name == name {
+			return scenario
+		}
+	}
+	t.Fatalf("fixture scenario %q not found", name)
+	return fixtureScenario{}
 }
 
 func TestAgentKitCheckFixtureUsesTextContract(t *testing.T) {
@@ -263,7 +398,10 @@ func assertReadOnlyCalls(t *testing.T, cliCalls, providerCalls []string) {
 	for _, call := range providerCalls {
 		if !strings.HasPrefix(call, "repository ") &&
 			!strings.HasPrefix(call, "release-ref ") &&
+			!strings.HasPrefix(call, "release-tag ") &&
+			!strings.HasPrefix(call, "release-commit ") &&
 			!strings.HasPrefix(call, "release-tree ") &&
+			!strings.HasPrefix(call, "release-content ") &&
 			!strings.HasPrefix(call, "target ") {
 			t.Errorf("fixture invoked non-read-only provider operation %q", call)
 		}

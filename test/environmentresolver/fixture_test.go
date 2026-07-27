@@ -41,6 +41,7 @@ type fixtureGitRepository struct {
 	Root            string   `json:"root"`
 	RemoteURLs      []string `json:"remoteUrls"`
 	Head            string   `json:"head"`
+	Objects         []string `json:"objects"`
 	Tags            []string `json:"tags"`
 	TrackedSymlinks []string `json:"trackedSymlinks"`
 	Identity        string   `json:"-"`
@@ -53,10 +54,13 @@ type fixtureToolkit struct {
 }
 
 type fixtureProviderOutputs struct {
-	Repository  string            `json:"repository"`
-	ReleaseRef  string            `json:"releaseRef"`
-	ReleaseTree string            `json:"releaseTree"`
-	Targets     map[string]string `json:"targets"`
+	Repository      string            `json:"repository"`
+	ReleaseRef      string            `json:"releaseRef"`
+	ReleaseTags     map[string]string `json:"releaseTags"`
+	ReleaseTree     string            `json:"releaseTree"`
+	ReleaseContents map[string]string `json:"releaseContents"`
+	CommitObjects   []string          `json:"commitObjects"`
+	Targets         map[string]string `json:"targets"`
 }
 
 type fixtureRun struct {
@@ -146,7 +150,10 @@ func materializeScenario(t *testing.T, scenario fixtureScenario) *testEnvironmen
 	providerOutputs := scenario.ProviderOutputs
 	providerOutputs.Repository = strings.ReplaceAll(providerOutputs.Repository, "$ROOT", filepath.ToSlash(root))
 	providerOutputs.ReleaseRef = strings.ReplaceAll(providerOutputs.ReleaseRef, "$ROOT", filepath.ToSlash(root))
+	providerOutputs.ReleaseTags = cloneExpandedMap(providerOutputs.ReleaseTags, root)
 	providerOutputs.ReleaseTree = strings.ReplaceAll(providerOutputs.ReleaseTree, "$ROOT", filepath.ToSlash(root))
+	providerOutputs.ReleaseContents = cloneExpandedMap(providerOutputs.ReleaseContents, root)
+	providerOutputs.CommitObjects = append([]string(nil), providerOutputs.CommitObjects...)
 	providerOutputs.Targets = cloneExpandedMap(providerOutputs.Targets, root)
 
 	return &testEnvironment{
@@ -308,12 +315,39 @@ func (f *fakeProvider) releaseRef(version string) ([]byte, error) {
 	return []byte(f.outputs.ReleaseRef), nil
 }
 
+func (f *fakeProvider) releaseTag(object string) ([]byte, error) {
+	f.calls = append(f.calls, "release-tag "+object)
+	output, ok := f.outputs.ReleaseTags[object]
+	if !ok {
+		return nil, fmt.Errorf("fake provider has no annotated tag output for %s", object)
+	}
+	return []byte(output), nil
+}
+
+func (f *fakeProvider) releaseCommit(commit string) ([]byte, error) {
+	f.calls = append(f.calls, "release-commit "+commit)
+	resolved, ok := resolveGitObjectID(commit, f.outputs.CommitObjects)
+	if !ok {
+		return nil, fmt.Errorf("fake provider cannot resolve commit %s uniquely", commit)
+	}
+	return json.Marshal(remoteCommit{SHA: resolved})
+}
+
 func (f *fakeProvider) releaseTree(commit string) ([]byte, error) {
 	f.calls = append(f.calls, "release-tree "+commit)
 	if f.outputs.ReleaseTree == "" {
 		return nil, fmt.Errorf("fake provider has no release tree output")
 	}
 	return []byte(f.outputs.ReleaseTree), nil
+}
+
+func (f *fakeProvider) releaseContent(path, commit string) ([]byte, error) {
+	f.calls = append(f.calls, "release-content "+commit+" "+path)
+	output, ok := f.outputs.ReleaseContents[path]
+	if !ok {
+		return nil, fmt.Errorf("fake provider has no release content output for %s", path)
+	}
+	return []byte(output), nil
 }
 
 func (f *fakeProvider) target(identity string) ([]byte, error) {

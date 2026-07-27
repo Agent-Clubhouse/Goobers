@@ -3,6 +3,7 @@ package environmentresolver
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -116,15 +117,44 @@ type remoteRepository struct {
 	NameWithOwner string `json:"nameWithOwner"`
 }
 
+type remoteGitObject struct {
+	SHA  string `json:"sha"`
+	Type string `json:"type"`
+}
+
 type remoteReleaseRef struct {
-	Tag    string `json:"tag"`
-	Commit string `json:"commit"`
+	Ref    string          `json:"ref"`
+	Object remoteGitObject `json:"object"`
+}
+
+type remoteAnnotatedTag struct {
+	SHA    string          `json:"sha"`
+	Object remoteGitObject `json:"object"`
 }
 
 type remoteReleaseTree struct {
-	Commit    string   `json:"commit"`
-	Truncated bool     `json:"truncated"`
-	Paths     []string `json:"paths"`
+	SHA       string            `json:"sha"`
+	Truncated bool              `json:"truncated"`
+	Tree      []remoteTreeEntry `json:"tree"`
+}
+
+type remoteTreeEntry struct {
+	Path string `json:"path"`
+	Mode string `json:"mode"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+type remoteCommit struct {
+	SHA string `json:"sha"`
+}
+
+type remoteContent struct {
+	Path     string `json:"path"`
+	SHA      string `json:"sha"`
+	Type     string `json:"type"`
+	Encoding string `json:"encoding"`
+	Content  string `json:"content"`
 }
 
 type remoteTarget struct {
@@ -315,7 +345,8 @@ func verifyLocalSource(environment *testEnvironment, sourceRoot string, identity
 	if repository == nil || !hasContractPaths(sourceRoot) || hasTrackedContractSymlink(repository) {
 		return contractReport{}, false
 	}
-	commitMatches := commitsMatch(repository.Head, identity.Commit)
+	objects := append(append([]string(nil), repository.Objects...), repository.Head)
+	commitMatches := commitsMatch(repository.Head, identity.Commit, objects)
 	tagMatches := false
 	if identity.Version != "" {
 		for _, tag := range repository.Tags {
@@ -360,9 +391,9 @@ func verifyInstalledToolkit(
 			return contractReport{}, true, false
 		}
 		if !versionsMatch(check.SourceBinaryVersion, identity.Version) ||
-			!commitsMatch(check.SourceBinaryCommit, identity.Commit) ||
+			!commitsMatch(check.SourceBinaryCommit, identity.Commit, nil) ||
 			!versionsMatch(check.InstalledSourceVersion, check.SourceBinaryVersion) ||
-			!commitsMatch(check.InstalledSourceCommit, check.SourceBinaryCommit) {
+			!commitsMatch(check.InstalledSourceCommit, check.SourceBinaryCommit, nil) {
 			return contractReport{}, true, false
 		}
 		producer = toolkitProducer{
@@ -381,7 +412,7 @@ func verifyInstalledToolkit(
 		producer = manifest.Producer
 	}
 	if binaryPath != "" && (!versionsMatch(producer.Version, identity.Version) ||
-		!commitsMatch(producer.Commit, identity.Commit)) {
+		!commitsMatch(producer.Commit, identity.Commit, nil)) {
 		return contractReport{}, true, false
 	}
 	return contractReport{
@@ -554,30 +585,107 @@ func verifyRemoteRelease(provider *fakeProvider, identity binaryIdentity) (contr
 	}
 	var ref remoteReleaseRef
 	if err := json.Unmarshal(refJSON, &ref); err != nil ||
-		!versionsMatch(ref.Tag, identity.Version) || !commitsMatch(ref.Commit, identity.Commit) {
+		!strings.HasPrefix(ref.Ref, "refs/tags/") ||
+		!versionsMatch(strings.TrimPrefix(ref.Ref, "refs/tags/"), identity.Version) {
 		return contractReport{}, false
 	}
-	treeJSON, err := provider.releaseTree(ref.Commit)
+	commit, ok := peelRemoteCommit(provider, ref.Object)
+	if !ok {
+		return contractReport{}, false
+	}
+	binaryCommit, ok := resolveProviderCommit(provider, identity.Commit)
+	if !ok || !commitsMatch(commit, binaryCommit, nil) {
+		return contractReport{}, false
+	}
+	treeJSON, err := provider.releaseTree(commit)
 	if err != nil {
 		return contractReport{}, false
 	}
 	var tree remoteReleaseTree
 	if err := json.Unmarshal(treeJSON, &tree); err != nil ||
-		tree.Truncated || !commitsMatch(tree.Commit, ref.Commit) || !containsAll(tree.Paths, requiredContractPaths) {
+		tree.Truncated || !isFullGitObjectID(tree.SHA) {
 		return contractReport{}, false
+	}
+	entries := make(map[string]remoteTreeEntry, len(tree.Tree))
+	for _, entry := range tree.Tree {
+		if _, duplicate := entries[entry.Path]; duplicate {
+			return contractReport{}, false
+		}
+		entries[entry.Path] = entry
 	}
 	locations := make(map[string]string, len(requiredContractPaths))
 	for _, path := range requiredContractPaths {
-		locations[path] = "github:Agent-Clubhouse/Goobers@" + ref.Commit + "/" + path
+		entry, exists := entries[path]
+		if !exists || entry.Type != "blob" || entry.Mode == "120000" || !isFullGitObjectID(entry.SHA) {
+			return contractReport{}, false
+		}
+		contentJSON, err := provider.releaseContent(path, commit)
+		if err != nil {
+			return contractReport{}, false
+		}
+		var content remoteContent
+		if err := json.Unmarshal(contentJSON, &content); err != nil ||
+			content.Path != path || content.SHA != entry.SHA || content.Type != "file" ||
+			content.Encoding != "base64" {
+			return contractReport{}, false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content.Content, "\n", ""))
+		if err != nil || len(decoded) == 0 {
+			return contractReport{}, false
+		}
+		locations[path] = "github:Agent-Clubhouse/Goobers@" + commit + "/" + path
 	}
 	return contractReport{
 		Kind:      "remote-release",
 		Root:      "github:Agent-Clubhouse/Goobers",
-		Version:   ref.Tag,
-		Commit:    ref.Commit,
-		Integrity: "exact untruncated release tree",
+		Version:   strings.TrimPrefix(ref.Ref, "refs/tags/"),
+		Commit:    commit,
+		Integrity: "exact untruncated release tree and pinned contents",
 		Locations: locations,
 	}, true
+}
+
+func peelRemoteCommit(provider *fakeProvider, object remoteGitObject) (string, bool) {
+	seen := make(map[string]bool)
+	for object.Type == "tag" {
+		if !isFullGitObjectID(object.SHA) || seen[object.SHA] {
+			return "", false
+		}
+		seen[object.SHA] = true
+		tagJSON, err := provider.releaseTag(object.SHA)
+		if err != nil {
+			return "", false
+		}
+		var tag remoteAnnotatedTag
+		if err := json.Unmarshal(tagJSON, &tag); err != nil || tag.SHA != object.SHA {
+			return "", false
+		}
+		object = tag.Object
+	}
+	if object.Type != "commit" || !isFullGitObjectID(object.SHA) {
+		return "", false
+	}
+	return strings.ToLower(object.SHA), true
+}
+
+func resolveProviderCommit(provider *fakeProvider, commit string) (string, bool) {
+	normalized, ok := normalizeGitObjectID(commit)
+	if !ok {
+		return "", false
+	}
+	if len(normalized) == 40 {
+		return normalized, true
+	}
+	commitJSON, err := provider.releaseCommit(normalized)
+	if err != nil {
+		return "", false
+	}
+	var resolved remoteCommit
+	if err := json.Unmarshal(commitJSON, &resolved); err != nil {
+		return "", false
+	}
+	full, ok := normalizeGitObjectID(resolved.SHA)
+	return full, ok && len(full) == 40 && strings.HasPrefix(full, normalized)
 }
 
 func resolveTargets(
@@ -835,10 +943,55 @@ func versionsMatch(left, right string) bool {
 	return normalize(left) != "" && normalize(left) == normalize(right)
 }
 
-func commitsMatch(left, right string) bool {
-	left = strings.TrimSpace(strings.ToLower(left))
-	right = strings.TrimSpace(strings.ToLower(right))
-	return left != "" && right != "" && (strings.HasPrefix(left, right) || strings.HasPrefix(right, left))
+func commitsMatch(left, right string, objects []string) bool {
+	left, leftOK := resolveGitObjectID(left, objects)
+	right, rightOK := resolveGitObjectID(right, objects)
+	return leftOK && rightOK && left == right
+}
+
+func resolveGitObjectID(value string, objects []string) (string, bool) {
+	value, ok := normalizeGitObjectID(value)
+	if !ok {
+		return "", false
+	}
+	if len(value) == 40 {
+		return value, true
+	}
+	if len(value) < 4 {
+		return "", false
+	}
+	matches := make(map[string]bool)
+	for _, object := range objects {
+		object, ok := normalizeGitObjectID(object)
+		if ok && len(object) == 40 && strings.HasPrefix(object, value) {
+			matches[object] = true
+		}
+	}
+	if len(matches) != 1 {
+		return "", false
+	}
+	for match := range matches {
+		return match, true
+	}
+	return "", false
+}
+
+func isFullGitObjectID(value string) bool {
+	value, ok := normalizeGitObjectID(value)
+	return ok && len(value) == 40
+}
+
+func normalizeGitObjectID(value string) (string, bool) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" || len(value) > 40 {
+		return "", false
+	}
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func repositoryIdentity(repository configRepo) string {

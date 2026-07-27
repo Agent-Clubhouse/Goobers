@@ -113,6 +113,17 @@ leading `v` only when comparing versions. Treat commits as equal only when one
 non-empty value is an unambiguous prefix of the other. Empty values and
 placeholders such as `dev` and `unknown` do not prove a match.
 
+Resolve an abbreviated commit instead of comparing prefix text. Require at
+least four hexadecimal characters, then resolve it against the selected
+repository's object database by requiring
+`git rev-parse --disambiguate=<abbrev>` to return exactly one object and
+verifying it with `git rev-parse --verify <abbrev>^{commit}`, or resolve it
+against the canonical provider repository with
+`gh api repos/Agent-Clubhouse/Goobers/commits/<abbrev> --jq .sha`. Accept the
+abbreviation only when that lookup returns exactly one full commit and every
+other release-identity source resolves to that same commit. An ambiguous,
+missing, or inaccessible abbreviation leaves the identity unresolved.
+
 A candidate matches only when every field available on both sides agrees. A
 matching version never overrides a commit conflict, and a matching commit never
 overrides a version conflict. Report a conflict rather than selecting either
@@ -244,19 +255,27 @@ defaults.
 Resolve the exact release tag, peel annotated tags to a commit, and compare that
 commit with the selected binary. Enumerate the tree at the full commit, require
 an untruncated result and every contract root, then request required files with
-that full commit as `ref`. For GitHub, use requests scoped like:
+that full commit as `ref`. Parse the Git ref's `object.type` and `object.sha`;
+when the type is `tag`, request `git/tags/<object.sha>` until the object type is
+`commit`. Parse the recursive tree's `sha`, `truncated`, and complete `tree[]`
+entries, requiring each consumed path to be a non-symlink blob. For GitHub, use
+requests scoped like:
 
 ```sh
 gh repo view Agent-Clubhouse/Goobers --json nameWithOwner
 gh api repos/Agent-Clubhouse/Goobers/git/ref/tags/<version>
+gh api repos/Agent-Clubhouse/Goobers/git/tags/<annotated-tag-object>
 gh api 'repos/Agent-Clubhouse/Goobers/git/trees/<full-commit>?recursive=1'
 gh api 'repos/Agent-Clubhouse/Goobers/contents/<path>?ref=<full-commit>'
 ```
 
-Report the provider repository, tag, full commit, and exact-ref locations for
-docs, schemas, examples, capability registry, and skills. If repository
-identity, ref identity, tree completeness, or a required path cannot be proven,
-remote contracts are unresolved.
+For every required file, parse the contents response's `path`, `sha`, `type`,
+`encoding`, and `content`; require a file whose object ID matches the tree entry
+and whose content decodes successfully. Report the provider repository, tag,
+full commit, and exact-ref locations for docs, schemas, examples, capability
+registry, and skills. If repository identity, ref identity, tag peeling, tree
+completeness, or any required content fetch cannot be proven, remote contracts
+are unresolved.
 
 For a known binary release, failure to find an exact verified source is a hard
 unresolved result. Never query or link to `main`, silently follow the default
