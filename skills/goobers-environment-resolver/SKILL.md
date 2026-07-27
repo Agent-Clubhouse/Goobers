@@ -153,20 +153,27 @@ inspection.
 If `agent-kit check` is unavailable, fail safely while checking the installed
 manifest:
 
-1. Parse `manifest.json`; reject duplicate assets, unknown schema or bundle
+1. Before opening any toolkit file, use non-following metadata checks to require
+   the selected config repository and every descendant component through
+   `.goobers/agent-toolkit` to be existing, non-symbolic-link directories.
+   Canonicalize both validated roots and require the toolkit root to remain
+   beneath the canonical config repository. Require `manifest.json` at that
+   exact toolkit root to be a regular, non-symbolic-link file beneath the
+   canonical config repository before opening or parsing it.
+2. Parse `manifest.json`; reject duplicate assets, unknown schema or bundle
    versions, malformed digests, and unsafe paths.
-2. Before opening an asset, require its path to start with
+3. Before opening an asset, require its path to start with
    `payload/.goobers/agent-toolkit/`, contain no `..` or backslash segment, and
    resolve beneath the candidate config repository after removing only the
    leading `payload/`. Reject a symbolic link in any path component between the
    config repository and the asset.
-3. Require every listed asset to be a regular, non-symbolic-link file. Recompute
+4. Require every listed asset to be a regular, non-symbolic-link file. Recompute
    and compare its SHA-256, byte size, and permission mode. Validate every
    asset, not only the paths needed by the next skill.
-4. Require `release.json` itself to be in that verified inventory. Then compare
+5. Require `release.json` itself to be in that verified inventory. Then compare
    the manifest and release producer version, commit, and complete DSL support
    matrix with each other and with the binary evidence.
-5. Require every contract path listed above to appear in the verified
+6. Require every contract path listed above to appear in the verified
    inventory. If any check cannot be performed, mark the toolkit unresolved;
    do not treat partial validation as intact.
 
