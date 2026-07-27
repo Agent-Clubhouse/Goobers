@@ -109,6 +109,40 @@ func IsNotFoundError(err error) bool {
 	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound
 }
 
+// IsMergeConflictError reports whether err is a typed provider response that
+// the forge returned specifically because the pull request has merge
+// conflicts (issue #1751). A conflicted PR is a normal business refusal —
+// merge-pr records it as a non-merge so merge-review's fail branch can count
+// and demote it — not the infrastructure failure a bare provider error
+// implies.
+//
+// Deliberately narrow. GitHub answers the merge endpoint with 405 for several
+// distinct policy refusals (draft PRs, branch-protection blocks, ruleset
+// violations), and #1751 requires that only a confirmed conflict be
+// reclassified: an unrecognized 405 must keep the generic provider-error
+// behavior rather than be silently recorded as a conflict refusal. So the
+// status code alone is never sufficient — the response body must also name
+// the condition.
+func IsMergeConflictError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusMethodNotAllowed {
+		return false
+	}
+	return mentionsMergeConflict(responseErr.body)
+}
+
+// mentionsMergeConflict reports whether a provider response body names a
+// merge-conflict refusal. GitHub's merge endpoint phrases this as
+// "Pull Request is not mergeable"; the explicit "merge conflict" wording is
+// accepted too so a forge that says it plainly is not missed.
+func mentionsMergeConflict(body string) bool {
+	lowered := strings.ToLower(body)
+	return strings.Contains(lowered, "not mergeable") || strings.Contains(lowered, "merge conflict")
+}
+
 // retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
 // `(Retry-After="1", X-RateLimit-Remaining="0", X-RateLimit-Reset="...")`
 // suffix shared by every error that surfaces a rate-limited response's

@@ -47,12 +47,17 @@ type mergePRServerState struct {
 	deleteCalls     int
 	baseListCalls   int
 	baseDeleteCalls int
-	mergeSHA        *string // set by the /merge handler on a successful call
-	mergeBody       map[string]interface{}
-	commentCalls    int
-	authCalls       int
-	verdictAuthor   string
-	mergeLogin      string
+	// mergeRefusalStatus/mergeRefusalBody make the REST merge endpoint answer
+	// with a refusal instead of merging — #1751's conflict case and its
+	// false-positive guard both drive the same handler with different bodies.
+	mergeRefusalStatus int
+	mergeRefusalBody   string
+	mergeSHA           *string // set by the /merge handler on a successful call
+	mergeBody          map[string]interface{}
+	commentCalls       int
+	authCalls          int
+	verdictAuthor      string
+	mergeLogin         string
 	// verdictOnSecondCommentPage forces the pass verdict onto page 2 of the
 	// comments endpoint, behind 100 routine comments and a Link: rel="next"
 	// header — proves structuredMergeCommitMessage's verdict lookup follows
@@ -291,6 +296,10 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		st.mergeCalls++
 		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
 			t.Errorf("decode merge request body: %v", err)
+		}
+		if st.mergeRefusalStatus != 0 {
+			http.Error(w, st.mergeRefusalBody, st.mergeRefusalStatus)
+			return
 		}
 		if st.mergeQueueRules {
 			// What GitHub actually does on a queue-required branch (issue
@@ -1308,5 +1317,86 @@ func TestMergePRReleasesLockOnRefusal(t *testing.T) {
 	}
 	if st.mergeCalls != 0 {
 		t.Fatalf("merge endpoint called %d times across both runs, want 0 (still a draft)", st.mergeCalls)
+	}
+}
+
+// TestMergePRRecordsMergeConflictAsRefusal is issue #1751's acceptance at the
+// stage level. When GitHub rejects the merge because the pull request has
+// conflicts, merge-pr must emit its standard refusal envelope and exit as an
+// evaluated non-merge — not failProviderStage's generic error envelope, which
+// carries only errorCode/errorMessage/errorRetryable. merge-review's
+// merge-gate routes the absent landOutcome down the fail branch to
+// record-merge-refusal, whose inputsFrom requires selectedNumber, reason and
+// selectedHeadSha; without them the run fails closed before the refusal can be
+// counted, demoted, or routed for remediation, trapping a repeatedly selected
+// conflicted PR in a loop.
+func TestMergePRRecordsMergeConflictAsRefusal(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		mergeRefusalStatus: http.StatusMethodNotAllowed,
+		mergeRefusalBody:   `{"message":"Pull Request is not mergeable","documentation_url":"https://docs.github.com/rest"}`,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q — a merge conflict is a business refusal, not a provider-stage failure", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
+	}
+	if result["reason"] != "merge-conflict" {
+		t.Fatalf("result = %+v, want reason=merge-conflict", result)
+	}
+	// record-merge-refusal's inputsFrom requires both of these; their absence
+	// is exactly what made the shipped workflow fail closed.
+	if result["selectedNumber"] != "9" {
+		t.Fatalf("result = %+v, want selectedNumber=9 for record-merge-refusal", result)
+	}
+	if result["selectedHeadSha"] != "head123" {
+		t.Fatalf("result = %+v, want selectedHeadSha=head123 so a refusal at a new head starts a fresh sequence", result)
+	}
+	// merge-gate branches on landOutcome; leaving it absent keeps the refusal
+	// on the existing fail branch rather than inventing a new outcome.
+	if _, ok := result["landOutcome"]; ok {
+		t.Fatalf("result = %+v, want no landOutcome so merge-gate still takes the fail branch", result)
+	}
+	if _, ok := result["errorCode"]; ok {
+		t.Fatalf("result = %+v, want no generic provider error envelope", result)
+	}
+}
+
+// TestMergePRKeepsUnrecognized405AsProviderFailure is #1751's explicit
+// classification constraint: GitHub uses 405 for several merge refusals
+// (branch protection, ruleset violations, method restrictions), so the status
+// code alone must never be read as a conflict. An unrecognized 405 keeps the
+// generic provider-stage failure rather than being silently recorded as a
+// merge-conflict refusal, which would let an unrelated policy block reach
+// record-merge-refusal and demote a lander for the wrong reason.
+func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		mergeRefusalStatus: http.StatusMethodNotAllowed,
+		mergeRefusalBody:   `{"message":"Required status check \"lint\" is expected."}`,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, _ := runArgs(t, "merge-pr", root)
+	if code == 0 {
+		t.Fatal("code = 0, want a provider-stage failure for an unrecognized 405")
+	}
+	result := readMergeResult(t, dir)
+	if _, ok := result["errorCode"]; !ok {
+		t.Fatalf("result = %+v, want the generic provider error envelope", result)
+	}
+	if result["reason"] == "merge-conflict" {
+		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge conflict", result)
 	}
 }
