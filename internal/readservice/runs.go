@@ -1460,10 +1460,20 @@ func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions)
 }
 
 func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, population StagePopulation) bool {
-	latest := make(map[string]int)
+	type traversalKey struct {
+		stage       string
+		branch      int
+		branchKnown bool
+	}
+	latest := make(map[traversalKey]int)
 	for _, attempt := range attempts {
-		if attempt.Traversal > latest[attempt.Stage] {
-			latest[attempt.Stage] = attempt.Traversal
+		key := traversalKey{
+			stage:       attempt.Stage,
+			branch:      attempt.Branch,
+			branchKnown: attempt.BranchKnown,
+		}
+		if attempt.Traversal > latest[key] {
+			latest[key] = attempt.Traversal
 		}
 	}
 	for _, attempt := range attempts {
@@ -1484,7 +1494,12 @@ func matchesTelemetryAttempts(attempts []rollup.StageAttempt, stage string, popu
 				return true
 			}
 		case StagePopulationRetryWaste:
-			if attempt.Traversal < latest[attempt.Stage] {
+			key := traversalKey{
+				stage:       attempt.Stage,
+				branch:      attempt.Branch,
+				branchKnown: attempt.BranchKnown,
+			}
+			if attempt.Traversal < latest[key] {
 				return true
 			}
 		}
