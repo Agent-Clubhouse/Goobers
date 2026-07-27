@@ -348,19 +348,34 @@ func writeOnboardingSampleFile(target string, data []byte, replace bool, previou
 }
 
 func validateOnboardingDestination(destination string) error {
-	info, err := os.Lstat(destination)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return fmt.Errorf("inspect destination %s: %w", destination, err)
-	case info.Mode()&fs.ModeSymlink != 0:
-		return fmt.Errorf("refusing symbolic-link destination %s", destination)
-	case !info.IsDir():
-		return fmt.Errorf("destination %s is not a directory", destination)
-	default:
-		return nil
+	destination = filepath.Clean(destination)
+	var components []string
+	for current := destination; ; current = filepath.Dir(current) {
+		components = append(components, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
 	}
+	for i := len(components) - 1; i >= 0; i-- {
+		current := components[i]
+		info, err := os.Lstat(current)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("inspect destination component %s: %w", current, err)
+		case info.Mode()&fs.ModeSymlink != 0 && current == destination:
+			return fmt.Errorf("refusing symbolic-link destination %s", destination)
+		case info.Mode()&fs.ModeSymlink != 0:
+			return fmt.Errorf("refusing symbolic-link destination ancestor %s", current)
+		case !info.IsDir() && current == destination:
+			return fmt.Errorf("destination %s is not a directory", destination)
+		case !info.IsDir():
+			return fmt.Errorf("destination ancestor %s is not a directory", current)
+		}
+	}
+	return nil
 }
 
 func validateOnboardingParents(destination, parent string) error {

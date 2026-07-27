@@ -24,7 +24,7 @@ func TestOnboardingStubSampleDestinationGoldens(t *testing.T) {
 
 	for _, fixture := range []string{"empty", "partial", "populated"} {
 		t.Run(fixture, func(t *testing.T) {
-			destination := filepath.Join(t.TempDir(), "sample")
+			destination := filepath.Join(onboardingTestTempDir(t), "sample")
 			switch fixture {
 			case "partial":
 				if err := os.MkdirAll(destination, 0o755); err != nil {
@@ -90,7 +90,7 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination := filepath.Join(t.TempDir(), "sample")
+	destination := filepath.Join(onboardingTestTempDir(t), "sample")
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -126,12 +126,30 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestOnboardingStubSampleRefusesSymlinkedDestinationAncestor(t *testing.T) {
+	parent := onboardingTestTempDir(t)
+	outside := onboardingTestTempDir(t)
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	destination := filepath.Join(link, "sample")
+
+	code, _, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination)
+	if code != 1 || !strings.Contains(stderr, "symbolic-link destination ancestor") {
+		t.Fatalf("symlinked ancestor: code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sample")); !os.IsNotExist(err) {
+		t.Fatalf("sample was written through symlinked ancestor: %v", err)
+	}
+}
+
 func TestOnboardingStubSampleForceReplacesReadOnlyConflict(t *testing.T) {
 	files, _, err := loadOnboardingSample()
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination := filepath.Join(t.TempDir(), "sample")
+	destination := filepath.Join(onboardingTestTempDir(t), "sample")
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +202,7 @@ func TestOnboardingStubSampleReportsPendingWithoutCredentials(t *testing.T) {
 	code, stdout, stderr := runArgs(
 		t,
 		"onboarding", "stub-sample",
-		"--destination", filepath.Join(t.TempDir(), "sample"),
+		"--destination", filepath.Join(onboardingTestTempDir(t), "sample"),
 		"--work-tracking", "acme/tutorial",
 		"--token-env", tokenEnv,
 		"--json",
@@ -223,7 +241,7 @@ func TestOnboardingStubSampleSeedsLabelsAndIssuesIdempotently(t *testing.T) {
 	}
 	t.Cleanup(func() { newOnboardingIssueSeeder = previous })
 
-	destination := filepath.Join(t.TempDir(), "sample")
+	destination := filepath.Join(onboardingTestTempDir(t), "sample")
 	run := func() onboardingActionResult {
 		t.Helper()
 		code, stdout, stderr := runArgs(
@@ -283,6 +301,15 @@ func TestOnboardingStubSampleSeedsLabelsAndIssuesIdempotently(t *testing.T) {
 	if len(seeder.createRequests) != 3 {
 		t.Fatalf("rerun created additional issues: %d total", len(seeder.createRequests))
 	}
+}
+
+func onboardingTestTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 type fakeOnboardingIssueSeeder struct {
