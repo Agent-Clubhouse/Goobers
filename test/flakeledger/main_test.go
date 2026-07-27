@@ -133,6 +133,58 @@ func TestRunPublishesSeededFailureAndRefreshesKnownFingerprint(t *testing.T) {
 	}
 }
 
+func TestPublishBoundsSeededLongFailureAndContinues(t *testing.T) {
+	t.Parallel()
+	known := strings.Repeat("c", 64)
+	freshLong := strings.Repeat("d", 64)
+	subsequent := strings.Repeat("e", 64)
+	longSignature := strings.Repeat("assertion output ", 8*1024)
+	provider := &fakeLedgerProvider{items: []providers.WorkItem{{
+		ID:     "7",
+		Body:   fingerprintMarker(known),
+		Labels: []string{flakeLabel},
+	}}}
+	report := failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "123"},
+		Failures: []testFailure{
+			seedFailure(known, longSignature),
+			seedFailure(freshLong, longSignature),
+			seedFailure(subsequent, "subsequent failure"),
+		},
+	}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{Created: 2, Refreshed: 1}) ||
+		len(provider.updates) != 1 || len(provider.creates) != 2 {
+		t.Fatalf("result=%+v creates=%d updates=%d", result, len(provider.creates), len(provider.updates))
+	}
+	if strings.Contains(provider.updates[0].Comment, longSignature) {
+		t.Fatal("occurrence comment contains the unbounded signature")
+	}
+	if strings.Contains(provider.creates[0].Body, longSignature) {
+		t.Fatal("issue body contains the unbounded signature")
+	}
+	if got := len([]rune(renderedSignature(longSignature))); got != signatureLimit {
+		t.Fatalf("rendered signature length = %d, want %d", got, signatureLimit)
+	}
+	if len(provider.updates[0].Comment) >= 64*1024 {
+		t.Fatalf("occurrence comment length = %d, want below GitHub limit", len(provider.updates[0].Comment))
+	}
+	if len(provider.creates[0].Body) >= 64*1024 {
+		t.Fatalf("issue body length = %d, want below GitHub limit", len(provider.creates[0].Body))
+	}
+	if provider.creates[1].RunID != "flake-"+subsequent {
+		t.Fatalf("subsequent create = %+v", provider.creates[1])
+	}
+}
+
 func TestPublishDoesNotDuplicateRecordedOccurrence(t *testing.T) {
 	t.Parallel()
 	fingerprint := strings.Repeat("d", 64)

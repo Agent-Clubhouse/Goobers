@@ -107,6 +107,22 @@ func TestFailureFingerprintIncludesNormalizedSignature(t *testing.T) {
 	}
 }
 
+func TestNormalizeFailureSignatureBoundsLongAssertion(t *testing.T) {
+	t.Parallel()
+	prefix := strings.Repeat("assertion detail ", failureSignatureLimit)
+	first := normalizeFailureSignature(prefix + "first")
+	second := normalizeFailureSignature(prefix + "second")
+	if len([]rune(first)) != failureSignatureLimit {
+		t.Fatalf("signature length = %d, want %d", len([]rune(first)), failureSignatureLimit)
+	}
+	if first == second {
+		t.Fatal("long assertions with distinct suffixes produced the same signature")
+	}
+	if !strings.Contains(first, "… [sha256:") {
+		t.Fatalf("bounded signature lacks digest suffix: %q", first)
+	}
+}
+
 func TestNormalizePanicSignatureIncludesStableSite(t *testing.T) {
 	t.Parallel()
 	text := `panic: close of closed channel [recovered, repanicked]
