@@ -13,7 +13,7 @@ const gatherContextID = "gather-implement-context"
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
-	"init":                   "  goobers init [--guided | --demo | --template=quickstart] [path]\n                                scaffold an instance root\n",
+	"init":                   "  goobers init [--guided | --demo | --template=quickstart [--source-tree <path> [--json]]] [path]\n                                scaffold an instance root or checked-in config source\n",
 	"preflight":              "  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]\n                                check WSL full-isolation readiness and optionally hand off a command\n",
 	"onboarding":             "  goobers onboarding stub-sample --destination <path> [--json]\n                                run non-interactive onboarding actions\n",
 	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",

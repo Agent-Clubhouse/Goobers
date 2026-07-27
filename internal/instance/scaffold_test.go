@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -133,6 +134,9 @@ func TestInitQuickstartFresh(t *testing.T) {
 	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
 	}
+	if len(workflow.Spec.Triggers) != 1 || workflow.Spec.Triggers[0].Type != apiv1.TriggerManual {
+		t.Fatalf("quickstart trigger = %+v, want manual-only", workflow.Spec.Triggers)
+	}
 	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
@@ -229,5 +233,60 @@ repos:
 	}
 	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "mine" {
 		t.Fatalf("pre-existing instance.yaml was overwritten: %+v", cfg.Repos)
+	}
+}
+
+func TestSeedQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "manifest.yaml")
+	if err := os.WriteFile(manifest, []byte("user-owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := SeedQuickstartConfigSource(root)
+	if err == nil || !strings.Contains(err.Error(), "manifest.yaml differs from the quickstart template") {
+		t.Fatalf("SeedQuickstartConfigSource error = %v, want managed-file conflict", err)
+	}
+	data, readErr := os.ReadFile(manifest)
+	if readErr != nil || string(data) != "user-owned\n" {
+		t.Fatalf("conflicting manifest changed: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, GuidedSourceInstanceFile)); !os.IsNotExist(statErr) {
+		t.Fatalf("preflight conflict created another managed file: %v", statErr)
+	}
+}
+
+func TestSeedQuickstartConfigSourceRejectsSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "gaggles")); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	_, err := SeedQuickstartConfigSource(root)
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("SeedQuickstartConfigSource error = %v, want symlink rejection", err)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("seed wrote outside the config source: %v", entries)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, GuidedSourceInstanceFile)); !os.IsNotExist(statErr) {
+		t.Fatalf("symlink preflight created another managed file: %v", statErr)
+	}
+}
+
+func TestSeedQuickstartConfigSourceRejectsInvalidCompletedTree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "invalid.yaml"), []byte("not: [valid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := SeedQuickstartConfigSource(root)
+	if err == nil || !strings.Contains(err.Error(), "validate seeded config source") {
+		t.Fatalf("SeedQuickstartConfigSource error = %v, want validation failure", err)
 	}
 }

@@ -1090,7 +1090,7 @@ $ goobers gather-sibling-context
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]
+Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
@@ -1100,8 +1100,12 @@ with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
 then validates both. The source may be new or existing locally, cloned from
 GitHub, or optionally backed by a newly confirmed GitHub repository.
---template=quickstart seeds the versioned onboarding
-workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour
+--template=quickstart seeds the versioned onboarding workflow; it is
+intentionally not production-safe. With --source-tree <path>, it instead
+seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
+and gaggles/) without runtime state. The source-tree action is non-interactive,
+preserves every existing file, and reports each created or skipped path;
+--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
@@ -1116,6 +1120,7 @@ launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 ~~~console
 $ goobers init
 $ goobers init --template=quickstart ./tutorial
+$ goobers init --template=quickstart --source-tree ./tutorial-config --json
 $ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
