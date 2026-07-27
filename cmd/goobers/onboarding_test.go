@@ -126,6 +126,24 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestWriteOnboardingSampleFileDoesNotReplaceFileCreatedAfterPreflight(t *testing.T) {
+	target := filepath.Join(onboardingTestTempDir(t), "package.json")
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("target unexpectedly exists before simulated preflight: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("user-owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := writeOnboardingSampleFile(target, []byte("sample\n"), false, 0)
+	if err == nil || !strings.Contains(err.Error(), "without replacing destination") {
+		t.Fatalf("writeOnboardingSampleFile error = %v, want no-replace publication failure", err)
+	}
+	if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "user-owned\n" {
+		t.Fatalf("file created after preflight was replaced: data=%q err=%v", got, readErr)
+	}
+}
+
 func TestOnboardingStubSampleRefusesSymlinkedDestinationAncestor(t *testing.T) {
 	parent := onboardingTestTempDir(t)
 	outside := onboardingTestTempDir(t)

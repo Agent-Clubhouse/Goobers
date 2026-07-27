@@ -237,7 +237,7 @@ repos:
 }
 
 func TestSeedQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
-	root := t.TempDir()
+	root := scaffoldTestTempDir(t)
 	manifest := filepath.Join(root, "manifest.yaml")
 	if err := os.WriteFile(manifest, []byte("user-owned\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -257,8 +257,8 @@ func TestSeedQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
 }
 
 func TestSeedQuickstartConfigSourceRejectsSymlinkedParent(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
+	root := scaffoldTestTempDir(t)
+	outside := scaffoldTestTempDir(t)
 	if err := os.Symlink(outside, filepath.Join(root, "gaggles")); err != nil {
 		t.Skipf("create symlink: %v", err)
 	}
@@ -279,8 +279,26 @@ func TestSeedQuickstartConfigSourceRejectsSymlinkedParent(t *testing.T) {
 	}
 }
 
+func TestSeedQuickstartConfigSourceRejectsSymlinkedRootAncestor(t *testing.T) {
+	parent := scaffoldTestTempDir(t)
+	outside := scaffoldTestTempDir(t)
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+	root := filepath.Join(link, "config")
+
+	_, err := SeedQuickstartConfigSource(root)
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("SeedQuickstartConfigSource error = %v, want symlinked ancestor rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "config")); !os.IsNotExist(statErr) {
+		t.Fatalf("config source was created through symlinked ancestor: %v", statErr)
+	}
+}
+
 func TestSeedQuickstartConfigSourceRejectsInvalidCompletedTree(t *testing.T) {
-	root := t.TempDir()
+	root := scaffoldTestTempDir(t)
 	if err := os.WriteFile(filepath.Join(root, "invalid.yaml"), []byte("not: [valid\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -289,4 +307,13 @@ func TestSeedQuickstartConfigSourceRejectsInvalidCompletedTree(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "validate seeded config source") {
 		t.Fatalf("SeedQuickstartConfigSource error = %v, want validation failure", err)
 	}
+}
+
+func scaffoldTestTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

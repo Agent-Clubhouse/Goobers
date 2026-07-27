@@ -278,21 +278,38 @@ func copyConfig(dir, source string) error {
 }
 
 func prepareConfigSourceRoot(root string) error {
-	info, err := os.Lstat(root)
-	if errors.Is(err, fs.ErrNotExist) {
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			return fmt.Errorf("create config source %s: %w", root, err)
-		}
-		info, err = os.Lstat(root)
-	}
+	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return fmt.Errorf("inspect config source %s: %w", root, err)
+		return fmt.Errorf("resolve config source %s: %w", root, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("config source path %s must not be a symlink", root)
+	var components []string
+	for current := absolute; ; current = filepath.Dir(current) {
+		components = append(components, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("config source path %s is not a directory", root)
+	for i := len(components) - 1; i >= 0; i-- {
+		current := components[i]
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := os.Mkdir(current, 0o755); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("create config source component %s: %w", current, err)
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return fmt.Errorf("inspect config source component %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("config source path component %s must not be a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("config source path component %s is not a directory", current)
+		}
 	}
 	return nil
 }

@@ -57,7 +57,7 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "config-source")
+			root := configSourceTestPath(t, "config-source")
 			if test.setup != nil {
 				test.setup(t, root)
 			}
@@ -99,7 +99,7 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 }
 
 func TestInitQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "config-source")
+	root := configSourceTestPath(t, "config-source")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestInitQuickstartConfigSourceRejectsConflictingManagedFile(t *testing.T) {
 }
 
 func TestInitQuickstartConfigSourceRejectsSemanticallyInvalidPopulatedDestination(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "config-source")
+	root := configSourceTestPath(t, "config-source")
 	if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
 		t.Fatalf("seed populated fixture: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestInitQuickstartConfigSourceRejectsSemanticallyInvalidPopulatedDestinatio
 }
 
 func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "config $HOME ' $(touch-pwned) `touch-pwned`")
+	root := configSourceTestPath(t, "config $HOME ' $(touch-pwned) `touch-pwned`")
 	code, stdout, stderr := runArgs(
 		t,
 		"init",
@@ -186,7 +186,7 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 }
 
 func TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "config $HOME $([char]0x58) `n O'Brien")
+	root := configSourceTestPath(t, "config $HOME $([char]0x58) `n O'Brien")
 	var stdout, stderr bytes.Buffer
 	code := runInitWithInputForOS(
 		[]string{
@@ -295,4 +295,13 @@ func assertQuickstartSourceValid(t *testing.T, root string) {
 	if !result.OK || len(result.Findings) != 0 {
 		t.Fatalf("validation result = %s", stdout)
 	}
+}
+
+func configSourceTestPath(t *testing.T, name string) string {
+	t.Helper()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(parent, name)
 }

@@ -335,8 +335,18 @@ func writeOnboardingSampleFile(target string, data []byte, replace bool, previou
 		}
 		restoreMode = true
 	}
-	if err := durability.ReplaceFile(stagedPath, target); err != nil {
-		replaceErr := fmt.Errorf("replace with staged file: %w", err)
+	var publishErr error
+	if replace {
+		publishErr = durability.ReplaceFile(stagedPath, target)
+	} else {
+		publishErr = os.Link(stagedPath, target)
+	}
+	if publishErr != nil {
+		action := "publish staged file without replacing destination"
+		if replace {
+			action = "replace with staged file"
+		}
+		replaceErr := fmt.Errorf("%s: %w", action, publishErr)
 		if restoreMode {
 			if restoreErr := os.Chmod(target, previousMode.Perm()); restoreErr != nil {
 				return errors.Join(replaceErr, fmt.Errorf("restore existing file mode: %w", restoreErr))
