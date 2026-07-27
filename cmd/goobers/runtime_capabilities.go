@@ -86,6 +86,10 @@ func init() {
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+		command("preflight", apicontract.ActionWorkflowExecution, runOnboardingPreflight).
+			withSynopsis(synopsisByID["preflight"]).
+			withHelp("check WSL full-isolation readiness and optionally hand off a command", wslPreflightHelp).
+			withExamples("goobers preflight", "goobers preflight --distro Ubuntu-24.04", "goobers preflight --launch-wsl -- run implementation ."),
 		groupCommand(
 			"examples",
 			runExamples,
@@ -241,6 +245,7 @@ func init() {
 			withExamples("goobers run default-implement", "goobers run default-implement --no-wait"),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
+		command(wslNetworkPreflightCommand, apicontract.ActionConfigTime, runWSLNetworkPreflight),
 		command("signal", apicontract.ActionWorkflowExecution, runSignal).
 			withSynopsis(synopsisByID["signal"]).
 			withHelp("fire an external signal to subscribed workflows", signalHelp).

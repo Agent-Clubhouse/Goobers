@@ -37,7 +37,8 @@ const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --templa
 	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
 	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
 	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
-	"the general Windows sandbox policy (#651). --insecure requires --demo.\n"
+	"the general Windows sandbox policy (#651). Use `goobers preflight` to check and\n" +
+	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -92,7 +93,7 @@ func runInitWithInputForOSAndGitHub(
 	}
 	demoUnisolated := *demo && goos != "linux" && goos != "darwin"
 	if demoUnisolated && !*insecure {
-		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s (pass --insecure to proceed without it)\n", goos)
+		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s; run `goobers preflight` for the fully isolated WSL 2 route, or pass --insecure to proceed without isolation\n", goos)
 		return 2
 	}
 	root := "."
@@ -565,4 +566,5 @@ Demo full loop (run these from %s):
 // even scaffold, it does not alter that general Windows sandbox policy.
 const demoInsecureWarning = "\nwarning: demo scaffolded WITHOUT enforced network isolation — this platform\n" +
 	"has no network:none equivalent. Before `goobers run demo`, set\n" +
-	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n"
+	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n" +
+	"For full isolation instead, run `goobers preflight` and launch the command through WSL 2.\n"

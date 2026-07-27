@@ -61,6 +61,7 @@
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one eligible open PR for merge-review (a workflow stage) |
+| [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
@@ -1104,7 +1105,8 @@ demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
 --insecure is also given, which scaffolds the demo anyway and reports the
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
-the general Windows sandbox policy (#651). --insecure requires --demo.
+the general Windows sandbox policy (#651). Use `goobers preflight` to check and
+launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 ~~~
 
 **Examples**
@@ -1355,6 +1357,36 @@ result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 
 ~~~console
 $ goobers pr-select
+~~~
+
+## `goobers preflight`
+
+check WSL full-isolation readiness and optionally hand off a command
+
+~~~text
+Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+
+On Windows, verify that the selected or default WSL distro can run the full
+isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
+goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
+
+With --launch-wsl, run the trailing Goobers command through that distro after
+the checks pass. Arguments are forwarded directly without shell evaluation,
+the WSL process starts in the current Windows directory, and its exit code is
+returned. Use paths relative to that directory or Linux paths in forwarded
+arguments.
+
+Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
+command failed, 2 = usage error. A forwarded command's non-zero exit code is
+preserved.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers preflight
+$ goobers preflight --distro Ubuntu-24.04
+$ goobers preflight --launch-wsl -- run implementation .
 ~~~
 
 ## `goobers push-branch`
