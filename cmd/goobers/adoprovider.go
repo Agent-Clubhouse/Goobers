@@ -83,8 +83,8 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 	if gaggle == "" {
 		return routed
 	}
-	set, _, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
-	if err != nil || set == nil {
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil || report == nil || set == nil {
 		return routed
 	}
 	return applyBacklogProject(set, gaggle, routed)
@@ -106,8 +106,8 @@ func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) 
 	if gaggle == "" {
 		return routed
 	}
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
-	if err != nil || set == nil {
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
+	if err != nil || report == nil || set == nil {
 		return routed
 	}
 	return applyBacklogProject(set, gaggle, routed)
