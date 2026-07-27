@@ -41,7 +41,9 @@ var Kind = map[string]string{
 
 // Envelope maps an envelope name to its schema file name. "artifact" names the
 // shared ArtifactPointer schema that invocation/result/verdict $ref and that the
-// journal (#8) imports directly.
+// journal (#8) imports directly. Every v1alpha1 runtime type represented here,
+// plus standalone schema-backed artifacts such as RemediationBrief, must have a
+// fully populated round-trip case in api/validate/envelope_completeness_test.go.
 var Envelope = map[string]string{
 	"invocation": "invocation.schema.json",
 	"result":     "result.schema.json",

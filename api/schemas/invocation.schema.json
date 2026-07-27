@@ -107,6 +107,7 @@
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado"], "description": "Repository provider." },
         "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
+        "project": { "type": "string", "description": "Azure DevOps project containing the repository." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },
         "branch": { "type": "string", "description": "Default branch checked out and targeted by the run." },
         "connectionRef": { "type": "string", "description": "Connection that supplies credentials for the repository." }

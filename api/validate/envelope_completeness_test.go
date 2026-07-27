@@ -1,0 +1,360 @@
+package validate
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
+
+type schemaFixture struct {
+	schema string
+	value  any
+}
+
+func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
+	fixtures := map[string]schemaFixture{
+		"artifact": {
+			schema: schemas.Envelope["artifact"],
+			value:  completeArtifactPointer("artifacts/review/evidence.json"),
+		},
+		"invocation": {
+			schema: schemas.Envelope["invocation"],
+			value:  completeInvocationEnvelope(),
+		},
+		"result": {
+			schema: schemas.Envelope["result"],
+			value:  completeResultEnvelope(),
+		},
+		"verdict": {
+			schema: schemas.Envelope["verdict"],
+			value:  completeVerdict(),
+		},
+		"remediation-brief": {
+			schema: schemas.RemediationBrief,
+			value:  completeRemediationBrief(),
+		},
+	}
+
+	for name := range schemas.Envelope {
+		if _, ok := fixtures[name]; !ok {
+			t.Errorf("schema-backed envelope %q has no complete round-trip fixture", name)
+		}
+	}
+
+	validator := newV(t)
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			assertEveryJSONFieldPopulated(t, fixture.value)
+			data, err := json.Marshal(fixture.value)
+			if err != nil {
+				t.Fatalf("marshal fully populated %s: %v", name, err)
+			}
+			if err := validator.ValidateJSON(fixture.schema, data); err != nil {
+				t.Fatalf("fully populated %s does not match %s: %v\n%s", name, fixture.schema, err, data)
+			}
+		})
+	}
+}
+
+func completeArtifactPointer(path string) apiv1.ArtifactPointer {
+	return apiv1.ArtifactPointer{
+		Path:      path,
+		Digest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		MediaType: "application/json",
+		Size:      42,
+	}
+}
+
+func completeInvocationEnvelope() apiv1.InvocationEnvelope {
+	return apiv1.InvocationEnvelope{
+		TaskID:              "implement",
+		WorkflowID:          "implementation",
+		RunID:               "run-123",
+		TriggerRef:          "github:issue:1704",
+		Gaggle:              "goobers",
+		BranchNamespace:     "goobers/",
+		Goal:                "implement the claimed issue",
+		InstructionAddendum: "Preserve the public contract.",
+		Workspace:           "/workspace",
+		RepoRef: apiv1.RepoRef{
+			Provider:      apiv1.ProviderADO,
+			Owner:         "agent-clubhouse",
+			Project:       "goobers-project",
+			Name:          "goobers",
+			Branch:        "main",
+			ConnectionRef: "origin",
+		},
+		AdditionalWorkspaces: []apiv1.AdditionalWorkspace{{
+			Name: "reference",
+			Path: "/workspace-reference",
+		}},
+		Item: &apiv1.BacklogItem{
+			ID:       "1704",
+			Provider: apiv1.ProviderGitHub,
+			Title:    "Keep schemas synchronized",
+			Body:     "Add a structural drift guard.",
+			URL:      "https://example.test/issues/1704",
+			Labels:   []string{"type:bug"},
+		},
+		ContextPointers: []apiv1.ContextPointer{
+			{
+				Name:     "evidence",
+				Artifact: pointer(completeArtifactPointer("artifacts/gather/evidence.json")),
+				RunID:    "source-run",
+			},
+			{
+				Name: "issue",
+				External: &apiv1.ExternalRef{
+					Kind:        "issue",
+					URI:         "https://example.test/issues/1704",
+					Description: "claimed issue",
+				},
+			},
+		},
+		Capabilities: []string{"repo:push"},
+		Limits: apiv1.Limits{
+			MaxDurationSeconds: 600,
+			MaxTokens:          10_000,
+			MaxCostUSD:         1.5,
+		},
+		Inputs: map[string]interface{}{"repass": false},
+	}
+}
+
+func completeResultEnvelope() apiv1.ResultEnvelope {
+	artifact := completeArtifactPointer("artifacts/implement/result.json")
+	return apiv1.ResultEnvelope{
+		Status:     apiv1.ResultFailure,
+		Outputs:    map[string]interface{}{"attempt": 1},
+		Artifacts:  []apiv1.ArtifactPointer{artifact},
+		Transcript: pointer(completeArtifactPointer("artifacts/implement/transcript.txt")),
+		Summary:    "The implementation needs another pass.",
+		Metrics:    map[string]float64{"duration_seconds": 2.5},
+		Error: &apiv1.ErrorInfo{
+			Code:      "RETRY",
+			Message:   "a retryable failure",
+			Retryable: true,
+		},
+	}
+}
+
+func completeVerdict() apiv1.Verdict {
+	return apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Rationale: "One substantive finding remains.",
+		Evidence:  []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
+		Findings: []apiv1.Finding{{
+			Severity:    apiv1.SeverityError,
+			Message:     "Wait for the overlapping pull request.",
+			Location:    "api/v1alpha1/envelope.go:311",
+			Class:       apiv1.FindingCrossPRBlocked,
+			BlockingPRs: []int{1703},
+		}},
+		Summary:        "Changes are required.",
+		HeadSHA:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BaseSHA:        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Digest:         "sha256:review-inputs",
+		SourceRunID:    "review-run",
+		OverlapCluster: true,
+		Elected:        true,
+	}
+}
+
+func completeRemediationBrief() apiv1.RemediationBrief {
+	return apiv1.RemediationBrief{
+		Schema:                 apiv1.RemediationBriefVersion,
+		SelectedNumber:         "1704",
+		Head:                   "goobers/implementation/run-1704",
+		Base:                   "main",
+		WorkspaceBranch:        "goobers/implementation/run-1704",
+		IsBehindBase:           true,
+		HasSubstantiveFindings: "true",
+		HasFailingCI:           "true",
+		GatherPRContext: apiv1.RemediationPRContext{
+			HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			BaseSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			Verdict: pointer(completeVerdict()),
+			Comments: []apiv1.RemediationThreadComment{{
+				Author:    "reviewer",
+				Body:      "Address every finding.",
+				CreatedAt: "2026-07-26T12:00:00Z",
+				URL:       "https://example.test/comments/1",
+			}},
+		},
+		GatherCIFailures: &apiv1.RemediationCIFailures{
+			Checks: []apiv1.RemediationCIFailure{{
+				Name:       "unit",
+				Conclusion: "failure",
+				URL:        "https://example.test/checks/1",
+				Summary:    "A test failed.",
+				Annotations: []apiv1.RemediationCIAnnotation{{
+					Path:      "api/validate/validate_test.go",
+					StartLine: 10,
+					EndLine:   11,
+					Level:     "failure",
+					Title:     "schema drift",
+					Message:   "The schema is missing a field.",
+				}},
+			}},
+		},
+		GatherReviewThreads: &apiv1.RemediationReviewThreads{
+			Reviews: []apiv1.RemediationNativeReview{{
+				Author:      "reviewer",
+				State:       "changes_requested",
+				Body:        "Update the schema.",
+				CommitSHA:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				SubmittedAt: "2026-07-26T12:00:00Z",
+				URL:         "https://example.test/reviews/1",
+			}},
+			InlineComments: []apiv1.RemediationInlineComment{{
+				Author:            "reviewer",
+				Body:              "This field is missing.",
+				Path:              "api/schemas/verdict.schema.json",
+				Line:              40,
+				OriginalLine:      38,
+				Side:              "RIGHT",
+				StartLine:         39,
+				OriginalStartLine: 37,
+				StartSide:         "RIGHT",
+				DiffHunk:          "@@ -37,2 +39,2 @@",
+				InReplyTo:         1,
+				IsResolved:        true,
+				IsOutdated:        true,
+				CreatedAt:         "2026-07-26T12:00:00Z",
+				URL:               "https://example.test/comments/2",
+			}},
+		},
+		GatherSiblingContext: &apiv1.RemediationSiblingContext{
+			PullRequests: []apiv1.RemediationSibling{{
+				Number:           1703,
+				Head:             "fix/schema",
+				HeadSHA:          "cccccccccccccccccccccccccccccccccccccccc",
+				Blocking:         true,
+				Reason:           "overlapping files",
+				OverlappingFiles: []string{"api/schemas/verdict.schema.json"},
+			}},
+		},
+		GatherIssueContext: &apiv1.RemediationIssueContext{
+			Issues: []apiv1.RemediationIssue{{
+				Number: "1704",
+				Title:  "Keep schemas synchronized",
+				Body:   "Add a structural drift guard.",
+				URL:    "https://example.test/issues/1704",
+			}},
+		},
+	}
+}
+
+func pointer[T any](value T) *T {
+	return &value
+}
+
+var completenessOmissions = map[reflect.Type]map[string]string{
+	reflect.TypeOf(apiv1.RepoRef{}): {
+		"Checkout": "workspace materialization config is intentionally projected out by RepoRef.EnvelopeRef",
+	},
+}
+
+func assertEveryJSONFieldPopulated(t *testing.T, value any) {
+	t.Helper()
+	var missing []string
+	collectUnpopulatedJSONFields(
+		[]reflect.Value{reflect.ValueOf(value)},
+		reflect.TypeOf(value).Name(),
+		&missing,
+	)
+	if len(missing) == 0 {
+		return
+	}
+	sort.Strings(missing)
+	t.Fatalf("fully populated fixture leaves exported JSON field(s) at zero:\n  %s", strings.Join(missing, "\n  "))
+}
+
+func collectUnpopulatedJSONFields(values []reflect.Value, path string, missing *[]string) {
+	values = indirectValues(values)
+	if len(values) == 0 {
+		return
+	}
+
+	switch values[0].Kind() {
+	case reflect.Struct:
+		typ := values[0].Type()
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			name := reflectedJSONFieldName(field)
+			if !field.IsExported() || name == "" || isCompletenessOmission(typ, field.Name) {
+				continue
+			}
+			fieldValues := make([]reflect.Value, 0, len(values))
+			for _, value := range values {
+				candidate := value.Field(i)
+				if isPopulatedJSONValue(candidate) {
+					fieldValues = append(fieldValues, candidate)
+				}
+			}
+			fieldPath := fmt.Sprintf("%s.%s", path, name)
+			if len(fieldValues) == 0 {
+				*missing = append(*missing, fieldPath)
+				continue
+			}
+			collectUnpopulatedJSONFields(fieldValues, fieldPath, missing)
+		}
+	case reflect.Slice, reflect.Array:
+		var elements []reflect.Value
+		for _, value := range values {
+			for i := 0; i < value.Len(); i++ {
+				elements = append(elements, value.Index(i))
+			}
+		}
+		collectUnpopulatedJSONFields(elements, path+"[]", missing)
+	}
+}
+
+func isPopulatedJSONValue(value reflect.Value) bool {
+	switch value.Kind() {
+	case reflect.Map, reflect.Slice, reflect.String:
+		return value.Len() > 0
+	default:
+		return !value.IsZero()
+	}
+}
+
+func indirectValues(values []reflect.Value) []reflect.Value {
+	indirect := make([]reflect.Value, 0, len(values))
+	for _, value := range values {
+		for value.IsValid() && (value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer) {
+			if value.IsNil() {
+				break
+			}
+			value = value.Elem()
+		}
+		if value.IsValid() && value.Kind() != reflect.Pointer && value.Kind() != reflect.Interface {
+			indirect = append(indirect, value)
+		}
+	}
+	return indirect
+}
+
+func reflectedJSONFieldName(field reflect.StructField) string {
+	tag := field.Tag.Get("json")
+	if tag == "" || tag == "-" {
+		return ""
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	return name
+}
+
+func isCompletenessOmission(typ reflect.Type, field string) bool {
+	fields, ok := completenessOmissions[typ]
+	if !ok {
+		return false
+	}
+	_, ok = fields[field]
+	return ok
+}
