@@ -248,6 +248,15 @@ func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writ
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	var validationOutput strings.Builder
+	if code := runValidate(
+		[]string{"--source-tree", "--json", result.Root},
+		&validationOutput,
+		&validationOutput,
+	); code != 0 {
+		pf(stderr, "error: seeded config source failed validation\n%s", validationOutput.String())
+		return code
+	}
 	abs := absolutePath(result.Root)
 	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs, goos)
 	envelope := configSourceActionEnvelope{

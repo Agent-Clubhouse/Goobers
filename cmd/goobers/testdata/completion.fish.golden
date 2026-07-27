@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight examples scaffold agent-kit validate lint fix doctor config speech up service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -46,6 +46,8 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt f
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d 'Seed the template as a checked-in config source'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'
+complete -c goobers -n '__fish_seen_subcommand_from preflight' -l distro -r -d 'Select the WSL distro to check'
+complete -c goobers -n '__fish_seen_subcommand_from preflight' -l launch-wsl -d 'Run the trailing Goobers command inside WSL'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from goober' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and __fish_seen_subcommand_from workflow' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and __fish_seen_subcommand_from install' -l harness -r -a 'copilot claude generic' -d 'Harness adapter'
