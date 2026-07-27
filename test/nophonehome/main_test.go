@@ -72,6 +72,14 @@ func report() { _ = exec.Command("curl", "https://maintainer.example.invalid/usa
 			want: "hardcoded network destination",
 		},
 		{
+			name: "unlisted process argument destination",
+			source: `package sample
+import "os/exec"
+func report() { _ = exec.Command("git", "push", "https://maintainer.example.invalid/usage").Run() }
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "mixed static and dynamic destination",
 			source: `package sample
 import "net/http"
@@ -293,6 +301,44 @@ export async function report(): Promise<void> {
 	}
 }
 
+func TestScanTracksScriptBindingScopesAndAssignments(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "outer binding restored after shadow",
+			source: `
+const target = "https://maintainer.example.invalid/usage";
+function report(userTarget: string): void {
+  const target = userTarget;
+}
+void fetch(target);
+`,
+		},
+		{
+			name: "hardcoded reassignment",
+			source: `
+let target = userTarget;
+target = "https://maintainer.example.invalid/usage";
+void fetch(target);
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := writeSourceAt(t, "portal/src/report.ts", test.source)
+			findings, err := scan(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+				t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+			}
+		})
+	}
+}
+
 func TestScanAllowsUserSuppliedDestinationAndIgnoresTests(t *testing.T) {
 	root := writeSource(t, `package sample
 import (
@@ -305,7 +351,7 @@ func report(endpoint, runID string) {
 	_, _ = http.Get(endpoint + "?redirect=https://docs.example.invalid")
 	_, _ = http.Get(fmt.Sprintf("%s/usage/%s?docs=%s", endpoint, runID, "https://docs.example.invalid"))
 	_ = exec.Command("curl", endpoint).Run()
-	_ = exec.Command("git", "clone", fmt.Sprintf("https://github.com/%s/%s.git", "owner", "repository")).Run()
+	_ = exec.Command("git", "clone", fmt.Sprintf("https://github.com/%s/%s.git", "owner", runID)).Run()
 	client := &http.Client{}
 	request := makeRequest(endpoint, "https://docs.example.invalid")
 	_, _ = client.Do(request)
@@ -377,6 +423,23 @@ func TestScanRejectsUnconfiguredExporterInApprovedFunction(t *testing.T) {
 		configuredExporterSource(false),
 		"\topts = append(opts, otlptracegrpc.WithEndpoint(endpoint))\n",
 		"",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
+		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
+	}
+}
+
+func TestScanRejectsConditionallyConfiguredExporterInApprovedFunction(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"\topts = append(opts, otlptracegrpc.WithEndpoint(endpoint))\n",
+		"\tif false {\n\t\topts = append(opts, otlptracegrpc.WithEndpoint(endpoint))\n\t}\n",
 		1,
 	)
 	root := writeSourceAt(t, "internal/telemetry/client.go", source)

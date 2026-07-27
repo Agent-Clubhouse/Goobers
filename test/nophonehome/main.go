@@ -237,8 +237,9 @@ func scanGoFile(root, path string) ([]finding, error) {
 			bindings := bindingsAt(function, call, fileBindings)
 			if firstArgument, callName, monitored := monitoredProcessCall(selector, imports); monitored {
 				position := files.Position(call.Pos())
-				for _, argument := range processURLArguments(call.Args[firstArgument:], bindings) {
-					if destination, ok := processURLDestination(argument, bindings); ok {
+				arguments, inspectPartial := processURLArguments(call.Args[firstArgument:], bindings)
+				for _, argument := range arguments {
+					if destination, ok := processURLDestination(argument, bindings, inspectPartial); ok {
 						findings = append(findings, finding{
 							path: rel, line: position.Line, column: position.Column,
 							message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
@@ -312,25 +313,35 @@ func monitoredProcessCall(selector *ast.SelectorExpr, imports map[string]string)
 	}
 }
 
-func processURLArguments(arguments []ast.Expr, bindings map[string]ast.Expr) []ast.Expr {
-	if len(arguments) == 0 {
-		return nil
+func processURLArguments(arguments []ast.Expr, bindings map[string]ast.Expr) ([]ast.Expr, bool) {
+	if len(arguments) < 2 {
+		return nil, false
 	}
 	command, ok := staticString(arguments[0], bindings, nil)
 	if !ok {
-		return nil
+		return arguments[1:], false
 	}
 	name := strings.TrimSuffix(strings.ToLower(filepath.Base(command)), ".exe")
 	switch name {
 	case "curl", "wget", "http", "httpie", "powershell", "pwsh",
 		"sh", "bash", "dash", "ksh", "zsh", "cmd":
-		return arguments[1:]
+		return arguments[1:], true
 	default:
-		return nil
+		return arguments[1:], false
 	}
 }
 
-func processURLDestination(expression ast.Expr, bindings map[string]ast.Expr) (string, bool) {
+func processURLDestination(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	inspectPartial bool,
+) (string, bool) {
+	if text, ok := staticString(expression, bindings, nil); ok {
+		return hardcodedURLPrefix(text)
+	}
+	if !inspectPartial {
+		return "", false
+	}
 	text, ok := partialString(expression, bindings, nil)
 	if !ok {
 		return "", false
@@ -910,51 +921,201 @@ func explicitlyConfiguredImplicitCall(
 		return false
 	}
 	importPath := strings.TrimSuffix(callName, ".New")
-	configured := false
-	ast.Inspect(function.Body, func(node ast.Node) bool {
-		if configured || node == nil || node.Pos() >= call.Pos() {
-			return false
+	state, found := implicitConfigurationBeforeCall(
+		function.Body.List,
+		implicitConfiguration{reaches: true},
+		call,
+		func(assignment *ast.AssignStmt, configured bool) bool {
+			return applyImplicitOptionsAssignment(
+				assignment,
+				configured,
+				function,
+				imports,
+				fileBindings,
+				importPath,
+				approval,
+			)
+		},
+	)
+	return found && state.configured
+}
+
+type implicitConfiguration struct {
+	configured bool
+	reaches    bool
+}
+
+func implicitConfigurationBeforeCall(
+	statements []ast.Stmt,
+	state implicitConfiguration,
+	call *ast.CallExpr,
+	applyAssignment func(*ast.AssignStmt, bool) bool,
+) (implicitConfiguration, bool) {
+	for _, statement := range statements {
+		if !state.reaches {
+			return state, false
 		}
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok {
-			return true
+		if containsNode(statement, call) {
+			return implicitConfigurationInsideStatement(statement, state, call, applyAssignment)
 		}
-		for i, left := range assignment.Lhs {
-			if expressionName(left) != approval.options || i >= len(assignment.Rhs) {
+		state = implicitConfigurationAfterStatement(statement, state, applyAssignment)
+	}
+	return state, false
+}
+
+func implicitConfigurationInsideStatement(
+	statement ast.Stmt,
+	state implicitConfiguration,
+	call *ast.CallExpr,
+	applyAssignment func(*ast.AssignStmt, bool) bool,
+) (implicitConfiguration, bool) {
+	switch value := statement.(type) {
+	case *ast.BlockStmt:
+		return implicitConfigurationBeforeCall(value.List, state, call, applyAssignment)
+	case *ast.IfStmt:
+		if containsNode(value.Body, call) {
+			return implicitConfigurationBeforeCall(value.Body.List, state, call, applyAssignment)
+		}
+		if value.Else != nil && containsNode(value.Else, call) {
+			return implicitConfigurationInsideStatement(value.Else, state, call, applyAssignment)
+		}
+	case *ast.SwitchStmt:
+		for _, clause := range value.Body.List {
+			if containsNode(clause, call) {
+				return implicitConfigurationInsideStatement(clause, state, call, applyAssignment)
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		for _, clause := range value.Body.List {
+			if containsNode(clause, call) {
+				return implicitConfigurationInsideStatement(clause, state, call, applyAssignment)
+			}
+		}
+	case *ast.SelectStmt:
+		for _, clause := range value.Body.List {
+			if containsNode(clause, call) {
+				return implicitConfigurationInsideStatement(clause, state, call, applyAssignment)
+			}
+		}
+	case *ast.CaseClause:
+		return implicitConfigurationBeforeCall(value.Body, state, call, applyAssignment)
+	case *ast.CommClause:
+		return implicitConfigurationBeforeCall(value.Body, state, call, applyAssignment)
+	case *ast.ForStmt:
+		if value.Init != nil {
+			state = implicitConfigurationAfterStatement(value.Init, state, applyAssignment)
+		}
+		if containsNode(value.Body, call) {
+			return implicitConfigurationBeforeCall(value.Body.List, state, call, applyAssignment)
+		}
+	case *ast.RangeStmt:
+		if containsNode(value.Body, call) {
+			return implicitConfigurationBeforeCall(value.Body.List, state, call, applyAssignment)
+		}
+	case *ast.LabeledStmt:
+		return implicitConfigurationInsideStatement(value.Stmt, state, call, applyAssignment)
+	}
+	return state, true
+}
+
+func implicitConfigurationAfterStatement(
+	statement ast.Stmt,
+	state implicitConfiguration,
+	applyAssignment func(*ast.AssignStmt, bool) bool,
+) implicitConfiguration {
+	if !state.reaches {
+		return state
+	}
+	switch value := statement.(type) {
+	case *ast.AssignStmt:
+		state.configured = applyAssignment(value, state.configured)
+	case *ast.BlockStmt:
+		return implicitConfigurationAfterStatements(value.List, state, applyAssignment)
+	case *ast.IfStmt:
+		thenState := implicitConfigurationAfterStatements(value.Body.List, state, applyAssignment)
+		elseState := state
+		if value.Else != nil {
+			elseState = implicitConfigurationAfterStatement(value.Else, state, applyAssignment)
+		}
+		return mergeImplicitConfigurations(thenState, elseState)
+	case *ast.ReturnStmt:
+		state.reaches = false
+	}
+	return state
+}
+
+func implicitConfigurationAfterStatements(
+	statements []ast.Stmt,
+	state implicitConfiguration,
+	applyAssignment func(*ast.AssignStmt, bool) bool,
+) implicitConfiguration {
+	for _, statement := range statements {
+		state = implicitConfigurationAfterStatement(statement, state, applyAssignment)
+		if !state.reaches {
+			break
+		}
+	}
+	return state
+}
+
+func mergeImplicitConfigurations(left, right implicitConfiguration) implicitConfiguration {
+	switch {
+	case !left.reaches:
+		return right
+	case !right.reaches:
+		return left
+	default:
+		return implicitConfiguration{configured: left.configured && right.configured, reaches: true}
+	}
+}
+
+func applyImplicitOptionsAssignment(
+	assignment *ast.AssignStmt,
+	configured bool,
+	function *ast.FuncDecl,
+	imports map[string]string,
+	fileBindings map[string]ast.Expr,
+	importPath string,
+	approval implicitEgressApproval,
+) bool {
+	for index, left := range assignment.Lhs {
+		if expressionName(left) != approval.options || index >= len(assignment.Rhs) {
+			continue
+		}
+		appendCall, ok := assignment.Rhs[index].(*ast.CallExpr)
+		if !ok || expressionName(appendCall.Fun) != "append" || len(appendCall.Args) < 2 ||
+			expressionName(appendCall.Args[0]) != approval.options {
+			configured = false
+			continue
+		}
+		for _, expression := range appendCall.Args[1:] {
+			optionCall, ok := expression.(*ast.CallExpr)
+			if !ok {
 				continue
 			}
-			appendCall, ok := assignment.Rhs[i].(*ast.CallExpr)
-			if !ok || expressionName(appendCall.Fun) != "append" || len(appendCall.Args) < 2 ||
-				expressionName(appendCall.Args[0]) != approval.options {
+			selector, ok := optionCall.Fun.(*ast.SelectorExpr)
+			if !ok || len(optionCall.Args) == 0 {
 				continue
 			}
-			for _, expression := range appendCall.Args[1:] {
-				optionCall, ok := expression.(*ast.CallExpr)
-				if !ok {
-					continue
-				}
-				selector, ok := optionCall.Fun.(*ast.SelectorExpr)
-				if !ok || len(optionCall.Args) == 0 {
-					continue
-				}
-				pkg, ok := selector.X.(*ast.Ident)
-				if !ok || imports[pkg.Name] != importPath {
-					continue
-				}
-				api, monitored := egressAPIs[importPath][selector.Sel.Name]
-				if !monitored || api.implicit || api.destination >= len(optionCall.Args) {
-					continue
-				}
-				bindings := bindingsAt(function, optionCall, fileBindings)
-				if derivesFrom(optionCall.Args[api.destination], bindings, approval.endpointSource, nil) {
-					configured = true
-					return false
-				}
+			pkg, ok := selector.X.(*ast.Ident)
+			if !ok || imports[pkg.Name] != importPath {
+				continue
+			}
+			api, monitored := egressAPIs[importPath][selector.Sel.Name]
+			if !monitored || api.implicit || api.destination >= len(optionCall.Args) {
+				continue
+			}
+			bindings := bindingsAt(function, optionCall, fileBindings)
+			if derivesFrom(optionCall.Args[api.destination], bindings, approval.endpointSource, nil) {
+				configured = true
 			}
 		}
-		return !configured
-	})
+	}
 	return configured
+}
+
+func containsNode(outer, inner ast.Node) bool {
+	return outer != nil && inner != nil && outer.Pos() <= inner.Pos() && outer.End() >= inner.End()
 }
 
 func derivesFrom(expression ast.Expr, bindings map[string]ast.Expr, source string, seen map[string]bool) bool {
@@ -1270,6 +1431,13 @@ type scriptToken struct {
 	staticString bool
 }
 
+type scriptScope struct {
+	declared   map[string]bool
+	bindings   map[string]string
+	urls       map[string]string
+	isFunction bool
+}
+
 func scanScriptFile(root, path string) ([]finding, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
@@ -1281,34 +1449,68 @@ func scanScriptFile(root, path string) ([]finding, error) {
 	}
 	rel = filepath.ToSlash(rel)
 	tokens := tokenizeScript(source)
-	bindings := make(map[string]string)
-	urlBindings := make(map[string]string)
+	scopes := []*scriptScope{newScriptScope(true)}
+	pendingFunction := -1
 	var findings []finding
 	for index := 0; index < len(tokens); index++ {
 		current := tokens[index]
+		if current.kind == scriptIdentifier && current.text == "function" {
+			pendingFunction = index
+		}
+		switch current.text {
+		case "{":
+			scope := newScriptScope(false)
+			if pendingFunction >= 0 && scriptFunctionBody(tokens, pendingFunction, index) {
+				scope.isFunction = true
+				declareScriptFunctionParameters(scope, tokens, pendingFunction, index)
+				pendingFunction = -1
+			}
+			scopes = append(scopes, scope)
+			continue
+		case "}":
+			if len(scopes) > 1 {
+				scopes = scopes[:len(scopes)-1]
+			}
+			continue
+		}
 		if current.kind == scriptIdentifier &&
 			(current.text == "const" || current.text == "let" || current.text == "var") {
-			nameIndex, valueIndex, ok := scriptDeclaration(tokens, index)
+			if index+1 >= len(tokens) || tokens[index+1].kind != scriptIdentifier {
+				continue
+			}
+			name := tokens[index+1].text
+			scope := scriptDeclarationScope(scopes, current.text)
+			setScriptBinding(scope, name, "", false, "", false)
+			_, valueIndex, ok := scriptDeclaration(tokens, index)
 			if ok {
-				name := tokens[nameIndex].text
-				delete(bindings, name)
-				delete(urlBindings, name)
-				value, next, static := scriptStaticString(tokens, valueIndex, bindings, nil)
-				if static && scriptExpressionBoundary(tokens, next) {
-					bindings[name] = value
-					if sensitiveEndpointName(name) && strings.TrimSpace(value) != "" {
-						findings = append(findings, finding{
-							path: rel, line: tokens[valueIndex].line, column: tokens[valueIndex].column,
-							message: fmt.Sprintf("default telemetry/reporting endpoint %q assigned to %s", value, name),
-						})
-					}
-				}
-				end := scriptExpressionEnd(tokens, valueIndex)
-				if destination, found := scriptURLDestination(tokens, valueIndex, end, bindings, urlBindings); found {
-					urlBindings[name] = destination
-				}
+				bindings, urls := visibleScriptBindings(scopes)
+				findings = bindScriptValue(
+					findings,
+					rel,
+					tokens,
+					name,
+					valueIndex,
+					scope,
+					bindings,
+					urls,
+				)
 			}
 		}
+		if valueIndex, ok := scriptAssignment(tokens, index); ok {
+			bindings, urls := visibleScriptBindings(scopes)
+			scope := scriptAssignmentScope(scopes, current.text)
+			findings = bindScriptValue(
+				findings,
+				rel,
+				tokens,
+				current.text,
+				valueIndex,
+				scope,
+				bindings,
+				urls,
+			)
+		}
+		bindings, urlBindings := visibleScriptBindings(scopes)
 		destinationArgument, monitored := scriptEgressCall(tokens, index)
 		if !monitored {
 			continue
@@ -1332,6 +1534,157 @@ func scanScriptFile(root, path string) ([]finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+func newScriptScope(function bool) *scriptScope {
+	return &scriptScope{
+		declared:   make(map[string]bool),
+		bindings:   make(map[string]string),
+		urls:       make(map[string]string),
+		isFunction: function,
+	}
+}
+
+func visibleScriptBindings(scopes []*scriptScope) (map[string]string, map[string]string) {
+	bindings := make(map[string]string)
+	urls := make(map[string]string)
+	for _, scope := range scopes {
+		for name := range scope.declared {
+			delete(bindings, name)
+			delete(urls, name)
+		}
+		for name, value := range scope.bindings {
+			bindings[name] = value
+		}
+		for name, value := range scope.urls {
+			urls[name] = value
+		}
+	}
+	return bindings, urls
+}
+
+func scriptDeclarationScope(scopes []*scriptScope, declaration string) *scriptScope {
+	if declaration != "var" {
+		return scopes[len(scopes)-1]
+	}
+	for index := len(scopes) - 1; index >= 0; index-- {
+		if scopes[index].isFunction {
+			return scopes[index]
+		}
+	}
+	return scopes[0]
+}
+
+func scriptAssignmentScope(scopes []*scriptScope, name string) *scriptScope {
+	functionScope := 0
+	for index := len(scopes) - 1; index >= 0; index-- {
+		if scopes[index].isFunction {
+			functionScope = index
+			break
+		}
+	}
+	for index := len(scopes) - 1; index >= 0; index-- {
+		if !scopes[index].declared[name] {
+			continue
+		}
+		if index < functionScope {
+			return scopes[functionScope]
+		}
+		return scopes[index]
+	}
+	return scopes[functionScope]
+}
+
+func setScriptBinding(
+	scope *scriptScope,
+	name, value string,
+	static bool,
+	destination string,
+	hasDestination bool,
+) {
+	scope.declared[name] = true
+	delete(scope.bindings, name)
+	delete(scope.urls, name)
+	if static {
+		scope.bindings[name] = value
+	}
+	if hasDestination {
+		scope.urls[name] = destination
+	}
+}
+
+func bindScriptValue(
+	findings []finding,
+	rel string,
+	tokens []scriptToken,
+	name string,
+	valueIndex int,
+	scope *scriptScope,
+	bindings, urls map[string]string,
+) []finding {
+	value, next, static := scriptStaticString(tokens, valueIndex, bindings, nil)
+	static = static && scriptExpressionBoundary(tokens, next)
+	end := scriptExpressionEnd(tokens, valueIndex)
+	destination, hasDestination := scriptURLDestination(tokens, valueIndex, end, bindings, urls)
+	setScriptBinding(scope, name, value, static, destination, hasDestination)
+	if static && sensitiveEndpointName(name) && strings.TrimSpace(value) != "" {
+		findings = append(findings, finding{
+			path: rel, line: tokens[valueIndex].line, column: tokens[valueIndex].column,
+			message: fmt.Sprintf("default telemetry/reporting endpoint %q assigned to %s", value, name),
+		})
+	}
+	return findings
+}
+
+func scriptFunctionBody(tokens []scriptToken, function, body int) bool {
+	open := -1
+	for index := function + 1; index < body; index++ {
+		if tokens[index].text == "(" {
+			open = index
+			break
+		}
+	}
+	if open < 0 {
+		return false
+	}
+	close := matchingScriptDelimiter(tokens, open, len(tokens))
+	return close >= 0 && close < body
+}
+
+func declareScriptFunctionParameters(scope *scriptScope, tokens []scriptToken, function, body int) {
+	open := -1
+	for index := function + 1; index < body; index++ {
+		if tokens[index].text == "(" {
+			open = index
+			break
+		}
+	}
+	if open < 0 {
+		return
+	}
+	close := matchingScriptDelimiter(tokens, open, body)
+	if close < 0 {
+		return
+	}
+	expectName := true
+	depth := 0
+	for index := open + 1; index < close; index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			depth--
+		case ",":
+			if depth == 0 {
+				expectName = true
+			}
+		default:
+			if depth == 0 && expectName && tokens[index].kind == scriptIdentifier {
+				expectName = false
+				setScriptBinding(scope, tokens[index].text, "", false, "", false)
+			}
+		}
+	}
 }
 
 func tokenizeScript(source []byte) []scriptToken {
@@ -1491,6 +1844,23 @@ func scriptDeclaration(tokens []scriptToken, declaration int) (int, int, bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+func scriptAssignment(tokens []scriptToken, identifier int) (int, bool) {
+	if identifier+2 >= len(tokens) || tokens[identifier].kind != scriptIdentifier ||
+		tokens[identifier+1].text != "=" {
+		return 0, false
+	}
+	if tokens[identifier+2].text == "=" || tokens[identifier+2].text == ">" {
+		return 0, false
+	}
+	if identifier > 0 {
+		switch tokens[identifier-1].text {
+		case ".", "const", "let", "var", "!", "<", ">", "=":
+			return 0, false
+		}
+	}
+	return identifier + 2, true
 }
 
 func scriptEgressCall(tokens []scriptToken, index int) (int, bool) {
