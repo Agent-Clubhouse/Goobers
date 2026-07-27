@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,7 @@ import (
 type egressAPI struct {
 	destination int
 	implicit    bool
+	request     bool
 }
 
 var egressAPIs = map[string]map[string]egressAPI{
@@ -70,6 +72,7 @@ var httpClientEgressAPIs = map[string]egressAPI{
 	"Head":     {destination: 0},
 	"Post":     {destination: 0},
 	"PostForm": {destination: 0},
+	"Do":       {destination: 0, request: true},
 }
 
 type implicitEgressApproval struct {
@@ -232,6 +235,18 @@ func scanGoFile(root, path string) ([]finding, error) {
 				return true
 			}
 			bindings := bindingsAt(function, call, fileBindings)
+			if firstArgument, callName, monitored := monitoredProcessCall(selector, imports); monitored {
+				position := files.Position(call.Pos())
+				for _, argument := range processURLArguments(call.Args[firstArgument:], bindings) {
+					if destination, ok := processURLDestination(argument, bindings); ok {
+						findings = append(findings, finding{
+							path: rel, line: position.Line, column: position.Column,
+							message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
+						})
+					}
+				}
+				return true
+			}
 			api, callName, monitored := monitoredEgressCall(
 				parsed,
 				function,
@@ -251,7 +266,7 @@ func scanGoFile(root, path string) ([]finding, error) {
 			if api.destination >= len(call.Args) {
 				return true
 			}
-			if destination, ok := staticString(call.Args[api.destination], bindings, nil); ok && strings.TrimSpace(destination) != "" {
+			if destination, ok := egressDestination(api, call.Args[api.destination], bindings, imports); ok {
 				findings = append(findings, finding{
 					path: rel, line: position.Line, column: position.Column,
 					message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
@@ -280,6 +295,198 @@ func scanGoFile(root, path string) ([]finding, error) {
 	}
 	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, fileBindings)...)
 	return findings, nil
+}
+
+func monitoredProcessCall(selector *ast.SelectorExpr, imports map[string]string) (int, string, bool) {
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || imports[pkg.Name] != "os/exec" {
+		return 0, "", false
+	}
+	switch selector.Sel.Name {
+	case "Command":
+		return 0, "os/exec.Command", true
+	case "CommandContext":
+		return 1, "os/exec.CommandContext", true
+	default:
+		return 0, "", false
+	}
+}
+
+func processURLArguments(arguments []ast.Expr, bindings map[string]ast.Expr) []ast.Expr {
+	if len(arguments) == 0 {
+		return nil
+	}
+	command, ok := staticString(arguments[0], bindings, nil)
+	if !ok {
+		return nil
+	}
+	name := strings.TrimSuffix(strings.ToLower(filepath.Base(command)), ".exe")
+	switch name {
+	case "curl", "wget", "http", "httpie", "powershell", "pwsh",
+		"sh", "bash", "dash", "ksh", "zsh", "cmd":
+		return arguments[1:]
+	default:
+		return nil
+	}
+}
+
+func processURLDestination(expression ast.Expr, bindings map[string]ast.Expr) (string, bool) {
+	text, ok := partialString(expression, bindings, nil)
+	if !ok {
+		return "", false
+	}
+	return hardcodedURLPrefix(text)
+}
+
+func egressDestination(
+	api egressAPI,
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	imports map[string]string,
+) (string, bool) {
+	if api.request {
+		return requestURLDestination(expression, bindings, imports, nil)
+	}
+	if destination, ok := staticString(expression, bindings, nil); ok && strings.TrimSpace(destination) != "" {
+		return destination, true
+	}
+	return staticURLDestination(expression, bindings, nil)
+}
+
+func requestURLDestination(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	imports map[string]string,
+	seen map[string]bool,
+) (string, bool) {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return "", false
+		}
+		seen[value.Name] = true
+		defer delete(seen, value.Name)
+		if assignedURL, ok := bindings[value.Name+".URL"]; ok {
+			return requestURLValueDestination(assignedURL, bindings, imports, seen)
+		}
+		if binding, ok := bindings[value.Name]; ok {
+			return requestURLDestination(binding, bindings, imports, seen)
+		}
+	case *ast.UnaryExpr:
+		return requestURLDestination(value.X, bindings, imports, seen)
+	case *ast.ParenExpr:
+		return requestURLDestination(value.X, bindings, imports, seen)
+	case *ast.CallExpr:
+		selector, ok := value.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return "", false
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || imports[pkg.Name] != "net/http" {
+			return "", false
+		}
+		switch selector.Sel.Name {
+		case "NewRequest":
+			if len(value.Args) > 1 {
+				return egressDestination(egressAPI{destination: 1}, value.Args[1], bindings, imports)
+			}
+		case "NewRequestWithContext":
+			if len(value.Args) > 2 {
+				return egressDestination(egressAPI{destination: 2}, value.Args[2], bindings, imports)
+			}
+		}
+	case *ast.CompositeLit:
+		for _, element := range value.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			if !ok || expressionName(field.Key) != "URL" {
+				continue
+			}
+			return requestURLValueDestination(field.Value, bindings, imports, seen)
+		}
+	}
+	return "", false
+}
+
+func requestURLValueDestination(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	imports map[string]string,
+	seen map[string]bool,
+) (string, bool) {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return "", false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return "", false
+		}
+		seen[value.Name] = true
+		destination, found := requestURLValueDestination(binding, bindings, imports, seen)
+		delete(seen, value.Name)
+		return destination, found
+	case *ast.UnaryExpr:
+		return requestURLValueDestination(value.X, bindings, imports, seen)
+	case *ast.ParenExpr:
+		return requestURLValueDestination(value.X, bindings, imports, seen)
+	case *ast.CallExpr:
+		selector, ok := value.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return "", false
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || imports[pkg.Name] != "net/url" || len(value.Args) == 0 {
+			return "", false
+		}
+		switch selector.Sel.Name {
+		case "Parse", "ParseRequestURI":
+			return egressDestination(egressAPI{}, value.Args[0], bindings, imports)
+		}
+	case *ast.CompositeLit:
+		if !isURLType(value.Type, imports) {
+			return "", false
+		}
+		var scheme, host string
+		for _, element := range value.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			text, static := staticString(field.Value, bindings, nil)
+			if !static {
+				continue
+			}
+			switch expressionName(field.Key) {
+			case "Scheme":
+				scheme = text
+			case "Host":
+				host = text
+			}
+		}
+		return hardcodedLeadingURLPrefix(scheme + "://" + host)
+	}
+	return "", false
+}
+
+func isURLType(expression ast.Expr, imports map[string]string) bool {
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return isURLType(value.X, imports)
+	case *ast.ParenExpr:
+		return isURLType(value.X, imports)
+	case *ast.SelectorExpr:
+		pkg, ok := value.X.(*ast.Ident)
+		return ok && imports[pkg.Name] == "net/url" && value.Sel.Name == "URL"
+	default:
+		return false
+	}
 }
 
 func monitoredEgressCall(
@@ -314,16 +521,23 @@ func httpClientIdentifiersAt(
 	imports map[string]string,
 ) map[string]bool {
 	identifiers := make(map[string]bool)
+	structFields := httpClientStructFields(parsed, imports)
+	for typeName, fields := range structFields {
+		for fieldName := range fields {
+			if fieldName == "" {
+				identifiers[typeName] = true
+			} else {
+				identifiers[typeName+"."+fieldName] = true
+			}
+		}
+	}
 	addFields := func(fields *ast.FieldList) {
 		if fields == nil {
 			return
 		}
 		for _, field := range fields.List {
-			if !isHTTPClientType(field.Type, imports) {
-				continue
-			}
 			for _, name := range field.Names {
-				identifiers[name.Name] = true
+				addHTTPClientIdentifiers(identifiers, name.Name, field.Type, imports, structFields)
 			}
 		}
 	}
@@ -334,11 +548,11 @@ func httpClientIdentifiersAt(
 		}
 		for _, spec := range general.Specs {
 			values, ok := spec.(*ast.ValueSpec)
-			if !ok || !isHTTPClientType(values.Type, imports) {
+			if !ok {
 				continue
 			}
 			for _, name := range values.Names {
-				identifiers[name.Name] = true
+				addHTTPClientIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
 			}
 		}
 	}
@@ -349,15 +563,111 @@ func httpClientIdentifiersAt(
 			return false
 		}
 		values, ok := node.(*ast.ValueSpec)
-		if !ok || !isHTTPClientType(values.Type, imports) {
+		if !ok {
 			return true
 		}
 		for _, name := range values.Names {
-			identifiers[name.Name] = true
+			addHTTPClientIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
 		}
 		return false
 	})
 	return identifiers
+}
+
+func httpClientStructFields(parsed *ast.File, imports map[string]string) map[string]map[string]bool {
+	result := make(map[string]map[string]bool)
+	embeddedTypes := make(map[string][]string)
+	for _, declaration := range parsed.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range general.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range structType.Fields.List {
+				if len(field.Names) == 0 && !isHTTPClientType(field.Type, imports) {
+					if embedded := namedTypeName(field.Type); embedded != "" {
+						embeddedTypes[typeSpec.Name.Name] = append(embeddedTypes[typeSpec.Name.Name], embedded)
+					}
+					continue
+				}
+				if !isHTTPClientType(field.Type, imports) {
+					continue
+				}
+				if result[typeSpec.Name.Name] == nil {
+					result[typeSpec.Name.Name] = make(map[string]bool)
+				}
+				if len(field.Names) == 0 {
+					result[typeSpec.Name.Name][""] = true
+					continue
+				}
+				for _, name := range field.Names {
+					result[typeSpec.Name.Name][name.Name] = true
+				}
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for typeName, embedded := range embeddedTypes {
+			for _, embeddedType := range embedded {
+				if !result[embeddedType][""] || result[typeName][""] {
+					continue
+				}
+				if result[typeName] == nil {
+					result[typeName] = make(map[string]bool)
+				}
+				result[typeName][""] = true
+				result[typeName][embeddedType] = true
+				changed = true
+			}
+		}
+	}
+	return result
+}
+
+func addHTTPClientIdentifiers(
+	identifiers map[string]bool,
+	name string,
+	expression ast.Expr,
+	imports map[string]string,
+	structFields map[string]map[string]bool,
+) {
+	if isHTTPClientType(expression, imports) {
+		identifiers[name] = true
+		return
+	}
+	for fieldName := range structFields[namedTypeName(expression)] {
+		if fieldName == "" {
+			identifiers[name] = true
+		} else {
+			identifiers[name+"."+fieldName] = true
+		}
+	}
+}
+
+func namedTypeName(expression ast.Expr) string {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return value.Name
+	case *ast.StarExpr:
+		return namedTypeName(value.X)
+	case *ast.ParenExpr:
+		return namedTypeName(value.X)
+	case *ast.IndexExpr:
+		return namedTypeName(value.X)
+	case *ast.IndexListExpr:
+		return namedTypeName(value.X)
+	default:
+		return ""
+	}
 }
 
 func isHTTPClientType(expression ast.Expr, imports map[string]string) bool {
@@ -381,11 +691,11 @@ func isHTTPClientReceiver(
 	typedClients map[string]bool,
 	seen map[string]bool,
 ) bool {
+	if typedClients[expressionName(expression)] {
+		return true
+	}
 	switch value := expression.(type) {
 	case *ast.Ident:
-		if typedClients[value.Name] {
-			return true
-		}
 		if seen == nil {
 			seen = make(map[string]bool)
 		}
@@ -402,9 +712,19 @@ func isHTTPClientReceiver(
 		return resolved
 	case *ast.SelectorExpr:
 		pkg, ok := value.X.(*ast.Ident)
-		return ok && imports[pkg.Name] == "net/http" && value.Sel.Name == "DefaultClient"
+		if ok && imports[pkg.Name] == "net/http" && value.Sel.Name == "DefaultClient" {
+			return true
+		}
+		if !ok {
+			return false
+		}
+		binding, bound := bindings[pkg.Name]
+		if !bound {
+			return false
+		}
+		return typedClients[boundTypeName(binding)+"."+value.Sel.Name]
 	case *ast.CompositeLit:
-		return isHTTPClientType(value.Type, imports)
+		return isHTTPClientType(value.Type, imports) || typedClients[namedTypeName(value.Type)]
 	case *ast.UnaryExpr:
 		return value.Op == token.AND &&
 			isHTTPClientReceiver(value.X, imports, bindings, typedClients, seen)
@@ -419,6 +739,19 @@ func isHTTPClientReceiver(
 	}
 }
 
+func boundTypeName(expression ast.Expr) string {
+	switch value := expression.(type) {
+	case *ast.CompositeLit:
+		return namedTypeName(value.Type)
+	case *ast.UnaryExpr:
+		return boundTypeName(value.X)
+	case *ast.ParenExpr:
+		return boundTypeName(value.X)
+	default:
+		return ""
+	}
+}
+
 func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[string]string, []finding) {
 	imports := make(map[string]string)
 	var findings []finding
@@ -427,7 +760,8 @@ func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[s
 		if err != nil {
 			continue
 		}
-		if _, monitored := egressAPIs[importPath]; !monitored {
+		if _, monitored := egressAPIs[importPath]; !monitored &&
+			importPath != "os/exec" && importPath != "net/url" {
 			continue
 		}
 		if spec.Name != nil && spec.Name.Name == "_" {
@@ -513,14 +847,14 @@ func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string
 		switch value := node.(type) {
 		case *ast.AssignStmt:
 			for i, left := range value.Lhs {
-				name, ok := left.(*ast.Ident)
-				if !ok || name.Name == "_" {
+				name := expressionName(left)
+				if name == "" || name == "_" {
 					continue
 				}
 				if i < len(value.Rhs) {
-					bindings[name.Name] = value.Rhs[i]
+					bindings[name] = value.Rhs[i]
 				} else {
-					delete(bindings, name.Name)
+					delete(bindings, name)
 				}
 			}
 			return false
@@ -695,9 +1029,138 @@ func staticString(expression ast.Expr, bindings map[string]ast.Expr, seen map[st
 		text, ok := staticString(binding, bindings, seen)
 		delete(seen, value.Name)
 		return text, ok
+	case *ast.CallExpr:
+		if expressionName(value.Fun) != "fmt.Sprintf" || len(value.Args) == 0 {
+			return "", false
+		}
+		format, ok := staticString(value.Args[0], bindings, seen)
+		if !ok {
+			return "", false
+		}
+		arguments := make([]any, 0, len(value.Args)-1)
+		for _, argument := range value.Args[1:] {
+			text, static := staticString(argument, bindings, seen)
+			if !static {
+				return "", false
+			}
+			arguments = append(arguments, text)
+		}
+		return fmt.Sprintf(format, arguments...), true
 	default:
 		return "", false
 	}
+}
+
+func staticURLDestination(expression ast.Expr, bindings map[string]ast.Expr, seen map[string]bool) (string, bool) {
+	text, ok := partialString(expression, bindings, seen)
+	if !ok {
+		return "", false
+	}
+	return hardcodedLeadingURLPrefix(text)
+}
+
+func partialString(expression ast.Expr, bindings map[string]ast.Expr, seen map[string]bool) (string, bool) {
+	if text, ok := staticString(expression, bindings, nil); ok {
+		return text, true
+	}
+	switch value := expression.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
+			return "${dynamic}", true
+		}
+		text, err := strconv.Unquote(value.Value)
+		return text, err == nil
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return "${dynamic}", true
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return "${dynamic}", true
+		}
+		seen[value.Name] = true
+		text, resolved := partialString(binding, bindings, seen)
+		delete(seen, value.Name)
+		return text, resolved
+	case *ast.BinaryExpr:
+		if value.Op != token.ADD {
+			return "${dynamic}", true
+		}
+		left, leftOK := partialString(value.X, bindings, seen)
+		right, rightOK := partialString(value.Y, bindings, seen)
+		return left + right, leftOK && rightOK
+	case *ast.ParenExpr:
+		return partialString(value.X, bindings, seen)
+	case *ast.UnaryExpr:
+		return partialString(value.X, bindings, seen)
+	case *ast.CallExpr:
+		if expressionName(value.Fun) != "fmt.Sprintf" || len(value.Args) == 0 {
+			return "${dynamic}", true
+		}
+		format, ok := staticString(value.Args[0], bindings, nil)
+		if !ok {
+			return "${dynamic}", true
+		}
+		arguments := make([]any, 0, len(value.Args)-1)
+		for _, argument := range value.Args[1:] {
+			text, resolved := partialString(argument, bindings, seen)
+			if !resolved {
+				return "", false
+			}
+			arguments = append(arguments, text)
+		}
+		return fmt.Sprintf(format, arguments...), true
+	default:
+		return "${dynamic}", true
+	}
+}
+
+func hardcodedLeadingURLPrefix(text string) (string, bool) {
+	text = strings.TrimLeft(text, " \t\r\n")
+	lower := strings.ToLower(text)
+	for _, scheme := range []string{"http://", "https://", "ws://", "wss://", "grpc://"} {
+		if strings.HasPrefix(lower, scheme) {
+			return hardcodedURLPrefix(text)
+		}
+	}
+	return "", false
+}
+
+func hardcodedURLPrefix(text string) (string, bool) {
+	lower := strings.ToLower(text)
+	start := -1
+	for _, scheme := range []string{"http://", "https://", "ws://", "wss://", "grpc://"} {
+		if index := strings.Index(lower, scheme); index >= 0 && (start < 0 || index < start) {
+			start = index
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	end := len(text)
+	for index, character := range text[start:] {
+		if strings.ContainsRune(" \t\r\n\"'`", character) {
+			end = start + index
+			break
+		}
+	}
+	if interpolation := strings.Index(text[start:end], "${"); interpolation >= 0 {
+		end = start + interpolation
+	}
+	candidate := strings.TrimRight(text[start:end], ",;)]}")
+	schemeEnd := strings.Index(candidate, "://") + len("://")
+	originEnd := len(candidate)
+	if separator := strings.IndexAny(candidate[schemeEnd:], "/?#"); separator >= 0 {
+		originEnd = schemeEnd + separator
+	}
+	parsed, err := url.Parse(candidate[:originEnd])
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	return candidate, true
 }
 
 func telemetryEndpointDefaults(files *token.FileSet, parsed *ast.File, rel string, fileBindings map[string]ast.Expr) []finding {
@@ -819,6 +1282,7 @@ func scanScriptFile(root, path string) ([]finding, error) {
 	rel = filepath.ToSlash(rel)
 	tokens := tokenizeScript(source)
 	bindings := make(map[string]string)
+	urlBindings := make(map[string]string)
 	var findings []finding
 	for index := 0; index < len(tokens); index++ {
 		current := tokens[index]
@@ -826,9 +1290,11 @@ func scanScriptFile(root, path string) ([]finding, error) {
 			(current.text == "const" || current.text == "let" || current.text == "var") {
 			nameIndex, valueIndex, ok := scriptDeclaration(tokens, index)
 			if ok {
+				name := tokens[nameIndex].text
+				delete(bindings, name)
+				delete(urlBindings, name)
 				value, next, static := scriptStaticString(tokens, valueIndex, bindings, nil)
 				if static && scriptExpressionBoundary(tokens, next) {
-					name := tokens[nameIndex].text
 					bindings[name] = value
 					if sensitiveEndpointName(name) && strings.TrimSpace(value) != "" {
 						findings = append(findings, finding{
@@ -836,6 +1302,10 @@ func scanScriptFile(root, path string) ([]finding, error) {
 							message: fmt.Sprintf("default telemetry/reporting endpoint %q assigned to %s", value, name),
 						})
 					}
+				}
+				end := scriptExpressionEnd(tokens, valueIndex)
+				if destination, found := scriptURLDestination(tokens, valueIndex, end, bindings, urlBindings); found {
+					urlBindings[name] = destination
 				}
 			}
 		}
@@ -849,7 +1319,12 @@ func scanScriptFile(root, path string) ([]finding, error) {
 		}
 		destination, next, static := scriptStaticString(tokens, argument, bindings, nil)
 		if !static || !scriptCallArgumentBoundary(tokens, next) || strings.TrimSpace(destination) == "" {
-			continue
+			end := scriptCallArgumentEnd(tokens, argument)
+			var found bool
+			destination, found = scriptURLDestination(tokens, argument, end, bindings, urlBindings)
+			if !found {
+				continue
+			}
 		}
 		findings = append(findings, finding{
 			path: rel, line: current.line, column: current.column,
@@ -1060,6 +1535,153 @@ func scriptCallArgument(tokens []scriptToken, openParenthesis, destination int) 
 		}
 	}
 	return -1
+}
+
+func scriptCallArgumentEnd(tokens []scriptToken, start int) int {
+	depth := 0
+	for index := start; index < len(tokens); index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return index
+			}
+			depth--
+		case ",":
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return len(tokens)
+}
+
+func scriptExpressionEnd(tokens []scriptToken, start int) int {
+	depth := 0
+	for index := start; index < len(tokens); index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return index
+			}
+			depth--
+		case ";", ",":
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return len(tokens)
+}
+
+func scriptURLDestination(
+	tokens []scriptToken,
+	start, end int,
+	bindings, urlBindings map[string]string,
+) (string, bool) {
+	for start < end && tokens[start].text == "(" {
+		close := matchingScriptDelimiter(tokens, start, end)
+		if close != end-1 {
+			break
+		}
+		start++
+		end--
+	}
+	depth := 0
+	for index := start; index < end; index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			depth--
+		case "+":
+			if depth == 0 {
+				if destination, ok := scriptURLDestination(tokens, start, index, bindings, urlBindings); ok {
+					return destination, true
+				}
+				return scriptURLDestination(tokens, index+1, end, bindings, urlBindings)
+			}
+		}
+	}
+	if end-start != 1 {
+		return "", false
+	}
+	current := tokens[start]
+	switch current.kind {
+	case scriptString:
+		return scriptTemplateURLDestination(current.text, bindings)
+	case scriptIdentifier:
+		if destination := urlBindings[current.text]; destination != "" {
+			return destination, true
+		}
+		if destination, ok := hardcodedURLPrefix(bindings[current.text]); ok {
+			return destination, true
+		}
+	}
+	return "", false
+}
+
+func matchingScriptDelimiter(tokens []scriptToken, open, end int) int {
+	depth := 0
+	for index := open; index < end; index++ {
+		switch tokens[index].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func scriptTemplateURLDestination(text string, bindings map[string]string) (string, bool) {
+	if destination, ok := hardcodedURLPrefix(text); ok {
+		return destination, true
+	}
+	var resolved strings.Builder
+	for {
+		start := strings.Index(text, "${")
+		if start < 0 {
+			resolved.WriteString(text)
+			break
+		}
+		resolved.WriteString(text[:start])
+		text = text[start+2:]
+		end := strings.IndexByte(text, '}')
+		if end < 0 {
+			return "", false
+		}
+		value, ok := scriptTemplateStaticValue(strings.TrimSpace(text[:end]), bindings)
+		if !ok {
+			return hardcodedURLPrefix(resolved.String())
+		}
+		resolved.WriteString(value)
+		text = text[end+1:]
+	}
+	return hardcodedURLPrefix(resolved.String())
+}
+
+func scriptTemplateStaticValue(expression string, bindings map[string]string) (string, bool) {
+	if value, ok := bindings[expression]; ok {
+		return value, true
+	}
+	if len(expression) < 2 {
+		return "", false
+	}
+	quote := expression[0]
+	if (quote != '"' && quote != '\'' && quote != '`') || expression[len(expression)-1] != quote {
+		return "", false
+	}
+	value := expression[1 : len(expression)-1]
+	value = strings.ReplaceAll(value, `\`+string(quote), string(quote))
+	value = strings.ReplaceAll(value, `\\`, `\`)
+	return value, true
 }
 
 func scriptStaticString(

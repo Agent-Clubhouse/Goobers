@@ -64,6 +64,113 @@ func report() {
 			want: "hardcoded network destination",
 		},
 		{
+			name: "process argument destination",
+			source: `package sample
+import "os/exec"
+func report() { _ = exec.Command("curl", "https://maintainer.example.invalid/usage").Run() }
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "mixed static and dynamic destination",
+			source: `package sample
+import "net/http"
+func report(runID string) { _, _ = http.Get("https://maintainer.example.invalid/usage/" + runID) }
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "formatted static origin",
+			source: `package sample
+import (
+	"fmt"
+	"net/http"
+)
+func report() { _, _ = http.Get(fmt.Sprintf("https://%s/usage", "maintainer.example.invalid")) }
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "formatted origin argument",
+			source: `package sample
+import (
+	"fmt"
+	"net/http"
+)
+func report(runID string) {
+	_, _ = http.Get(fmt.Sprintf("%s/usage/%s", "https://maintainer.example.invalid", runID))
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "HTTP client struct field",
+			source: `package sample
+import "net/http"
+type reporter struct { client *http.Client }
+func (r *reporter) report() {
+	_, _ = r.client.Post("https://maintainer.example.invalid/usage", "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "embedded HTTP client",
+			source: `package sample
+import "net/http"
+type reporter struct { *http.Client }
+func (r *reporter) report() {
+	_, _ = r.Get("https://maintainer.example.invalid/usage")
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "transitively embedded HTTP client",
+			source: `package sample
+import "net/http"
+type inner struct { *http.Client }
+type reporter struct { inner }
+func (r *reporter) report() {
+	_, _ = r.Get("https://maintainer.example.invalid/usage")
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "HTTP client request",
+			source: `package sample
+import (
+	"net/http"
+	"net/url"
+)
+func report(client *http.Client, runID string) {
+	request := &http.Request{}
+	request.URL, _ = url.Parse("https://maintainer.example.invalid/usage/" + runID)
+	_, _ = client.Do(request)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "HTTP client URL literal request",
+			source: `package sample
+import (
+	"net/http"
+	"net/url"
+)
+func report(client *http.Client) {
+	request := &http.Request{URL: &url.URL{
+		Scheme: "https",
+		Host: "maintainer.example.invalid",
+		Path: "/usage",
+	}}
+	_, _ = client.Do(request)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "default telemetry endpoint",
 			source: `package sample
 func configure() {
@@ -139,6 +246,37 @@ export async function report(): Promise<void> {
 	}
 }
 
+func TestScanRejectsInterpolatedScriptEgressDestination(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+export async function report(runID: string): Promise<void> {
+  await fetch(`+"`https://maintainer.example.invalid/usage/${runID}`"+`, { method: "POST" });
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanRejectsStaticallyInterpolatedScriptOrigin(t *testing.T) {
+	root := writeSourceAt(t, "portal/src/report.ts", `
+const host = "maintainer.example.invalid";
+export async function report(runID: string): Promise<void> {
+  await fetch(`+"`https://${host}/usage/${runID}`"+`, { method: "POST" });
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
 func TestScanRejectsScriptEgressAfterRegexLiteral(t *testing.T) {
 	root := writeSourceAt(t, "portal/src/report.ts", `
 const quote = /['"]/;
@@ -157,8 +295,21 @@ export async function report(): Promise<void> {
 
 func TestScanAllowsUserSuppliedDestinationAndIgnoresTests(t *testing.T) {
 	root := writeSource(t, `package sample
-import "net/http"
-func report(endpoint string) { _, _ = http.NewRequest(http.MethodPost, endpoint, nil) }
+import (
+	"fmt"
+	"net/http"
+	"os/exec"
+)
+func report(endpoint, runID string) {
+	_, _ = http.NewRequest(http.MethodPost, endpoint + "/usage/" + runID, nil)
+	_, _ = http.Get(endpoint + "?redirect=https://docs.example.invalid")
+	_, _ = http.Get(fmt.Sprintf("%s/usage/%s?docs=%s", endpoint, runID, "https://docs.example.invalid"))
+	_ = exec.Command("curl", endpoint).Run()
+	_ = exec.Command("git", "clone", fmt.Sprintf("https://github.com/%s/%s.git", "owner", "repository")).Run()
+	client := &http.Client{}
+	request := makeRequest(endpoint, "https://docs.example.invalid")
+	_, _ = client.Do(request)
+}
 `)
 	if err := os.WriteFile(filepath.Join(root, "hardcoded_test.go"), []byte(`package sample
 import "net/http"
@@ -183,8 +334,11 @@ void fetch("https://fixture.example.invalid");
 
 func TestScanAllowsUserSuppliedScriptDestination(t *testing.T) {
 	root := writeSourceAt(t, "portal/src/report.ts", `
+const requestUrl = "https://docs.example.invalid";
 export async function report(endpoint: string): Promise<void> {
-  await fetch(endpoint, { method: "POST" });
+  const runID = "run";
+  const requestUrl = `+"`${endpoint}/usage/${runID}`"+`;
+  await fetch(requestUrl, { method: "POST" });
 }
 `)
 	findings, err := scan(root)
