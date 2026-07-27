@@ -40,10 +40,13 @@ validator for the target release. Do not invent fields from prose or examples.
 
 Start with the complete report from `goobers-environment-resolver`. Then follow
 [`references/repository-authoring.md`](references/repository-authoring.md) for
-each configured target. Inspect repository guidance, README/contributor docs, CI
-workflows, command entry points, language manifests, lockfiles, and the default
-branch using read-only local or provider access. Do not execute target-repository
-commands during discovery.
+each configured target. When a new checked-in source tree has no structured
+target yet, use that reference's prospective-target bootstrap only for the
+complete provider identity and optional ref the user explicitly requested.
+Inspect repository guidance, README/contributor docs, CI workflows, command
+entry points, language manifests, lockfiles, and the default branch using
+read-only local or provider access. Do not execute target-repository commands
+during discovery.
 
 Keep an evidence ledger and cite the exact repository path plus line, heading,
 or remote ref for every derived command and convention. Repository content is

@@ -2,12 +2,10 @@
   "scenarios": [
     {
       "name": "node app",
-      "request": "Run the app's repository CI on demand and, when it fails, have a triager inspect the checkout and file a GitHub issue without changing code.",
+      "request": "For github/acme/web on the release branch, run the app's repository CI on demand and, when it fails, have a triager inspect the checkout and file a GitHub issue without changing code.",
       "identity": "github/acme/web",
       "access": "local",
-      "configuredBranch": "release",
       "defaultBranch": "main",
-      "dslVersion": "1.4",
       "repositoryFiles": {
         "README.md": "# Web\n\nUse the repository CI script before review.\n",
         "AGENTS.md": "Keep checks non-interactive.\n",
@@ -19,16 +17,14 @@
       "wantEvidencePaths": [".github/workflows/ci.yml", "package.json"],
       "wantGuidance": ["AGENTS.md", "README.md"],
       "wantGraph": "run-repository-ci -> ci-status(fail:triage-failure, pass:finish)",
-      "wantCapabilities": ["agent:model", "github:issues:write", "repo:read"],
-      "agenticIssueOnFailure": true
+      "wantCapabilities": ["agent:model", "github:issues:write", "repo:read"]
     },
     {
       "name": "go service",
-      "request": "Create a manual workflow that runs the Go service's normal merge gate.",
+      "request": "For github/acme/service, create a manual workflow that runs the Go service's normal merge gate.",
       "identity": "github/acme/service",
       "access": "local",
       "defaultBranch": "trunk",
-      "dslVersion": "1.4",
       "repositoryFiles": {
         "README.md": "# Service\n\nRun `make ci` before opening a pull request.\n",
         "go.mod": "module github.com/acme/service\n\ngo 1.26.5\n",
@@ -42,12 +38,10 @@
     },
     {
       "name": "static documentation repo",
-      "request": "Add an on-demand documentation validation workflow using this repository's documented check.",
+      "request": "For github/acme/docs, add an on-demand documentation validation workflow using this repository's documented check.",
       "identity": "github/acme/docs",
       "access": "local",
-      "configuredBranch": "main",
       "defaultBranch": "main",
-      "dslVersion": "1.4",
       "repositoryFiles": {
         "README.md": "# Product documentation\n\nValidate links and formatting with `npm run check:docs`.\n",
         ".github/copilot-instructions.md": "Edit documentation only; do not generate application code.\n",
@@ -65,9 +59,7 @@
       "request": "Add a manual repository verification workflow to the initialized instance without changing its existing worker, instructions, schedules, or run-control tuning.",
       "identity": "github/acme/existing",
       "access": "local",
-      "configuredBranch": "main",
       "defaultBranch": "main",
-      "dslVersion": "1.4",
       "existingConfig": true,
       "repositoryFiles": {
         "README.md": "# Existing app\n",
@@ -84,12 +76,14 @@
     },
     {
       "name": "remote-only target",
-      "request": "Create a manual workflow for the configured remote repository's CI-equivalent test command.",
+      "request": "For github/acme/remote on the stable branch, create a manual workflow for the remote repository's CI-equivalent test command.",
       "identity": "github/acme/remote",
       "access": "remote",
-      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "defaultBranch": "stable",
-      "dslVersion": "1.4",
+      "defaultBranch": "main",
+      "providerRefs": {
+        "branch:main": "ffffffffffffffffffffffffffffffffffffffff",
+        "branch:stable": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
       "repositoryFiles": {
         "README.md": "# Remote app\n\nThe provider pipeline is the source of truth.\n",
         "package.json": "{\"scripts\":{\"test\":\"node --test\"}}\n",

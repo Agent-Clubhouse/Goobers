@@ -67,9 +67,13 @@ and the installed Goobers release. It does not require the Goobers daemon.
 The author first runs the environment resolver, then inspects the configured
 target's applicable agent guidance, README and contributor docs, CI workflows,
 task-runner files, and language manifests without executing repository commands.
-For remote-only targets it uses existing read-only provider access at the
-configured ref. The result cites the exact path and line, heading, or remote ref
-behind every inferred command and convention.
+For a new source tree with no structured target, the request must name one
+complete provider identity; the skill verifies that identity and the requested
+or default ref through an exact local Git identity match or existing read-only
+provider access before it writes initial config. For remote-only targets it uses
+existing read-only provider access at the resolved ref. The result cites the
+exact path and line, heading, or remote ref behind every inferred command and
+convention.
 
 The selected binary's `versions --json`, `features --json`, canonical examples,
 release-matched schemas, and structured validator govern the generated YAML.
@@ -82,7 +86,7 @@ Include the target repo, desired cadence, work, decisions, and allowed side
 effects when known. Missing optional details receive conservative defaults.
 For example:
 
-> Create an `acme-api` gaggle for the GitHub repo and backlog `acme/api` on
+> Create an `acme-api` gaggle for the repo `github/acme/api` and its backlog on
 > `main`. Every weekday at 09:00, run `go test ./...`. If tests pass, ask a
 > triager goober to inspect the repo and file evidence-backed GitHub issues;
 > otherwise abort. The triager may read code and write issues but must never
