@@ -69,6 +69,8 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"unrelated parent",
 		"manual manifest verification",
 		"refuse toolkit and remote mismatch",
+		"reject matching tag with conflicting commit",
+		"reject tracked contract symlink",
 	} {
 		if !runs[name] {
 			t.Errorf("resolver fixture suite is missing %q", name)
@@ -80,6 +82,8 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"ambiguous instance",
 		"intact toolkit without binary",
 		"known version mismatch",
+		"conflicting local release identities",
+		"tracked symlink local source",
 	} {
 		if !scenarios[name] {
 			t.Errorf("resolver fixture suite is missing scenario %q", name)
@@ -112,12 +116,77 @@ func TestResolverSkillMatchesFixtureContract(t *testing.T) {
 		"Goobers source checkout",
 		"target application",
 		"unresolved",
+		"github/<owner>/<name>",
+		"entire sanitized provider key",
+		"`dslVersions[]`",
+		"`agent-kit check` has no JSON mode",
+		"an exact tag match never overrides",
+		"reject mode `120000`",
 		"Never query or link to `main`",
 		"`spec.additionalRepos`",
 	} {
 		if !strings.Contains(skill, required) {
 			t.Errorf("resolver skill is missing fixture-backed directive %q", required)
 		}
+	}
+}
+
+func TestAgentKitCheckFixtureUsesTextContract(t *testing.T) {
+	output := []byte("state: current\n" +
+		"bundle version: 1\n" +
+		"source binary version: v1.2.3\n" +
+		"source binary commit: abc123\n" +
+		"installed bundle version: 1\n" +
+		"installed source version: v1.2.3\n" +
+		"installed source commit: abc123\n" +
+		"update available: no\n" +
+		"modified owned files: none\n" +
+		"missing owned files: none\n")
+	check, ok := parseAgentKitCheck(output)
+	if !ok {
+		t.Fatal("real agent-kit check text was not parsed")
+	}
+	if check.State != "current" || check.SourceBinaryVersion != "v1.2.3" ||
+		check.InstalledSourceCommit != "abc123" {
+		t.Fatalf("parsed agent-kit check = %+v", check)
+	}
+	if _, ok := parseAgentKitCheck([]byte(`{"state":"current"}`)); ok {
+		t.Fatal("obsolete JSON agent-kit check shape was accepted")
+	}
+}
+
+func TestRepositoryIdentityFromRemoteURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+		ok   bool
+	}{
+		{name: "GitHub HTTPS", url: "https://token@github.com/Acme/Web.git", want: "github/acme/web", ok: true},
+		{name: "GitHub SSH", url: "git@github.com:Acme/Web.git", want: "github/acme/web", ok: true},
+		{name: "ADO HTTPS", url: "https://dev.azure.com/Acme/Platform/_git/Web", want: "ado/acme/platform/web", ok: true},
+		{name: "ADO SSH", url: "git@ssh.dev.azure.com:v3/Acme/Platform/Web", want: "ado/acme/platform/web", ok: true},
+		{name: "unknown provider", url: "https://example.invalid/acme/web.git", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := repositoryIdentityFromRemoteURL(tt.url)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("repository identity = %q, %t; want %q, %t", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestRepositoryIdentityRequiresCompleteProviderKey(t *testing.T) {
+	if got := repositoryIdentity(configRepo{Provider: "github", Owner: "acme", Name: "web"}); got != "github/acme/web" {
+		t.Fatalf("GitHub identity = %q", got)
+	}
+	if got := repositoryIdentity(configRepo{Provider: "ado", Owner: "acme", Name: "web"}); got != "" {
+		t.Fatalf("incomplete ADO identity = %q, want unresolved", got)
+	}
+	if got := repositoryIdentity(configRepo{Provider: "ado", Owner: "acme", Project: "platform", Name: "web"}); got != "ado/acme/platform/web" {
+		t.Fatalf("ADO identity = %q", got)
 	}
 }
 

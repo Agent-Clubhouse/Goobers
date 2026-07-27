@@ -22,17 +22,17 @@
       "gitRepositories": [
         {
           "root": "config",
-          "identity": "github/acme/config",
+          "remoteUrls": ["https://github.com/acme/config.git"],
           "head": "1111111111111111111111111111111111111111"
         },
         {
           "root": "targets/web",
-          "identity": "github/acme/web",
+          "remoteUrls": ["git@github.com:acme/web.git"],
           "head": "2222222222222222222222222222222222222222"
         },
         {
           "root": "source",
-          "identity": "github/Agent-Clubhouse/Goobers",
+          "remoteUrls": ["https://github.com/Agent-Clubhouse/Goobers.git"],
           "head": "abc1230000000000000000000000000000000000",
           "tags": [
             "v1.2.3"
@@ -45,20 +45,14 @@
       "installedToolkit": {
         "configRoot": "config",
         "version": "v1.2.3",
-        "commit": "abc1230000000000000000000000000000000000",
-        "dslVersions": [
-          {
-            "version": "v1alpha1",
-            "lifecycle": "current"
-          }
-        ]
+        "commit": "abc1230000000000000000000000000000000000"
       },
       "pathBinary": "path/bin/goobers",
       "cliOutputs": {
         "version --json": "{\"version\":\"v1.2.3\",\"commit\":\"abc1230000000000000000000000000000000000\"}\n",
-        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"current\"}]}\n",
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"1.4\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]},{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"dev\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n",
         "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"workflowSource\":{\"kind\":\"local-dir\",\"path\":\"$ROOT/config\"},\"repos\":[{\"provider\":\"github\",\"owner\":\"acme\",\"name\":\"web\",\"token\":{\"env\":\"RESOLVER_FIXTURE_TOKEN\"}}]}\n",
-        "agent-kit check": "{\"state\":\"current\",\"producer\":{\"version\":\"v1.2.3\",\"commit\":\"abc1230000000000000000000000000000000000\"},\"modified\":[],\"missing\":[]}\n"
+        "agent-kit check": "state: current\nbundle version: 1\nsource binary version: v1.2.3\nsource binary commit: abc1230000000000000000000000000000000000\ninstalled bundle version: 1\ninstalled source version: v1.2.3\ninstalled source commit: abc1230000000000000000000000000000000000\nupdate available: no\nmodified owned files: none\nmissing owned files: none\n"
       },
       "providerOutputs": {
         "targets": {
@@ -158,14 +152,14 @@
       "gitRepositories": [
         {
           "root": "config",
-          "identity": "github/acme/config",
+          "remoteUrls": ["https://github.com/acme/config.git"],
           "head": "3333333333333333333333333333333333333333"
         }
       ],
       "pathBinary": "path/bin/goobers",
       "cliOutputs": {
         "version --json": "{\"version\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
-        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"deprecated\"},{\"version\":\"v1alpha2\",\"lifecycle\":\"current\"}]}\n"
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"1.4\",\"level\":\"deprecated\",\"unsupportedAfter\":\"v3.0.0\",\"replacement\":\"2.0\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v1.0.0\"},{\"level\":\"deprecated\",\"sinceVersion\":\"v2.0.0\"}]},{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v2.0.0\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n"
       },
       "providerOutputs": {
         "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
@@ -199,7 +193,7 @@
       "pathBinary": "path/bin/goobers",
       "cliOutputs": {
         "version --json": "{\"version\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
-        "versions --json": "{\"versions\":[{\"version\":\"v1alpha2\",\"lifecycle\":\"current\"}]}\n"
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v2.0.0\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n"
       },
       "providerOutputs": {
         "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
@@ -234,20 +228,14 @@
       "gitRepositories": [
         {
           "root": "config",
-          "identity": "github/acme/config",
+          "remoteUrls": ["https://github.com/acme/config.git"],
           "head": "4444444444444444444444444444444444444444"
         }
       ],
       "installedToolkit": {
         "configRoot": "config",
         "version": "v3.0.0",
-        "commit": "9876540000000000000000000000000000000000",
-        "dslVersions": [
-          {
-            "version": "v1alpha2",
-            "lifecycle": "current"
-          }
-        ]
+        "commit": "9876540000000000000000000000000000000000"
       },
       "runs": [
         {
@@ -276,26 +264,20 @@
       "gitRepositories": [
         {
           "root": "config",
-          "identity": "github/acme/config",
+          "remoteUrls": ["https://github.com/acme/config.git"],
           "head": "5555555555555555555555555555555555555555"
         }
       ],
       "installedToolkit": {
         "configRoot": "config",
         "version": "v2.0.0",
-        "commit": "2222220000000000000000000000000000000000",
-        "dslVersions": [
-          {
-            "version": "v1alpha2",
-            "lifecycle": "current"
-          }
-        ]
+        "commit": "2222220000000000000000000000000000000000"
       },
       "pathBinary": "path/bin/goobers",
       "cliOutputs": {
         "version --json": "{\"version\":\"v1.0.0\",\"commit\":\"1111110000000000000000000000000000000000\"}\n",
-        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"current\"}]}\n",
-        "agent-kit check": "{\"state\":\"current\",\"producer\":{\"version\":\"v2.0.0\",\"commit\":\"2222220000000000000000000000000000000000\"},\"modified\":[],\"missing\":[]}\n"
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"1.4\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v1.0.0\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n",
+        "agent-kit check": "state: upgrade-available\nbundle version: 1\nsource binary version: v1.0.0\nsource binary commit: 1111110000000000000000000000000000000000\ninstalled bundle version: 1\ninstalled source version: v2.0.0\ninstalled source commit: 2222220000000000000000000000000000000000\nupdate available: yes\nmodified owned files: none\nmissing owned files: none\n"
       },
       "providerOutputs": {
         "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
@@ -314,6 +296,79 @@
             "diagnosticsContain": [
               "installed toolkit identity does not match binary",
               "known release v1.0.0 has no exact verified contract source"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "conflicting local release identities",
+      "files": {
+        "source/bin/goobers": "fixture executable\n",
+        "source/cmd/goobers/main.go": "package main\n",
+        "source/go.mod": "module github.com/goobers/goobers\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "source",
+          "remoteUrls": ["https://github.com/Agent-Clubhouse/Goobers.git"],
+          "head": "bbbbbb0000000000000000000000000000000000",
+          "tags": ["v4.0.0"]
+        }
+      ],
+      "sourceContractRoots": ["source"],
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v4.0.0\",\"commit\":\"aaaaaa0000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v4.0.0\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n"
+      },
+      "runs": [
+        {
+          "name": "reject matching tag with conflicting commit",
+          "start": "source",
+          "want": {
+            "currentRole": "goobers-source",
+            "binaryProvenance": "unresolved",
+            "contractKind": "unresolved",
+            "diagnosticsContain": [
+              "source binary provenance unresolved",
+              "known release v4.0.0 has no exact verified contract source"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tracked symlink local source",
+      "files": {
+        "source/bin/goobers": "fixture executable\n",
+        "source/cmd/goobers/main.go": "package main\n",
+        "source/go.mod": "module github.com/goobers/goobers\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "source",
+          "remoteUrls": ["https://github.com/Agent-Clubhouse/Goobers.git"],
+          "head": "cccccc0000000000000000000000000000000000",
+          "tags": ["v4.1.0"],
+          "trackedSymlinks": ["docs/ARCHITECTURE.md"]
+        }
+      ],
+      "sourceContractRoots": ["source"],
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v4.1.0\",\"commit\":\"cccccc0000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"minGoVersion\":\"1.26.5\",\"dslVersions\":[{\"version\":\"2.0\",\"level\":\"supported\",\"history\":[{\"level\":\"supported\",\"sinceVersion\":\"v4.1.0\"}]}],\"platforms\":[{\"os\":\"linux\",\"arch\":\"amd64\",\"tier\":\"supported\"}],\"host\":{\"os\":\"linux\",\"arch\":\"amd64\",\"goVersion\":\"go1.26.5\",\"supported\":true,\"tier\":\"supported\"}}\n"
+      },
+      "runs": [
+        {
+          "name": "reject tracked contract symlink",
+          "start": "source",
+          "want": {
+            "currentRole": "goobers-source",
+            "binaryProvenance": "unresolved",
+            "contractKind": "unresolved",
+            "diagnosticsContain": [
+              "source binary provenance unresolved",
+              "known release v4.1.0 has no exact verified contract source"
             ]
           }
         }

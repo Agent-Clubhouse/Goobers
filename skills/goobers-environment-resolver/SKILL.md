@@ -37,6 +37,25 @@ Find the current Git root without reading remotes:
 git -C <start> rev-parse --show-toplevel
 ```
 
+To determine whether that root is a configured target, enumerate remote names
+and obtain their fetch URLs without displaying or recording the raw values:
+
+```sh
+git -C <git-root> remote
+git -C <git-root> remote get-url --all <remote-name>
+```
+
+Parse each URL locally into a credential-free provider key. Accept GitHub URL
+forms only as `github/<owner>/<name>` and Azure DevOps URL forms only as
+`ado/<organization>/<project>/<name>`; discard scheme, user information, port,
+query, fragment, and a terminal `.git`. Normalize provider host and
+provider-defined case-insensitive identity components. Never include a raw URL
+in commands, diagnostics, or the report. If recognized remotes produce zero or
+multiple distinct identities, report the current repository identity
+unresolved. Match a target only when the entire sanitized provider key equals
+the key from structured config; a repository name or owner/name suffix alone is
+not evidence.
+
 Classify locations by these markers:
 
 | Role | Evidence |
@@ -80,10 +99,12 @@ non-repository binary is corroborated by a verified toolkit or exact release
 ref; and as `PATH-only` when PATH selected it but no matching release material
 is available.
 
-Record the binary version and commit, every DSL version and lifecycle level,
-the config source, instance root, and configured target repositories. `config
-show` does not resolve credential locators; omit those locator fields from the
-report anyway.
+Record the binary version and commit and every entry from
+`dslVersions[]`, including `version`, `level`, `unsupportedAfter`,
+`replacement`, and the complete `history[]`. Do not expect a `versions[]` array
+or a `lifecycle` field. Also record the config source, instance root, and
+configured target repositories. `config show` does not resolve credential
+locators; omit those locator fields from the report anyway.
 
 ### 2. Establish an exact release identity
 
@@ -120,16 +141,28 @@ only to another candidate with the same exact release identity.
 #### Matching local source checkout
 
 Read `HEAD` and tags with `git rev-parse HEAD` and `git tag --points-at HEAD`.
-Select the checkout only when its commit or exact release tag matches the
-identity established above. Require every contract root and required path to be
-tracked at `HEAD`, and reject local modifications under those roots:
+When the binary reports a commit, `HEAD` must match it. When an exact release
+tag is used as version evidence, that tag must also match the binary version.
+Every available comparison must agree: an exact tag match never overrides a
+conflicting commit, and a matching commit never overrides a conflicting tag.
+
+Require every contract root and required path to be tracked at `HEAD`, and
+reject local modifications under those roots. Parse the full `ls-tree` records,
+including mode, type, object ID, and path; `--name-only` is insufficient:
 
 ```sh
-git -C <source-root> ls-tree -r --name-only HEAD -- \
+git -C <source-root> ls-tree -r -z --full-tree HEAD -- \
   docs api/schemas config-examples internal/capability skills
 git -C <source-root> status --porcelain -- \
   docs api/schemas config-examples internal/capability skills
 ```
+
+Require every consumed entry to be a blob and reject mode `120000` anywhere
+under the contract roots. This rejects a clean tracked symbolic link before a
+later working-tree read can escape the selected source. Also reject any
+untracked or modified contract path. After those checks, read only the verified
+paths; alternatively, read their bytes directly with
+`git cat-file blob HEAD:<path>` and retain the object ID as evidence.
 
 Report the source root, full `HEAD`, exact tag when present, and absolute paths
 to its docs, schemas, examples, capability registry, and skills.
@@ -144,11 +177,13 @@ must exist. When the selected binary provides `agent-kit check`, run:
 <goobers> agent-kit check <config-repo>
 ```
 
+Parse the command's documented text report; `agent-kit check` has no JSON mode.
 Select the toolkit only when the command succeeds, reports `state: current`,
-reports no modified or missing owned files, and its installed source version
-and commit match `version --json`. This command compares the installation with
-the toolkit embedded in that exact binary, so it is preferred over manual
-inspection.
+`update available: no`, and `none` for both modified and missing owned files.
+Require both its `source binary version`/`source binary commit` and its
+`installed source version`/`installed source commit` to match `version --json`
+and each other. This command compares the installation with the toolkit
+embedded in that exact binary, so it is preferred over manual inspection.
 
 If `agent-kit check` is unavailable, fail safely while checking the installed
 manifest:
@@ -160,8 +195,12 @@ manifest:
    beneath the canonical config repository. Require `manifest.json` at that
    exact toolkit root to be a regular, non-symbolic-link file beneath the
    canonical config repository before opening or parsing it.
-2. Parse `manifest.json`; reject duplicate assets, unknown schema or bundle
-   versions, malformed digests, and unsafe paths.
+2. Validate `manifest.json` against the release-matched
+   `agent-toolkit-manifest.schema.json`, then parse it. Require `$schema`,
+   ownership, adapters, CLI capabilities, the real `dslVersions[].level` and
+   `history[]` shape, and every other schema-required field. Reject duplicate
+   assets, unknown schema or bundle versions, malformed digests, and unsafe
+   paths.
 3. Before opening an asset, require its path to start with
    `payload/.goobers/agent-toolkit/`, contain no `..` or backslash segment, and
    resolve beneath the candidate config repository after removing only the
@@ -173,9 +212,13 @@ manifest:
 5. Require `release.json` itself to be in that verified inventory. Then compare
    the manifest and release producer version, commit, and complete DSL support
    matrix with each other and with the binary evidence.
-6. Require every contract path listed above to appear in the verified
-   inventory. If any check cannot be performed, mark the toolkit unresolved;
-   do not treat partial validation as intact.
+6. Require the complete manifest inventory for every contract tree, not one
+   representative file per directory. In particular, parse the
+   `docs/requirements/README.md` index and require every local requirements
+   document it references to be present in the verified inventory. Require all
+   declared adapter and skill paths as well as every contract path listed
+   above. If any check cannot be performed, mark the toolkit unresolved; do not
+   treat partial validation as intact.
 
 Report the absolute toolkit root and these exact selected locations:
 
@@ -223,9 +266,12 @@ sources.
 ### 4. Retain target-repository evidence
 
 Build the target set only from structured config (`repos`, Gaggle
-`spec.project`, and `spec.additionalRepos`). Keep the config repository separate
-unless it is also explicitly configured as a target. Prefer an exact-identity
-local checkout; otherwise use existing read-only provider access.
+`spec.project`, and `spec.additionalRepos`). Form each complete provider key
+using all provider-required fields: provider, owner/organization, project for
+Azure DevOps, and repository name. Keep the config repository separate unless
+its complete key is also explicitly configured as a target. Prefer a local
+checkout only when its sanitized Git-derived key exactly matches; otherwise use
+existing read-only provider access.
 
 For each target, report repository identity, configured branch, local or
 provider-only access, README and applicable agent-guidance paths, and likely
@@ -242,7 +288,7 @@ Return the report before invoking another Goobers skill:
 | Current repository | Absolute root and classified role, or unresolved |
 | Executable | Canonical path, selection rule, and provenance (`source-built`, `installed-release`, `PATH-only`, or unresolved) |
 | Binary identity | Version and commit from `version --json` |
-| DSL support | Version and lifecycle levels from `versions --json` |
+| DSL support | Version, level, optional transition fields, and full history from `versions --json` |
 | Config source | Absolute local path or exact remote identity/ref |
 | Instance | Absolute root and active config path, independently from config source |
 | Contract source | Kind, root/provider repository, version, commit, exact tag/ref, and integrity result |

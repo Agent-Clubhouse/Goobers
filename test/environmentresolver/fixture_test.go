@@ -1,14 +1,15 @@
 package environmentresolver
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/agentkit"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 var requiredContractPaths = []string{
@@ -37,17 +38,18 @@ type fixtureScenario struct {
 }
 
 type fixtureGitRepository struct {
-	Root     string   `json:"root"`
-	Identity string   `json:"identity"`
-	Head     string   `json:"head"`
-	Tags     []string `json:"tags"`
+	Root            string   `json:"root"`
+	RemoteURLs      []string `json:"remoteUrls"`
+	Head            string   `json:"head"`
+	Tags            []string `json:"tags"`
+	TrackedSymlinks []string `json:"trackedSymlinks"`
+	Identity        string   `json:"-"`
 }
 
 type fixtureToolkit struct {
-	ConfigRoot  string       `json:"configRoot"`
-	Version     string       `json:"version"`
-	Commit      string       `json:"commit"`
-	DSLVersions []dslVersion `json:"dslVersions"`
+	ConfigRoot string `json:"configRoot"`
+	Version    string `json:"version"`
+	Commit     string `json:"commit"`
 }
 
 type fixtureProviderOutputs struct {
@@ -78,10 +80,7 @@ type fixtureWant struct {
 	DiagnosticsContain []string `json:"diagnosticsContain"`
 }
 
-type dslVersion struct {
-	Version   string `json:"version"`
-	Lifecycle string `json:"lifecycle"`
-}
+type dslVersion = supportmatrix.Version
 
 type testEnvironment struct {
 	root            string
@@ -115,6 +114,13 @@ func materializeScenario(t *testing.T, scenario fixtureScenario) *testEnvironmen
 	for i, repository := range scenario.GitRepositories {
 		repositories[i] = repository
 		repositories[i].Root = fixturePath(root, repository.Root)
+		if len(repository.RemoteURLs) > 0 {
+			identity, ok := repositoryIdentityFromRemoteURLs(repository.RemoteURLs)
+			if !ok {
+				t.Fatalf("derive fixture repository identity for %s", repository.Root)
+			}
+			repositories[i].Identity = identity
+		}
 		writeFixtureFile(t, root, filepath.Join(repository.Root, ".git", "HEAD"), repository.Head+"\n")
 	}
 	for _, sourceRoot := range scenario.SourceContractRoots {
@@ -155,60 +161,78 @@ func materializeScenario(t *testing.T, scenario fixtureScenario) *testEnvironmen
 func writeFixtureToolkit(t *testing.T, root string, toolkit fixtureToolkit) {
 	t.Helper()
 	configRoot := fixturePath(root, toolkit.ConfigRoot)
-	productRoot := filepath.Join(configRoot, ".goobers", "agent-toolkit")
-	release := toolkitRelease{
-		SchemaVersion: "1",
-		BundleVersion: "1",
-		Producer: toolkitProducer{
-			Version: toolkit.Version,
-			Commit:  toolkit.Commit,
-		},
-		DSLVersions: toolkit.DSLVersions,
-	}
-	releaseJSON, err := json.MarshalIndent(release, "", "  ")
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	releaseJSON = append(releaseJSON, '\n')
-
-	assets := map[string][]byte{
-		".goobers/agent-toolkit/release.json": releaseJSON,
+	bundle, err := agentkit.Build(os.DirFS(repositoryRoot), toolkit.Version, toolkit.Commit)
+	if err != nil {
+		t.Fatalf("build fixture toolkit: %v", err)
 	}
-	for _, relative := range requiredContractPaths {
-		assets[filepath.ToSlash(filepath.Join(".goobers", "agent-toolkit", relative))] = []byte("fixture contract: " + relative + "\n")
-	}
-	paths := make([]string, 0, len(assets))
-	for path := range assets {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-
-	manifest := toolkitManifest{
-		SchemaVersion: "1",
-		BundleVersion: "1",
-		Producer:      release.Producer,
-		DSLVersions:   release.DSLVersions,
-	}
-	for _, path := range paths {
-		data := assets[path]
-		writeFixtureFile(t, configRoot, path, string(data))
-		info, err := os.Stat(filepath.Join(configRoot, filepath.FromSlash(path)))
-		if err != nil {
-			t.Fatalf("stat fixture toolkit asset %s: %v", path, err)
+	for path, file := range bundle.Files {
+		writeFixtureFile(t, configRoot, path, string(file.Data))
+		if err := os.Chmod(filepath.Join(configRoot, filepath.FromSlash(path)), file.Mode); err != nil {
+			t.Fatalf("set fixture toolkit mode for %s: %v", path, err)
 		}
-		sum := sha256.Sum256(data)
-		manifest.Assets = append(manifest.Assets, toolkitAsset{
-			Path:   "payload/" + path,
-			SHA256: fmt.Sprintf("%x", sum),
-			Size:   int64(len(data)),
-			Mode:   fmt.Sprintf("%04o", info.Mode().Perm()),
-		})
 	}
-	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if _, err := agentkit.DecodeManifest(bundle.ManifestJSON); err != nil {
+		t.Fatalf("validate fixture toolkit manifest: %v", err)
+	}
+	writeFixtureFile(t, configRoot, agentkit.InstalledManifestPath, string(bundle.ManifestJSON))
+}
+
+func TestFallbackRejectsSchemaValidIncompleteRequirementInventory(t *testing.T) {
+	root := t.TempDir()
+	writeFixtureToolkit(t, root, fixtureToolkit{
+		ConfigRoot: ".",
+		Version:    "v1.2.3",
+		Commit:     "abc1230000000000000000000000000000000000",
+	})
+	if _, _, ok := verifyToolkitManifest(root); !ok {
+		t.Fatal("canonical fixture toolkit did not verify")
+	}
+
+	manifestPath := filepath.Join(root, agentkit.InstalledManifestPath)
+	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFixtureFile(t, productRoot, "manifest.json", string(append(manifestJSON, '\n')))
+	manifest, err := agentkit.DecodeManifest(manifestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const removed = "payload/.goobers/agent-toolkit/docs/requirements/workflow.md"
+	assets := manifest.Assets[:0]
+	for _, asset := range manifest.Assets {
+		if asset.Path != removed {
+			assets = append(assets, asset)
+		}
+	}
+	if len(assets) == len(manifest.Assets) {
+		t.Fatalf("canonical fixture does not contain %s", removed)
+	}
+	manifest.Assets = assets
+	manifestData, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestData = append(manifestData, '\n')
+	if _, err := agentkit.DecodeManifest(manifestData); err != nil {
+		t.Fatalf("incomplete fixture must remain schema-valid: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := agentkit.InstalledAssetPath(removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(installed))); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := verifyToolkitManifest(root); ok {
+		t.Fatal("fallback verifier accepted an incomplete requirements inventory")
+	}
 }
 
 func writeFixtureFile(t *testing.T, root, relative, contents string) {
@@ -301,29 +325,6 @@ func (f *fakeProvider) target(identity string) ([]byte, error) {
 	return []byte(output), nil
 }
 
-type toolkitProducer struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
-}
-
-type toolkitRelease struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	BundleVersion string          `json:"bundleVersion"`
-	Producer      toolkitProducer `json:"producer"`
-	DSLVersions   []dslVersion    `json:"dslVersions"`
-}
-
-type toolkitManifest struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	BundleVersion string          `json:"bundleVersion"`
-	Producer      toolkitProducer `json:"producer"`
-	DSLVersions   []dslVersion    `json:"dslVersions"`
-	Assets        []toolkitAsset  `json:"assets"`
-}
-
-type toolkitAsset struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
-	Mode   string `json:"mode"`
-}
+type toolkitProducer = agentkit.Producer
+type toolkitRelease = agentkit.Release
+type toolkitManifest = agentkit.Manifest

@@ -1,15 +1,20 @@
 package environmentresolver
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/agentkit"
 	"sigs.k8s.io/yaml"
 )
 
@@ -68,7 +73,7 @@ type binaryIdentity struct {
 }
 
 type versionsOutput struct {
-	Versions []dslVersion `json:"versions"`
+	DSLVersions []dslVersion `json:"dslVersions"`
 }
 
 type configOutput struct {
@@ -84,6 +89,7 @@ type workflowSource struct {
 type configRepo struct {
 	Provider string `json:"provider" yaml:"provider"`
 	Owner    string `json:"owner" yaml:"owner"`
+	Project  string `json:"project" yaml:"project"`
 	Name     string `json:"name" yaml:"name"`
 	Branch   string `json:"branch" yaml:"branch"`
 }
@@ -96,10 +102,14 @@ type gaggleConfig struct {
 }
 
 type agentKitCheck struct {
-	State    string          `json:"state"`
-	Producer toolkitProducer `json:"producer"`
-	Modified []string        `json:"modified"`
-	Missing  []string        `json:"missing"`
+	State                  string
+	SourceBinaryVersion    string
+	SourceBinaryCommit     string
+	InstalledSourceVersion string
+	InstalledSourceCommit  string
+	UpdateAvailable        string
+	ModifiedOwnedFiles     string
+	MissingOwnedFiles      string
 }
 
 type remoteRepository struct {
@@ -177,7 +187,7 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 			if err := json.Unmarshal(versionsJSON, &versions); err != nil {
 				report.Diagnostics = append(report.Diagnostics, "DSL support unresolved: invalid versions JSON")
 			} else {
-				report.DSLVersions = versions.Versions
+				report.DSLVersions = versions.DSLVersions
 			}
 		}
 	}
@@ -210,8 +220,11 @@ func resolveEnvironment(environment *testEnvironment, inputs resolverInputs) res
 		report.Executable.Provenance = "source-built"
 	case report.Contract.Kind == "installed-toolkit" || report.Contract.Kind == "remote-release":
 		report.Executable.Provenance = "installed-release"
-	default:
+	case binarySelection == "PATH":
 		report.Executable.Provenance = "PATH-only"
+	default:
+		report.Executable.Provenance = "unresolved"
+		report.Diagnostics = append(report.Diagnostics, "source binary provenance unresolved: checkout identity mismatch")
 	}
 
 	report.Targets = resolveTargets(environment, effectiveConfig.Repos, configSource, &report.Diagnostics)
@@ -299,19 +312,20 @@ func selectContract(
 
 func verifyLocalSource(environment *testEnvironment, sourceRoot string, identity binaryIdentity) (contractReport, bool) {
 	repository := environment.gitRepositoryAt(sourceRoot)
-	if repository == nil || !hasContractPaths(sourceRoot) {
+	if repository == nil || !hasContractPaths(sourceRoot) || hasTrackedContractSymlink(repository) {
 		return contractReport{}, false
 	}
-	matches := commitsMatch(repository.Head, identity.Commit)
-	if !matches {
+	commitMatches := commitsMatch(repository.Head, identity.Commit)
+	tagMatches := false
+	if identity.Version != "" {
 		for _, tag := range repository.Tags {
 			if versionsMatch(tag, identity.Version) {
-				matches = true
+				tagMatches = true
 				break
 			}
 		}
 	}
-	if !matches {
+	if !commitMatches || (len(repository.Tags) > 0 && !tagMatches) {
 		return contractReport{}, false
 	}
 	return contractReport{
@@ -336,16 +350,25 @@ func verifyInstalledToolkit(
 
 	var producer toolkitProducer
 	if binaryPath != "" && environment.cli.supports("agent-kit check") {
-		checkJSON, err := environment.cli.run(binaryPath, "agent-kit check", configSource)
+		checkOutput, err := environment.cli.run(binaryPath, "agent-kit check", configSource)
 		if err != nil {
 			return contractReport{}, true, false
 		}
-		var check agentKitCheck
-		if err := json.Unmarshal(checkJSON, &check); err != nil ||
-			check.State != "current" || len(check.Modified) != 0 || len(check.Missing) != 0 {
+		check, ok := parseAgentKitCheck(checkOutput)
+		if !ok || check.State != "current" || check.UpdateAvailable != "no" ||
+			check.ModifiedOwnedFiles != "none" || check.MissingOwnedFiles != "none" {
 			return contractReport{}, true, false
 		}
-		producer = check.Producer
+		if !versionsMatch(check.SourceBinaryVersion, identity.Version) ||
+			!commitsMatch(check.SourceBinaryCommit, identity.Commit) ||
+			!versionsMatch(check.InstalledSourceVersion, check.SourceBinaryVersion) ||
+			!commitsMatch(check.InstalledSourceCommit, check.SourceBinaryCommit) {
+			return contractReport{}, true, false
+		}
+		producer = toolkitProducer{
+			Version: check.InstalledSourceVersion,
+			Commit:  check.InstalledSourceCommit,
+		}
 		release, ok := readToolkitRelease(toolkitRoot)
 		if !ok || release.Producer != producer {
 			return contractReport{}, true, false
@@ -371,18 +394,67 @@ func verifyInstalledToolkit(
 	}, true, true
 }
 
+func parseAgentKitCheck(output []byte) (agentKitCheck, bool) {
+	var check agentKitCheck
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		label, value, found := strings.Cut(scanner.Text(), ":")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.TrimSpace(label) {
+		case "state":
+			check.State = value
+		case "source binary version":
+			check.SourceBinaryVersion = value
+		case "source binary commit":
+			check.SourceBinaryCommit = value
+		case "installed source version":
+			check.InstalledSourceVersion = value
+		case "installed source commit":
+			check.InstalledSourceCommit = value
+		case "update available":
+			check.UpdateAvailable = value
+		case "modified owned files":
+			check.ModifiedOwnedFiles = value
+		case "missing owned files":
+			check.MissingOwnedFiles = value
+		}
+	}
+	if scanner.Err() != nil {
+		return agentKitCheck{}, false
+	}
+	return check, check.State != "" &&
+		check.SourceBinaryVersion != "" &&
+		check.SourceBinaryCommit != "" &&
+		check.InstalledSourceVersion != "" &&
+		check.InstalledSourceCommit != "" &&
+		check.UpdateAvailable != "" &&
+		check.ModifiedOwnedFiles != "" &&
+		check.MissingOwnedFiles != ""
+}
+
 func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease, bool) {
 	toolkitRoot := filepath.Join(configSource, ".goobers", "agent-toolkit")
-	manifestData, err := os.ReadFile(filepath.Join(toolkitRoot, "manifest.json"))
+	manifestPath := filepath.Join(toolkitRoot, "manifest.json")
+	if hasSymlinkComponent(configSource, manifestPath) {
+		return toolkitManifest{}, toolkitRelease{}, false
+	}
+	manifestInfo, err := os.Lstat(manifestPath)
+	if err != nil || !manifestInfo.Mode().IsRegular() || manifestInfo.Mode()&os.ModeSymlink != 0 {
+		return toolkitManifest{}, toolkitRelease{}, false
+	}
+	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return toolkitManifest{}, toolkitRelease{}, false
 	}
-	var manifest toolkitManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil ||
-		manifest.SchemaVersion != "1" || manifest.BundleVersion != "1" {
+	manifest, err := agentkit.DecodeManifest(manifestData)
+	if err != nil {
 		return toolkitManifest{}, toolkitRelease{}, false
 	}
 	inventory := make(map[string]bool, len(manifest.Assets))
+	verified := make(map[string][]byte, len(manifest.Assets))
 	for _, asset := range manifest.Assets {
 		if inventory[asset.Path] || !strings.HasPrefix(asset.Path, "payload/.goobers/agent-toolkit/") ||
 			hasUnsafePath(asset.Path) {
@@ -390,6 +462,9 @@ func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease
 		}
 		inventory[asset.Path] = true
 		installedPath := filepath.Join(configSource, filepath.FromSlash(strings.TrimPrefix(asset.Path, "payload/")))
+		if hasSymlinkComponent(configSource, installedPath) {
+			return toolkitManifest{}, toolkitRelease{}, false
+		}
 		info, err := os.Lstat(installedPath)
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return toolkitManifest{}, toolkitRelease{}, false
@@ -403,6 +478,7 @@ func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease
 			fmt.Sprintf("%04o", info.Mode().Perm()) != asset.Mode {
 			return toolkitManifest{}, toolkitRelease{}, false
 		}
+		verified[asset.Path] = data
 	}
 	for _, relative := range append([]string{"release.json"}, requiredContractPaths...) {
 		path := "payload/.goobers/agent-toolkit/" + relative
@@ -410,12 +486,44 @@ func verifyToolkitManifest(configSource string) (toolkitManifest, toolkitRelease
 			return toolkitManifest{}, toolkitRelease{}, false
 		}
 	}
-	release, ok := readToolkitRelease(toolkitRoot)
-	if !ok || release.Producer != manifest.Producer ||
+	requirementsIndex := verified["payload/.goobers/agent-toolkit/docs/requirements/README.md"]
+	if !requirementsInventoryComplete(requirementsIndex, inventory) {
+		return toolkitManifest{}, toolkitRelease{}, false
+	}
+	var release toolkitRelease
+	releaseData := verified["payload/.goobers/agent-toolkit/release.json"]
+	if err := json.Unmarshal(releaseData, &release); err != nil ||
+		release.SchemaVersion != agentkit.SchemaVersion ||
+		release.BundleVersion != agentkit.BundleVersion ||
+		release.Producer != manifest.Producer ||
 		!dslVersionsEqual(release.DSLVersions, manifest.DSLVersions) {
 		return toolkitManifest{}, toolkitRelease{}, false
 	}
 	return manifest, release, true
+}
+
+var markdownLinkPattern = regexp.MustCompile(`\]\(([^)#?]+\.md)(?:#[^)]*)?\)`)
+
+func requirementsInventoryComplete(index []byte, inventory map[string]bool) bool {
+	matches := markdownLinkPattern.FindAllSubmatch(index, -1)
+	required := 0
+	for _, match := range matches {
+		relative := string(match[1])
+		if strings.HasPrefix(relative, "../") || strings.Contains(relative, `\`) ||
+			filepath.IsAbs(relative) {
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return false
+		}
+		required++
+		path := "payload/.goobers/agent-toolkit/docs/requirements/" + clean
+		if !inventory[path] {
+			return false
+		}
+	}
+	return required > 0
 }
 
 func readToolkitRelease(toolkitRoot string) (toolkitRelease, bool) {
@@ -660,8 +768,8 @@ func contractLocations(root string) map[string]string {
 }
 
 func regularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
 }
 
 func directory(path string) bool {
@@ -675,6 +783,42 @@ func pathWithin(path, root string) bool {
 	}
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func hasSymlinkComponent(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return true
+	}
+	current := root
+	parts := []string{"."}
+	if relative != "." {
+		parts = append(parts, strings.Split(relative, string(filepath.Separator))...)
+	}
+	for _, part := range parts {
+		if part != "." {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTrackedContractSymlink(repository *fixtureGitRepository) bool {
+	for _, tracked := range repository.TrackedSymlinks {
+		tracked = filepath.ToSlash(filepath.Clean(filepath.FromSlash(tracked)))
+		for _, root := range []string{"docs", "api/schemas", "config-examples", "internal/capability", "skills"} {
+			if tracked == root || strings.HasPrefix(tracked, root+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func identityIsKnown(identity binaryIdentity) bool {
@@ -701,7 +845,96 @@ func repositoryIdentity(repository configRepo) string {
 	if repository.Provider == "" || repository.Owner == "" || repository.Name == "" {
 		return ""
 	}
-	return repository.Provider + "/" + repository.Owner + "/" + repository.Name
+	provider := strings.ToLower(strings.TrimSpace(repository.Provider))
+	owner := strings.ToLower(strings.TrimSpace(repository.Owner))
+	project := strings.ToLower(strings.TrimSpace(repository.Project))
+	name := strings.ToLower(strings.TrimSpace(repository.Name))
+	switch provider {
+	case "github":
+		if project != "" {
+			return ""
+		}
+		return strings.Join([]string{provider, owner, name}, "/")
+	case "ado":
+		if project == "" {
+			return ""
+		}
+		return strings.Join([]string{provider, owner, project, name}, "/")
+	default:
+		return ""
+	}
+}
+
+func repositoryIdentityFromRemoteURLs(remoteURLs []string) (string, bool) {
+	identities := make(map[string]bool)
+	for _, remoteURL := range remoteURLs {
+		identity, ok := repositoryIdentityFromRemoteURL(remoteURL)
+		if !ok {
+			continue
+		}
+		identities[identity] = true
+	}
+	if len(identities) != 1 {
+		return "", false
+	}
+	for identity := range identities {
+		return identity, true
+	}
+	return "", false
+}
+
+func repositoryIdentityFromRemoteURL(remoteURL string) (string, bool) {
+	value := strings.TrimSpace(remoteURL)
+	if value == "" {
+		return "", false
+	}
+
+	var host, repositoryPath string
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return "", false
+		}
+		host = parsed.Hostname()
+		repositoryPath = parsed.EscapedPath()
+		if unescaped, err := url.PathUnescape(repositoryPath); err == nil {
+			repositoryPath = unescaped
+		}
+	} else {
+		before, after, found := strings.Cut(value, ":")
+		if !found || strings.Contains(before, "/") {
+			return "", false
+		}
+		if _, hostname, found := strings.Cut(before, "@"); found {
+			host = hostname
+		} else {
+			host = before
+		}
+		repositoryPath = after
+	}
+
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	repositoryPath = strings.Trim(strings.TrimSuffix(repositoryPath, ".git"), "/")
+	segments := strings.Split(repositoryPath, "/")
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	switch {
+	case host == "github.com" && len(segments) == 2:
+		return strings.ToLower(strings.Join([]string{"github", segments[0], segments[1]}, "/")), true
+	case host == "dev.azure.com" && len(segments) == 4 && strings.EqualFold(segments[2], "_git"):
+		return strings.ToLower(strings.Join([]string{"ado", segments[0], segments[1], segments[3]}, "/")), true
+	case strings.HasSuffix(host, ".visualstudio.com") && len(segments) == 3 &&
+		strings.EqualFold(segments[1], "_git"):
+		owner := strings.TrimSuffix(host, ".visualstudio.com")
+		return strings.ToLower(strings.Join([]string{"ado", owner, segments[0], segments[2]}, "/")), true
+	case host == "ssh.dev.azure.com" && len(segments) == 4 && strings.EqualFold(segments[0], "v3"):
+		return strings.ToLower(strings.Join([]string{"ado", segments[1], segments[2], segments[3]}, "/")), true
+	default:
+		return "", false
+	}
 }
 
 func containsAll(have, want []string) bool {
@@ -730,13 +963,5 @@ func hasUnsafePath(path string) bool {
 }
 
 func dslVersionsEqual(left, right []dslVersion) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return reflect.DeepEqual(left, right)
 }
