@@ -68,6 +68,13 @@ type ArtifactPointer struct {
 type ContextPointer struct {
 	// Name is the logical handle the stage refers to this input by.
 	Name string `json:"name"`
+	// Branch is the producing parallel branch's declaration-ordered numeric id.
+	// It is set only on artifacts fanned into a join; 0 means the pointer was
+	// produced on the root path.
+	Branch int `json:"branch,omitempty"`
+	// BranchName is the producing branch's declared name. It is paired with
+	// Branch so join logic can use a stable id while agents see the authored name.
+	BranchName string `json:"branchName,omitempty"`
 	// Artifact points at an in-journal artifact. Mutually exclusive with External.
 	Artifact *ArtifactPointer `json:"artifact,omitempty"`
 	// External points at a resource outside the journal (e.g. an issue/PR URL).
@@ -173,6 +180,15 @@ func WriteArtifact(journalRoot, relPath string, data []byte, mediaType string) (
 func (c ContextPointer) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		return errors.New("context pointer: name is required")
+	}
+	if c.Branch < 0 {
+		return fmt.Errorf("context pointer %q: branch must not be negative", c.Name)
+	}
+	if (c.Branch == 0) != (strings.TrimSpace(c.BranchName) == "") {
+		return fmt.Errorf("context pointer %q: branch and branchName must be set together", c.Name)
+	}
+	if c.Branch > 0 && c.Artifact == nil {
+		return fmt.Errorf("context pointer %q: branch attribution is only valid for artifacts", c.Name)
 	}
 	switch {
 	case c.Artifact != nil && c.External != nil:

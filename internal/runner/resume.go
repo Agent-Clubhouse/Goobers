@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -338,15 +339,30 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// (#108), the subject a resumed gate needs. Both are exactly what a live
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
+	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+	pointerEvents := seedEvents
+	if activeParallel != nil {
+		pointerEvents = seedEvents[:parallelStart]
+	}
 	seed := walkSeed{
-		pointers:     reconstructPointers(seedEvents),
-		stageOutputs: reconstructStageOutputs(seedEvents),
+		pointers:     reconstructPointers(pointerEvents, in.Machine),
+		stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
+		parallel:     activeParallel,
+		fanIn:        pendingFanIn(seedEvents, in.Machine),
+	}
+	if activeParallel != nil {
+		seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+		jr.SetBranchCursors(activeParallel.cursors())
+		if current := activeParallel.current(); current != nil {
+			jr.SetBranch(current.id)
+		}
 	}
 	if humanProgress.waiting {
 		seed.humanDecision = in.HumanDecision
 	}
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
+	seed.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, seed.lastResult)
 	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 	seed.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
@@ -377,6 +393,25 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = lastStage
 		} else {
 			startState = in.Machine.Def.Spec.Start
+		}
+	}
+	if rerun == nil && seed.fanIn != nil {
+		// parallel.finished is authoritative over a checkpoint that still names
+		// the final branch stage from immediately before the fan-in completed.
+		startState = seed.fanIn.spec.Join
+	}
+	if seed.parallel != nil {
+		current := seed.parallel.current()
+		switch {
+		case current == nil:
+			return Result{}, fmt.Errorf("runner: restore active parallel %q: no current branch", seed.parallel.spec.Name)
+		case current.settled:
+			startState = workflow.TargetJoin
+		case startState == seed.parallel.spec.Name || !branchContainsState(in.Machine, current.start, startState):
+			startState = current.machine
+			if startState == "" {
+				startState = current.start
+			}
 		}
 	}
 	if humanProgress.waiting || humanProgress.decided {
@@ -467,14 +502,34 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
-			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
-			if terr != nil {
-				return res, terr
+			replayedBranchOutcome := false
+			if seed.parallel != nil {
+				switch lastResult.Status {
+				case apiv1.ResultFailure:
+					if !t.ContinueOnError {
+						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
+							seed.parallel.markCurrentFailed()
+							seed.lastResult.Outputs = nil
+							startState = workflow.TargetJoin
+							replayedBranchOutcome = true
+						}
+					}
+				case apiv1.ResultNoWork:
+					seed.parallel.markCurrentNoOutput()
+					startState = workflow.TargetJoin
+					replayedBranchOutcome = true
+				}
 			}
-			if !advance {
-				return res, nil
+			if !replayedBranchOutcome {
+				next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
+				if terr != nil {
+					return res, terr
+				}
+				if !advance {
+					return res, nil
+				}
+				startState = next
 			}
-			startState = next
 		}
 	}
 	startIn := StartInput{
@@ -774,16 +829,54 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 // exactly as the live path would. Events are walked in their journaled
 // (chronological) order so a resumed run's pointers interleave stage
 // artifacts and verdict pointers identically to how a live run would have
-// accumulated them.
-func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
+// accumulated them. machine identifies whether a completed parallel routed to
+// its join; branches that routed to onFailure never expose their pointers.
+func reconstructPointers(events []journal.Event, machine *workflow.Machine) []apiv1.ContextPointer {
 	var out []apiv1.ContextPointer
+	var branchNames map[int]string
+	var branchPointers map[int][]apiv1.ContextPointer
+	discardBranches := func() {
+		branchNames = nil
+		branchPointers = nil
+	}
+	flushBranches := func(order []journal.BranchOutcome) {
+		for _, branch := range order {
+			out = append(out, branchPointers[branch.Branch]...)
+		}
+		discardBranches()
+	}
+	record := func(branch int, pointers []apiv1.ContextPointer) {
+		if branch <= 0 {
+			out = append(out, pointers...)
+			return
+		}
+		if branchPointers == nil {
+			branchPointers = map[int][]apiv1.ContextPointer{}
+		}
+		for i := range pointers {
+			pointers[i].Branch = branch
+			pointers[i].BranchName = branchNames[branch]
+		}
+		branchPointers[branch] = append(branchPointers[branch], pointers...)
+	}
 	for _, e := range events {
 		switch e.Type {
+		case journal.EventParallelStarted:
+			branchNames = map[int]string{}
+			branchPointers = map[int][]apiv1.ContextPointer{}
+			for _, branch := range e.Completeness {
+				branchNames[branch.Branch] = branch.Name
+			}
+		case journal.EventBranchStarted:
+			if branchNames == nil {
+				branchNames = map[int]string{}
+			}
+			branchNames[e.Branch] = e.BranchName
 		case journal.EventStageFinished:
 			if isInterruptedAttemptMarker(e) {
 				continue
 			}
-			out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
+			record(e.Branch, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts)))
 		case journal.EventGateEvaluated:
 			if e.Ref == nil {
 				continue
@@ -792,13 +885,230 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 			case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
 				continue
 			}
-			out = append(out, apiv1.ContextPointer{
+			record(e.Branch, []apiv1.ContextPointer{{
 				Name:     e.Gate + ".verdict",
 				Artifact: &apiv1.ArtifactPointer{Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size, MediaType: "application/json"},
-			})
+			}})
+		case journal.EventParallelFinished:
+			spec, ok := machine.Parallel(e.Parallel)
+			if ok && e.Target == spec.Join {
+				flushBranches(e.Completeness)
+			} else {
+				discardBranches()
+			}
+		}
+	}
+	if len(branchPointers) > 0 {
+		ids := make([]int, 0, len(branchPointers))
+		for branch := range branchPointers {
+			ids = append(ids, branch)
+		}
+		sort.Ints(ids)
+		for _, branch := range ids {
+			out = append(out, branchPointers[branch]...)
 		}
 	}
 	return out
+}
+
+// pendingParallel rebuilds the in-memory execution state for the latest
+// parallel.started that has not reached parallel.finished. A run.resumed event
+// starts a new run segment, so prior branch state must not cross that boundary;
+// run.finished alone does not, because RerunStage can reopen the branch.
+func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int) {
+	start := -1
+	for i, event := range events {
+		switch event.Type {
+		case journal.EventParallelStarted:
+			start = i
+		case journal.EventParallelFinished:
+			if start >= 0 && event.Parallel == events[start].Parallel {
+				start = -1
+			}
+		case journal.EventRunResumed:
+			start = -1
+		}
+	}
+	if start < 0 {
+		return nil, -1
+	}
+
+	spec, ok := machine.Parallel(events[start].Parallel)
+	if !ok {
+		return nil, -1
+	}
+	par := newParallelExec(spec)
+	branchByID := func(id int) (*branchState, int) {
+		for i, branch := range par.branches {
+			if branch.id == id {
+				return branch, i
+			}
+		}
+		return nil, -1
+	}
+	record := func(branch *branchState, outputs map[string]any, pointers []apiv1.ContextPointer) {
+		if branch == nil {
+			return
+		}
+		branch.pointers = append(branch.pointers, pointers...)
+		for _, pointer := range pointers {
+			if pointer.Artifact != nil {
+				branch.artifacts++
+			}
+		}
+		if len(outputs) > 0 || len(pointers) > 0 {
+			branch.produced = true
+		}
+	}
+	lastStage := map[int]journal.Event{}
+
+	for _, event := range events[start+1:] {
+		branch, branchIndex := branchByID(event.Branch)
+		switch event.Type {
+		case journal.EventBranchStarted:
+			if event.Parallel != spec.Name || branch == nil {
+				continue
+			}
+			par.active = branchIndex
+			branch.machine = event.Stage
+			branch.status = ""
+			branch.started = true
+			branch.settled = false
+		case journal.EventStageStarted:
+			if branch != nil {
+				branch.machine = event.Stage
+			}
+		case journal.EventStageFinished:
+			if branch == nil || isInterruptedAttemptMarker(event) {
+				continue
+			}
+			branch.machine = event.Stage
+			outputs := event.Outputs
+			task, taskKnown := machine.Task(event.Stage)
+			if taskKnown && event.Status == string(apiv1.ResultFailure) && task.ContinueOnError {
+				outputs = nil
+			}
+			record(branch, outputs, contextPointersFor(event.Stage, artifactPointersFrom(event.Artifacts)))
+			lastStage[event.Branch] = event
+			switch event.Status {
+			case string(apiv1.ResultFailure):
+				if taskKnown && !task.ContinueOnError {
+					if _, nextIsGate := machine.Gate(task.Next); !nextIsGate {
+						branch.failed = true
+					}
+				}
+			case string(apiv1.ResultNoWork):
+				branch.noOutput = true
+			}
+		case journal.EventGatePaused:
+			if branch != nil {
+				branch.machine = event.Gate
+			}
+		case journal.EventGateEvaluated:
+			if branch == nil {
+				continue
+			}
+			branch.machine = event.Gate
+			switch event.Target {
+			case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+			default:
+				if event.Ref != nil {
+					record(branch, nil, []apiv1.ContextPointer{{
+						Name: event.Gate + ".verdict",
+						Artifact: &apiv1.ArtifactPointer{
+							Path: event.Ref.Path, Digest: event.Ref.Digest, Size: event.Ref.Size, MediaType: "application/json",
+						},
+					}})
+				}
+			}
+			subject, hasSubject := lastStage[event.Branch]
+			gateDef, gateKnown := machine.Gate(event.Gate)
+			if event.Target == workflow.TargetJoin && hasSubject &&
+				subject.Status == string(apiv1.ResultFailure) && gateKnown &&
+				!gateClearsFailure(gateResultFromEvent(event), gateDef) {
+				branch.failed = true
+			}
+		case journal.EventBranchFinished:
+			if event.Parallel != spec.Name || branch == nil {
+				continue
+			}
+			par.active = branchIndex
+			branch.machine = ""
+			branch.status = event.BranchStatus
+			branch.settled = true
+		}
+	}
+	return par, start
+}
+
+func branchContainsState(machine *workflow.Machine, start, state string) bool {
+	seen := map[string]bool{}
+	stack := []string{start}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if current == state {
+			return true
+		}
+		if current == "" || workflow.IsReservedAnyTarget(current) || seen[current] || !machine.Has(current) {
+			continue
+		}
+		seen[current] = true
+		stack = append(stack, machine.Outgoing(current)...)
+	}
+	return false
+}
+
+func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelExec {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelFinished {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if !ok || event.Target != spec.Join {
+			continue
+		}
+		for _, later := range events[i+1:] {
+			stageFinished := later.Type == journal.EventStageFinished && later.Stage == spec.Join && !isInterruptedAttemptMarker(later)
+			gateFinished := later.Type == journal.EventGateEvaluated && later.Gate == spec.Join
+			if stageFinished || gateFinished {
+				return nil
+			}
+		}
+		return fanInFromFinished(spec, event)
+	}
+	return nil
+}
+
+// rerunFanIn restores the fan-in associated with an explicitly rerun join;
+// earlier completed attempts of that join do not consume its branch state.
+func rerunFanIn(events []journal.Event, machine *workflow.Machine, stage string) *parallelExec {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelFinished || event.Target != stage {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if ok && spec.Join == stage {
+			return fanInFromFinished(spec, event)
+		}
+	}
+	return pendingFanIn(events, machine)
+}
+
+func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
+	fanIn := newParallelExec(spec)
+	for _, outcome := range event.Completeness {
+		branch := fanIn.branch(outcome.Name)
+		if branch == nil {
+			continue
+		}
+		branch.status = outcome.Status
+		branch.artifacts = outcome.Artifacts
+		branch.settled = true
+	}
+	return fanIn
 }
 
 // lastWorkspaceBranch rebuilds walk's run-scoped workspace-branch binding
@@ -831,6 +1141,9 @@ func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine, nsPr
 		}
 		t, ok := machine.Task(e.Stage)
 		if !ok {
+			continue
+		}
+		if e.Status == string(apiv1.ResultFailure) && t.ContinueOnError {
 			continue
 		}
 		if b := rebindWorkspaceBranch(t, apiv1.ResultEnvelope{Outputs: e.Outputs}, nsPrefix); b != "" {

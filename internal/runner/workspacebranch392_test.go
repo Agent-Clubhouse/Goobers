@@ -97,6 +97,10 @@ func (b *branchObservingDeterministic) Run(ctx context.Context, env apiv1.Invoca
 // context), and "rework"/"verify" stand in for the shared implement/local-ci
 // stages that must land on the PR's branch without doing anything themselves.
 func rebindFixtureMachine(t *testing.T) *workflow.Machine {
+	return rebindFixtureMachineWithContinueOnError(t, false)
+}
+
+func rebindFixtureMachineWithContinueOnError(t *testing.T, continueOnError bool) *workflow.Machine {
 	t.Helper()
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
@@ -110,6 +114,7 @@ func rebindFixtureMachine(t *testing.T) *workflow.Machine {
 			{
 				Name: "rework", Type: apiv1.TaskDeterministic, Goal: "rework the PR",
 				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify",
+				ContinueOnError: continueOnError,
 			},
 			{
 				Name: "verify", Type: apiv1.TaskDeterministic, Goal: "verify the rework",
@@ -396,6 +401,23 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("tolerated failure does not rebind", func(t *testing.T) {
+		events := []journal.Event{
+			{
+				Type: journal.EventStageFinished, Stage: "select", Status: string(apiv1.ResultSuccess),
+				Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"},
+			},
+			{
+				Type: journal.EventStageFinished, Stage: "rework", Status: string(apiv1.ResultFailure),
+				Outputs: map[string]any{WorkspaceBranchOutput: "goobers/never"},
+			},
+		}
+		machine := rebindFixtureMachineWithContinueOnError(t, true)
+		if got := lastWorkspaceBranch(events, machine, providers.DefaultBranchNamespace); got != "goobers/a" {
+			t.Errorf("lastWorkspaceBranch = %q, want prior binding %q", got, "goobers/a")
+		}
+	})
 }
 
 // TestWorkspaceBranchSurvivesCrashAndResume is the durability half of the
