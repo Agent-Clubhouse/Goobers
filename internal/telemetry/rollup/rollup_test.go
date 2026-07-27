@@ -161,6 +161,89 @@ func TestIngestRunPreservesParallelBranches(t *testing.T) {
 	}
 }
 
+func TestIngestRunMatchesOverlappingBranchSpans(t *testing.T) {
+	tmp := t.TempDir()
+	runID := "1111111111111111cccccccccccccccc"
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLineForBranch(2, 1, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(3, 2, fixtureStart.Add(2*time.Second), `"type":"stage.started","stage":"research","attempt":1`),
+		eventLineForBranch(4, 1, fixtureStart.Add(5*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"success"`),
+		eventLineForBranch(5, 2, fixtureStart.Add(6*time.Second), `"type":"stage.finished","stage":"research","attempt":1,"status":"success"`),
+		eventLine(6, fixtureStart.Add(7*time.Second), `"type":"run.finished","status":"completed"`),
+	}, "\n") + "\n"
+	spanRecords := []telemetry.SpanRecord{
+		{
+			Schema: telemetry.SpanSchema, TraceID: runID, SpanID: "1111111111111111",
+			Name: "task/research", Kind: telemetry.SpanKindTask,
+			StartTime: fixtureStart.Add(500 * time.Millisecond), EndTime: fixtureStart.Add(5 * time.Second),
+			Status: "ok",
+			Attributes: map[string]string{
+				telemetry.AttrStage: "research", telemetry.AttrAttemptNumber: "1", telemetry.AttrBranch: "1",
+				telemetry.AttrModel: "model", telemetry.AttrHarnessVersion: "harness", telemetry.AttrUsageCostUSD: "1.25",
+			},
+		},
+		{
+			Schema: telemetry.SpanSchema, TraceID: runID, SpanID: "2222222222222222",
+			Name: "task/research", Kind: telemetry.SpanKindTask,
+			StartTime: fixtureStart.Add(1500 * time.Millisecond), EndTime: fixtureStart.Add(6 * time.Second),
+			Status: "ok",
+			Attributes: map[string]string{
+				telemetry.AttrStage: "research", telemetry.AttrAttemptNumber: "1", telemetry.AttrBranch: "2",
+				telemetry.AttrModel: "model", telemetry.AttrHarnessVersion: "harness", telemetry.AttrUsageCostUSD: "2.50",
+			},
+		},
+	}
+	var spans strings.Builder
+	for _, record := range spanRecords {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("marshal span: %v", err)
+		}
+		spans.Write(line)
+		spans.WriteByte('\n')
+	}
+	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, spans.String())
+	db := openTestDB(t, tmp)
+
+	if err := db.IngestRun(runDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	rows, err := db.sql.Query(`
+		SELECT branch, traversal, cost_usd
+		FROM stage_usage
+		WHERE run_id = ?
+		ORDER BY branch`, runID)
+	if err != nil {
+		t.Fatalf("query stage usage: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for i, want := range []struct {
+		branch    int
+		traversal int
+		cost      float64
+	}{{1, 1, 1.25}, {2, 2, 2.50}} {
+		if !rows.Next() {
+			t.Fatalf("stage usage rows ended at %d", i)
+		}
+		var branch, traversal int
+		var cost float64
+		if err := rows.Scan(&branch, &traversal, &cost); err != nil {
+			t.Fatalf("scan stage usage: %v", err)
+		}
+		if branch != want.branch || traversal != want.traversal || cost != want.cost {
+			t.Fatalf("stage usage row %d = {%d %d %.2f}, want {%d %d %.2f}",
+				i, branch, traversal, cost, want.branch, want.traversal, want.cost)
+		}
+	}
+	if rows.Next() {
+		t.Fatal("stage usage contains unexpected extra rows")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate stage usage: %v", err)
+	}
+}
+
 func TestIngestRunTreatsRunResumedAsActive(t *testing.T) {
 	tmp := t.TempDir()
 	runID := "11111111111111111111111111111111"

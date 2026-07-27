@@ -90,6 +90,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrModel, "gpt-5.6-sol"),
 		attribute.String(AttrHarnessVersion, "copilot version 1.2.3"),
 		attribute.String(AttrStage, "implement"),
+		attribute.Int(AttrBranch, 3),
 		attribute.String(AttrStageType, StageTypeAgentic),
 		attribute.Int(AttrAttemptNumber, 2),
 		attribute.String(AttrAttemptKind, AttemptKindPolicy),

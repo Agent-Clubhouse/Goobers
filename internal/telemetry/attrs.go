@@ -39,6 +39,7 @@ func taskAttributeSet(a TaskAttributes) []attribute.KeyValue {
 		attribute.String(AttrGaggle, a.Gaggle),
 		attribute.String(AttrWorkflow, a.WorkflowID),
 		attribute.String(AttrStage, a.TaskID),
+		attribute.Int(AttrBranch, a.Branch),
 		attribute.Int(AttrAttemptNumber, attempt),
 	}
 	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)

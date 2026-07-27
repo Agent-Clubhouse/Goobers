@@ -17,6 +17,7 @@ const (
 	AttrModel                  = "goobers.model"
 	AttrHarnessVersion         = "goobers.harness.version"
 	AttrStage                  = "goobers.stage"
+	AttrBranch                 = "goobers.branch"
 	AttrStageType              = "goobers.stage.type"
 	AttrAttemptNumber          = "goobers.attempt.n"
 	AttrAttemptKind            = "goobers.attempt.kind"
@@ -51,6 +52,7 @@ func AllAttributes() []Attribute {
 		AttrModel,
 		AttrHarnessVersion,
 		AttrStage,
+		AttrBranch,
 		AttrStageType,
 		AttrAttemptNumber,
 		AttrAttemptKind,
@@ -130,6 +132,7 @@ type TaskAttributes struct {
 	GooberDigest    string
 	RunID           string
 	TaskID          string
+	Branch          int
 	TaskType        string
 	GooberID        string
 	Model           string

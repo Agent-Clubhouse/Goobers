@@ -35,8 +35,9 @@ const runnerTestWaitTimeout = 15 * time.Second
 // three methods (issue #126). Returns the zero telemetry.Span throughout, so
 // its End/Succeed/Fail calls no-op exactly like a nil Telemetry would.
 type fakeSpanStarter struct {
-	mu    sync.Mutex
-	calls []string
+	mu        sync.Mutex
+	calls     []string
+	taskAttrs []telemetry.TaskAttributes
 }
 
 func (f *fakeSpanStarter) record(s string) {
@@ -51,7 +52,10 @@ func (f *fakeSpanStarter) StartRun(ctx context.Context, attrs telemetry.RunAttri
 }
 
 func (f *fakeSpanStarter) StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error) {
-	f.record("task:" + attrs.TaskID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "task:"+attrs.TaskID)
+	f.taskAttrs = append(f.taskAttrs, attrs)
 	return ctx, telemetry.Span{}, nil
 }
 
@@ -4913,6 +4917,27 @@ func TestRunnerEmitsRunTaskAndGateSpans(t *testing.T) {
 	want := []string{"run:run-span", "task:implement", "gate:review"}
 	if !reflect.DeepEqual(spans.calls, want) {
 		t.Fatalf("span calls = %v, want %v", spans.calls, want)
+	}
+	if len(spans.taskAttrs) != 1 || spans.taskAttrs[0].Branch != 0 {
+		t.Fatalf("root task span attributes = %#v, want branch 0", spans.taskAttrs)
+	}
+}
+
+func TestStartTaskSpanCarriesParallelBranch(t *testing.T) {
+	machine := fixtureMachine(t)
+	task, ok := machine.Task("implement")
+	if !ok {
+		t.Fatal("fixture task implement missing")
+	}
+	spans := &fakeSpanStarter{}
+	r := &Runner{cfg: Config{Telemetry: spans}}
+
+	r.startTaskSpan(context.Background(), StartInput{
+		RunID: "parallel-span", Machine: machine, Gaggle: "acme-web",
+	}, task, 2, 1, "")
+
+	if len(spans.taskAttrs) != 1 || spans.taskAttrs[0].Branch != 2 {
+		t.Fatalf("parallel task span attributes = %#v, want branch 2", spans.taskAttrs)
 	}
 }
 

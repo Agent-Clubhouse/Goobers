@@ -1027,11 +1027,21 @@ func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span
 	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
 		return 0, false, fmt.Errorf("rollup: span %s has invalid time window", span.SpanID)
 	}
-	rows, err := tx.Query(`
+	query := `
 		SELECT traversal, started_at
 		FROM stage_attempts
-		WHERE run_id = ? AND stage = ? AND attempt = ?
-		ORDER BY traversal`, runID, stage, attempt)
+		WHERE run_id = ? AND stage = ? AND attempt = ?`
+	args := []any{runID, stage, attempt}
+	if rawBranch, ok := span.Attributes[telemetry.AttrBranch]; ok {
+		branch, err := strconv.Atoi(rawBranch)
+		if err != nil || branch < 0 {
+			return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrBranch, rawBranch)
+		}
+		query += ` AND branch = ?`
+		args = append(args, branch)
+	}
+	query += ` ORDER BY traversal`
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
 	}

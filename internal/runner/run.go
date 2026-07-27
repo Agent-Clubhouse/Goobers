@@ -1163,7 +1163,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if resumedResult != nil {
 				result = *resumedResult
 			} else {
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, pointers, lastResult, completed, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				branch := 0
+				if par != nil && par.current() != nil {
+					branch = par.current().id
+				}
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, pointers, lastResult, completed, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -2163,7 +2167,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -2231,7 +2235,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if class != journal.AttemptInfra || attempt == startAttempt {
 			policyAttempts++
 		}
-		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, int(attempt), string(class))
+		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
@@ -2430,7 +2434,7 @@ func routeRetryDecision(jr *journal.Run, result gate.Result, stage string, subje
 
 // startTaskSpan opens one task-attempt span under the run's trace, if telemetry is
 // configured. A zero telemetry.Span is safe to use (its methods no-op).
-func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task, attempt int, attemptKind string) (context.Context, telemetry.Span) {
+func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task, branch, attempt int, attemptKind string) (context.Context, telemetry.Span) {
 	if r.cfg.Telemetry == nil {
 		return ctx, telemetry.Span{}
 	}
@@ -2442,6 +2446,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 		GooberDigest:    in.GooberDigest,
 		RunID:           in.RunID,
 		TaskID:          t.Name,
+		Branch:          branch,
 		TaskType:        string(t.Type),
 		GooberID:        t.Goober,
 		Attempt:         attempt,

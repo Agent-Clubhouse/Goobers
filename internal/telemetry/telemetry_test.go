@@ -87,6 +87,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		GooberDigest:   "sha256:goobers",
 		RunID:          runID,
 		TaskID:         "implement",
+		Branch:         3,
 		TaskType:       "agentic",
 		GooberID:       "coder",
 		Model:          "gpt-5.6-sol",
@@ -164,6 +165,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	taskAttrs := attrMap(task)
 	assertAttr(t, taskAttrs, AttrGooberDigest, "sha256:goobers")
 	assertAttr(t, taskAttrs, AttrStage, "implement")
+	assertAttr(t, taskAttrs, AttrBranch, "3")
 	assertAttr(t, taskAttrs, AttrStageType, "agentic")
 	assertAttr(t, taskAttrs, AttrGoober, "coder")
 	assertAttr(t, taskAttrs, AttrModel, "gpt-5.6-sol")
@@ -862,6 +864,7 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.model",
 		"goobers.harness.version",
 		"goobers.stage",
+		"goobers.branch",
 		"goobers.stage.type",
 		"goobers.attempt.n",
 		"goobers.attempt.kind",
