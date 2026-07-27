@@ -177,7 +177,10 @@ func (c *connector) Query(ctx context.Context, request externaltelemetry.QueryRe
 			errors.New("ADX connector accepts data queries, not control commands"),
 		)
 	}
-	payload, err := requestPayload(c.database, request)
+	if err := ctx.Err(); err != nil {
+		return externaltelemetry.SourceResult{}, err
+	}
+	payload, err := requestPayload(ctx, c.database, request)
 	if err != nil {
 		return externaltelemetry.SourceResult{}, externaltelemetry.NewQueryError("request_encoding", "query", false, err)
 	}
@@ -246,7 +249,7 @@ func (c *connector) Query(ctx context.Context, request externaltelemetry.QueryRe
 	return result, nil
 }
 
-func requestPayload(database string, request externaltelemetry.QueryRequest) ([]byte, error) {
+func requestPayload(ctx context.Context, database string, request externaltelemetry.QueryRequest) ([]byte, error) {
 	body := struct {
 		Database   string `json:"db"`
 		Query      string `json:"csl"`
@@ -274,19 +277,23 @@ func requestPayload(database string, request externaltelemetry.QueryRequest) ([]
 	if request.Window.End != nil {
 		parameters[WindowEndParameter] = "datetime(" + request.Window.End.UTC().Format(time.RFC3339Nano) + ")"
 	}
+	options := map[string]any{
+		"request_callout_disabled":             true,
+		"request_external_data_disabled":       true,
+		"request_external_table_disabled":      true,
+		"request_impersonation_disabled":       true,
+		"request_readonly_hardline":            true,
+		"request_remote_entities_disabled":     true,
+		"request_sandboxed_execution_disabled": true,
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		options["servertimeout"] = formatADXTimespan(time.Until(deadline))
+	}
 	properties, err := json.Marshal(struct {
-		Options    map[string]bool `json:"Options"`
-		Parameters map[string]any  `json:"Parameters,omitempty"`
+		Options    map[string]any `json:"Options"`
+		Parameters map[string]any `json:"Parameters,omitempty"`
 	}{
-		Options: map[string]bool{
-			"request_callout_disabled":             true,
-			"request_external_data_disabled":       true,
-			"request_external_table_disabled":      true,
-			"request_impersonation_disabled":       true,
-			"request_readonly_hardline":            true,
-			"request_remote_entities_disabled":     true,
-			"request_sandboxed_execution_disabled": true,
-		},
+		Options:    options,
 		Parameters: parameters,
 	})
 	if err != nil {
@@ -294,6 +301,28 @@ func requestPayload(database string, request externaltelemetry.QueryRequest) ([]
 	}
 	body.Properties = string(properties)
 	return json.Marshal(body)
+}
+
+func formatADXTimespan(duration time.Duration) string {
+	if duration <= 0 {
+		return "00:00:00"
+	}
+	duration = duration.Truncate(100 * time.Nanosecond)
+	days := duration / (24 * time.Hour)
+	hours := duration % (24 * time.Hour) / time.Hour
+	minutes := duration % time.Hour / time.Minute
+	seconds := duration % time.Minute / time.Second
+	ticks := duration % time.Second / (100 * time.Nanosecond)
+
+	var prefix string
+	if days > 0 {
+		prefix = fmt.Sprintf("%d.", days)
+	}
+	value := fmt.Sprintf("%s%02d:%02d:%02d", prefix, hours, minutes, seconds)
+	if ticks > 0 {
+		value += fmt.Sprintf(".%07d", ticks)
+	}
+	return value
 }
 
 func encodeParameter(value any) (any, error) {

@@ -104,7 +104,7 @@ func TestADXConnectorContractAndParameterizedRequest(t *testing.T) {
 }
 
 func TestRequestPayloadIncludesRestrictionsWithoutParameters(t *testing.T) {
-	payload, err := requestPayload("metrics", externaltelemetry.QueryRequest{Query: "Metrics | take 1"})
+	payload, err := requestPayload(context.Background(), "metrics", externaltelemetry.QueryRequest{Query: "Metrics | take 1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +127,73 @@ func TestRequestPayloadIncludesRestrictionsWithoutParameters(t *testing.T) {
 		options["request_external_data_disabled"] != true ||
 		options["request_remote_entities_disabled"] != true {
 		t.Fatalf("request restrictions = %#v", properties["Options"])
+	}
+	if _, exists := options["servertimeout"]; exists {
+		t.Fatalf("request without a deadline contains servertimeout: %#v", options)
+	}
+}
+
+func TestADXRequestIncludesServerTimeoutFromDeadline(t *testing.T) {
+	timeoutValue := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Properties string `json:"properties"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var properties struct {
+			Options map[string]any `json:"Options"`
+		}
+		if err := json.Unmarshal([]byte(body.Properties), &properties); err != nil {
+			t.Errorf("decode properties: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		timeout, _ := properties.Options["servertimeout"].(string)
+		timeoutValue <- timeout
+		_, _ = writer.Write([]byte(successResponse))
+	}))
+	defer server.Close()
+
+	connector := buildTestConnector(t, server, externaltelemetry.AuthConfig{Mode: externaltelemetry.AuthNone}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := connector.Query(ctx, externaltelemetry.QueryRequest{
+		Query:  "Metrics | take 1",
+		Shape:  externaltelemetry.ShapeTimeSeries,
+		Limits: externaltelemetry.QueryLimits{MaxBytes: 4096},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout := <-timeoutValue
+	parsed, err := time.Parse("15:04:05", timeout)
+	if err != nil {
+		t.Fatalf("servertimeout = %q: %v", timeout, err)
+	}
+	duration := time.Duration(parsed.Hour())*time.Hour +
+		time.Duration(parsed.Minute())*time.Minute +
+		time.Duration(parsed.Second())*time.Second +
+		time.Duration(parsed.Nanosecond())
+	if duration < 45*time.Second || duration > time.Minute {
+		t.Fatalf("servertimeout = %q (%s), want remaining one-minute context deadline", timeout, duration)
+	}
+}
+
+func TestFormatADXTimespan(t *testing.T) {
+	tests := map[time.Duration]string{
+		0:                     "00:00:00",
+		100 * time.Nanosecond: "00:00:00.0000001",
+		2*time.Hour + 3*time.Minute + 4*time.Second:       "02:03:04",
+		25*time.Hour + 2*time.Minute + 3*time.Second + 40: "1.01:02:03",
+	}
+	for duration, want := range tests {
+		if got := formatADXTimespan(duration); got != want {
+			t.Errorf("formatADXTimespan(%s) = %q, want %q", duration, got, want)
+		}
 	}
 }
 
