@@ -94,8 +94,9 @@ The runner hands the stage an `InvocationEnvelope`:
   - on a **repass**, also the gate's most-recent `Verdict` artifact — see
     "Repass context obligation" below.
   Artifacts fanned into a parallel join also carry their declaration-order
-  `branch` id and `branchName`; the union is ordered first by branch declaration,
-  then by each branch's original pointer order.
+  `branch` id and `branchName`; both fields are paired and valid only on artifact
+  pointers. The union is ordered first by branch declaration, then by each
+  branch's original pointer order.
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
@@ -763,7 +764,7 @@ from the diff alone.
   optional `additionalWorkspaces` invocation field — read-only reference-repo
   checkouts for a gaggle's `additionalRepos` (MGV-11 #1286); `v1alpha4` admits
   `no-work` through the closed result schema for both deterministic and agentic
-  stage producers; `v1alpha5` adds branch attribution on artifact context
+  stage producers; `v1alpha5` adds paired branch attribution to artifact context
   pointers used at parallel joins.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.

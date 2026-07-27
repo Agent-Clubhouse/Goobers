@@ -104,9 +104,11 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		},
 		ContextPointers: []apiv1.ContextPointer{
 			{
-				Name:     "evidence",
-				Artifact: pointer(completeArtifactPointer("artifacts/gather/evidence.json")),
-				RunID:    "source-run",
+				Name:       "evidence",
+				Branch:     1,
+				BranchName: "gather",
+				Artifact:   pointer(completeArtifactPointer("artifacts/gather/evidence.json")),
+				RunID:      "source-run",
 			},
 			{
 				Name: "issue",
