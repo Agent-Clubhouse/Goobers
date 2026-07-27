@@ -1,0 +1,53 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: parallel-analysis
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: query
+  tasks:
+    - name: query
+      type: deterministic
+      goal: Query work.
+      run:
+        command: ["query"]
+      next: analyze
+    - name: security
+      type: deterministic
+      goal: Analyze security.
+      run:
+        command: ["analyze-security"]
+      next: "@join"
+    - name: performance
+      type: deterministic
+      goal: Analyze performance.
+      run:
+        command: ["analyze-performance"]
+      next: "@join"
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement work.
+      next: review
+  gates:
+    - name: review
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+        fail: "@abort"
+        timeout: "@escalate"
+  parallels:
+    - name: analyze
+      failurePolicy: all_or_nothing
+      branches:
+        - name: security
+          start: security
+        - name: performance
+          start: performance
+      join: implement
+      onFailure: "@abort"

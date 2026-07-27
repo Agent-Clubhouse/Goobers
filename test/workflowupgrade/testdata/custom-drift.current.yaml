@@ -1,0 +1,37 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: implementation
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "17 * * * *"
+  readiness:
+    maxConcurrentRuns: 3
+  start: query
+  tasks:
+    - name: query
+      type: deterministic
+      goal: Query work.
+      run:
+        command: ["query"]
+      inputs:
+        legacyContext: "owner/repo"
+      next: implement
+    - name: implement
+      type: deterministic
+      goal: Implement work.
+      run:
+        command: ["implement"]
+      next: review
+  gates:
+    - name: review
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+        fail: "@abort"
+        timeout: "@escalate"

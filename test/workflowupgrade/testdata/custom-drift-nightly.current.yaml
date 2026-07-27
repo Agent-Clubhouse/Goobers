@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: nightly-release
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "30 2 * * *"
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the release.
+      run:
+        command: ["build"]
+      next: deploy
+    - name: deploy
+      type: deterministic
+      goal: Deploy with the owner's custom command.
+      run:
+        command: ["custom-deploy", "--channel", "nightly"]
