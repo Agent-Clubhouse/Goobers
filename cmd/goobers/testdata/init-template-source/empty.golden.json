@@ -1,0 +1,17 @@
+{
+  "action": "seed-config-source",
+  "version": 1,
+  "created": [
+    "instance.yaml.example",
+    "gaggles/example/gaggle.yaml",
+    "gaggles/example/goobers/implementer/goober.yaml",
+    "gaggles/example/goobers/implementer/instructions.md",
+    "gaggles/example/goobers/reviewer/goober.yaml",
+    "gaggles/example/goobers/reviewer/instructions.md",
+    "gaggles/example/workflows/quickstart.yaml",
+    "manifest.yaml"
+  ],
+  "skipped": [],
+  "path": "$SOURCE",
+  "nextCommand": "goobers validate --source-tree --json '$SOURCE'"
+}

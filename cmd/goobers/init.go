@@ -19,9 +19,11 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
+
+	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
 	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
@@ -30,8 +32,12 @@ const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --templa
 	"selects a checked-in config source and target GitHub application repository,\n" +
 	"then validates both. The source may be new or existing locally, cloned from\n" +
 	"GitHub, or optionally backed by a newly confirmed GitHub repository.\n" +
-	"--template=quickstart seeds the versioned onboarding\n" +
-	"workflow; it is intentionally not production-safe. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
+	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
+	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
+	"and gaggles/) without runtime state. The source-tree action is non-interactive,\n" +
+	"preserves every existing file, and reports each created or skipped path;\n" +
+	"--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
 	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
@@ -65,10 +71,18 @@ func runInitWithInputForOSAndGitHub(
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
 	guided := fs.Bool("guided", false, "prompt for config source, target repository, credentials, and workflows")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
+	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
+	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	sourceTreeSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source-tree" {
+			sourceTreeSet = true
+		}
+	})
 	selectedModes := 0
 	for _, selected := range []bool{*demo, *guided, *template != ""} {
 		if selected {
@@ -87,6 +101,22 @@ func runInitWithInputForOSAndGitHub(
 		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
 		return 2
 	}
+	if sourceTreeSet && *sourceTree == "" {
+		pf(stderr, "error: --source-tree destination must not be empty\n")
+		return 2
+	}
+	if *sourceTree != "" && *template != instance.QuickstartTemplate {
+		pf(stderr, "error: --source-tree requires --template=%s\n", instance.QuickstartTemplate)
+		return 2
+	}
+	if *asJSON && *sourceTree == "" {
+		pf(stderr, "error: --json is supported by init only with --source-tree\n")
+		return 2
+	}
+	if *sourceTree != "" && fs.NArg() != 0 {
+		pf(stderr, "error: --source-tree supplies the destination; do not also pass [path]\n")
+		return 2
+	}
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
@@ -95,6 +125,9 @@ func runInitWithInputForOSAndGitHub(
 	if demoUnisolated && !*insecure {
 		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s; run `goobers preflight` for the fully isolated WSL 2 route, or pass --insecure to proceed without isolation\n", goos)
 		return 2
+	}
+	if *sourceTree != "" {
+		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr, goos)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -198,6 +231,69 @@ func ensureInitCompleted(root string) error {
 		return err
 	}
 	return instanceLog.Close()
+}
+
+const configSourceActionVersion = 1
+
+type configSourceActionEnvelope struct {
+	Action      string   `json:"action"`
+	Version     int      `json:"version"`
+	Created     []string `json:"created"`
+	Skipped     []string `json:"skipped"`
+	Path        string   `json:"path"`
+	NextCommand string   `json:"nextCommand"`
+}
+
+func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
+	result, err := instance.SeedQuickstartConfigSource(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	var validationOutput strings.Builder
+	if code := runValidate(
+		[]string{"--source-tree", "--json", result.Root},
+		&validationOutput,
+		&validationOutput,
+	); code != 0 {
+		pf(stderr, "error: seeded config source failed validation\n%s", validationOutput.String())
+		return code
+	}
+	abs := absolutePath(result.Root)
+	nextCommand := "goobers validate --source-tree --json " + quoteShellArg(abs, goos)
+	envelope := configSourceActionEnvelope{
+		Action:      "seed-config-source",
+		Version:     configSourceActionVersion,
+		Created:     result.Created,
+		Skipped:     result.Skipped,
+		Path:        abs,
+		NextCommand: nextCommand,
+	}
+	if asJSON {
+		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, envelope); err != nil {
+			pf(stderr, "error: encode config-source result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	pf(stdout, "seeded quickstart config source at %s\n", abs)
+	for _, created := range result.Created {
+		pf(stdout, "  created  %s\n", created)
+	}
+	for _, skipped := range result.Skipped {
+		pf(stdout, "  skipped  %s (already exists)\n", skipped)
+	}
+	pf(stdout, "\nNext: %s\n", nextCommand)
+	return 0
+}
+
+func quoteShellArg(arg, goos string) string {
+	if goos == "windows" {
+		// nextCommand targets PowerShell, where single-quoted strings are literal.
+		return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
 
 func finishGuidedInit(root, abs string, result guidedInitResult, stdout, stderr io.Writer) int {
