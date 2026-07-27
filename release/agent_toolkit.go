@@ -124,12 +124,21 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 			newAgentToolkitAdapter("agents", "AGENTS.md"),
 		},
 		CLICapabilities: agentToolkitCLICapabilities{
-			Required: []string{"version", "versions", "validate", "status", "trace", "workflow show"},
+			Required: []string{
+				"version",
+				"versions",
+				"features",
+				"examples list",
+				"examples show",
+				"validate",
+				"status",
+				"trace",
+				"workflow show",
+			},
 			Optional: []string{
 				"agent-kit install",
 				"agent-kit check",
 				"agent-kit update",
-				"features",
 				"runs list",
 				"stats",
 				"blocked list",

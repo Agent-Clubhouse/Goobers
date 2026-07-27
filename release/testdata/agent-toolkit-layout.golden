@@ -73,6 +73,7 @@ payload/.goobers/agent-toolkit/internal/capability/capability.go
 payload/.goobers/agent-toolkit/release.json
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/SKILL.md
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/dsl-reference.md
+payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-authoring.md
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/terminology.md
 payload/.goobers/agent-toolkit/skills/goobers-environment-resolver/SKILL.md
 payload/.goobers/agent-toolkit/skills/goobers-run-operator/SKILL.md

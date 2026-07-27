@@ -61,8 +61,20 @@ from the matching release are authoritative. A source checkout is optional.
 The canonical
 [`goobers-dsl-author` skill](../../skills/goobers-dsl-author/SKILL.md) turns a
 plain-English process into Gaggle, Goober, and Workflow definitions, explains
-the platform's core terms, and points the authoring agent at the matching docs
-and schemas. It does not require the Goobers daemon.
+the platform's core terms, and grounds the result in both the target repository
+and the installed Goobers release. It does not require the Goobers daemon.
+
+The author first runs the environment resolver, then inspects the configured
+target's applicable agent guidance, README and contributor docs, CI workflows,
+task-runner files, and language manifests without executing repository commands.
+For remote-only targets it uses existing read-only provider access at the
+configured ref. The result cites the exact path and line, heading, or remote ref
+behind every inferred command and convention.
+
+The selected binary's `versions --json`, `features --json`, canonical examples,
+release-matched schemas, and structured validator govern the generated YAML.
+Repository prose never overrides those contracts, and current `main` is not used
+as a substitute for an installed release.
 
 ## Ask in plain English
 
@@ -77,9 +89,9 @@ For example:
 > push code or open pull requests.
 
 The skill first explains the terms involved, chooses an output layout, then
-sketches the state graph and generates the applicable paths. For a new
-checked-in config source tree, it emits a complete tree that can be validated
-directly:
+shows its repository evidence, selected DSL version, state graph, planned paths,
+and least-privilege grants before writing. For a new checked-in config source
+tree, it emits a complete tree that can be validated directly:
 
 ```text
 instance.yaml.example
@@ -102,6 +114,13 @@ task, an automated status gate, and an agentic triage task. The goober and its
 agentic task receive only `agent:model`, `repo:read`, and
 `github:issues:write`.
 
+For an existing config, the skill reads the current definitions and changes only
+the fields required by the request. Schedules, readiness budgets, retries,
+timeouts, run controls, connections, harness/model choices, and user-authored
+instructions remain untouched unless the request changes them. A scaffold may
+seed a missing definition in an initialized instance, but it is never forced
+over an existing definition or returned without tailoring.
+
 You can also use the skill as a docs finder:
 
 > Use `goobers-dsl-author` to explain the difference between a task and a gate,
@@ -123,11 +142,11 @@ Validation is local and does not require `goobers up`:
 
 ```sh
 # An initialized instance containing instance.yaml and config/
-goobers validate ./my-instance
+goobers validate --json ./my-instance
 
 # A checked-in config source tree containing instance.yaml.example,
 # manifest.yaml, and gaggles/
-goobers validate --source-tree ./my-config
+goobers validate --json --source-tree ./my-config
 ```
 
 The `--source-tree` path is the config root itself: do not add an extra
@@ -139,6 +158,11 @@ broken state references, unreachable states, invalid schedules, incomplete
 gate outcomes, unknown capabilities, and task grants that exceed a goober's
 grants. Give validation errors back to the same authoring agent and have it
 repair the generated files before committing them.
+
+The author reports `ready` only when the structured validator returns `ok:
+true`. An inaccessible target, unresolved command or branch, release mismatch,
+or finding that cannot be repaired without unrelated edits is returned as
+`unresolved` with the exact evidence or validator finding still needed.
 
 If an initialized instance already exists, the agent may use
 `goobers scaffold goober` and `goobers scaffold workflow` as validated
