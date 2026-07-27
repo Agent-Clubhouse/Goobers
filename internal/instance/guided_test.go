@@ -10,6 +10,18 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 )
 
+func initGuidedForTest(root string, opts GuidedOptions) (*InitResult, error) {
+	sourceRoot := root + "-config-source"
+	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		return nil, err
+	}
+	cfg, err := LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		return nil, err
+	}
+	return InitGuidedFromSource(root, sourceRoot, cfg)
+}
+
 func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "guided")
 	opts := GuidedOptions{
@@ -27,7 +39,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		CICommand:            []string{"npm", "run", "ci"},
 	}
 
-	res, err := InitGuided(root, opts)
+	res, err := initGuidedForTest(root, opts)
 	if err != nil {
 		t.Fatalf("InitGuided: %v", err)
 	}
@@ -111,7 +123,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 
 func TestInitGuidedRejectsInvalidOptionsBeforeWriting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "guided")
-	_, err := InitGuided(root, GuidedOptions{
+	_, err := initGuidedForTest(root, GuidedOptions{
 		GaggleName:           "widget",
 		RepoOwner:            "acme",
 		RepoName:             "widget",
@@ -176,7 +188,7 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 			layout := NewLayout(root)
 			sentinel := test.seed(t, layout)
 
-			_, err := InitGuided(root, opts)
+			_, err := initGuidedForTest(root, opts)
 			if err == nil || !strings.Contains(err.Error(), "guided setup requires an unconfigured target") ||
 				!strings.Contains(err.Error(), test.blocker) {
 				t.Fatalf("InitGuided error = %v", err)
@@ -217,7 +229,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 			}
 			root := filepath.Join(t.TempDir(), "guided")
-			if _, err := InitGuided(root, opts); err != nil {
+			if _, err := initGuidedForTest(root, opts); err != nil {
 				t.Fatalf("InitGuided: %v", err)
 			}
 			set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
@@ -268,7 +280,7 @@ func TestValidGuidedTokenEnvNameRejectsTokenValues(t *testing.T) {
 
 func TestInitGuidedTokenValidationDoesNotEchoSecret(t *testing.T) {
 	const secret = "github_pat_11AASecret"
-	_, err := InitGuided(filepath.Join(t.TempDir(), "guided"), GuidedOptions{
+	_, err := initGuidedForTest(filepath.Join(t.TempDir(), "guided"), GuidedOptions{
 		GaggleName:           "widget",
 		RepoOwner:            "acme",
 		RepoName:             "widget",
@@ -296,8 +308,8 @@ func TestInitGuidedSourceMaterializesSeparateRuntimeState(t *testing.T) {
 		WorkTrackingTokenEnv: "ISSUES_TOKEN",
 		Workflows:            []string{GuidedWorkflowWorkNomination},
 	}
-	if err := InitGuidedSource(sourceRoot, opts); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	for _, path := range []string{
 		filepath.Join(sourceRoot, GuidedSourceInstanceFile),
@@ -351,8 +363,8 @@ func TestMaterializeWorkflowSourceAppliesLaterSourceEdits(t *testing.T) {
 		WorkTrackingTokenEnv: "ISSUES_TOKEN",
 		Workflows:            []string{GuidedWorkflowWorkNomination},
 	}
-	if err := InitGuidedSource(sourceRoot, opts); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
 	if err != nil {
@@ -426,8 +438,8 @@ func TestMaterializeWorkflowSourceRejectsInvalidSourceWithoutChangingRuntime(t *
 		WorkTrackingTokenEnv: "ISSUES_TOKEN",
 		Workflows:            []string{GuidedWorkflowWorkNomination},
 	}
-	if err := InitGuidedSource(sourceRoot, opts); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	sourceConfig, err := LoadGuidedSourceConfig(sourceRoot)
 	if err != nil {
@@ -464,7 +476,7 @@ func TestInitGuidedSourceRefusesToOverwriteExistingTree(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("sentinel\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := InitGuidedSource(sourceRoot, GuidedOptions{
+	_, err := SeedGuidedConfigSource(sourceRoot, GuidedOptions{
 		GaggleName:           "widget",
 		RepoOwner:            "app-org",
 		RepoName:             "widget",
@@ -473,7 +485,7 @@ func TestInitGuidedSourceRefusesToOverwriteExistingTree(t *testing.T) {
 		Workflows:            []string{GuidedWorkflowWorkNomination},
 	})
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
-		t.Fatalf("InitGuidedSource error = %v", err)
+		t.Fatalf("SeedGuidedConfigSource error = %v", err)
 	}
 	data, readErr := os.ReadFile(sentinel)
 	if readErr != nil || string(data) != "sentinel\n" {
@@ -491,8 +503,8 @@ func TestInitGuidedFromSourceRejectsOverlappingRuntimePath(t *testing.T) {
 		WorkTrackingTokenEnv: "ISSUES_TOKEN",
 		Workflows:            []string{GuidedWorkflowWorkNomination},
 	}
-	if err := InitGuidedSource(sourceRoot, opts); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	cfg, err := LoadGuidedSourceConfig(sourceRoot)
 	if err != nil {

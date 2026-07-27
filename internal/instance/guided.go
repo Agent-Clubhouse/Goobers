@@ -71,35 +71,6 @@ type GuidedOptions struct {
 	CICommand            []string
 }
 
-// InitGuided scaffolds a repository-specific instance from selected canonical
-// workflows.
-func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
-	opts = normalizeGuidedOptions(opts)
-	if err := validateGuidedOptions(opts); err != nil {
-		return nil, err
-	}
-	if err := CheckGuidedInitTarget(root); err != nil {
-		return nil, err
-	}
-	return initWithSeed(root, guidedConfig(opts), func(dir string) error {
-		return copyGuidedConfig(dir, opts)
-	})
-}
-
-// InitGuidedSource creates a complete checked-in config source tree without
-// placing runtime state or credential values beneath root.
-func InitGuidedSource(root string, opts GuidedOptions) error {
-	opts = normalizeGuidedOptions(opts)
-	if err := validateGuidedOptions(opts); err != nil {
-		return err
-	}
-	if err := CheckGuidedSourceTarget(root); err != nil {
-		return err
-	}
-	_, err := SeedGuidedConfigSource(root, opts)
-	return err
-}
-
 // SeedGuidedConfigSource applies prompt-selected guided configuration through
 // the same idempotent, no-clobber source seeder as the non-interactive action.
 func SeedGuidedConfigSource(root string, opts GuidedOptions) (*ConfigSourceSeedResult, error) {
@@ -594,19 +565,6 @@ func guidedConfig(opts GuidedOptions) *Config {
 	return cfg
 }
 
-func copyGuidedConfig(dir string, opts GuidedOptions) error {
-	files, err := guidedConfigFiles(opts)
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		if err := writeGuidedFile(filepath.Join(dir, filepath.FromSlash(file.path)), file.data); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func guidedConfigFiles(opts GuidedOptions) ([]configSeedFile, error) {
 	files := []configSeedFile{
 		{path: "manifest.yaml", data: guidedManifest(opts)},
@@ -788,14 +746,4 @@ func yamlScalar(value string) string {
 func yamlStringList(values []string) string {
 	data, _ := json.Marshal(values)
 	return string(data)
-}
-
-func writeGuidedFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
 }
