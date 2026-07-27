@@ -51,6 +51,13 @@ func TestTelemetryQueryExecutorRunsFakePointQuery(t *testing.T) {
 		artifact.Window.End.Sub(*artifact.Window.Start) != 15*time.Minute {
 		t.Fatalf("window = %+v", artifact.Window)
 	}
+	if recorder.maxBytes[ExternalTelemetryArtifactName] != artifact.Metadata.MaxBytes {
+		t.Fatalf(
+			"persisted byte limit = %d, artifact limit %d",
+			recorder.maxBytes[ExternalTelemetryArtifactName],
+			artifact.Metadata.MaxBytes,
+		)
+	}
 }
 
 func TestTelemetryQueryExecutorLoadsCheckedInQueryRef(t *testing.T) {

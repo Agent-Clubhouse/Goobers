@@ -119,6 +119,12 @@ type ArtifactRecorder interface {
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 }
 
+// BoundedArtifactRecorder applies a byte limit to the final persisted artifact.
+type BoundedArtifactRecorder interface {
+	ArtifactRecorder
+	RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error)
+}
+
 // ShellExecutor runs deterministic shell stages (invoke.Deterministic) in the
 // worktree the caller hands it via InvocationEnvelope.Workspace.
 type ShellExecutor struct {

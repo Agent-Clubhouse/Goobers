@@ -70,7 +70,7 @@ const maxQueryFileBytes = 1 << 20
 // records its normalized result as a journal artifact.
 type TelemetryQueryExecutor struct {
 	Host    *externaltelemetry.Host
-	Journal ArtifactRecorder
+	Journal BoundedArtifactRecorder
 	Now     func() time.Time
 }
 
@@ -79,7 +79,11 @@ func NewTelemetryQueryExecutor(host *externaltelemetry.Host, recorder ArtifactRe
 	if host == nil || recorder == nil {
 		return nil, errors.New("executor: external telemetry host and journal are required")
 	}
-	return &TelemetryQueryExecutor{Host: host, Journal: recorder}, nil
+	boundedRecorder, ok := recorder.(BoundedArtifactRecorder)
+	if !ok {
+		return nil, errors.New("executor: external telemetry journal must support bounded artifacts")
+	}
+	return &TelemetryQueryExecutor{Host: host, Journal: boundedRecorder}, nil
 }
 
 // Run executes one external telemetry query.
@@ -101,7 +105,11 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode external telemetry artifact: %w", err)
 	}
-	ref, err := e.Journal.RecordArtifact(ExternalTelemetryArtifactName, data)
+	ref, err := e.Journal.RecordArtifactBounded(
+		ExternalTelemetryArtifactName,
+		data,
+		artifact.Metadata.MaxBytes,
+	)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record external telemetry artifact: %w", err)
 	}

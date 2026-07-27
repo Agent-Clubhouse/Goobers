@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"sort"
@@ -424,11 +425,14 @@ func valueMatches(columnType ColumnType, value any) bool {
 		return err == nil
 	case TypeInteger:
 		switch typed := value.(type) {
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
-			if number, ok := typed.(json.Number); ok {
-				_, err := number.Int64()
-				return err == nil
-			}
+		case uint:
+			return uint64(typed) <= uint64(math.MaxInt64)
+		case uint64:
+			return typed <= uint64(math.MaxInt64)
+		case json.Number:
+			_, err := typed.Int64()
+			return err == nil
+		case int, int8, int16, int32, int64, uint8, uint16, uint32:
 			return true
 		default:
 			return false

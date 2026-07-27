@@ -401,38 +401,28 @@ func decodeResponse(data []byte, units map[string]string) (externaltelemetry.Sou
 	if len(trimmed) == 0 {
 		return externaltelemetry.SourceResult{}, errors.New("ADX response is empty")
 	}
-	switch trimmed[0] {
-	case '[':
-		var frames []responseFrame
-		if err := decodeJSON(data, &frames); err != nil {
-			return externaltelemetry.SourceResult{}, fmt.Errorf("decode ADX v2 response: %w", err)
-		}
-		if len(frames) == 0 || frames[len(frames)-1].FrameType != "DataSetCompletion" {
-			return externaltelemetry.SourceResult{}, errors.New("ADX v2 response is missing a final dataset completion frame")
-		}
-		for _, frame := range frames {
-			switch frame.FrameType {
-			case "DataTable":
-				tables = append(tables, frame.responseTable)
-			case "DataSetCompletion":
-				if frame.HasErrors {
-					return externaltelemetry.SourceResult{}, errors.New("ADX dataset completion reports query errors")
-				}
-				if frame.Cancelled {
-					return externaltelemetry.SourceResult{}, errors.New("ADX dataset completion reports cancellation")
-				}
+	if trimmed[0] != '[' {
+		return externaltelemetry.SourceResult{}, errors.New("ADX v2 response must be a JSON frame array")
+	}
+	var frames []responseFrame
+	if err := decodeJSON(data, &frames); err != nil {
+		return externaltelemetry.SourceResult{}, fmt.Errorf("decode ADX v2 response: %w", err)
+	}
+	if len(frames) == 0 || frames[len(frames)-1].FrameType != "DataSetCompletion" {
+		return externaltelemetry.SourceResult{}, errors.New("ADX v2 response is missing a final dataset completion frame")
+	}
+	for _, frame := range frames {
+		switch frame.FrameType {
+		case "DataTable":
+			tables = append(tables, frame.responseTable)
+		case "DataSetCompletion":
+			if frame.HasErrors {
+				return externaltelemetry.SourceResult{}, errors.New("ADX dataset completion reports query errors")
+			}
+			if frame.Cancelled {
+				return externaltelemetry.SourceResult{}, errors.New("ADX dataset completion reports cancellation")
 			}
 		}
-	case '{':
-		var response struct {
-			Tables []responseTable `json:"Tables"`
-		}
-		if err := decodeJSON(data, &response); err != nil {
-			return externaltelemetry.SourceResult{}, fmt.Errorf("decode ADX response: %w", err)
-		}
-		tables = response.Tables
-	default:
-		return externaltelemetry.SourceResult{}, errors.New("ADX response is not JSON")
 	}
 
 	primaryIndex := -1

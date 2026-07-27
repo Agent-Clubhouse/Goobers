@@ -329,6 +329,20 @@ func TestADXFailuresAreExplicit(t *testing.T) {
 			wantCode: "invalid_response",
 		},
 		{
+			name: "v1 object response",
+			handler: func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write([]byte(`{
+					"Tables":[{
+						"TableName":"PrimaryResult",
+						"Columns":[{"ColumnName":"value","DataType":"long"}],
+						"Rows":[[1]]
+					}]
+				}`))
+			},
+			policy:   externaltelemetry.PolicyConfig{MaxAttempts: 1, MaxBytes: 4096},
+			wantCode: "invalid_response",
+		},
+		{
 			name: "multiple primary results",
 			handler: func(writer http.ResponseWriter, _ *http.Request) {
 				_, _ = writer.Write([]byte(`[
@@ -466,21 +480,16 @@ func TestADXPreservesCredentialContextErrors(t *testing.T) {
 	}
 }
 
-func TestDecodeResponseSupportsV1EmptyTableAndUnits(t *testing.T) {
-	result, err := decodeResponse([]byte(`{
+func TestDecodeResponseRejectsV1Object(t *testing.T) {
+	_, err := decodeResponse([]byte(`{
 		"Tables":[{
 			"TableName":"PrimaryResult",
 			"Columns":[{"ColumnName":"requests","DataType":"long"}],
 			"Rows":[]
 		}]
 	}`), map[string]string{"requests": "count"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Rows) != 0 || len(result.Columns) != 1 ||
-		result.Columns[0].Type != externaltelemetry.TypeInteger || result.Columns[0].Unit != "count" {
-		t.Fatalf("result = %+v", result)
+	if err == nil || !strings.Contains(err.Error(), "frame array") {
+		t.Fatalf("v1 response error = %v", err)
 	}
 }
 

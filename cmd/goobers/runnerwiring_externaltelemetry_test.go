@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,4 +206,11 @@ type externalTelemetryTestRecorder struct {
 func (r *externalTelemetryTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	r.data = append([]byte(nil), data...)
 	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+}
+
+func (r *externalTelemetryTestRecorder) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	if len(data) > maxBytes {
+		return journal.Ref{}, errors.New("artifact exceeds byte limit")
+	}
+	return r.RecordArtifact(name, data)
 }

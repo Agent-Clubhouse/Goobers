@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -124,6 +125,26 @@ func TestHostRejectsMalformedDatetimeValues(t *testing.T) {
 	if err == nil || artifact.State != DataFailed || artifact.Failure == nil ||
 		artifact.Failure.Code != "invalid_source_value" || artifact.Failure.Kind != "normalization" {
 		t.Fatalf("malformed datetime = state %q failure %+v err %v", artifact.State, artifact.Failure, err)
+	}
+}
+
+func TestHostRejectsUnsignedIntegerOverflow(t *testing.T) {
+	connector := &sequenceConnector{result: SourceResult{
+		Columns: []Column{{Name: "value", Type: TypeInteger}},
+		Rows:    [][]any{{uint64(math.MaxUint64)}},
+	}}
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: 5 * time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: 4096,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "value",
+		Shape: ShapePoint,
+	})
+	if err == nil || artifact.State != DataFailed || artifact.Failure == nil ||
+		artifact.Failure.Code != "invalid_source_value" || artifact.Failure.Kind != "normalization" {
+		t.Fatalf("unsigned overflow = state %q failure %+v err %v", artifact.State, artifact.Failure, err)
 	}
 }
 
