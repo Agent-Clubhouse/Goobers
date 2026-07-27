@@ -15,8 +15,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/goobers/goobers/internal/agentkit"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/agentkit"
 )
 
 type resolverReport struct {
@@ -1137,24 +1138,6 @@ func repositoryIdentity(repository configRepo) string {
 	}
 }
 
-func repositoryIdentityFromRemoteURLs(remoteURLs []string) (string, bool) {
-	identities := make(map[string]bool)
-	for _, remoteURL := range remoteURLs {
-		identity, ok := repositoryIdentityFromRemoteURL(remoteURL)
-		if !ok {
-			continue
-		}
-		identities[identity] = true
-	}
-	if len(identities) != 1 {
-		return "", false
-	}
-	for identity := range identities {
-		return identity, true
-	}
-	return "", false
-}
-
 func repositoryIdentityFromRemoteURL(remoteURL string) (string, bool) {
 	value := strings.TrimSpace(remoteURL)
 	if value == "" {
@@ -1207,19 +1190,6 @@ func repositoryIdentityFromRemoteURL(remoteURL string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func containsAll(have, want []string) bool {
-	set := make(map[string]bool, len(have))
-	for _, item := range have {
-		set[item] = true
-	}
-	for _, item := range want {
-		if !set[item] {
-			return false
-		}
-	}
-	return true
 }
 
 func hasUnsafePath(path string) bool {
