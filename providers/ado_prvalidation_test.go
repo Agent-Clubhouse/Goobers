@@ -201,7 +201,6 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 	}
 }
 
-
 func TestADOProviderPublishPullRequestStatus(t *testing.T) {
 	var captured map[string]interface{}
 	mux := http.NewServeMux()

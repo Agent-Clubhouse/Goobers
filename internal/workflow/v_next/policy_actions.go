@@ -48,15 +48,15 @@ var policyActionContracts = map[string]policyActionContract{
 	// name is a GitHub name the credential seam rebinds per provider — this is
 	// an Azure DevOps parity capability with no GitHub equivalent, so it
 	// requires ado:pr:status directly (#772).
-	"report-pr-status":              {requiredCapabilities: []capability.Capability{capability.ADOPRStatus}},
-	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"update-pr-branch":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"watch-merge-queue":             {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
+	"report-pr-status":         {requiredCapabilities: []capability.Capability{capability.ADOPRStatus}},
+	"respond-to-findings":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"rework-pr":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
+	"route-queue-outcome":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"route-verdict":            {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"unpark-resolved-siblings": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"update-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"update-pr-branch":         {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"watch-merge-queue":        {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 }
 
 var commandPolicyActions = map[string][]string{

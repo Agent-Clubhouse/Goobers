@@ -502,7 +502,6 @@ func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, 
 	}
 }
 
-
 // ClosePullRequest abandons an Azure DevOps pull request — the ADO equivalent of
 // closing a pull request unmerged. A completed pull request is reported as
 // merged (#772). Only used for terminal-failure cleanup; the happy path leaves
@@ -1392,8 +1391,8 @@ type adoPullRequestsResponse struct {
 type adoPullRequestDetail struct {
 	adoPullRequest
 	Description string        `json:"description"`
-	Reviewers  []adoReviewer `json:"reviewers"`
-	Repository adoRepository `json:"repository"`
+	Reviewers   []adoReviewer `json:"reviewers"`
+	Repository  adoRepository `json:"repository"`
 }
 
 type adoReviewer struct {
@@ -1583,15 +1582,15 @@ func mapADOWorkItem(item adoWorkItem) WorkItem {
 		// State carries the provider-neutral open/closed model the CLI backlog
 		// logic reasons in; Status still derives from the raw ADO state so its
 		// finer distinctions (in-progress vs done) survive.
-		State:      adoUnifiedState(state),
-		Status:     statusFromLabels(labels, state),
-		Assignee:   stringField(item.Fields, "System.AssignedTo"),
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        item.URL,
-		UpdatedAt:  updated,
-		Raw:        item,
+		State:     adoUnifiedState(state),
+		Status:    statusFromLabels(labels, state),
+		Assignee:  stringField(item.Fields, "System.AssignedTo"),
+		Links:     links,
+		Parent:    parent,
+		Hierarchy: hierarchy,
+		URL:       item.URL,
+		UpdatedAt: updated,
+		Raw:       item,
 	}
 }
 

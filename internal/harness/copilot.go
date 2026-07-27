@@ -18,8 +18,9 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // defaultPromptFlag is the flag CopilotAdapter passes before the rendered
