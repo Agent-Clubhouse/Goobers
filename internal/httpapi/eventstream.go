@@ -26,6 +26,15 @@ import (
 
 const (
 	defaultEventPollInterval = 100 * time.Millisecond
+	// defaultEventSweepInterval bounds how long a run that goes idle and then
+	// resumes writing can wait before the stream notices. Idle runs are excluded
+	// from the fast poll, so this sweep is what re-arms them.
+	defaultEventSweepInterval = 5 * time.Second
+	// defaultSourceIdleAfter is how long a run journal must go without producing
+	// an event before it drops out of the fast poll. A finished run never writes
+	// again, so on a long-lived instance this is almost every run that has ever
+	// existed.
+	defaultSourceIdleAfter   = 30 * time.Second
 	defaultHeartbeatInterval = 15 * time.Second
 	defaultEventHistoryLimit = 512
 	defaultSubscriberBuffer  = 64
@@ -60,6 +69,8 @@ type StreamEvent struct {
 
 type eventStreamConfig struct {
 	pollInterval     time.Duration
+	sweepInterval    time.Duration
+	idleAfter        time.Duration
 	heartbeat        time.Duration
 	historyLimit     int
 	subscriberBuffer int
@@ -68,6 +79,10 @@ type eventStreamConfig struct {
 }
 
 type eventStreamOption func(*eventStreamConfig)
+
+func withEventSweepInterval(interval time.Duration) eventStreamOption {
+	return func(c *eventStreamConfig) { c.sweepInterval = interval }
+}
 
 func withEventPollInterval(interval time.Duration) eventStreamOption {
 	return func(c *eventStreamConfig) { c.pollInterval = interval }
@@ -101,6 +116,12 @@ type sourceState struct {
 	stateDigest  string
 	stateVersion fileVersion
 	source       journalSource
+	// version is the last observed size/mtime of the journal file itself, used
+	// by the sweep to re-arm an idle source without opening it.
+	version fileVersion
+	// activeAt is when this source last changed. A source that has not changed
+	// within idleAfter is excluded from the fast poll.
+	activeAt time.Time
 }
 
 type fileVersion struct {
@@ -131,6 +152,14 @@ type EventStream struct {
 	nextSubID   uint64
 	sources     map[string]sourceState
 	closeOnce   sync.Once
+
+	// now is injectable so idle/sweep behaviour is testable without sleeping.
+	now func() time.Time
+	// runDirVersions gates run discovery: creating or deleting a run directory
+	// bumps its parent's mtime, so an unchanged parent cannot hold a new run and
+	// is skipped without a ReadDir.
+	runDirVersions map[string]fileVersion
+	lastSweep      time.Time
 }
 
 // NewEventStream starts a bounded replay stream over the instance and run
@@ -150,6 +179,8 @@ func newEventStream(layout instance.Layout, errorLog *log.Logger, opts ...eventS
 	}
 	config := eventStreamConfig{
 		pollInterval:     defaultEventPollInterval,
+		sweepInterval:    defaultEventSweepInterval,
+		idleAfter:        defaultSourceIdleAfter,
 		heartbeat:        defaultHeartbeatInterval,
 		historyLimit:     defaultEventHistoryLimit,
 		subscriberBuffer: defaultSubscriberBuffer,
@@ -161,6 +192,12 @@ func newEventStream(layout instance.Layout, errorLog *log.Logger, opts ...eventS
 	}
 	if config.pollInterval <= 0 {
 		return nil, errors.New("http API event poll interval must be positive")
+	}
+	if config.sweepInterval <= 0 {
+		return nil, errors.New("http API event sweep interval must be positive")
+	}
+	if config.idleAfter <= 0 {
+		return nil, errors.New("http API event idle interval must be positive")
 	}
 	if config.heartbeat <= 0 {
 		return nil, errors.New("http API event heartbeat interval must be positive")
@@ -188,6 +225,9 @@ func newEventStream(layout instance.Layout, errorLog *log.Logger, opts ...eventS
 		done:        make(chan struct{}),
 		subscribers: make(map[uint64]*eventSubscriber),
 		sources:     make(map[string]sourceState),
+
+		now:            time.Now,
+		runDirVersions: make(map[string]fileVersion),
 	}
 	if err := stream.baseline(); err != nil {
 		cancel()
@@ -223,11 +263,49 @@ func (s *EventStream) baseline() error {
 		if err != nil {
 			return fmt.Errorf("http API: baseline run state %q: %w", source.runID, err)
 		}
+		// Seed activeAt from the journal's own mtime rather than "now", so a
+		// daemon starting on an instance with tens of thousands of finished runs
+		// treats them as idle immediately instead of fast-polling all of them
+		// until idleAfter elapses (#1738).
+		version, err := journalFileVersion(source.path)
+		if err != nil {
+			return fmt.Errorf("http API: baseline event journal %q: %w", source.path, err)
+		}
 		s.sources[source.path] = sourceState{
 			offset: offset, stateDigest: stateDigest, stateVersion: stateVersion, source: source,
+			version:  version,
+			activeAt: time.Unix(0, version.modTime),
+		}
+	}
+	s.lastSweep = s.now()
+	for _, runsDir := range s.runDirsSafe() {
+		if version, err := journalFileVersion(runsDir); err == nil {
+			s.runDirVersions[runsDir] = version
 		}
 	}
 	return nil
+}
+
+// journalReadObserver, when non-nil, is invoked with each journal path the
+// stream actually opens and reads during a scan. It is a test seam proving the
+// fast poll is bounded by active runs rather than by total run history. Always
+// nil in production.
+var journalReadObserver func(path string)
+
+func journalFileVersion(path string) (fileVersion, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileVersion{}, err
+	}
+	return fileVersion{size: info.Size(), modTime: info.ModTime().UnixNano()}, nil
+}
+
+func (s *EventStream) runDirsSafe() []string {
+	dirs, err := s.layout.RunDirs()
+	if err != nil {
+		return nil
+	}
+	return dirs
 }
 
 func (s *EventStream) run() {
@@ -246,30 +324,74 @@ func (s *EventStream) run() {
 	}
 }
 
+// scan advances the stream. Work per tick is proportional to the *active* runs,
+// not to every run that has ever existed: discovery is gated on run-parent
+// directory mtimes, idle sources are excluded from the poll, and a periodic
+// sweep re-arms an idle source that starts writing again.
+//
+// Previously every tick rebuilt the whole source list (a ReadDir plus a stat per
+// run) and then opened and read every run journal. On an instance with ~20k
+// finished runs that was well over a second of syscalls against a 100ms ticker,
+// so scans ran back-to-back and starved every HTTP handler in the daemon while
+// watching ~10 files that could actually change (#1738).
 func (s *EventStream) scan() error {
-	sources, err := s.journalSources()
-	if err != nil {
+	now := s.now()
+	var scanErrors []error
+	if err := s.discover(now, &scanErrors); err != nil {
 		return err
 	}
-	seen := make(map[string]struct{}, len(sources))
-	var scanErrors []error
-	for _, source := range sources {
-		seen[source.path] = struct{}{}
-		state, ok := s.sources[source.path]
-		if !ok {
-			source, err = enrichJournalSource(source)
-			if err != nil {
-				scanErrors = append(scanErrors, err)
-				continue
-			}
-			state = sourceState{source: source}
-		} else {
-			source = state.source
+	if now.Sub(s.lastSweep) >= s.config.sweepInterval {
+		s.sweepIdleSources(now)
+		s.lastSweep = now
+	}
+	s.pollActiveSources(now, &scanErrors)
+	return errors.Join(scanErrors...)
+}
+
+// sweepIdleSources re-arms a source that changed while it was excluded from the
+// fast poll — the resumed-run case. It only stats, never opens.
+func (s *EventStream) sweepIdleSources(now time.Time) {
+	for path, state := range s.sources {
+		if s.sourceActive(state, now) {
+			continue
+		}
+		version, err := journalFileVersion(path)
+		if err != nil {
+			continue
+		}
+		if version != state.version {
+			state.version = version
+			state.activeAt = now
+			s.sources[path] = state
+		}
+	}
+}
+
+// sourceActive reports whether a source is polled on the fast tick. The instance
+// journal always is; a run journal is until it has been quiet for idleAfter.
+func (s *EventStream) sourceActive(state sourceState, now time.Time) bool {
+	if state.source.runID == "" {
+		return true
+	}
+	return now.Sub(state.activeAt) <= s.config.idleAfter
+}
+
+func (s *EventStream) pollActiveSources(now time.Time, scanErrors *[]error) {
+	for path, state := range s.sources {
+		if !s.sourceActive(state, now) {
+			continue
+		}
+		source := state.source
+		if journalReadObserver != nil {
+			journalReadObserver(path)
 		}
 		events, offset, err := readNewJournalEvents(source.path, state.offset)
 		if err != nil {
-			scanErrors = append(scanErrors, err)
+			*scanErrors = append(*scanErrors, err)
 			continue
+		}
+		if offset != state.offset {
+			state.activeAt = now
 		}
 		state.offset = offset
 		for _, event := range events {
@@ -277,10 +399,13 @@ func (s *EventStream) scan() error {
 				s.publish(invalidation)
 			}
 		}
-		s.sources[source.path] = state
+		if version, err := journalFileVersion(path); err == nil {
+			state.version = version
+		}
+		s.sources[path] = state
 		stateVersion, err := runStateVersion(source)
 		if err != nil {
-			scanErrors = append(scanErrors, err)
+			*scanErrors = append(*scanErrors, err)
 			continue
 		}
 		if stateVersion == state.stateVersion {
@@ -288,23 +413,102 @@ func (s *EventStream) scan() error {
 		}
 		stateDigest, stateVersion, err := readRunState(source, true)
 		if err != nil {
-			scanErrors = append(scanErrors, err)
+			*scanErrors = append(*scanErrors, err)
 			continue
 		}
 		state.stateVersion = stateVersion
+		state.activeAt = now
 		if stateDigest != "" && stateDigest != state.stateDigest {
 			state.stateDigest = stateDigest
 			invalidation, _ := invalidationFor(source, journal.Event{})
 			s.publish(invalidation)
 		}
-		s.sources[source.path] = state
+		s.sources[path] = state
 	}
-	for path := range s.sources {
-		if _, ok := seen[path]; !ok {
-			delete(s.sources, path)
+}
+
+// discover adds journals that have appeared and drops ones that are gone. It is
+// gated per run-parent directory: adding or removing a run directory bumps its
+// parent's mtime, so an unchanged parent costs a single stat instead of a
+// ReadDir plus a stat for every run beneath it.
+func (s *EventStream) discover(now time.Time, scanErrors *[]error) error {
+	instancePath := filepath.Join(s.layout.SchedulerDir(), "events.jsonl")
+	if _, ok := s.sources[instancePath]; !ok {
+		if _, err := os.Stat(instancePath); err == nil {
+			s.addSource(journalSource{path: instancePath}, now, scanErrors)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("http API: stat instance journal: %w", err)
 		}
 	}
-	return errors.Join(scanErrors...)
+
+	runDirs, err := s.layout.RunDirs()
+	if err != nil {
+		return fmt.Errorf("http API: enumerate runs directories: %w", err)
+	}
+	for _, runsDir := range runDirs {
+		version, err := journalFileVersion(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("http API: stat runs directory: %w", err)
+		}
+		if previous, ok := s.runDirVersions[runsDir]; ok && previous == version {
+			continue
+		}
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("http API: read runs directory: %w", err)
+		}
+		present := make(map[string]struct{}, len(entries))
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			path := filepath.Join(runsDir, entry.Name(), "events.jsonl")
+			if _, err := os.Stat(path); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					*scanErrors = append(*scanErrors, err)
+				}
+				continue
+			}
+			present[path] = struct{}{}
+			if _, ok := s.sources[path]; ok {
+				continue
+			}
+			s.addSource(journalSource{path: path, runID: entry.Name()}, now, scanErrors)
+		}
+		prefix := runsDir + string(filepath.Separator)
+		for path, state := range s.sources {
+			if state.source.runID == "" || !strings.HasPrefix(path, prefix) {
+				continue
+			}
+			if _, ok := present[path]; !ok {
+				delete(s.sources, path)
+			}
+		}
+		s.runDirVersions[runsDir] = version
+	}
+	return nil
+}
+
+// addSource registers a newly appeared journal. It starts at offset zero and
+// active, so a run created after startup still streams its events from the
+// beginning.
+func (s *EventStream) addSource(source journalSource, now time.Time, scanErrors *[]error) {
+	enriched, err := enrichJournalSource(source)
+	if err != nil {
+		*scanErrors = append(*scanErrors, err)
+		return
+	}
+	state := sourceState{source: enriched, activeAt: now}
+	if version, err := journalFileVersion(enriched.path); err == nil {
+		state.version = version
+	}
+	s.sources[enriched.path] = state
 }
 
 func enrichJournalSource(source journalSource) (journalSource, error) {
