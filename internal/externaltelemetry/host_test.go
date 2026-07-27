@@ -148,6 +148,25 @@ func TestHostRejectsUnsignedIntegerOverflow(t *testing.T) {
 	}
 }
 
+func TestHostRejectsPointWithoutColumn(t *testing.T) {
+	connector := &sequenceConnector{result: SourceResult{
+		Rows: [][]any{{}},
+	}}
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: 5 * time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 10, MaxBytes: 4096,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "value",
+		Shape: ShapePoint,
+	})
+	if err == nil || artifact.State != DataFailed || artifact.Failure == nil ||
+		artifact.Failure.Code != "point_cardinality" || artifact.Failure.Kind != "schema" {
+		t.Fatalf("point without column = state %q failure %+v err %v", artifact.State, artifact.Failure, err)
+	}
+}
+
 func TestHostRejectsEmptyTimeSeriesWithoutTimestampColumn(t *testing.T) {
 	registry := NewRegistry()
 	registry.connectors["metrics"] = configuredConnector{

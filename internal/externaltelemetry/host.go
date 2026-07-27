@@ -373,8 +373,8 @@ func validateSourceResult(result SourceResult, shape ResultShape) error {
 			}
 		}
 	}
-	if shape == ShapePoint && (len(result.Rows) > 1 || len(result.Columns) > 1) {
-		return NewQueryError("point_cardinality", "schema", false, errors.New("point result must contain at most one row and one column"))
+	if shape == ShapePoint && (len(result.Rows) > 1 || len(result.Columns) != 1) {
+		return NewQueryError("point_cardinality", "schema", false, errors.New("point result must contain exactly one column and at most one row"))
 	}
 	if shape == ShapeTimeSeries && !slices.ContainsFunc(result.Columns, func(column Column) bool {
 		return column.Type == TypeDateTime
