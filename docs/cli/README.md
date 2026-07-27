@@ -2289,12 +2289,13 @@ $ goobers telemetry prune-orphans --delete
 success rate and duration aggregates per workflow and stage
 
 ~~~text
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--branch=id] [--model=id] [--harness-version=version] [--group-by=branch|model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and stage, plus curation
 actions and ready-pool health for unfiltered workflow views,
 across every run (default path "."). Agent filters retain matching agentic
-stage attempts; a run that used multiple grouped cohorts appears in each.
+stage attempts; --branch filters stage/usage rows by journal branch id.
+A run that used multiple grouped agent cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
 ~~~
 

@@ -366,6 +366,8 @@ func TestRunnerFansInThreeBranchScalarsAndArtifacts(t *testing.T) {
 		}, nil
 	}, nil)
 	r.cfg.ScratchDir = t.TempDir()
+	spans := &fakeSpanStarter{}
+	r.cfg.Telemetry = spans
 
 	for _, runID := range []string{"fan-in-a", "fan-in-b"} {
 		result, err := r.Start(context.Background(), StartInput{
@@ -416,6 +418,15 @@ func TestRunnerFansInThreeBranchScalarsAndArtifacts(t *testing.T) {
 	}
 	if string(firstPointers) != string(secondPointers) {
 		t.Errorf("journaled pointer sets differ across runs:\n%s\n%s", firstPointers, secondPointers)
+	}
+	wantBranches := []int{1, 2, 3, 0, 1, 2, 3, 0}
+	if len(spans.taskAttrs) != len(wantBranches) {
+		t.Fatalf("task span attributes = %#v, want %d branch and join spans", spans.taskAttrs, len(wantBranches))
+	}
+	for i, want := range wantBranches {
+		if got := spans.taskAttrs[i].Branch; got != want {
+			t.Errorf("task span %d branch = %d, want %d", i, got, want)
+		}
 	}
 }
 

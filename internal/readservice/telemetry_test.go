@@ -63,6 +63,7 @@ func (f *fakeTelemetryStore) Errors(req rollup.ErrorsRequest) ([]rollup.ErrorEve
 func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
+	branch := 2
 	store := &fakeTelemetryStore{stats: rollup.StatsResult{
 		Gaggles: []rollup.GaggleStats{
 			{Gaggle: "core", TotalRuns: 2, CompletedRuns: 1, FailedRuns: 1, SuccessRate: 0.5},
@@ -73,7 +74,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		},
 		Stages: []rollup.StageStats{
 			{
-				Gaggle: "core", Workflow: "failed", Stage: "done", Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
+				Gaggle: "core", Workflow: "failed", Stage: "done", Branch: &branch, Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
 				DurationSamples: 2, P50DurationMs: 10, P95DurationMs: 20,
 				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
@@ -84,7 +85,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
 		Usage: []rollup.UsageStats{{
-			Scope: "workflow", Gaggle: "core", Workflow: "failed",
+			Scope: "workflow", Gaggle: "core", Workflow: "failed", Branch: &branch,
 			TotalAttempts: 2,
 			TokenSamples:  2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 			PremiumRequestSamples: 2, P50CopilotPremiumRequests: 0, P95CopilotPremiumRequests: 1, HasPremiumRequests: true,
@@ -112,8 +113,10 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
 		Workflow:              "implement",
 		Gaggle:                "core",
+		Branch:                &branch,
 		Model:                 "gpt-5.6-sol",
 		HarnessVersion:        "copilot version 1.2.3",
+		GroupByBranch:         true,
 		GroupByModel:          true,
 		GroupByHarnessVersion: true,
 		Since:                 since,
@@ -123,8 +126,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantReq := rollup.StatsRequest{
-		Workflow: "implement", Gaggle: "core", Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3",
-		GroupByModel: true, GroupByHarnessVersion: true, Since: since, Until: until,
+		Workflow: "implement", Gaggle: "core", Branch: &branch, Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3",
+		GroupByBranch: true, GroupByModel: true, GroupByHarnessVersion: true, Since: since, Until: until,
 	}
 	if !reflect.DeepEqual(store.statsReq, wantReq) {
 		t.Fatalf("store request = %+v, want %+v", store.statsReq, wantReq)
@@ -148,6 +151,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	}
 	done := got.Stages[0]
 	if got.Runs[0].Model != "gpt-5.6-sol" || got.Runs[0].HarnessVersion != "copilot version 1.2.3" ||
+		done.Branch == nil || *done.Branch != 2 ||
 		done.Model != "gpt-5.6-sol" || done.HarnessVersion != "copilot version 1.2.3" {
 		t.Fatalf("projected provenance = %+v / %+v", got.Runs[0], done)
 	}
@@ -165,6 +169,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		t.Fatalf("projected model usage = %+v", got.Models)
 	}
 	if len(got.Usage) != 1 || got.Usage[0].Scope != "workflow" ||
+		got.Usage[0].Branch == nil || *got.Usage[0].Branch != 2 ||
 		got.Usage[0].P95Tokens == nil || *got.Usage[0].P95Tokens != 200 ||
 		got.Usage[0].P50CopilotPremiumRequests == nil || *got.Usage[0].P50CopilotPremiumRequests != 0 ||
 		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
@@ -234,6 +239,10 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	}
 	if store.statsCalled != 1 {
 		t.Fatalf("store called %d times, want only the valid query", store.statsCalled)
+	}
+	negativeBranch := -1
+	if _, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{Branch: &negativeBranch}); !errors.Is(err, ErrInvalidTelemetryRequest) {
+		t.Fatalf("negative branch error = %v", err)
 	}
 }
 

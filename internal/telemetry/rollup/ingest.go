@@ -150,11 +150,13 @@ type stageAttemptAccum struct {
 
 type stageKey struct {
 	stage     string
+	branch    int
 	traversal int
 }
 
 type stageAttemptKey struct {
 	stage   string
+	branch  int
 	attempt int
 }
 
@@ -164,12 +166,12 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	current := map[stageAttemptKey]stageKey{}
 	traversals := map[string]int{}
 	eventStageKeys := make([]stageKey, len(events))
-	newAccum := func(stage string, attempt int) stageKey {
+	newAccum := func(stage string, branch, attempt int) stageKey {
 		traversals[stage]++
-		k := stageKey{stage: stage, traversal: traversals[stage]}
+		k := stageKey{stage: stage, branch: branch, traversal: traversals[stage]}
 		stages[k] = &stageAttemptAccum{attempt: attempt}
 		order = append(order, k)
-		current[stageAttemptKey{stage: stage, attempt: attempt}] = k
+		current[stageAttemptKey{stage: stage, branch: branch, attempt: attempt}] = k
 		return k
 	}
 
@@ -177,14 +179,14 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		if ev.Stage == "" {
 			continue
 		}
-		attemptKey := stageAttemptKey{stage: ev.Stage, attempt: ev.Attempt}
+		attemptKey := stageAttemptKey{stage: ev.Stage, branch: ev.Branch, attempt: ev.Attempt}
 		switch ev.Type {
 		case eventStageStarted:
-			eventStageKeys[i] = newAccum(ev.Stage, ev.Attempt)
+			eventStageKeys[i] = newAccum(ev.Stage, ev.Branch, ev.Attempt)
 		case eventStageFinished:
 			k, ok := current[attemptKey]
 			if !ok {
-				k = newAccum(ev.Stage, ev.Attempt)
+				k = newAccum(ev.Stage, ev.Branch, ev.Attempt)
 			}
 			eventStageKeys[i] = k
 		case eventError:
@@ -195,7 +197,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 			}
 			k, ok := current[attemptKey]
 			if !ok {
-				k = newAccum(ev.Stage, ev.Attempt)
+				k = newAccum(ev.Stage, ev.Branch, ev.Attempt)
 			}
 			eventStageKeys[i] = k
 		}
@@ -301,9 +303,9 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				return err
 			}
 			if _, err := tx.Exec(`
-				INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at, runner_json)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time), rj); err != nil {
+				INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at, runner_json, branch)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time), rj, ev.Branch); err != nil {
 				return fmt.Errorf("rollup: insert gate_verdict seq %d: %w", ev.Seq, err)
 			}
 
@@ -355,11 +357,11 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	for _, k := range order {
 		a := stages[k]
 		if _, err := tx.Exec(`
-			INSERT INTO stage_attempts (run_id, stage, traversal, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class, runner_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO stage_attempts (run_id, stage, traversal, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class, runner_json, branch)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, k.stage, k.traversal, a.attempt, nullIfEmpty(a.attemptClass), nullIfEmpty(a.status),
 			formatTime(a.startedAt), formatTime(a.finishedAt), durationMillis(a.startedAt, a.finishedAt),
-			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON); err != nil {
+			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON, k.branch); err != nil {
 			return fmt.Errorf("rollup: insert stage_attempt %s traversal %d: %w", k.stage, k.traversal, err)
 		}
 	}
@@ -923,9 +925,9 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 	if hasAggregate {
 		result, err := tx.Exec(`
 			INSERT INTO stage_usage (
-				run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
+				run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd, branch
 			)
-			SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?
+			SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?, branch
 			FROM stage_attempts
 			WHERE run_id = ? AND stage = ? AND traversal = ? AND attempt = ?`,
 			nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
@@ -1025,11 +1027,21 @@ func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span
 	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
 		return 0, false, fmt.Errorf("rollup: span %s has invalid time window", span.SpanID)
 	}
-	rows, err := tx.Query(`
+	query := `
 		SELECT traversal, started_at
 		FROM stage_attempts
-		WHERE run_id = ? AND stage = ? AND attempt = ?
-		ORDER BY traversal`, runID, stage, attempt)
+		WHERE run_id = ? AND stage = ? AND attempt = ?`
+	args := []any{runID, stage, attempt}
+	if rawBranch, ok := span.Attributes[telemetry.AttrBranch]; ok {
+		branch, err := strconv.Atoi(rawBranch)
+		if err != nil || branch < 0 {
+			return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrBranch, rawBranch)
+		}
+		query += ` AND branch = ?`
+		args = append(args, branch)
+	}
+	query += ` ORDER BY traversal`
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
 	}

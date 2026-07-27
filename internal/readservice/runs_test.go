@@ -466,6 +466,23 @@ func TestUsageStagePopulationsSelectOnlyContributingAttempts(t *testing.T) {
 	}
 }
 
+func TestRetryWastePopulationSeparatesParallelBranches(t *testing.T) {
+	attempts := []rollup.StageAttempt{
+		{Stage: "research", Branch: 1, BranchKnown: true, Traversal: 1},
+		{Stage: "research", Branch: 2, BranchKnown: true, Traversal: 2},
+	}
+	if matchesTelemetryAttempts(attempts, "research", StagePopulationRetryWaste) {
+		t.Fatal("single traversal in each parallel branch contributed to retry waste")
+	}
+
+	attempts = append(attempts,
+		rollup.StageAttempt{Stage: "research", Branch: 1, BranchKnown: true, Traversal: 3},
+	)
+	if !matchesTelemetryAttempts(attempts, "research", StagePopulationRetryWaste) {
+		t.Fatal("superseded traversal within a parallel branch did not contribute to retry waste")
+	}
+}
+
 func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	started := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)

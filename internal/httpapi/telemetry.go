@@ -64,7 +64,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 }
 
 func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequest, error) {
-	if err := validateQueryValues(values, "workflow", "gaggle", "model", "harnessVersion", "groupBy", "since", "until"); err != nil {
+	if err := validateQueryValues(values, "workflow", "gaggle", "branch", "model", "harnessVersion", "groupBy", "since", "until"); err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -78,15 +78,25 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	if !since.IsZero() && !until.IsZero() && since.After(until) {
 		return readservice.TelemetryStatsRequest{}, errors.New("since must not be after until")
 	}
-	groupByModel, groupByHarnessVersion, err := parseTelemetryGroupBy(values.Get("groupBy"))
+	var branch *int
+	if values.Has("branch") {
+		value, parseErr := strconv.Atoi(values.Get("branch"))
+		if parseErr != nil || value < 0 {
+			return readservice.TelemetryStatsRequest{}, errors.New("branch must be a non-negative integer")
+		}
+		branch = &value
+	}
+	groupByBranch, groupByModel, groupByHarnessVersion, err := parseTelemetryGroupBy(values.Get("groupBy"))
 	if err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
 	return readservice.TelemetryStatsRequest{
 		Workflow:              values.Get("workflow"),
 		Gaggle:                values.Get("gaggle"),
+		Branch:                branch,
 		Model:                 values.Get("model"),
 		HarnessVersion:        values.Get("harnessVersion"),
+		GroupByBranch:         groupByBranch,
 		GroupByModel:          groupByModel,
 		GroupByHarnessVersion: groupByHarnessVersion,
 		Since:                 since,
@@ -94,21 +104,23 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	}, nil
 }
 
-func parseTelemetryGroupBy(value string) (model, harnessVersion bool, err error) {
+func parseTelemetryGroupBy(value string) (branch, model, harnessVersion bool, err error) {
 	if value == "" {
-		return false, false, nil
+		return false, false, false, nil
 	}
 	for _, dimension := range strings.Split(value, ",") {
 		switch dimension {
+		case "branch":
+			branch = true
 		case "model":
 			model = true
 		case "harness-version", "harnessVersion":
 			harnessVersion = true
 		default:
-			return false, false, fmt.Errorf("groupBy contains unknown dimension %q", dimension)
+			return false, false, false, fmt.Errorf("groupBy contains unknown dimension %q", dimension)
 		}
 	}
-	return model, harnessVersion, nil
+	return branch, model, harnessVersion, nil
 }
 
 func parseTelemetryErrorSignaturesQuery(values url.Values) (readservice.TelemetryErrorSignaturesRequest, error) {
