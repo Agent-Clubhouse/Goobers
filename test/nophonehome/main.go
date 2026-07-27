@@ -75,6 +75,11 @@ var httpClientEgressAPIs = map[string]egressAPI{
 	"Do":       {destination: 0, request: true},
 }
 
+var netDialerEgressAPIs = map[string]egressAPI{
+	"Dial":        {destination: 1},
+	"DialContext": {destination: 2},
+}
+
 type implicitEgressApproval struct {
 	location       string
 	options        string
@@ -151,6 +156,8 @@ func scan(root string) ([]finding, error) {
 			fileFindings, err = scanGoFile(root, path)
 		case isProductionScript(path):
 			fileFindings, err = scanScriptFile(root, path)
+		case isCommandFile(path):
+			fileFindings, err = scanCommandFile(root, path)
 		default:
 			return nil
 		}
@@ -204,6 +211,21 @@ func isProductionScript(path string) bool {
 	return true
 }
 
+func isCommandFile(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(normalized)
+	switch filepath.Ext(base) {
+	case ".sh", ".bash", ".zsh", ".ps1", ".psm1":
+		return true
+	case ".yml", ".yaml":
+		return strings.Contains(normalized, "/.github/workflows/")
+	case ".mk":
+		return true
+	default:
+		return base == "makefile"
+	}
+}
+
 func scanGoFile(root, path string) ([]finding, error) {
 	files := token.NewFileSet()
 	parsed, err := parser.ParseFile(files, path, nil, 0)
@@ -239,7 +261,20 @@ func scanGoFile(root, path string) ([]finding, error) {
 				position := files.Position(call.Pos())
 				arguments, inspectPartial := processURLArguments(call.Args[firstArgument:], bindings)
 				for _, argument := range arguments {
-					if destination, ok := processURLDestination(argument, bindings, inspectPartial); ok {
+					destination, found := processURLDestination(argument, bindings, inspectPartial)
+					if !found {
+						destination, found = conditionalEgressDestination(
+							function,
+							call,
+							argument,
+							fileBindings,
+							imports,
+							egressAPI{},
+							true,
+							false,
+						)
+					}
+					if found {
 						findings = append(findings, finding{
 							path: rel, line: position.Line, column: position.Column,
 							message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
@@ -267,7 +302,20 @@ func scanGoFile(root, path string) ([]finding, error) {
 			if api.destination >= len(call.Args) {
 				return true
 			}
-			if destination, ok := egressDestination(api, call.Args[api.destination], bindings, imports); ok {
+			destination, found := egressDestination(api, call.Args[api.destination], bindings, imports)
+			if !found {
+				destination, found = conditionalEgressDestination(
+					function,
+					call,
+					call.Args[api.destination],
+					fileBindings,
+					imports,
+					api,
+					false,
+					strings.Contains(callName, "go.opentelemetry.io/otel/exporters/"),
+				)
+			}
+			if found {
 				findings = append(findings, finding{
 					path: rel, line: position.Line, column: position.Column,
 					message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
@@ -514,6 +562,12 @@ func monitoredEgressCall(
 			return api, importPath + "." + selector.Sel.Name, true
 		}
 	}
+	if api, monitored := netDialerEgressAPIs[selector.Sel.Name]; monitored {
+		typedDialers := netDialerIdentifiersAt(parsed, function, call, imports)
+		if isNetDialerReceiver(selector.X, imports, bindings, typedDialers, nil) {
+			return api, "net.Dialer." + selector.Sel.Name, true
+		}
+	}
 	api, monitored := httpClientEgressAPIs[selector.Sel.Name]
 	if !monitored {
 		return egressAPI{}, "", false
@@ -523,6 +577,115 @@ func monitoredEgressCall(
 		return egressAPI{}, "", false
 	}
 	return api, "net/http.Client." + selector.Sel.Name, true
+}
+
+func netDialerIdentifiersAt(
+	parsed *ast.File,
+	function *ast.FuncDecl,
+	target ast.Node,
+	imports map[string]string,
+) map[string]bool {
+	identifiers := make(map[string]bool)
+	addFields := func(fields *ast.FieldList) {
+		if fields == nil {
+			return
+		}
+		for _, field := range fields.List {
+			if !isNetDialerType(field.Type, imports) {
+				continue
+			}
+			for _, name := range field.Names {
+				identifiers[name.Name] = true
+			}
+		}
+	}
+	for _, declaration := range parsed.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range general.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok || !isNetDialerType(values.Type, imports) {
+				continue
+			}
+			for _, name := range values.Names {
+				identifiers[name.Name] = true
+			}
+		}
+	}
+	addFields(function.Recv)
+	addFields(function.Type.Params)
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= target.Pos() {
+			return false
+		}
+		values, ok := node.(*ast.ValueSpec)
+		if !ok || !isNetDialerType(values.Type, imports) {
+			return true
+		}
+		for _, name := range values.Names {
+			identifiers[name.Name] = true
+		}
+		return false
+	})
+	return identifiers
+}
+
+func isNetDialerType(expression ast.Expr, imports map[string]string) bool {
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return isNetDialerType(value.X, imports)
+	case *ast.ParenExpr:
+		return isNetDialerType(value.X, imports)
+	case *ast.SelectorExpr:
+		pkg, ok := value.X.(*ast.Ident)
+		return ok && imports[pkg.Name] == "net" && value.Sel.Name == "Dialer"
+	default:
+		return false
+	}
+}
+
+func isNetDialerReceiver(
+	expression ast.Expr,
+	imports map[string]string,
+	bindings map[string]ast.Expr,
+	typedDialers map[string]bool,
+	seen map[string]bool,
+) bool {
+	if typedDialers[expressionName(expression)] {
+		return true
+	}
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return false
+		}
+		seen[value.Name] = true
+		resolved := isNetDialerReceiver(binding, imports, bindings, typedDialers, seen)
+		delete(seen, value.Name)
+		return resolved
+	case *ast.CompositeLit:
+		return isNetDialerType(value.Type, imports)
+	case *ast.UnaryExpr:
+		return value.Op == token.AND &&
+			isNetDialerReceiver(value.X, imports, bindings, typedDialers, seen)
+	case *ast.ParenExpr:
+		return isNetDialerReceiver(value.X, imports, bindings, typedDialers, seen)
+	case *ast.CallExpr:
+		identifier, ok := value.Fun.(*ast.Ident)
+		return ok && identifier.Name == "new" && len(value.Args) == 1 &&
+			isNetDialerType(value.Args[0], imports)
+	default:
+		return false
+	}
 }
 
 func httpClientIdentifiersAt(
@@ -903,6 +1066,141 @@ func enclosingBlock(node ast.Node, parents map[ast.Node]ast.Node) *ast.BlockStmt
 		}
 	}
 	return nil
+}
+
+func conditionalEgressDestination(
+	function *ast.FuncDecl,
+	target ast.Node,
+	expression ast.Expr,
+	fileBindings map[string]ast.Expr,
+	imports map[string]string,
+	api egressAPI,
+	requireURL bool,
+	rejectAny bool,
+) (string, bool) {
+	bindings := bindingsAt(function, target, fileBindings)
+	names := referencedBindingNames(expression, bindings, target.Pos())
+	if len(names) == 0 {
+		return "", false
+	}
+
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	callScopes := make(map[*ast.BlockStmt]bool)
+	for node := target; node != nil; node = parents[node] {
+		if block, ok := node.(*ast.BlockStmt); ok {
+			callScopes[block] = true
+		}
+	}
+
+	lastDominatingAssignment := make(map[string]token.Pos)
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= target.Pos() {
+			return false
+		}
+		block := enclosingBlock(node, parents)
+		if block == nil || !callScopes[block] || node.End() >= target.Pos() {
+			return true
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range value.Lhs {
+				name := expressionName(left)
+				if value.Pos() < names[name] {
+					lastDominatingAssignment[name] = value.Pos()
+				}
+			}
+			return false
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				if value.Pos() < names[name.Name] {
+					lastDominatingAssignment[name.Name] = value.Pos()
+				}
+			}
+			return false
+		default:
+			return true
+		}
+	})
+
+	var destination string
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if destination != "" || node == nil || node.Pos() >= target.Pos() {
+			return false
+		}
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.ASSIGN || assignment.End() >= target.Pos() {
+			return true
+		}
+		block := enclosingBlock(assignment, parents)
+		if block == nil || callScopes[block] {
+			return true
+		}
+		for index, left := range assignment.Lhs {
+			name := expressionName(left)
+			if assignment.Pos() >= names[name] || assignment.Pos() <= lastDominatingAssignment[name] ||
+				index >= len(assignment.Rhs) {
+				continue
+			}
+			assignmentBindings := bindingsAt(function, assignment, fileBindings)
+			var found bool
+			if requireURL {
+				destination, found = processURLDestination(assignment.Rhs[index], assignmentBindings, true)
+			} else {
+				destination, found = egressDestination(api, assignment.Rhs[index], assignmentBindings, imports)
+			}
+			if found && (rejectAny || isReportingDestination(destination)) {
+				return false
+			}
+			destination = ""
+		}
+		return false
+	})
+	return destination, destination != ""
+}
+
+func referencedBindingNames(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	before token.Pos,
+) map[string]token.Pos {
+	names := make(map[string]token.Pos)
+	var collect func(ast.Expr, token.Pos)
+	collect = func(current ast.Expr, currentBefore token.Pos) {
+		ast.Inspect(current, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			name := identifier.Name
+			if names[name] >= currentBefore {
+				return false
+			}
+			names[name] = currentBefore
+			binding, bound := bindings[name]
+			if bound {
+				bindingBefore := binding.Pos()
+				if bindingBefore <= 0 || bindingBefore > currentBefore {
+					bindingBefore = currentBefore
+				}
+				collect(binding, bindingBefore)
+			}
+			return false
+		})
+	}
+	collect(expression, before)
+	return names
 }
 
 func explicitlyConfiguredImplicitCall(
@@ -1409,6 +1707,128 @@ func sensitiveEndpointName(name string) bool {
 	}
 	for _, marker := range []string{"analytics", "beacon", "crash", "diagnostic", "otlp", "report", "telemetry", "usage"} {
 		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func scanCommandFile(root, path string) ([]finding, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, fmt.Errorf("make %s relative to %s: %w", path, root, err)
+	}
+	rel = filepath.ToSlash(rel)
+
+	lines := strings.Split(string(source), "\n")
+	var findings []finding
+	var command strings.Builder
+	commandLine := 0
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if command.Len() == 0 {
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			commandLine = index + 1
+		}
+		if command.Len() != 0 {
+			command.WriteByte(' ')
+		}
+		command.WriteString(trimmed)
+		if strings.HasSuffix(trimmed, `\`) || strings.HasSuffix(trimmed, "`") {
+			continue
+		}
+
+		text := command.String()
+		command.Reset()
+		name := commandEgressName(text)
+		if name == "" {
+			continue
+		}
+		destination, ok := reportingURLInCommand(text)
+		if !ok {
+			continue
+		}
+		findings = append(findings, finding{
+			path: rel, line: commandLine, column: 1,
+			message: fmt.Sprintf("hardcoded telemetry/reporting destination %q passed to command %s", destination, name),
+		})
+	}
+	return findings, nil
+}
+
+func commandEgressName(text string) string {
+	lower := strings.ToLower(text)
+	for _, name := range []string{
+		"invoke-restmethod",
+		"invoke-webrequest",
+		"start-bitstransfer",
+		"curl",
+		"http",
+		"httpie",
+		"iwr",
+		"wget",
+	} {
+		for start := 0; ; {
+			index := strings.Index(lower[start:], name)
+			if index < 0 {
+				break
+			}
+			index += start
+			beforeOK := index == 0 || !commandIdentifierByte(lower[index-1])
+			end := index + len(name)
+			afterOK := end == len(lower) || !commandIdentifierByte(lower[end])
+			if beforeOK && afterOK {
+				return name
+			}
+			start = index + len(name)
+		}
+	}
+	return ""
+}
+
+func commandIdentifierByte(value byte) bool {
+	return value == '_' || value == '-' ||
+		value >= 'a' && value <= 'z' ||
+		value >= '0' && value <= '9'
+}
+
+func reportingURLInCommand(text string) (string, bool) {
+	lower := strings.ToLower(text)
+	for offset := 0; offset < len(text); {
+		start := -1
+		for _, scheme := range []string{"http://", "https://", "ws://", "wss://", "grpc://"} {
+			if index := strings.Index(lower[offset:], scheme); index >= 0 &&
+				(start < 0 || index < start) {
+				start = index
+			}
+		}
+		if start < 0 {
+			return "", false
+		}
+		start += offset
+		destination, ok := hardcodedURLPrefix(text[start:])
+		if ok && isReportingDestination(destination) {
+			return destination, true
+		}
+		offset = start + 1
+	}
+	return "", false
+}
+
+func isReportingDestination(destination string) bool {
+	words := strings.FieldsFunc(strings.ToLower(destination), func(character rune) bool {
+		return character < 'a' || character > 'z'
+	})
+	for _, word := range words {
+		switch word {
+		case "analytics", "beacon", "collect", "crash", "diagnostic",
+			"maintainer", "metrics", "report", "telemetry", "usage":
 			return true
 		}
 	}

@@ -72,6 +72,19 @@ func report() { _ = exec.Command("curl", "https://maintainer.example.invalid/usa
 			want: "hardcoded network destination",
 		},
 		{
+			name: "net dialer destination",
+			source: `package sample
+import (
+	"context"
+	"net"
+)
+func report(ctx context.Context) {
+	_, _ = (&net.Dialer{}).DialContext(ctx, "tcp", "maintainer.example.invalid:443")
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "unlisted process argument destination",
 			source: `package sample
 import "os/exec"
@@ -235,6 +248,70 @@ export async function report(): Promise<void> {
 	}
 	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
 		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanRejectsBuiltInCommandEgressDestinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		source string
+	}{
+		{
+			name:   "shell",
+			path:   "scripts/report.sh",
+			source: "#!/bin/sh\ncurl https://maintainer.example.invalid/usage\n",
+		},
+		{
+			name:   "PowerShell",
+			path:   "scripts/report.ps1",
+			source: "Invoke-RestMethod -Uri https://maintainer.example.invalid/usage\n",
+		},
+		{
+			name:   "Makefile",
+			path:   "Makefile",
+			source: "report:\n\tcurl https://maintainer.example.invalid/usage\n",
+		},
+		{
+			name: "workflow",
+			path: ".github/workflows/report.yml",
+			source: `jobs:
+  report:
+    steps:
+      - run: curl https://maintainer.example.invalid/usage
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := writeSourceAt(t, test.path, test.source)
+			findings, err := scan(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) == 0 ||
+				!strings.Contains(findings[0].message, "hardcoded telemetry/reporting destination") {
+				t.Fatalf("scan() findings = %#v, want hardcoded telemetry/reporting destination", findings)
+			}
+		})
+	}
+}
+
+func TestScanAllowsCommandDependencyDownload(t *testing.T) {
+	root := writeSourceAt(t, ".github/workflows/ci.yml", `
+jobs:
+  lint:
+    steps:
+      - run: |
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/install.sh" \
+            | sh
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
 	}
 }
 
@@ -449,6 +526,43 @@ func TestScanRejectsConditionallyConfiguredExporterInApprovedFunction(t *testing
 	}
 	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
 		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
+	}
+}
+
+func TestScanRejectsConditionalEndpointFallback(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"\tendpoint := strings.TrimSpace(cfg.OTLPEndpoint)\n",
+		"\tendpoint := strings.TrimSpace(cfg.OTLPEndpoint)\n"+
+			"\tif endpoint == \"\" {\n\t\tendpoint = \"maintainer.example.invalid:4317\"\n\t}\n",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanAllowsConditionalMutationAfterEndpointCapture(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"\tendpoint := strings.TrimSpace(cfg.OTLPEndpoint)\n",
+		"\tbase := strings.TrimSpace(cfg.OTLPEndpoint)\n"+
+			"\tendpoint := base\n"+
+			"\tif base == \"\" {\n\t\tbase = \"maintainer.example.invalid:4317\"\n\t}\n",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
 	}
 }
 
