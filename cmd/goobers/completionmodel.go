@@ -72,8 +72,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
-		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
-		{name: "json", desc: "Emit the config-source action result as JSON"},
 	},
 	"preflight": {
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},

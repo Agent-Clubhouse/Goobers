@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,12 +13,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/samples"
 )
@@ -97,6 +99,8 @@ type onboardingIssueSeeder interface {
 var newOnboardingIssueSeeder = func(token string) onboardingIssueSeeder {
 	return providers.NewGitHubProvider(token)
 }
+
+var beforeOnboardingSamplePublish = func() {}
 
 func runOnboarding(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && isHelpArg(args[0]) {
@@ -246,75 +250,157 @@ func materializeOnboardingSample(
 		Path:        absolute,
 		NextCommand: stubSampleNextInstanceCommand,
 	}
-	if err := validateOnboardingDestination(absolute); err != nil {
+
+	destinationRoot, err := openOnboardingDestination(absolute, false)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return onboardingActionResult{}, err
 	}
+	defer func() {
+		if destinationRoot != nil {
+			_ = destinationRoot.Close()
+		}
+	}()
 
 	write := make([]bool, len(files))
 	replace := make([]bool, len(files))
 	previousMode := make([]fs.FileMode, len(files))
 	for i, file := range files {
-		if file.path == "." || file.path == "" || strings.HasPrefix(file.path, "../") {
+		relative := filepath.FromSlash(file.path)
+		if file.path == "." || file.path == "" || !filepath.IsLocal(relative) {
 			return onboardingActionResult{}, fmt.Errorf("embedded sample path %q is unsafe", file.path)
 		}
-		target := filepath.Join(absolute, filepath.FromSlash(file.path))
-		if err := validateOnboardingParents(absolute, filepath.Dir(target)); err != nil {
+		plan, err := planOnboardingSampleFile(destinationRoot, absolute, relative, file.data, force)
+		if err != nil {
 			return onboardingActionResult{}, err
 		}
-		info, statErr := os.Lstat(target)
-		switch {
-		case errors.Is(statErr, fs.ErrNotExist):
-			write[i] = true
+		write[i] = plan.write
+		replace[i] = plan.replace
+		previousMode[i] = plan.previousMode
+		if plan.write {
 			result.Created = append(result.Created, file.path)
-		case statErr != nil:
-			return onboardingActionResult{}, fmt.Errorf("inspect %s: %w", target, statErr)
-		case info.Mode()&fs.ModeSymlink != 0:
-			return onboardingActionResult{}, fmt.Errorf("refusing symbolic link %s", target)
-		case !info.Mode().IsRegular():
-			return onboardingActionResult{}, fmt.Errorf("refusing non-regular file %s", target)
-		default:
-			current, err := os.ReadFile(target)
-			if err != nil {
-				return onboardingActionResult{}, fmt.Errorf("read %s: %w", target, err)
-			}
-			if bytes.Equal(current, file.data) {
-				result.Skipped = append(result.Skipped, file.path)
-			} else if !force {
-				return onboardingActionResult{}, fmt.Errorf("refusing to replace user-owned file %s without --force", target)
-			} else {
-				write[i] = true
-				replace[i] = true
-				previousMode[i] = info.Mode().Perm()
-				result.Created = append(result.Created, file.path)
-			}
+		} else {
+			result.Skipped = append(result.Skipped, file.path)
 		}
 	}
 
-	if err := os.MkdirAll(absolute, 0o755); err != nil {
-		return onboardingActionResult{}, fmt.Errorf("create destination: %w", err)
+	hasWrites := false
+	for _, needed := range write {
+		hasWrites = hasWrites || needed
 	}
+	if !hasWrites {
+		return result, nil
+	}
+
+	beforeOnboardingSamplePublish()
+	if destinationRoot == nil {
+		destinationRoot, err = openOnboardingDestination(absolute, true)
+		if err != nil {
+			return onboardingActionResult{}, err
+		}
+	} else if err := validateOnboardingDestinationBinding(absolute, destinationRoot); err != nil {
+		return onboardingActionResult{}, err
+	}
+
 	for i, file := range files {
 		if !write[i] {
 			continue
 		}
-		target := filepath.Join(absolute, filepath.FromSlash(file.path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return onboardingActionResult{}, fmt.Errorf("create parent for %s: %w", target, err)
+		relative := filepath.FromSlash(file.path)
+		parent, err := openOnboardingSampleParent(destinationRoot, filepath.Dir(relative), true)
+		if err != nil {
+			return onboardingActionResult{}, err
 		}
-		if err := writeOnboardingSampleFile(target, file.data, replace[i], previousMode[i]); err != nil {
+		target := filepath.Join(absolute, relative)
+		err = writeOnboardingSampleFile(parent, filepath.Base(relative), file.data, replace[i], previousMode[i])
+		_ = parent.Close()
+		if err != nil {
 			return onboardingActionResult{}, fmt.Errorf("write %s: %w", target, err)
 		}
 	}
 	return result, nil
 }
 
-func writeOnboardingSampleFile(target string, data []byte, replace bool, previousMode fs.FileMode) error {
-	staged, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+"-*")
-	if err != nil {
-		return fmt.Errorf("create staged file: %w", err)
+type onboardingSampleFilePlan struct {
+	write        bool
+	replace      bool
+	previousMode fs.FileMode
+}
+
+func planOnboardingSampleFile(
+	root *os.Root,
+	destination, relative string,
+	data []byte,
+	force bool,
+) (onboardingSampleFilePlan, error) {
+	if root == nil {
+		return onboardingSampleFilePlan{write: true}, nil
 	}
-	stagedPath := staged.Name()
-	defer func() { _ = os.Remove(stagedPath) }()
+	parent, err := openOnboardingSampleParent(root, filepath.Dir(relative), false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return onboardingSampleFilePlan{write: true}, nil
+	}
+	if err != nil {
+		return onboardingSampleFilePlan{}, err
+	}
+	defer func() { _ = parent.Close() }()
+
+	name := filepath.Base(relative)
+	target := filepath.Join(destination, relative)
+	info, err := parent.Lstat(name)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return onboardingSampleFilePlan{write: true}, nil
+	case err != nil:
+		return onboardingSampleFilePlan{}, fmt.Errorf("inspect %s: %w", target, err)
+	case info.Mode()&fs.ModeSymlink != 0:
+		return onboardingSampleFilePlan{}, fmt.Errorf("refusing symbolic link %s", target)
+	case !info.Mode().IsRegular():
+		return onboardingSampleFilePlan{}, fmt.Errorf("refusing non-regular file %s", target)
+	}
+
+	current, err := readOnboardingSampleFile(parent, name, info)
+	if err != nil {
+		return onboardingSampleFilePlan{}, fmt.Errorf("read %s: %w", target, err)
+	}
+	if bytes.Equal(current, data) {
+		return onboardingSampleFilePlan{}, nil
+	}
+	if !force {
+		return onboardingSampleFilePlan{}, fmt.Errorf("refusing to replace user-owned file %s without --force", target)
+	}
+	return onboardingSampleFilePlan{write: true, replace: true, previousMode: info.Mode().Perm()}, nil
+}
+
+func readOnboardingSampleFile(root *os.Root, name string, expected fs.FileInfo) ([]byte, error) {
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	current, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if current.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing symbolic link %s", name)
+	}
+	if !current.Mode().IsRegular() || !opened.Mode().IsRegular() ||
+		!os.SameFile(expected, current) || !os.SameFile(expected, opened) {
+		return nil, fmt.Errorf("file changed while opening %s", name)
+	}
+	return io.ReadAll(file)
+}
+
+func writeOnboardingSampleFile(root *os.Root, target string, data []byte, replace bool, previousMode fs.FileMode) error {
+	staged, stagedName, err := createOnboardingStagedFile(root, target)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Remove(stagedName) }()
 	if err := staged.Chmod(0o644); err != nil {
 		_ = staged.Close()
 		return fmt.Errorf("set staged file mode: %w", err)
@@ -328,18 +414,25 @@ func writeOnboardingSampleFile(target string, data []byte, replace bool, previou
 	}
 
 	restoreMode := false
-	if replace && previousMode.Perm()&0o200 == 0 {
+	if replace && runtime.GOOS == "windows" && previousMode.Perm()&0o200 == 0 {
 		// Windows cannot replace a destination carrying the read-only attribute.
-		if err := os.Chmod(target, previousMode.Perm()|0o200); err != nil {
+		info, err := root.Lstat(target)
+		if err != nil {
+			return fmt.Errorf("inspect existing file: %w", err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular file %s", target)
+		}
+		if err := root.Chmod(target, previousMode.Perm()|0o200); err != nil {
 			return fmt.Errorf("make existing file replaceable: %w", err)
 		}
 		restoreMode = true
 	}
 	var publishErr error
 	if replace {
-		publishErr = durability.ReplaceFile(stagedPath, target)
+		publishErr = root.Rename(stagedName, target)
 	} else {
-		publishErr = os.Link(stagedPath, target)
+		publishErr = root.Link(stagedName, target)
 	}
 	if publishErr != nil {
 		action := "publish staged file without replacing destination"
@@ -348,7 +441,7 @@ func writeOnboardingSampleFile(target string, data []byte, replace bool, previou
 		}
 		replaceErr := fmt.Errorf("%s: %w", action, publishErr)
 		if restoreMode {
-			if restoreErr := os.Chmod(target, previousMode.Perm()); restoreErr != nil {
+			if restoreErr := root.Chmod(target, previousMode.Perm()); restoreErr != nil {
 				return errors.Join(replaceErr, fmt.Errorf("restore existing file mode: %w", restoreErr))
 			}
 		}
@@ -357,61 +450,144 @@ func writeOnboardingSampleFile(target string, data []byte, replace bool, previou
 	return nil
 }
 
-func validateOnboardingDestination(destination string) error {
-	destination = filepath.Clean(destination)
-	var components []string
-	for current := destination; ; current = filepath.Dir(current) {
-		components = append(components, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
+func createOnboardingStagedFile(root *os.Root, target string) (*os.File, string, error) {
+	var random [8]byte
+	for range 100 {
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", fmt.Errorf("create staged file name: %w", err)
 		}
-	}
-	for i := len(components) - 1; i >= 0; i-- {
-		current := components[i]
-		info, err := os.Lstat(current)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return nil
-		case err != nil:
-			return fmt.Errorf("inspect destination component %s: %w", current, err)
-		case info.Mode()&fs.ModeSymlink != 0 && current == destination:
-			return fmt.Errorf("refusing symbolic-link destination %s", destination)
-		case info.Mode()&fs.ModeSymlink != 0:
-			return fmt.Errorf("refusing symbolic-link destination ancestor %s", current)
-		case !info.IsDir() && current == destination:
-			return fmt.Errorf("destination %s is not a directory", destination)
-		case !info.IsDir():
-			return fmt.Errorf("destination ancestor %s is not a directory", current)
-		}
-	}
-	return nil
-}
-
-func validateOnboardingParents(destination, parent string) error {
-	relative, err := filepath.Rel(destination, parent)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("sample path escapes destination %s", destination)
-	}
-	current := destination
-	for _, part := range strings.Split(relative, string(filepath.Separator)) {
-		if part == "." || part == "" {
+		name := "." + target + "-" + hex.EncodeToString(random[:])
+		file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
 		if err != nil {
-			return fmt.Errorf("inspect sample parent %s: %w", current, err)
+			return nil, "", fmt.Errorf("create staged file: %w", err)
 		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("refusing symbolic-link parent %s", current)
+		return file, name, nil
+	}
+	return nil, "", fmt.Errorf("create staged file: exhausted unique names")
+}
+
+func openOnboardingDestination(destination string, create bool) (*os.Root, error) {
+	volumeRoot := filepath.VolumeName(destination) + string(filepath.Separator)
+	relative, err := filepath.Rel(volumeRoot, destination)
+	if err != nil {
+		return nil, fmt.Errorf("resolve destination %s: %w", destination, err)
+	}
+	if relative != "." && !filepath.IsLocal(relative) {
+		return nil, fmt.Errorf("destination %s is outside volume root %s", destination, volumeRoot)
+	}
+	current, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open destination volume %s: %w", volumeRoot, err)
+	}
+	if relative == "." {
+		return current, nil
+	}
+
+	parts := strings.Split(relative, string(filepath.Separator))
+	display := volumeRoot
+	for i, part := range parts {
+		display = filepath.Join(display, part)
+		description := "destination ancestor"
+		if i == len(parts)-1 {
+			description = "destination"
 		}
-		if !info.IsDir() {
-			return fmt.Errorf("sample parent %s is not a directory", current)
+		next, err := openStableOnboardingDirectory(current, part, display, description, create)
+		_ = current.Close()
+		if err != nil {
+			return nil, err
 		}
+		current = next
+	}
+	return current, nil
+}
+
+func openOnboardingSampleParent(root *os.Root, relative string, create bool) (*os.Root, error) {
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, fmt.Errorf("open destination: %w", err)
+	}
+	if relative == "." {
+		return current, nil
+	}
+	display := root.Name()
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		display = filepath.Join(display, part)
+		next, err := openStableOnboardingDirectory(current, part, display, "sample parent", create)
+		_ = current.Close()
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func openStableOnboardingDirectory(
+	parent *os.Root,
+	name, display, description string,
+	create bool,
+) (*os.Root, error) {
+	info, err := parent.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) && create {
+		if err := parent.Mkdir(name, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("create %s %s: %w", description, display, err)
+		}
+		info, err = parent.Lstat(name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s %s: %w", description, display, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing symbolic-link %s %s", description, display)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s %s is not a directory", description, display)
+	}
+
+	child, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, fmt.Errorf("open %s %s: %w", description, display, err)
+	}
+	opened, err := child.Stat(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, fmt.Errorf("inspect opened %s %s: %w", description, display, err)
+	}
+	current, err := parent.Lstat(name)
+	if err != nil {
+		_ = child.Close()
+		return nil, fmt.Errorf("reinspect %s %s: %w", description, display, err)
+	}
+	if current.Mode()&fs.ModeSymlink != 0 {
+		_ = child.Close()
+		return nil, fmt.Errorf("refusing symbolic-link %s %s", description, display)
+	}
+	if !current.IsDir() || !os.SameFile(info, current) || !os.SameFile(info, opened) {
+		_ = child.Close()
+		return nil, fmt.Errorf("%s %s changed while opening", description, display)
+	}
+	return child, nil
+}
+
+func validateOnboardingDestinationBinding(destination string, expected *os.Root) error {
+	current, err := openOnboardingDestination(destination, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = current.Close() }()
+	expectedInfo, err := expected.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect opened destination %s: %w", destination, err)
+	}
+	currentInfo, err := current.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect current destination %s: %w", destination, err)
+	}
+	if !os.SameFile(expectedInfo, currentInfo) {
+		return fmt.Errorf("destination %s changed after preflight", destination)
 	}
 	return nil
 }

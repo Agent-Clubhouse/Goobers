@@ -85,7 +85,7 @@ func init() {
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		command("preflight", apicontract.ActionWorkflowExecution, runOnboardingPreflight).
 			withSynopsis(synopsisByID["preflight"]).
 			withHelp("check WSL full-isolation readiness and optionally hand off a command", wslPreflightHelp).

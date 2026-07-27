@@ -127,20 +127,60 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 }
 
 func TestWriteOnboardingSampleFileDoesNotReplaceFileCreatedAfterPreflight(t *testing.T) {
-	target := filepath.Join(onboardingTestTempDir(t), "package.json")
+	dir := onboardingTestTempDir(t)
+	target := filepath.Join(dir, "package.json")
 	if _, err := os.Lstat(target); !os.IsNotExist(err) {
 		t.Fatalf("target unexpectedly exists before simulated preflight: %v", err)
 	}
 	if err := os.WriteFile(target, []byte("user-owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
 
-	err := writeOnboardingSampleFile(target, []byte("sample\n"), false, 0)
+	err = writeOnboardingSampleFile(root, "package.json", []byte("sample\n"), false, 0)
 	if err == nil || !strings.Contains(err.Error(), "without replacing destination") {
 		t.Fatalf("writeOnboardingSampleFile error = %v, want no-replace publication failure", err)
 	}
 	if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "user-owned\n" {
 		t.Fatalf("file created after preflight was replaced: data=%q err=%v", got, readErr)
+	}
+}
+
+func TestOnboardingStubSampleRefusesParentReplacedBySymlinkAfterPreflight(t *testing.T) {
+	base := onboardingTestTempDir(t)
+	parent := filepath.Join(base, "parent")
+	destination := filepath.Join(parent, "sample")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	movedParent := filepath.Join(base, "moved-parent")
+	outside := onboardingTestTempDir(t)
+
+	previous := beforeOnboardingSamplePublish
+	beforeOnboardingSamplePublish = func() {
+		if err := os.Rename(parent, movedParent); err != nil {
+			t.Skipf("cannot replace open parent on this platform: %v", err)
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeOnboardingSamplePublish = previous })
+
+	files := []onboardingSampleFile{{path: "package.json", data: []byte("sample\n")}}
+	_, err := materializeOnboardingSample(destination, files, false)
+	if err == nil || !strings.Contains(err.Error(), "symbolic-link destination ancestor") {
+		t.Fatalf("materializeOnboardingSample error = %v, want substituted-parent refusal", err)
+	}
+	if entries, readErr := os.ReadDir(outside); readErr != nil || len(entries) != 0 {
+		t.Fatalf("sample was redirected through substituted parent: entries=%v err=%v", entries, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedParent, "sample", "package.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("sample was published after destination binding changed: %v", statErr)
 	}
 }
 

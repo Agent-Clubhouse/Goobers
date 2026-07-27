@@ -15,7 +15,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         init)
-            flags+=" --demo --guided --template --source-tree --json"
+            flags+=" --demo --guided --template"
             ;;
         preflight)
             flags+=" --distro --launch-wsl"

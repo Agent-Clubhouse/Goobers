@@ -137,8 +137,6 @@ const (
 	errorTutorScopeTarget         WarningCode = "TUT001"
 )
 
-const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
-
 // Issue is a single validation finding.
 type Issue struct {
 	Code     WarningCode `json:"code,omitempty"`
@@ -1310,9 +1308,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// checks the inline field-by-field pass above deliberately does not duplicate.
 	def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 	for _, msg := range wf.CheckWarnings(def) {
-		if ix.acknowledgesManualOnly(w, msg) {
-			continue
-		}
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {
@@ -1364,21 +1359,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
-}
-
-func (ix *index) acknowledgesManualOnly(w apiv1.Workflow, warning string) bool {
-	if len(ix.manifests) != 1 || ix.manifests[0].Annotations[acknowledgeManualOnlyAnnotation] != "true" {
-		return false
-	}
-	if len(w.Spec.Triggers) != 1 || w.Spec.Triggers[0].Type != apiv1.TriggerManual {
-		return false
-	}
-	want := fmt.Sprintf(
-		"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
-		w.Name,
-		w.Name,
-	)
-	return warning == want
 }
 
 // gooberSpecs projects the indexed goobers into the name->spec map the compiler's
