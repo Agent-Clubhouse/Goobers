@@ -22,14 +22,24 @@ import (
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
-var contractPaths = []string{
-	"docs/ARCHITECTURE.md",
-	"docs/requirements/README.md",
-	"api/schemas/workflow.schema.json",
-	"config-examples/manifest.yaml",
-	"internal/capability/capability.go",
-	"skills/goobers-environment-resolver/SKILL.md",
-}
+var contractRoots = []string{"docs", "api/schemas", "config-examples", "internal/capability", "skills"}
+
+var contractPaths = func() []string {
+	bundle, err := agentkit.Build(os.DirFS(filepath.Join("..", "..")), "fixture", "fixture")
+	if err != nil {
+		panic(err)
+	}
+	var paths []string
+	for _, asset := range bundle.Manifest.Assets {
+		relative, ok := strings.CutPrefix(asset.Path, agentkit.ProductRoot+"/")
+		if ok && slices.ContainsFunc(contractRoots, func(root string) bool {
+			return relative == root || strings.HasPrefix(relative, root+"/")
+		}) {
+			paths = append(paths, relative)
+		}
+	}
+	return paths
+}()
 
 type fixtureDocument struct {
 	Scenarios []fixtureScenario `json:"scenarios"`
@@ -259,7 +269,7 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"reject tracked contract symlink", "reject ambiguous abbreviated commit",
 		"local Git config source", "remote Git config source",
 		"remote Git config source without provider access", "default instance config source",
-		"reject installed toolkit DSL mismatch", "reject incomplete toolkit inventory",
+		"reject installed toolkit DSL mismatch", "reject incomplete contract inventory",
 	} {
 		if !runs[name] {
 			t.Errorf("fixture suite is missing run %q", name)
@@ -272,7 +282,7 @@ func TestResolverFixturesCoverAcceptanceMatrix(t *testing.T) {
 		"tracked symlink local source", "ambiguous abbreviated commit", "local Git config source",
 		"remote Git config source", "remote Git config source without provider access",
 		"default instance config source", "installed toolkit DSL mismatch",
-		"incomplete toolkit inventory",
+		"incomplete contract inventory",
 	} {
 		if !scenarios[name] {
 			t.Errorf("fixture suite is missing scenario %q", name)
@@ -325,14 +335,26 @@ func TestRepositoryIdentitySanitizesCapturedRemotes(t *testing.T) {
 	}
 }
 
+func TestContractInventoryIncludesCompleteTrees(t *testing.T) {
+	for _, path := range []string{"api/schemas/gaggle.schema.json", "api/schemas/goober.schema.json", "skills/goobers-dsl-author/references/dsl-reference.md"} {
+		if !slices.Contains(contractPaths, path) {
+			t.Errorf("contract inventory is missing %q", path)
+		}
+	}
+}
+
 func TestRemoteReleaseRejectsMismatchedContentObject(t *testing.T) {
 	scenario := loadFixtures(t).Scenarios[1]
 	environment := materializeScenario(t, scenario)
+	identity := binaryIdentity{Version: scenario.CLI.Version, Commit: scenario.CLI.Commit}
+	files := environment.provider.output.Release.Files
+	environment.provider.output.Release.Files = files[1:]
+	if _, ok := verifyRemoteRelease(environment.provider, identity); ok {
+		t.Fatal("remote release with incomplete contract inventory was accepted")
+	}
+	environment.provider.output.Release.Files = files
 	environment.provider.output.Release.ContentObject = strings.Repeat("d", 40)
-	if _, ok := verifyRemoteRelease(environment.provider, binaryIdentity{
-		Version: scenario.CLI.Version,
-		Commit:  scenario.CLI.Commit,
-	}); ok {
+	if _, ok := verifyRemoteRelease(environment.provider, identity); ok {
 		t.Fatal("remote release accepted content from a different Git object")
 	}
 }
@@ -1172,7 +1194,7 @@ func newContract(kind, root, version, commit string) contractReport {
 
 func hasTrackedSymlink(repository *fixtureRepository) bool {
 	for _, path := range repository.TrackedSymlinks {
-		for _, root := range []string{"docs", "api/schemas", "config-examples", "internal/capability", "skills"} {
+		for _, root := range contractRoots {
 			if path == root || strings.HasPrefix(path, root+"/") {
 				return true
 			}

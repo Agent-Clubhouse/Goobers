@@ -156,10 +156,10 @@
       "runs": [{"name": "reject installed toolkit DSL mismatch", "start": "unrelated", "configSource": "config", "want": {"currentRole": "unresolved", "binaryProvenance": "PATH-only", "contractKind": "unresolved", "configSource": "$ROOT/config", "diagnosticsContain": ["known release"]}}]
     },
     {
-      "name": "incomplete toolkit inventory",
+      "name": "incomplete contract inventory",
       "files": {"config/manifest.yaml": "kind: Manifest\n", "config/gaggles/.keep": "", "unrelated/.keep": ""},
-      "toolkit": {"configRoot": "config", "version": "v1.2.3", "commit": "abc1230000000000000000000000000000000000", "removeInventory": "payload/.goobers/agent-toolkit/docs/requirements/workflow.md"},
-      "runs": [{"name": "reject incomplete toolkit inventory", "start": "unrelated", "configSource": "config", "want": {"currentRole": "unresolved", "binaryProvenance": "unresolved", "contractKind": "unresolved", "configSource": "$ROOT/config", "diagnosticsContain": ["executable unresolved"]}}]
+      "toolkit": {"configRoot": "config", "version": "v1.2.3", "commit": "abc1230000000000000000000000000000000000", "removeInventory": "payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json"},
+      "runs": [{"name": "reject incomplete contract inventory", "start": "unrelated", "configSource": "config", "want": {"currentRole": "unresolved", "binaryProvenance": "unresolved", "contractKind": "unresolved", "configSource": "$ROOT/config", "diagnosticsContain": ["executable unresolved"]}}]
     }
   ]
 }
