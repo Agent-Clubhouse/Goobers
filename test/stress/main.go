@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	stressCount      = 20
-	reportSchema     = "goobers.dev/stress/v1"
-	failureTextLimit = 64 * 1024
+	stressCount           = 20
+	reportSchema          = "goobers.dev/stress/v1"
+	failureTextLimit      = 64 * 1024
+	failureSignatureLimit = 1024
 )
 
 type options struct {
@@ -515,7 +516,7 @@ var (
 func normalizeFailureSignature(text string) string {
 	lines := strings.Split(text, "\n")
 	if signature, ok := normalizeRaceSignature(lines); ok {
-		return signature
+		return boundFailureSignature(signature)
 	}
 	for index, line := range lines {
 		if !strings.Contains(strings.TrimSpace(line), "panic:") {
@@ -532,7 +533,7 @@ func normalizeFailureSignature(text string) string {
 				break
 			}
 		}
-		return strings.Join(signature, " | ")
+		return boundFailureSignature(strings.Join(signature, " | "))
 	}
 
 	signature := make([]string, 0, 3)
@@ -555,7 +556,17 @@ func normalizeFailureSignature(text string) string {
 	if len(signature) == 0 {
 		return "test failed without stable signature"
 	}
-	return strings.Join(signature, " | ")
+	return boundFailureSignature(strings.Join(signature, " | "))
+}
+
+func boundFailureSignature(signature string) string {
+	runes := []rune(signature)
+	if len(runes) <= failureSignatureLimit {
+		return signature
+	}
+	suffix := fmt.Sprintf("… [sha256:%x]", sha256.Sum256([]byte(signature)))
+	suffixRunes := []rune(suffix)
+	return string(runes[:failureSignatureLimit-len(suffixRunes)]) + suffix
 }
 
 func normalizeRaceSignature(lines []string) (string, bool) {

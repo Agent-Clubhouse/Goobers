@@ -25,6 +25,7 @@ const (
 	flakeLabelColor  = "D73A4A"
 	flakeDescription = "Fingerprint-backed intermittent test failure"
 	snippetLimit     = 8 * 1024
+	signatureLimit   = 1024
 )
 
 var fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -331,7 +332,7 @@ func issueTitle(failure testFailure) string {
 	title := fmt.Sprintf("[flake] %s %s: %s",
 		singleLine(failure.Package),
 		singleLine(failure.Test),
-		singleLine(failure.FailureSignature),
+		renderedSignature(failure.FailureSignature),
 	)
 	return truncateRunes(title, 240)
 }
@@ -345,7 +346,7 @@ func issueBody(run runMetadata, failure testFailure) string {
 		"- **Fingerprint:** `" + failure.Fingerprint + "`",
 		"- **Package:** `" + singleLine(failure.Package) + "`",
 		"- **Test:** `" + singleLine(failure.Test) + "`",
-		"- **Normalized signature:** `" + singleLine(failure.FailureSignature) + "`",
+		"- **Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
 		"",
 		"## Occurrences",
 		"",
@@ -368,7 +369,7 @@ func occurrenceComment(run runMetadata, failure testFailure) string {
 		"",
 		occurrenceLine(run, failure),
 		"",
-		"**Normalized signature:** `" + singleLine(failure.FailureSignature) + "`",
+		"**Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
 		"",
 		failureSnippet(failure),
 	}, "\n")
@@ -415,6 +416,10 @@ func occurrenceMarker(run runMetadata, failure testFailure) string {
 
 func singleLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+func renderedSignature(value string) string {
+	return truncateRunes(singleLine(value), signatureLimit)
 }
 
 func truncateRunes(value string, limit int) string {
