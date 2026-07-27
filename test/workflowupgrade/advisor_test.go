@@ -26,7 +26,6 @@ type fixtureDocument struct {
 
 type fixtureScenario struct {
 	Name            string             `json:"name"`
-	Golden          string             `json:"golden"`
 	Scope           fixtureScope       `json:"scope"`
 	Target          fixtureRelease     `json:"target"`
 	Configs         fixtureConfigs     `json:"configs"`
@@ -46,7 +45,7 @@ type fixtureConfigs struct {
 }
 
 type fixtureRelease struct {
-	Version, Ref, Commit, Source, Confidence string
+	Ref, Commit, Source, Confidence string
 }
 
 type fixtureWorkflow struct {
@@ -82,7 +81,7 @@ func TestAdvisorFixtures(t *testing.T) {
 		t.Run(scenario.Name, func(t *testing.T) {
 			seen[scenario.Name] = true
 			got := renderAdvisory(scenario)
-			want, err := os.ReadFile(filepath.Join("testdata", scenario.Golden))
+			want, err := os.ReadFile(filepath.Join("testdata", scenario.Name+".golden.md"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -419,7 +418,42 @@ func loadFixtures(t *testing.T) fixtureDocument {
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
 	}
+	for i := range document.Scenarios {
+		scenario := &document.Scenarios[i]
+		hydrateScenarioGraphs(t, scenario)
+	}
 	return document
+}
+
+func hydrateScenarioGraphs(t *testing.T, scenario *fixtureScenario) {
+	t.Helper()
+	current := fixtureGraphs(t, scenario.Configs.Current)
+	canonical := fixtureGraphs(t, scenario.Configs.Canonical)
+	proposed := fixtureGraphs(t, scenario.Configs.Proposed)
+	for i := range scenario.Workflows {
+		candidate := &scenario.Workflows[i]
+		var ok bool
+		if candidate.CurrentGraph, ok = current[candidate.Name]; !ok {
+			t.Fatalf("current fixtures are missing workflow %q", candidate.Name)
+		}
+		candidate.TargetGraph = canonical[candidate.Name]
+		if candidate.ProposedGraph, ok = proposed[candidate.Name]; !ok {
+			t.Fatalf("proposed fixtures are missing workflow %q", candidate.Name)
+		}
+	}
+}
+
+func fixtureGraphs(t *testing.T, fixtures []string) map[string][]string {
+	t.Helper()
+	graphs := make(map[string][]string, len(fixtures))
+	for _, name := range fixtures {
+		var document apiv1.Workflow
+		if err := yaml.Unmarshal(readFixture(t, name), &document); err != nil {
+			t.Fatalf("parse fixture %s: %v", name, err)
+		}
+		graphs[document.Name] = graphLinesFromDocument(document)
+	}
+	return graphs
 }
 
 func readFixture(t *testing.T, name string) []byte {
