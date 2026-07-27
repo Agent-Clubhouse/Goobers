@@ -85,6 +85,20 @@ func report(ctx context.Context) {
 			want: "hardcoded network destination",
 		},
 		{
+			name: "net dialer struct field",
+			source: `package sample
+import (
+	"context"
+	"net"
+)
+type reporter struct { dialer *net.Dialer }
+func (r *reporter) report(ctx context.Context) {
+	_, _ = r.dialer.DialContext(ctx, "tcp", "maintainer.example.invalid:443")
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "unlisted process argument destination",
 			source: `package sample
 import "os/exec"
@@ -281,6 +295,32 @@ func TestScanRejectsBuiltInCommandEgressDestinations(t *testing.T) {
       - run: curl https://maintainer.example.invalid/usage
 `,
 		},
+		{
+			name:   "shell binding",
+			path:   "scripts/report.sh",
+			source: "REPORT_URL=https://maintainer.example.invalid/usage\ncurl \"$REPORT_URL\"\n",
+		},
+		{
+			name:   "PowerShell binding",
+			path:   "scripts/report.ps1",
+			source: "$ReportURL = \"https://maintainer.example.invalid/usage\"\nInvoke-RestMethod -Uri $ReportURL\n",
+		},
+		{
+			name:   "Make binding",
+			path:   "Makefile",
+			source: "REPORT_URL := https://maintainer.example.invalid/usage\nreport:\n\tcurl \"$(REPORT_URL)\"\n",
+		},
+		{
+			name: "workflow environment binding",
+			path: ".github/workflows/report.yml",
+			source: `jobs:
+  report:
+    steps:
+      - env:
+          REPORT_URL: https://maintainer.example.invalid/usage
+        run: curl "$REPORT_URL"
+`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -305,6 +345,22 @@ jobs:
       - run: |
           curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/install.sh" \
             | sh
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
+func TestScanAllowsEscapedMakeVariables(t *testing.T) {
+	root := writeSourceAt(t, "Makefile", `fmt-check:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "$$unformatted"; exit 1; \
+	fi
 `)
 	findings, err := scan(root)
 	if err != nil {
@@ -544,6 +600,23 @@ func TestScanRejectsConditionalEndpointFallback(t *testing.T) {
 	}
 	if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
 		t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+	}
+}
+
+func TestScanRejectsHelperEndpointFallback(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"\tendpoint := strings.TrimSpace(cfg.OTLPEndpoint)\n",
+		"\tendpoint := firstNonEmpty(cfg.OTLPEndpoint, \"maintainer.example.invalid:4317\")\n",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
+		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
 	}
 }
 

@@ -586,16 +586,23 @@ func netDialerIdentifiersAt(
 	imports map[string]string,
 ) map[string]bool {
 	identifiers := make(map[string]bool)
+	structFields := netDialerStructFields(parsed, imports)
+	for typeName, fields := range structFields {
+		for fieldName := range fields {
+			if fieldName == "" {
+				identifiers[typeName] = true
+			} else {
+				identifiers[typeName+"."+fieldName] = true
+			}
+		}
+	}
 	addFields := func(fields *ast.FieldList) {
 		if fields == nil {
 			return
 		}
 		for _, field := range fields.List {
-			if !isNetDialerType(field.Type, imports) {
-				continue
-			}
 			for _, name := range field.Names {
-				identifiers[name.Name] = true
+				addNetDialerIdentifiers(identifiers, name.Name, field.Type, imports, structFields)
 			}
 		}
 	}
@@ -606,11 +613,11 @@ func netDialerIdentifiersAt(
 		}
 		for _, spec := range general.Specs {
 			values, ok := spec.(*ast.ValueSpec)
-			if !ok || !isNetDialerType(values.Type, imports) {
+			if !ok {
 				continue
 			}
 			for _, name := range values.Names {
-				identifiers[name.Name] = true
+				addNetDialerIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
 			}
 		}
 	}
@@ -621,15 +628,94 @@ func netDialerIdentifiersAt(
 			return false
 		}
 		values, ok := node.(*ast.ValueSpec)
-		if !ok || !isNetDialerType(values.Type, imports) {
+		if !ok {
 			return true
 		}
 		for _, name := range values.Names {
-			identifiers[name.Name] = true
+			addNetDialerIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
 		}
 		return false
 	})
 	return identifiers
+}
+
+func netDialerStructFields(parsed *ast.File, imports map[string]string) map[string]map[string]bool {
+	result := make(map[string]map[string]bool)
+	embeddedTypes := make(map[string][]string)
+	for _, declaration := range parsed.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range general.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range structType.Fields.List {
+				if len(field.Names) == 0 && !isNetDialerType(field.Type, imports) {
+					if embedded := namedTypeName(field.Type); embedded != "" {
+						embeddedTypes[typeSpec.Name.Name] = append(embeddedTypes[typeSpec.Name.Name], embedded)
+					}
+					continue
+				}
+				if !isNetDialerType(field.Type, imports) {
+					continue
+				}
+				if result[typeSpec.Name.Name] == nil {
+					result[typeSpec.Name.Name] = make(map[string]bool)
+				}
+				if len(field.Names) == 0 {
+					result[typeSpec.Name.Name][""] = true
+					continue
+				}
+				for _, name := range field.Names {
+					result[typeSpec.Name.Name][name.Name] = true
+				}
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for typeName, embedded := range embeddedTypes {
+			for _, embeddedType := range embedded {
+				if !result[embeddedType][""] || result[typeName][""] {
+					continue
+				}
+				if result[typeName] == nil {
+					result[typeName] = make(map[string]bool)
+				}
+				result[typeName][""] = true
+				result[typeName][embeddedType] = true
+				changed = true
+			}
+		}
+	}
+	return result
+}
+
+func addNetDialerIdentifiers(
+	identifiers map[string]bool,
+	name string,
+	expression ast.Expr,
+	imports map[string]string,
+	structFields map[string]map[string]bool,
+) {
+	if isNetDialerType(expression, imports) {
+		identifiers[name] = true
+		return
+	}
+	for fieldName := range structFields[namedTypeName(expression)] {
+		if fieldName == "" {
+			identifiers[name] = true
+		} else {
+			identifiers[name+"."+fieldName] = true
+		}
+	}
 }
 
 func isNetDialerType(expression ast.Expr, imports map[string]string) bool {
@@ -672,8 +758,18 @@ func isNetDialerReceiver(
 		resolved := isNetDialerReceiver(binding, imports, bindings, typedDialers, seen)
 		delete(seen, value.Name)
 		return resolved
+	case *ast.SelectorExpr:
+		object, ok := value.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		binding, bound := bindings[object.Name]
+		if !bound {
+			return false
+		}
+		return typedDialers[boundTypeName(binding)+"."+value.Sel.Name]
 	case *ast.CompositeLit:
-		return isNetDialerType(value.Type, imports)
+		return isNetDialerType(value.Type, imports) || typedDialers[namedTypeName(value.Type)]
 	case *ast.UnaryExpr:
 		return value.Op == token.AND &&
 			isNetDialerReceiver(value.X, imports, bindings, typedDialers, seen)
@@ -1404,7 +1500,7 @@ func applyImplicitOptionsAssignment(
 				continue
 			}
 			bindings := bindingsAt(function, optionCall, fileBindings)
-			if derivesFrom(optionCall.Args[api.destination], bindings, approval.endpointSource, nil) {
+			if exclusivelyDerivedFrom(optionCall.Args[api.destination], bindings, approval.endpointSource, nil) {
 				configured = true
 			}
 		}
@@ -1416,7 +1512,7 @@ func containsNode(outer, inner ast.Node) bool {
 	return outer != nil && inner != nil && outer.Pos() <= inner.Pos() && outer.End() >= inner.End()
 }
 
-func derivesFrom(expression ast.Expr, bindings map[string]ast.Expr, source string, seen map[string]bool) bool {
+func exclusivelyDerivedFrom(expression ast.Expr, bindings map[string]ast.Expr, source string, seen map[string]bool) bool {
 	if expressionName(expression) == source {
 		return true
 	}
@@ -1433,22 +1529,26 @@ func derivesFrom(expression ast.Expr, bindings map[string]ast.Expr, source strin
 			return false
 		}
 		seen[value.Name] = true
-		derived := derivesFrom(binding, bindings, source, seen)
+		derived := exclusivelyDerivedFrom(binding, bindings, source, seen)
 		delete(seen, value.Name)
 		return derived
 	case *ast.CallExpr:
+		if len(value.Args) == 0 {
+			return false
+		}
 		for _, argument := range value.Args {
-			if derivesFrom(argument, bindings, source, seen) {
-				return true
+			if !exclusivelyDerivedFrom(argument, bindings, source, seen) {
+				return false
 			}
 		}
+		return true
 	case *ast.ParenExpr:
-		return derivesFrom(value.X, bindings, source, seen)
+		return exclusivelyDerivedFrom(value.X, bindings, source, seen)
 	case *ast.BinaryExpr:
-		return derivesFrom(value.X, bindings, source, seen) ||
-			derivesFrom(value.Y, bindings, source, seen)
+		return exclusivelyDerivedFrom(value.X, bindings, source, seen) &&
+			exclusivelyDerivedFrom(value.Y, bindings, source, seen)
 	case *ast.UnaryExpr:
-		return derivesFrom(value.X, bindings, source, seen)
+		return exclusivelyDerivedFrom(value.X, bindings, source, seen)
 	}
 	return false
 }
@@ -1727,6 +1827,9 @@ func scanCommandFile(root, path string) ([]finding, error) {
 	lines := strings.Split(string(source), "\n")
 	var findings []finding
 	var command strings.Builder
+	bindings := make(map[string]string)
+	yamlBindings := strings.HasSuffix(strings.ToLower(path), ".yml") ||
+		strings.HasSuffix(strings.ToLower(path), ".yaml")
 	commandLine := 0
 	for index, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -1746,6 +1849,8 @@ func scanCommandFile(root, path string) ([]finding, error) {
 
 		text := command.String()
 		command.Reset()
+		updateCommandBindings(text, bindings, yamlBindings)
+		text = expandCommandBindings(text, bindings)
 		name := commandEgressName(text)
 		if name == "" {
 			continue
@@ -1760,6 +1865,170 @@ func scanCommandFile(root, path string) ([]finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+func updateCommandBindings(text string, bindings map[string]string, yaml bool) {
+	name, value, ok := commandBinding(text, yaml)
+	if !ok {
+		return
+	}
+	value = expandCommandBindings(strings.TrimSpace(value), bindings)
+	if value == "" {
+		return
+	}
+	if len(value) >= 2 {
+		switch {
+		case value[0] == '"' && value[len(value)-1] == '"':
+			value = value[1 : len(value)-1]
+		case value[0] == '\'' && value[len(value)-1] == '\'':
+			value = value[1 : len(value)-1]
+		}
+	}
+	bindings[name] = value
+}
+
+func commandBinding(text string, yaml bool) (string, string, bool) {
+	text = strings.TrimSpace(text)
+	for _, prefix := range []string{"- ", "@", "export "} {
+		if strings.HasPrefix(strings.ToLower(text), prefix) {
+			text = strings.TrimSpace(text[len(prefix):])
+		}
+	}
+	for _, operator := range []string{":=", "?=", "+=", "="} {
+		if index := strings.Index(text, operator); index >= 0 {
+			name := normalizeCommandBindingName(text[:index])
+			if validCommandBindingName(name) {
+				return name, text[index+len(operator):], true
+			}
+		}
+	}
+	if index := strings.Index(text, ":"); yaml && index >= 0 {
+		name := normalizeCommandBindingName(text[:index])
+		return name, text[index+1:], validCommandBindingName(name)
+	}
+	return "", "", false
+}
+
+func normalizeCommandBindingName(name string) string {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "export ") {
+		name = strings.TrimSpace(name[len("export "):])
+		lower = strings.ToLower(name)
+	}
+	if strings.HasPrefix(lower, "$env:") {
+		name = name[len("$env:"):]
+	} else {
+		name = strings.TrimPrefix(name, "$")
+	}
+	return strings.Trim(strings.TrimSpace(name), `"'`)
+}
+
+func validCommandBindingName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for index, character := range name {
+		if character == '_' || character == '-' || character == '.' ||
+			character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			index > 0 && character >= '0' && character <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func expandCommandBindings(text string, bindings map[string]string) string {
+	return expandCommandBindingsSeen(text, bindings, make(map[string]bool))
+}
+
+func expandCommandBindingsSeen(text string, bindings map[string]string, seen map[string]bool) string {
+	names := make([]string, 0, len(bindings))
+	for name := range bindings {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return len(names[i]) > len(names[j])
+	})
+	for _, name := range names {
+		if seen[name] || !commandBindingReferenced(text, name) {
+			continue
+		}
+		seen[name] = true
+		value := expandCommandBindingsSeen(bindings[name], bindings, seen)
+		delete(seen, name)
+		for _, pattern := range []string{
+			"${" + name + "}",
+			"$(" + name + ")",
+			"$env:" + name,
+			"${env:" + name + "}",
+			"${{ env." + name + " }}",
+		} {
+			text = replaceCommandBinding(text, pattern, value, false)
+		}
+		text = replaceCommandBinding(text, "$"+name, value, true)
+	}
+	return text
+}
+
+func commandBindingReferenced(text, name string) bool {
+	for _, pattern := range []string{
+		"${" + name + "}",
+		"$(" + name + ")",
+		"$env:" + name,
+		"${env:" + name + "}",
+		"${{ env." + name + " }}",
+	} {
+		if commandBindingPatternPresent(text, pattern, false) {
+			return true
+		}
+	}
+	return commandBindingPatternPresent(text, "$"+name, true)
+}
+
+func commandBindingPatternPresent(text, pattern string, requireBoundary bool) bool {
+	for {
+		index := strings.Index(text, pattern)
+		if index < 0 {
+			return false
+		}
+		end := index + len(pattern)
+		if (index == 0 || text[index-1] != '$') &&
+			(!requireBoundary || end == len(text) || !commandVariableByte(text[end])) {
+			return true
+		}
+		text = text[end:]
+	}
+}
+
+func replaceCommandBinding(text, pattern, value string, requireBoundary bool) string {
+	var result strings.Builder
+	for {
+		index := strings.Index(text, pattern)
+		if index < 0 {
+			result.WriteString(text)
+			return result.String()
+		}
+		end := index + len(pattern)
+		if index > 0 && text[index-1] == '$' ||
+			requireBoundary && end < len(text) && commandVariableByte(text[end]) {
+			result.WriteString(text[:end])
+			text = text[end:]
+			continue
+		}
+		result.WriteString(text[:index])
+		result.WriteString(value)
+		text = text[end:]
+	}
+}
+
+func commandVariableByte(value byte) bool {
+	return value == '_' ||
+		value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9'
 }
 
 func commandEgressName(text string) string {
