@@ -18,7 +18,7 @@
       "description": "Content digest as sha256:<64-hex>.",
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
-    "mediaType": { "type": "string" },
-    "size": { "type": "integer", "minimum": 0 }
+    "mediaType": { "type": "string", "description": "Optional media type describing the artifact content." },
+    "size": { "type": "integer", "minimum": 0, "description": "Optional artifact size in bytes." }
   }
 }

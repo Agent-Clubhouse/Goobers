@@ -249,9 +249,14 @@ JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 # modules or a newer Go toolchain before the wrapper applies the same guards.
 GO_TEST_NETWORK_OFF := GOENV=off GOFLAGS=-mod=readonly GONOPROXY=none GONOSUMDB=none GOPRIVATE= GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOVCS=*:off
 
+## schema-description-coverage: Emit and enforce JSON Schema description coverage.
+.PHONY: schema-description-coverage
+schema-description-coverage:
+	$(GO_TEST_NETWORK_OFF) $(GO) test -v -run '^TestDescriptionCoverage$$' ./api/schemas
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
-test:
+test: schema-description-coverage
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, test, and verify the Go wire contract.

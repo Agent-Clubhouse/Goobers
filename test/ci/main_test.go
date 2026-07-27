@@ -60,6 +60,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"validate-configs",
 		"build-scheduler",
 		"shipped-workflows",
+		"schema-description-coverage",
 		"test",
 		"lint",
 		"portal-test",
@@ -72,7 +73,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[11]
+	testCheck := gotChecks[12]
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -103,6 +104,11 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
 		t.Fatalf("shipped workflow check = %#v", shippedCheck)
+	}
+	schemaCoverageCheck := gotChecks[11]
+	if schemaCoverageCheck.label != "schema-description-coverage" ||
+		!reflect.DeepEqual(schemaCoverageCheck.args, []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"}) {
+		t.Fatalf("schema description coverage check = %#v", schemaCoverageCheck)
 	}
 
 	buildCheck := gotChecks[7]
@@ -276,7 +282,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -711,7 +717,7 @@ func TestGroupChecksOnlyIsolatesHeavyweights(t *testing.T) {
 		want  []string
 	}{
 		{groupLint, []string{"lint"}},
-		{groupUnit, []string{"test"}},
+		{groupUnit, []string{"schema-description-coverage", "test"}},
 		{groupShipped, []string{"shipped-workflows"}},
 	} {
 		var got []string

@@ -7,31 +7,35 @@
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
-    "apiVersion": { "const": "goobers.dev/v1alpha1" },
-    "kind": { "const": "Gaggle" },
-    "metadata": { "$ref": "#/$defs/metadata" },
+    "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this gaggle definition." },
+    "kind": { "const": "Gaggle", "description": "Definition kind; always Gaggle." },
+    "metadata": { "$ref": "#/$defs/metadata", "description": "Identity and optional labels or annotations for this gaggle." },
     "spec": {
       "type": "object",
+      "description": "The gaggle's project, backlog, isolation boundary, and shared runner settings.",
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
-        "displayName": { "type": "string" },
-        "project": { "$ref": "#/$defs/repoRef" },
-        "backlog": { "$ref": "#/$defs/backlogRef" },
+        "displayName": { "type": "string", "description": "Human-facing gaggle name shown in the portal." },
+        "project": { "$ref": "#/$defs/repoRef", "description": "Primary code repository this gaggle works on." },
+        "backlog": { "$ref": "#/$defs/backlogRef", "description": "Singleton source of work-item truth for this gaggle." },
         "isolation": {
           "type": "object",
+          "description": "Per-gaggle namespace and workload-identity boundary.",
           "additionalProperties": false,
           "required": ["namespace"],
           "properties": {
             "namespace": {
               "type": "string",
-              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Kubernetes namespace reserved for this gaggle's workloads and secrets."
             },
-            "identityRef": { "type": "string" }
+            "identityRef": { "type": "string", "description": "Per-gaggle Azure workload identity used for external services." }
           }
         },
         "additionalRepos": {
           "type": "array",
+          "description": "Optional reference repositories supplied read-only to runs in addition to the primary project.",
           "items": { "$ref": "#/$defs/repoRef" }
         },
         "ciCommand": {
@@ -50,13 +54,13 @@
           "type": "string",
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
-        "runControls": { "$ref": "#/$defs/runControls" },
+        "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "agentic": { "type": "string", "enum": ["disabled", "enforced"] }
+            "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
           }
         }
       }
@@ -70,23 +74,25 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "DNS-label-compatible gaggle name, unique within the instance."
         },
-        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+        "labels": { "type": "object", "description": "String labels used to organize this gaggle.", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "description": "Non-identifying string metadata attached to this gaggle.", "additionalProperties": { "type": "string" } }
       }
     },
     "repoRef": {
       "type": "object",
+      "description": "Provider-neutral reference to a git repository and its credential connection.",
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"] },
-        "owner": { "type": "string", "minLength": 1 },
-        "project": { "type": "string", "minLength": 1 },
-        "name": { "type": "string", "minLength": 1 },
-        "branch": { "type": "string" },
-        "connectionRef": { "type": "string" },
+        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Repository provider." },
+        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
+        "project": { "type": "string", "minLength": 1, "description": "Azure DevOps project. Omit for GitHub repositories." },
+        "name": { "type": "string", "minLength": 1, "description": "Repository name." },
+        "branch": { "type": "string", "description": "Default branch checked out by runs. Omitted defaults to main." },
+        "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this repository." },
         "checkout": {
           "description": "Partial-checkout declaration (B2, #649). Accepted but not honored by the local runner yet — inert, surfaced as a VER003 compatibility warning at validate time.",
           "type": "object",
@@ -111,18 +117,19 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1 },
-        "stalledRunTimeout": { "type": "string", "minLength": 1 }
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
       }
     },
     "backlogRef": {
       "type": "object",
+      "description": "Provider-neutral reference to the singleton backlog a gaggle draws work from.",
       "additionalProperties": false,
       "required": ["provider", "project"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"] },
-        "project": { "type": "string", "minLength": 1 },
-        "labels": { "type": "array", "items": { "type": "string" } },
+        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Backlog provider." },
+        "project": { "type": "string", "minLength": 1, "description": "GitHub owner/repository or Azure DevOps project that scopes the backlog." },
+        "labels": { "type": "array", "description": "Required labels used to narrow candidate work items.", "items": { "type": "string" } },
         "labelPredicate": {
           "type": "string",
           "minLength": 1,
@@ -133,8 +140,8 @@
           "minLength": 1,
           "description": "CEL predicate over the provider's typed native-field projection. ANDed with labels; unavailable fields are errors."
         },
-        "query": { "type": "string" },
-        "connectionRef": { "type": "string" }
+        "query": { "type": "string", "description": "Provider-specific query used to narrow candidate work items." },
+        "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this backlog." }
       }
     }
   }
