@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -130,7 +131,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	if !*asJSON {
 		return code
 	}
-	if err := encodeIndentedJSON(stdout, diagnostics.envelope(code == 0)); err != nil {
+	if err := encodeSchemaJSON(stdout, schemas.Diagnostics, diagnostics.envelope(code == 0)); err != nil {
 		pf(stderr, "error: encode diagnostics: %v\n", err)
 		return 1
 	}

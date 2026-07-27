@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -8,6 +9,59 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+func TestValidateVerdictForPublishRejectsSchemaDrift(t *testing.T) {
+	type verdictWithFutureField struct {
+		apiv1.Verdict
+		FutureField string `json:"futureField"`
+	}
+	data, err := json.Marshal(verdictWithFutureField{
+		Verdict:     apiv1.Verdict{Decision: apiv1.VerdictPass},
+		FutureField: "not declared in verdict.schema.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateVerdictJSON(data); err == nil {
+		t.Fatal("schema-invalid verdict payload was accepted for publication")
+	}
+}
+
+func TestValidateVerdictForPublishRejectsInvalidVerdict(t *testing.T) {
+	err := validateVerdictForPublish(apiv1.Verdict{Decision: apiv1.VerdictDecision("future-decision")})
+	if err == nil {
+		t.Fatal("schema-invalid Verdict was accepted for publication")
+	}
+	if !strings.Contains(err.Error(), "verdict.schema.json") {
+		t.Fatalf("error = %q, want verdict schema context", err)
+	}
+}
+
+func TestApplyVerdictRejectsSchemaInvalidJournalVerdict(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-schema-invalid-verdict"
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "42")
+	t.Chdir(t.TempDir())
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictDecision("future-decision"),
+		HeadSHA:  "headsha",
+		BaseSHA:  "basesha",
+	})
+
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "validate review verdict from journal") ||
+		!strings.Contains(stderr, "verdict.schema.json") {
+		t.Fatalf("stderr = %q, want verdict schema validation failure", stderr)
+	}
+}
 
 func TestVerdictLabel(t *testing.T) {
 	substantive := []apiv1.Finding{{Severity: apiv1.SeverityWarning, Message: "nit", Class: apiv1.FindingSubstantive}}
