@@ -21,6 +21,9 @@ updates:
     directory: "/portal"
     schedule:
       interval: "weekly"
+    # Let routine releases age before adoption; security updates bypass cooldown.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       portal-npm:
