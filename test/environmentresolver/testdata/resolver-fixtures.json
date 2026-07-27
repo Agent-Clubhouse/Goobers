@@ -1,0 +1,323 @@
+{
+  "scenarios": [
+    {
+      "name": "starting directories and multiple targets",
+      "files": {
+        "config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "config/gaggles/team/gaggle.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: team\nspec:\n  project:\n    provider: github\n    owner: acme\n    name: web\n    branch: main\n  additionalRepos:\n    - provider: github\n      owner: acme\n      name: api\n      branch: release\n",
+        "config/nested/.keep": "",
+        "instance/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instance/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instance/subdir/.keep": "",
+        "targets/web/README.md": "# Web\n",
+        "targets/web/AGENTS.md": "Read-only fixture guidance.\n",
+        "targets/web/package.json": "{\"scripts\":{\"test\":\"node --test\"}}\n",
+        "targets/web/src/.keep": "",
+        "source/bin/goobers": "fixture executable\n",
+        "source/cmd/goobers/main.go": "package main\n",
+        "source/go.mod": "module github.com/goobers/goobers\n",
+        "unrelated/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "config",
+          "identity": "github/acme/config",
+          "head": "1111111111111111111111111111111111111111"
+        },
+        {
+          "root": "targets/web",
+          "identity": "github/acme/web",
+          "head": "2222222222222222222222222222222222222222"
+        },
+        {
+          "root": "source",
+          "identity": "github/Agent-Clubhouse/Goobers",
+          "head": "abc1230000000000000000000000000000000000",
+          "tags": [
+            "v1.2.3"
+          ]
+        }
+      ],
+      "sourceContractRoots": [
+        "source"
+      ],
+      "installedToolkit": {
+        "configRoot": "config",
+        "version": "v1.2.3",
+        "commit": "abc1230000000000000000000000000000000000",
+        "dslVersions": [
+          {
+            "version": "v1alpha1",
+            "lifecycle": "current"
+          }
+        ]
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v1.2.3\",\"commit\":\"abc1230000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"current\"}]}\n",
+        "config show --json": "{\"apiVersion\":\"goobers.dev/v1alpha1\",\"kind\":\"Instance\",\"workflowSource\":{\"kind\":\"local-dir\",\"path\":\"$ROOT/config\"},\"repos\":[{\"provider\":\"github\",\"owner\":\"acme\",\"name\":\"web\",\"token\":{\"env\":\"RESOLVER_FIXTURE_TOKEN\"}}]}\n",
+        "agent-kit check": "{\"state\":\"current\",\"producer\":{\"version\":\"v1.2.3\",\"commit\":\"abc1230000000000000000000000000000000000\"},\"modified\":[],\"missing\":[]}\n"
+      },
+      "providerOutputs": {
+        "targets": {
+          "github/acme/api": "{\"identity\":\"github/acme/api\",\"files\":[\"README.md\",\"AGENTS.md\",\".github/workflows/ci.yml\",\"go.mod\"]}\n"
+        }
+      },
+      "runs": [
+        {
+          "name": "config repository",
+          "start": "config/nested",
+          "instance": "instance",
+          "want": {
+            "currentRole": "config-source",
+            "binaryProvenance": "installed-release",
+            "contractKind": "installed-toolkit",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/config",
+            "targets": [
+              "github/acme/api",
+              "github/acme/web"
+            ]
+          }
+        },
+        {
+          "name": "initialized instance",
+          "start": "instance/subdir",
+          "want": {
+            "currentRole": "instance",
+            "binaryProvenance": "installed-release",
+            "contractKind": "installed-toolkit",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/config",
+            "targets": [
+              "github/acme/api",
+              "github/acme/web"
+            ]
+          }
+        },
+        {
+          "name": "target checkout",
+          "start": "targets/web/src",
+          "instance": "instance",
+          "want": {
+            "currentRole": "target",
+            "binaryProvenance": "installed-release",
+            "contractKind": "installed-toolkit",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/config",
+            "targets": [
+              "github/acme/api",
+              "github/acme/web"
+            ]
+          }
+        },
+        {
+          "name": "Goobers source checkout",
+          "start": "source/cmd/goobers",
+          "instance": "instance",
+          "want": {
+            "currentRole": "goobers-source",
+            "binaryProvenance": "source-built",
+            "contractKind": "local-source",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/config",
+            "targets": [
+              "github/acme/api",
+              "github/acme/web"
+            ]
+          }
+        },
+        {
+          "name": "unrelated parent",
+          "start": "unrelated",
+          "instance": "instance",
+          "want": {
+            "currentRole": "unresolved",
+            "binaryProvenance": "installed-release",
+            "contractKind": "installed-toolkit",
+            "instance": "$ROOT/instance",
+            "configSource": "$ROOT/config",
+            "targets": [
+              "github/acme/api",
+              "github/acme/web"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "matching remote release",
+      "files": {
+        "config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "config/gaggles/.keep": "",
+        "unrelated/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "config",
+          "identity": "github/acme/config",
+          "head": "3333333333333333333333333333333333333333"
+        }
+      ],
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"deprecated\"},{\"version\":\"v1alpha2\",\"lifecycle\":\"current\"}]}\n"
+      },
+      "providerOutputs": {
+        "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
+        "releaseRef": "{\"tag\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
+        "releaseTree": "{\"commit\":\"def4560000000000000000000000000000000000\",\"truncated\":false,\"paths\":[\"docs/ARCHITECTURE.md\",\"docs/requirements/README.md\",\"api/schemas/workflow.schema.json\",\"config-examples/manifest.yaml\",\"internal/capability/capability.go\",\"skills/goobers-environment-resolver/SKILL.md\"]}\n"
+      },
+      "runs": [
+        {
+          "name": "remote tag from unrelated directory",
+          "start": "unrelated",
+          "configSource": "config",
+          "want": {
+            "currentRole": "unresolved",
+            "binaryProvenance": "installed-release",
+            "contractKind": "remote-release",
+            "configSource": "$ROOT/config"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ambiguous instance",
+      "files": {
+        "instances/one/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instances/one/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "instances/two/instance.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n",
+        "instances/two/config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "unrelated/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"versions\":[{\"version\":\"v1alpha2\",\"lifecycle\":\"current\"}]}\n"
+      },
+      "providerOutputs": {
+        "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
+        "releaseRef": "{\"tag\":\"v2.0.0\",\"commit\":\"def4560000000000000000000000000000000000\"}\n",
+        "releaseTree": "{\"commit\":\"def4560000000000000000000000000000000000\",\"truncated\":false,\"paths\":[\"docs/ARCHITECTURE.md\",\"docs/requirements/README.md\",\"api/schemas/workflow.schema.json\",\"config-examples/manifest.yaml\",\"internal/capability/capability.go\",\"skills/goobers-environment-resolver/SKILL.md\"]}\n"
+      },
+      "runs": [
+        {
+          "name": "competing supplied instances",
+          "start": "unrelated",
+          "instanceCandidates": [
+            "instances/one",
+            "instances/two"
+          ],
+          "want": {
+            "currentRole": "unresolved",
+            "binaryProvenance": "installed-release",
+            "contractKind": "remote-release",
+            "diagnosticsContain": [
+              "ambiguous instance"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "intact toolkit without binary",
+      "files": {
+        "config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "config/gaggles/.keep": ""
+      },
+      "gitRepositories": [
+        {
+          "root": "config",
+          "identity": "github/acme/config",
+          "head": "4444444444444444444444444444444444444444"
+        }
+      ],
+      "installedToolkit": {
+        "configRoot": "config",
+        "version": "v3.0.0",
+        "commit": "9876540000000000000000000000000000000000",
+        "dslVersions": [
+          {
+            "version": "v1alpha2",
+            "lifecycle": "current"
+          }
+        ]
+      },
+      "runs": [
+        {
+          "name": "manual manifest verification",
+          "start": "config",
+          "want": {
+            "currentRole": "config-source",
+            "binaryProvenance": "unresolved",
+            "contractKind": "installed-toolkit",
+            "configSource": "$ROOT/config",
+            "diagnosticsContain": [
+              "executable unresolved",
+              "ready without binary"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "known version mismatch",
+      "files": {
+        "config/manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\n",
+        "config/gaggles/.keep": "",
+        "path/bin/goobers": "fixture executable\n"
+      },
+      "gitRepositories": [
+        {
+          "root": "config",
+          "identity": "github/acme/config",
+          "head": "5555555555555555555555555555555555555555"
+        }
+      ],
+      "installedToolkit": {
+        "configRoot": "config",
+        "version": "v2.0.0",
+        "commit": "2222220000000000000000000000000000000000",
+        "dslVersions": [
+          {
+            "version": "v1alpha2",
+            "lifecycle": "current"
+          }
+        ]
+      },
+      "pathBinary": "path/bin/goobers",
+      "cliOutputs": {
+        "version --json": "{\"version\":\"v1.0.0\",\"commit\":\"1111110000000000000000000000000000000000\"}\n",
+        "versions --json": "{\"versions\":[{\"version\":\"v1alpha1\",\"lifecycle\":\"current\"}]}\n",
+        "agent-kit check": "{\"state\":\"current\",\"producer\":{\"version\":\"v2.0.0\",\"commit\":\"2222220000000000000000000000000000000000\"},\"modified\":[],\"missing\":[]}\n"
+      },
+      "providerOutputs": {
+        "repository": "{\"nameWithOwner\":\"Agent-Clubhouse/Goobers\"}\n",
+        "releaseRef": "{\"tag\":\"v1.0.0\",\"commit\":\"9999990000000000000000000000000000000000\"}\n",
+        "releaseTree": "{\"commit\":\"9999990000000000000000000000000000000000\",\"truncated\":false,\"paths\":[\"docs/ARCHITECTURE.md\",\"docs/requirements/README.md\",\"api/schemas/workflow.schema.json\",\"config-examples/manifest.yaml\",\"internal/capability/capability.go\",\"skills/goobers-environment-resolver/SKILL.md\"]}\n"
+      },
+      "runs": [
+        {
+          "name": "refuse toolkit and remote mismatch",
+          "start": "config",
+          "want": {
+            "currentRole": "config-source",
+            "binaryProvenance": "PATH-only",
+            "contractKind": "unresolved",
+            "configSource": "$ROOT/config",
+            "diagnosticsContain": [
+              "installed toolkit identity does not match binary",
+              "known release v1.0.0 has no exact verified contract source"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
