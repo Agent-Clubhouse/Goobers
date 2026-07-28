@@ -425,6 +425,51 @@ func TestFilterBlockedEligibilityUsesMigratedLegacyRecords(t *testing.T) {
 	}
 }
 
+// TestFilterBlockedEligibilityScopesByProject is the bug-7 regression: an ADO
+// backlog lives in a different project than its code repo, so a blocked record
+// must be stored under the backlog project to be honored by a backlog-scoped
+// eligibility query. A record scoped to the code project is invisible to the
+// backlog query (and the item would be wrongly re-claimed) — proving the
+// blocked handler must key records under the backlog repo.
+func TestFilterBlockedEligibilityScopesByProject(t *testing.T) {
+	server, provider, _ := blockedFilterFixture(t)
+	server.addIssue(441, "prerequisite", "goobers:ready") // stays open
+	server.addIssue(510, "blocked parent", "goobers:ready")
+
+	backlogRepo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: "Backlog", Name: "web"}
+	codeRepo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: "Code", Name: "web"}
+
+	// A record keyed to the code project does not apply to the backlog query.
+	codeRec := map[string]blockedRecord{
+		blockedRecordKey(codeRepo, "510"): {Repository: codeRepo, ItemID: "510", Blockers: []string{"441"}, RunID: "code-run"},
+	}
+	filtered, _, changed, warnings := filterBlockedEligibility(
+		context.Background(), provider, backlogRepo,
+		[]providers.WorkItem{{ID: "510"}}, codeRec,
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("code-scoped changed = %v, warnings = %v; want a no-op", changed, warnings)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "510" {
+		t.Fatalf("filtered = %v, want 510 eligible — a code-scoped record must not apply to the backlog repo", filtered)
+	}
+
+	// The same record keyed to the backlog project is honored and skips 510.
+	backlogRec := map[string]blockedRecord{
+		blockedRecordKey(backlogRepo, "510"): {Repository: backlogRepo, ItemID: "510", Blockers: []string{"441"}, RunID: "backlog-run"},
+	}
+	filtered, _, changed, warnings = filterBlockedEligibility(
+		context.Background(), provider, backlogRepo,
+		[]providers.WorkItem{{ID: "510"}}, backlogRec,
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("backlog-scoped changed = %v, warnings = %v; want a clean skip", changed, warnings)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("filtered = %v, want 510 skipped — the backlog-scoped record applies", filtered)
+	}
+}
+
 func TestFilterBlockedEligibilityMixedBlockerStatesRemainParked(t *testing.T) {
 	server, provider, repo := blockedFilterFixture(t)
 	server.addIssue(441, "closed prerequisite", "goobers:ready")

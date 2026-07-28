@@ -403,6 +403,30 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})
+	router.Handle(apicontract.RouteRunTranscript, func(w http.ResponseWriter, request *http.Request) {
+		seq, err := strconv.ParseUint(request.PathValue("seq"), 10, 64)
+		if err != nil || seq == 0 {
+			writeReadError(w, errorLog, "read transcript", fmt.Errorf("%w: invalid transcript sequence", readservice.ErrInvalidArgument))
+			return
+		}
+		transcript, err := reader.Transcript(
+			request.Context(),
+			request.PathValue("run"),
+			seq,
+		)
+		if err != nil {
+			writeReadError(w, errorLog, "read transcript", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.Itoa(len(transcript.Bytes)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Goobers-Event-Sequence", strconv.FormatUint(transcript.Seq, 10))
+		w.Header().Set("X-Goobers-Stage", transcript.Stage)
+		w.Header().Set("X-Goobers-Transcript-Name", transcript.Name)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(transcript.Bytes)
+	})
 }
 
 func runListOptions(request *http.Request) (readservice.RunListOptions, error) {

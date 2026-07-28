@@ -30,6 +30,27 @@ export interface RunDetailQuery {
   state: QueryState<RunDetailSnapshot>;
 }
 
+export interface JournalEventGroup {
+  kind: "group";
+  id: string;
+  events: RunEvent[];
+  nodeId?: string;
+  visit?: number;
+}
+
+export interface JournalEventItem {
+  kind: "event";
+  event: RunEvent;
+}
+
+export type JournalEntry = JournalEventGroup | JournalEventItem;
+
+interface JournalVisitState {
+  ordinal: number;
+  humanVisit: boolean;
+  humanRequested: boolean;
+}
+
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
   const { cache, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("run-detail", runId);
@@ -142,28 +163,163 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
   return [...events].sort((left, right) => left.seq - right.seq || left.branch - right.branch);
 }
 
-export function eventNodeId(event: RunEvent): string | undefined {
-  return event.stage || event.gate || undefined;
+export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
+  if (event.stage) {
+    if (!isTranscriptEvent(event)) {
+      return event.stage;
+    }
+    const runPrefix = runId ? `${runId}:` : undefined;
+    return runPrefix && event.stage.startsWith(runPrefix)
+      ? event.stage.slice(runPrefix.length)
+      : event.stage;
+  }
+  return event.artifact?.stage || event.gate;
 }
 
 export function eventNodeAtSequence(
   events: RunEvent[],
   selectedSeq: number,
+  options: { branch?: number; runId?: string } = {},
 ): string | undefined {
+  const orderedEvents = orderRunEvents(events);
+  const selectedBranch =
+    options.branch ?? orderedEvents.find((event) => event.seq === selectedSeq)?.branch;
   let nodeId: string | undefined;
-  for (const event of orderRunEvents(events)) {
+  for (const event of orderedEvents) {
     if (event.seq > selectedSeq) {
       break;
     }
-    nodeId = eventNodeId(event) ?? nodeId;
+    if (selectedBranch !== undefined && event.branch !== selectedBranch) {
+      continue;
+    }
+    nodeId = eventNodeId(event, options.runId) ?? nodeId;
   }
   return nodeId;
+}
+
+export function journalEntries(events: RunEvent[], runId?: string): JournalEntry[] {
+  const entries: JournalEntry[] = [];
+  const visits = new Map<string, JournalVisitState>();
+  const activeNodes = new Map<number, string>();
+
+  for (const event of orderRunEvents(events)) {
+    const directNodeId = eventNodeId(event, runId);
+    if (directNodeId) {
+      activeNodes.set(event.branch, directNodeId);
+    }
+    const nodeId = directNodeId ?? activeNodes.get(event.branch);
+    const visitKey = nodeId ? `${event.branch}:${nodeId}` : undefined;
+    let visit: number | undefined;
+    if (visitKey) {
+      const state = nextVisitState(
+        event,
+        visits.get(visitKey) ?? {
+          ordinal: 0,
+          humanVisit: false,
+          humanRequested: false,
+        },
+      );
+      visits.set(visitKey, state);
+      visit = Math.max(state.ordinal, 1);
+    }
+
+    if (isMajorJournalEvent(event)) {
+      entries.push({ kind: "event", event });
+      continue;
+    }
+
+    const previous = entries.at(-1);
+    if (
+      previous?.kind === "group" &&
+      previous.nodeId === nodeId &&
+      previous.visit === visit &&
+      previous.events.at(-1)?.branch === event.branch
+    ) {
+      previous.events.push(event);
+      continue;
+    }
+    entries.push({
+      kind: "group",
+      id: `support-${event.branch}-${event.seq}`,
+      events: [event],
+      nodeId,
+      visit,
+    });
+  }
+
+  return entries;
+}
+
+export function evidenceVisit(
+  events: RunEvent[],
+  evidence: RunEvent,
+  runId?: string,
+): number | undefined {
+  for (const entry of journalEntries(events, runId)) {
+    if (
+      entry.kind === "group" &&
+      entry.events.some(
+        (event) => event.branch === evidence.branch && event.seq === evidence.seq,
+      )
+    ) {
+      return entry.visit;
+    }
+  }
+  return undefined;
+}
+
+export function isInspectableEvidenceEvent(event: RunEvent): boolean {
+  return isTranscriptEvent(event) || (event.type === "artifact.recorded" && !!event.artifact);
+}
+
+export function isMajorJournalEvent(event: RunEvent): boolean {
+  if (!event.knownSchema || !event.category) {
+    return true;
+  }
+  return (
+    event.category === "transition" ||
+    event.category === "decision" ||
+    event.category === "result" ||
+    event.category === "unknown"
+  );
+}
+
+export function evidenceDecision(
+  events: RunEvent[],
+  evidence: RunEvent,
+  runId?: string,
+): RunEvent | undefined {
+  if (!isVerdictArtifact(evidence)) {
+    return undefined;
+  }
+  const nodeId =
+    eventNodeId(evidence, runId) ??
+    eventNodeAtSequence(events, evidence.seq, { branch: evidence.branch, runId });
+  for (const event of orderRunEvents(events)) {
+    if (event.seq <= evidence.seq) {
+      continue;
+    }
+    if (event.branch !== evidence.branch) {
+      continue;
+    }
+    if (
+      event.type === "gate.evaluated" &&
+      (!nodeId || eventNodeId(event, runId) === nodeId)
+    ) {
+      return event;
+    }
+    if (event.type === "gate.started" || event.type === "stage.started") {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function deriveNodeStates(
   graph: WorkflowGraph,
   events: RunEvent[],
   selectedSeq: number,
+  runId?: string,
 ): Record<string, RunNodeState> {
   const states = Object.fromEntries(
     graph.nodes.map((node) => [node.id, "pending" as RunNodeState]),
@@ -182,7 +338,7 @@ export function deriveNodeStates(
       terminal = true;
       continue;
     }
-    const nodeId = eventNodeId(event);
+    const nodeId = eventNodeId(event, runId);
     if (!nodeId || !Object.hasOwn(states, nodeId)) {
       continue;
     }
@@ -222,10 +378,17 @@ export function eventHeading(event: RunEvent): string {
   if (!event.knownSchema) {
     return "Unsupported event";
   }
+  if (isTranscriptEvent(event)) {
+    return "Transcript recorded";
+  }
+  if (isVerdictArtifact(event)) {
+    return "Structured verdict recorded";
+  }
   const headings: Record<string, string> = {
     "run.started": "Run started",
     "run.finished": "Run finished",
     "stage.started": "Stage started",
+    "stage.heartbeat": "Stage heartbeat",
     "stage.finished": "Stage finished",
     "gate.started": "Gate started",
     "gate.evaluated": "Gate evaluated",
@@ -241,12 +404,16 @@ export function eventHeading(event: RunEvent): string {
   return headings[event.type] ?? humanize(event.type);
 }
 
-export function eventSummary(event: RunEvent): string {
+export function eventSummary(
+  event: RunEvent,
+  associatedDecision?: RunEvent,
+  runId?: string,
+): string {
   if (!event.knownSchema) {
     return `Schema ${event.schema} is not supported; ${event.type} is retained with generic fields.`;
   }
 
-  const node = eventNodeId(event);
+  const node = eventNodeId(event, runId);
   switch (event.type) {
     case "run.started":
       return event.workflow ? `${event.workflow} began execution.` : "The run began execution.";
@@ -262,15 +429,40 @@ export function eventSummary(event: RunEvent): string {
       const target = event.target ? ` and selected ${event.target}` : "";
       return `${humanize(node || "gate")} returned ${event.verdict || "a verdict"}${target}.`;
     }
-    case "artifact.recorded":
-      return `${event.artifact?.name || event.name || "An artifact"} was recorded.`;
+    case "artifact.recorded": {
+      const name = event.artifact?.name || event.name || "An artifact";
+      const stage = node ? ` for ${humanize(node)}` : "";
+      const access = event.artifact ? " Select this event to inspect the artifact." : "";
+      if (isVerdictArtifact(event) && associatedDecision?.type === "gate.evaluated") {
+        const gate = humanize(eventNodeId(associatedDecision, runId) || node || "review");
+        const verdict = associatedDecision.verdict || "a verdict";
+        const target = associatedDecision.target
+          ? ` selecting ${associatedDecision.target}`
+          : "";
+        return `${name} captured the ${gate} decision: ${verdict}${target}.${access}`;
+      }
+      return `${name} was recorded${stage}.${access}`;
+    }
+    case "span.recorded": {
+      const stage = node ? ` for ${humanize(node)}` : "";
+      const kind = isTranscriptEvent(event) ? "Transcript" : "Trace evidence";
+      return `${kind}${stage} was recorded. Select this event to inspect the evidence.`;
+    }
+    case "stage.heartbeat": {
+      const attempt = event.attempt ? ` attempt ${event.attempt}` : "";
+      return `${humanize(node || "stage")}${attempt} reported liveness; workflow state did not change.`;
+    }
     case "ref.touched": {
       const reference = event.externalRef;
       if (!reference) {
         return "An external reference was recorded.";
       }
-      const kind = reference.kind === "pr" ? "Pull request" : humanize(reference.kind);
-      return `${kind} ${reference.id} was recorded on ${humanize(reference.provider)}.`;
+      const kind = externalRefKind(reference.kind);
+      const id = reference.kind === "pr" || reference.kind === "issue"
+        ? `#${reference.id}`
+        : reference.id;
+      const operation = externalRefOperation(event);
+      return `${providerName(reference.provider)} ${operation} ${kind} ${id}.`;
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
@@ -336,6 +528,82 @@ function stateFromGate(event: RunEvent): RunNodeState {
     return "aborted";
   }
   return stateFromStatus(event.status, "completed");
+}
+
+function nextVisitState(event: RunEvent, current: JournalVisitState): JournalVisitState {
+  const next = { ...current };
+  if (event.type === "stage.rerun.requested") {
+    next.humanRequested = true;
+    return next;
+  }
+  if (event.type !== "stage.started" && event.type !== "gate.started") {
+    return next;
+  }
+  switch (event.attemptClass) {
+    case undefined:
+    case "initial":
+      next.ordinal += 1;
+      next.humanVisit = false;
+      next.humanRequested = false;
+      break;
+    case "human":
+      // A retry of an interrupted human rerun remains in the same visit.
+      if (next.humanRequested || !next.humanVisit || next.ordinal === 0) {
+        next.ordinal += 1;
+      }
+      next.humanVisit = true;
+      next.humanRequested = false;
+      break;
+    default:
+      if (next.ordinal === 0) {
+        next.ordinal = 1;
+      }
+  }
+  return next;
+}
+
+export function isTranscriptEvent(event: RunEvent): boolean {
+  const name = event.name?.toLowerCase() ?? "";
+  return event.type === "span.recorded" && (name === "transcript" || name.endsWith(".transcript"));
+}
+
+export function isVerdictArtifact(event: RunEvent): boolean {
+  const name = (event.artifact?.name || event.name || "").toLowerCase();
+  return event.type === "artifact.recorded" && name.includes("verdict");
+}
+
+function externalRefKind(kind: string): string {
+  switch (kind.toLowerCase()) {
+    case "pr":
+      return "pull request";
+    case "issue":
+      return "issue";
+    default:
+      return kind.replace(/[._-]+/g, " ");
+  }
+}
+
+function externalRefOperation(event: RunEvent): string {
+  const operation = event.runner?.operation;
+  if (typeof operation !== "string") {
+    return "touched";
+  }
+  const operations: Record<string, string> = {
+    claim: "claimed",
+    close: "closed",
+    create: "created",
+    delete: "deleted",
+    merge: "merged",
+    open: "opened",
+    push: "pushed",
+    release: "released",
+    update: "updated",
+  };
+  return operations[operation.toLowerCase()] ?? operation.replace(/[._-]+/g, " ");
+}
+
+function providerName(provider: string): string {
+  return provider.toLowerCase() === "github" ? "GitHub" : humanize(provider);
 }
 
 function stateFromStatus(

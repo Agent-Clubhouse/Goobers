@@ -202,6 +202,8 @@ Use only the target release's registry. The current set is:
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
 | `ado:code:read` | Inspect Azure Repos code and pull requests read-only. |
 | `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
+| `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
+| `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |

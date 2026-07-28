@@ -87,6 +87,7 @@ type OfflineRuns interface {
 	RunEvents(context.Context, string) (EventList, error)
 	StageAttempts(context.Context, string, string) (AttemptList, error)
 	Artifact(context.Context, string, string) (ArtifactContent, error)
+	Transcript(context.Context, string, uint64) (TranscriptContent, error)
 	RunTranscripts(context.Context, string, string) ([]TranscriptContent, error)
 	RunSpans(context.Context, string) ([]rollup.SpanSummary, error)
 	RunTelemetryStageAttempts(context.Context, string) ([]rollup.StageAttempt, error)
@@ -1019,6 +1020,28 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 	return ArtifactContent{Metadata: entry.metadata, Bytes: data}, nil
 }
 
+// Transcript returns the verified transcript recorded at one durable sequence.
+func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (TranscriptContent, error) {
+	if err := ctx.Err(); err != nil {
+		return TranscriptContent{}, err
+	}
+	run, err := s.openRun(runID)
+	if err != nil {
+		return TranscriptContent{}, err
+	}
+	for _, record := range run.records {
+		if record.Event.Seq != seq {
+			continue
+		}
+		recordedStage, ok := transcriptStage(record.Event, runID, "")
+		if !ok {
+			break
+		}
+		return readTranscript(run, record.Event, recordedStage)
+	}
+	return TranscriptContent{}, fmt.Errorf("%w: transcript at seq %d", ErrNotFound, seq)
+}
+
 // RunTranscripts returns verified transcript blobs in durable event order. An
 // optional stage limits reads before any blob is opened.
 func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]TranscriptContent, error) {
@@ -1035,44 +1058,60 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 			return nil, err
 		}
 		event := record.Event
-		recordedStage := strings.TrimPrefix(event.Stage, runID+":")
-		if !event.KnownSchema() ||
-			event.Type != journal.EventSpanRecorded ||
-			(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript")) ||
-			(stage != "" && recordedStage != stage) {
+		recordedStage, ok := transcriptStage(event, runID, stage)
+		if !ok {
 			continue
 		}
-		if event.Ref == nil {
-			return nil, fmt.Errorf(
-				"transcript for stage %q at seq %d is unavailable: span event has no content reference",
-				recordedStage,
-				event.Seq,
-			)
-		}
-		data, err := run.reader.SpanBytes(*event.Ref)
+		transcript, err := readTranscript(run, event, recordedStage)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"transcript for stage %q at seq %d is unavailable: %w",
-				recordedStage,
-				event.Seq,
-				err,
-			)
+			return nil, err
 		}
-		if len(data) == 0 {
-			return nil, fmt.Errorf(
-				"transcript for stage %q at seq %d is unavailable: recorded content is empty",
-				recordedStage,
-				event.Seq,
-			)
-		}
-		transcripts = append(transcripts, TranscriptContent{
-			Seq:   event.Seq,
-			Stage: recordedStage,
-			Name:  event.Name,
-			Bytes: data,
-		})
+		transcripts = append(transcripts, transcript)
 	}
 	return transcripts, nil
+}
+
+func transcriptStage(event journal.Event, runID, stage string) (string, bool) {
+	recordedStage := strings.TrimPrefix(event.Stage, runID+":")
+	if !event.KnownSchema() ||
+		event.Type != journal.EventSpanRecorded ||
+		(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript")) ||
+		(stage != "" && recordedStage != stage) {
+		return "", false
+	}
+	return recordedStage, true
+}
+
+func readTranscript(run runRead, event journal.Event, recordedStage string) (TranscriptContent, error) {
+	if event.Ref == nil {
+		return TranscriptContent{}, fmt.Errorf(
+			"transcript for stage %q at seq %d is unavailable: span event has no content reference",
+			recordedStage,
+			event.Seq,
+		)
+	}
+	data, err := run.reader.SpanBytes(*event.Ref)
+	if err != nil {
+		return TranscriptContent{}, fmt.Errorf(
+			"transcript for stage %q at seq %d is unavailable: %w",
+			recordedStage,
+			event.Seq,
+			err,
+		)
+	}
+	if len(data) == 0 {
+		return TranscriptContent{}, fmt.Errorf(
+			"transcript for stage %q at seq %d is unavailable: recorded content is empty",
+			recordedStage,
+			event.Seq,
+		)
+	}
+	return TranscriptContent{
+		Seq:   event.Seq,
+		Stage: recordedStage,
+		Name:  event.Name,
+		Bytes: data,
+	}, nil
 }
 
 // RunSpans returns rollup-ingested spans for one run. A missing telemetry

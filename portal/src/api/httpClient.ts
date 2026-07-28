@@ -38,6 +38,7 @@ import type {
   TelemetryErrorsPage,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TranscriptContent,
   WorkflowDetail,
   WorkflowPage,
 } from "./types";
@@ -60,6 +61,7 @@ const clientRoutes = {
   runEvents: apiRoutes.runEvents,
   stageAttempts: apiRoutes.stageAttempts,
   runArtifact: apiRoutes.runArtifact,
+  runTranscript: apiRoutes.runTranscript,
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
@@ -303,6 +305,41 @@ export class HttpDaemonClient implements DaemonClient {
         };
       },
       { run: runId, digest },
+    );
+  }
+
+  async getTranscript(
+    runId: string,
+    seq: number,
+    options?: RequestOptions,
+  ): Promise<TranscriptContent> {
+    return this.withResponse(
+      clientRoutes.runTranscript,
+      undefined,
+      options,
+      "text/plain",
+      async (response) => {
+        const responseSeq = Number(response.headers.get("X-Goobers-Event-Sequence"));
+        const stage = response.headers.get("X-Goobers-Stage");
+        const name = response.headers.get("X-Goobers-Transcript-Name");
+        const rawSize = response.headers.get("Content-Length");
+        const size = rawSize === null ? Number.NaN : Number(rawSize);
+        if (
+          responseSeq !== seq ||
+          !stage ||
+          !name ||
+          !Number.isSafeInteger(size) ||
+          size <= 0
+        ) {
+          throw new MalformedResponseError("The daemon returned invalid transcript metadata.");
+        }
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== size) {
+          throw new MalformedResponseError("The daemon returned a transcript with an invalid size.");
+        }
+        return { seq: responseSeq, stage, name, size, bytes };
+      },
+      { run: runId, seq: String(seq) },
     );
   }
 

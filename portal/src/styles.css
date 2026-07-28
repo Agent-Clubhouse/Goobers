@@ -3215,6 +3215,41 @@ a.telemetry-error-row:hover {
   padding: 18px;
 }
 
+.journal-heading-actions {
+  align-items: end;
+  display: grid;
+  gap: 7px;
+  justify-items: end;
+}
+
+.journal-view-control {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  padding: 2px;
+}
+
+.journal-view-button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 8px;
+  padding: 5px 7px;
+}
+
+.journal-view-button-active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 720;
+}
+
+.journal-view-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .event-ledger ol {
   list-style: none;
   margin: 0;
@@ -3243,6 +3278,28 @@ a.telemetry-error-row:hover {
   background: var(--surface);
 }
 
+.ledger-item-major[data-category="decision"] .run-ledger-button,
+.ledger-item-major[data-category="result"] .run-ledger-button {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.ledger-item-supporting:not(.ledger-support-group) .run-ledger-button {
+  opacity: 0.76;
+}
+
+.ledger-support-group {
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  border-top-style: dashed;
+}
+
+.ledger-support-group .run-ledger-button {
+  color: var(--muted-strong);
+}
+
+.ledger-support-group .ledger-copy strong {
+  font-weight: 650;
+}
+
 .ledger-item-causal button {
   box-shadow: inset 3px 0 0 var(--danger);
 }
@@ -3267,6 +3324,27 @@ a.telemetry-error-row:hover {
   color: var(--muted);
   font-size: 9px;
   line-height: 1.4;
+}
+
+.ledger-copy .ledger-category {
+  color: var(--muted-strong);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ledger-event-link {
+  color: var(--accent-ink);
+  display: inline-flex;
+  font-size: 8px;
+  font-weight: 700;
+  margin: 0 8px 10px;
+}
+
+.ledger-event-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .ledger-copy .causal-event-label {
@@ -4510,6 +4588,11 @@ a.telemetry-error-row:hover {
     align-items: start;
     display: grid;
     gap: 8px;
+  }
+
+  .journal-heading-actions {
+    align-items: start;
+    justify-items: start;
   }
 
   .playback-controls {

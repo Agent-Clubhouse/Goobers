@@ -72,7 +72,8 @@
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
-| [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
+| [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
+| [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -1580,8 +1581,8 @@ outputs) and hasSubstantiveFindings/hasFailingCI.
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
 sibling-overlap") is a comma-separated policy naming which detected
 causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base and sibling-overlap are accepted vocabulary but
-cannot fire yet (no detection reaches this stage's decision today).
+liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -1663,19 +1664,22 @@ $ goobers record-merge-refusal
 
 ## `goobers remediation-checkpoint`
 
-durable per-PR repass budget + same-diff escalation (a workflow stage)
+durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 
 ~~~text
 Usage: goobers remediation-checkpoint [--budget N] [path]
 
 Re-checkout the PR's own branch (this stage gets its own fresh
-worktree), read pr-remediation's durable per-PR cycle counter + last
+worktree), read pr-remediation's durable per-cause attempt counters + last
 diff digest back from a sticky PR comment, compare this cycle's
 actual diff (git diff base...HEAD) against it, and either
-escalate (goobers:merge-escalated, clearing needs-remediation) on
-budget exhaustion or a byte-identical repeat, or record the advanced
+escalate (goobers:merge-escalated, clearing needs-remediation) when
+the active cause exhausts its DSL-declared budget or on a byte-identical
+repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
-gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint
+gather-pr-context's selectedNumber output), remediationCauses, and the
+four per-cause budget inputs. --budget overrides every declared cause
+for standalone diagnostics. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business
 error, 2 = usage/IO error.
 ~~~
@@ -1683,7 +1687,35 @@ error, 2 = usage/IO error.
 **Examples**
 
 ~~~console
-$ goobers remediation-checkpoint --budget 3
+$ goobers remediation-checkpoint
+~~~
+
+## `goobers report-pr-status`
+
+publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+
+~~~text
+Usage: goobers report-pr-status [path]
+
+Publish a provider-native pull-request status (Azure DevOps PR status) as
+goobers' own evidence — the agentic reviewer verdict and the local-CI
+result — so a repository's status-check branch policy can gate on it and
+the validation loop can prove PR correctness against the repo's required
+policies (#772). Reaching this stage on the happy path is itself the
+evidence: the run only advances here after the review gate and local-CI
+gate both pass, so the default published state is `succeeded`.
+
+Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),
+statusName (default "validation"), statusGenre (default "goobers"),
+state (succeeded|failed|pending, default succeeded), description,
+targetUrl (default the PR url), resultFile (default status-result.json).
+Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers report-pr-status
 ~~~
 
 ## `goobers reset-rate-limit`

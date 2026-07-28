@@ -43,6 +43,7 @@ function Harness({
         onSeek?.(next);
         setSeq(next);
       }}
+      runId="run-1"
       selectedSeq={seq}
       terminal={terminal}
     />
