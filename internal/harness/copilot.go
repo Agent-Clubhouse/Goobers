@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -29,9 +31,8 @@ const defaultPromptFlag = "-p"
 // defaultExtraArgs is used when ExtraArgs is nil. --allow-all-tools is
 // REQUIRED for the real CLI's non-interactive mode — without it, a session
 // blocks on an interactive permission prompt instead of exiting, which would
-// hang until Timeout fires. Tool-level sandboxing (restricting which tools
-// Copilot may use) is deferred to V1 (SEC-044); V0's capability enforcement
-// is the credential-scoping this adapter already does via EnvCapabilities.
+// hang until Timeout fires. Run separately restricts the tools visible to the
+// model when the goober declares a non-empty allowlist.
 var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 
 const fallbackToDefaultOption = "fallback-to-default"
@@ -39,6 +40,37 @@ const fallbackToDefaultOption = "fallback-to-default"
 const copilotModelDiscoveryTimeout = 30 * time.Second
 
 const copilotModelPolicyDisabled = "disabled"
+
+// Shipped goobers declare harness-neutral tool groups. Copilot filters the
+// concrete model-facing tool IDs within those groups.
+var copilotToolGroups = map[string][]string{
+	"shell": {
+		"bash", "read_bash", "stop_bash", "list_bash",
+		"powershell", "read_powershell", "stop_powershell", "list_powershell",
+		"view", "create", "edit", "str_replace_editor", "apply_patch",
+		"grep", "rg", "glob",
+	},
+	"github": {
+		"github-mcp-server-get_copilot_space",
+		"github-mcp-server-get_file_contents",
+		"github-mcp-server-list_copilot_spaces",
+		"github-mcp-server-search_code",
+		"github-mcp-server-search_repositories",
+		"github-mcp-server-search_users",
+		"github-mcp-server-add_issue_comment",
+		"github-mcp-server-get_label",
+		"github-mcp-server-issue_read",
+		"github-mcp-server-issue_write",
+		"github-mcp-server-list_issue_fields",
+		"github-mcp-server-list_issue_types",
+		"github-mcp-server-list_issues",
+		"github-mcp-server-search_issues",
+		"github-mcp-server-sub_issue_write",
+	},
+	"telemetry": {
+		"view", "grep", "rg", "glob",
+	},
+}
 
 type copilotModelCapabilities struct {
 	longContext     bool
@@ -422,6 +454,59 @@ func firstOutputLine(output []byte) string {
 	return ""
 }
 
+func copilotAvailableTools(req RunRequest) []string {
+	var tools []string
+	seen := make(map[string]struct{})
+	appendTool := func(tool string) {
+		if _, ok := seen[tool]; ok {
+			return
+		}
+		seen[tool] = struct{}{}
+		tools = append(tools, tool)
+	}
+	for _, declaredTool := range req.Tools {
+		for _, server := range req.MCPServers {
+			appendTool(server.Name + "-" + declaredTool)
+		}
+		expanded := []string{declaredTool}
+		if group, ok := copilotToolGroups[strings.ToLower(declaredTool)]; ok {
+			expanded = group
+		}
+		for _, tool := range expanded {
+			appendTool(tool)
+		}
+	}
+	return tools
+}
+
+func validateCopilotTools(tools []string) error {
+	for i, tool := range tools {
+		if strings.Contains(tool, ",") {
+			return fmt.Errorf("harness: copilot-cli: tool allowlist entry %d %q must not contain a comma", i, tool)
+		}
+	}
+	return nil
+}
+
+func copilotDeclaresTool(declared []string, target string) bool {
+	for _, tool := range declared {
+		if strings.EqualFold(tool, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func copilotConstraintConflict(args []string) string {
+	for _, arg := range args {
+		if arg == "--available-tools" || strings.HasPrefix(arg, "--available-tools=") ||
+			arg == "--output-format" || strings.HasPrefix(arg, "--output-format=") {
+			return arg
+		}
+	}
+	return ""
+}
+
 func (c *CopilotAdapter) runner() ProcessRunner {
 	if c.Runner != nil {
 		return c.Runner
@@ -431,8 +516,9 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 
 // Run renders the prompt, runs the CLI non-interactively in req.Workspace with
 // capability-scoped credentials in its environment, prefers converted native
-// session events over the subprocess transcript when available, and reads back
-// the completion file at req.CompletionPath.
+// session events over the subprocess transcript when available, and captures
+// the completion through either the default file contract or the final response
+// used by tool-constrained sessions.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
@@ -463,8 +549,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			return Outcome{}, err
 		}
 	}
+	if err := validateCopilotTools(req.Tools); err != nil {
+		return Outcome{}, err
+	}
 
+	completionInResponse := len(req.Tools) > 0
 	prompt := renderPrompt(req)
+	if completionInResponse {
+		prompt = renderResponseCompletionPrompt(req)
+	}
 	// Also write the rendered prompt to the workspace for human debugging —
 	// the CLI itself receives it inline (its -p/--prompt flag takes text,
 	// not a file path).
@@ -485,6 +578,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		extra = defaultExtraArgs
 	}
 	baseCommand := resolveHarnessCommand(c.Command)
+	if completionInResponse {
+		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
+		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
+		}
+	}
 	argv := append(baseCommand, flag, prompt)
 	promptArg := len(baseCommand) + 1
 	if resolution.Model != "" {
@@ -497,6 +596,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
+	if completionInResponse {
+		if copilotDeclaresTool(req.Tools, "github") {
+			argv = append(argv, "--add-github-mcp-toolset=issues")
+		}
+		argv = append(argv,
+			"--available-tools="+strings.Join(copilotAvailableTools(req), ","),
+			"--silent",
+			"--output-format=text",
+		)
+	}
 
 	env, err := c.credentialEnv(ctx, req)
 	if err != nil {
@@ -523,7 +632,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if err != nil {
 			return Outcome{}, err
 		}
-		argv = append(argv, "--disable-builtin-mcps")
+		if !copilotDeclaresTool(req.Tools, "github") {
+			argv = append(argv, "--disable-builtin-mcps")
+		}
 	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
@@ -553,20 +664,27 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 
 	runner := c.runner()
 	started := time.Now()
+	var responseCapture *syncBuffer
+	var stdoutCapture io.Writer
+	if completionInResponse {
+		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+		stdoutCapture = responseCapture
+	}
 	result, runErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
+		StdoutCapture:      stdoutCapture,
 	})
 	var payload []byte
 	var completionErr error
 	if runErr == nil {
-		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
 		if errors.Is(completionErr, ErrNoCompletion) {
-			// A clean Copilot exit can still omit the contract file. Give the
-			// same session one contract-only turn without extending its budget.
+			// A clean Copilot exit can still omit its completion contract. Give
+			// the same session one contract-only turn without extending its budget.
 			totalTimeout := req.Timeout
 			if totalTimeout <= 0 {
 				totalTimeout = DefaultTimeout
@@ -577,26 +695,36 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 				completionErr = nil
 			} else {
 				recoveryArgv := append([]string(nil), argv...)
-				recoveryArgv[promptArg] = renderCompletionRecoveryPrompt(req)
+				recoveryPrompt := renderCompletionRecoveryPrompt(req)
+				var recoveryCapture *syncBuffer
+				var recoveryStdout io.Writer
+				if completionInResponse {
+					recoveryPrompt = renderResponseCompletionRecoveryPrompt(req)
+					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+					recoveryStdout = recoveryCapture
+				}
+				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
 					Command:            recoveryArgv,
 					Dir:                req.Workspace,
 					Env:                env,
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
+					StdoutCapture:      recoveryStdout,
 				})
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if err != nil {
 					runErr = err
 					completionErr = nil
 				} else {
-					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
 				}
 			}
 		}
 	}
 	out := Outcome{
 		Transcript:             result.Transcript,
+		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
@@ -620,6 +748,64 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	out.Payload = payload
 	return out, nil
+}
+
+func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResponse bool) ([]byte, error) {
+	if !completionInResponse {
+		return readCompletion(req.Workspace, req.CompletionPath)
+	}
+	payload, responseErr := readCopilotResponseCompletion(req.Mode, capture)
+	if responseErr == nil {
+		return payload, nil
+	}
+	payload, fileErr := readCompletion(req.Workspace, req.CompletionPath)
+	switch {
+	case fileErr == nil:
+		if err := validateCopilotCompletion(req.Mode, payload); err != nil {
+			return nil, fmt.Errorf("%w: Copilot completion file failed validation: %w", ErrNoCompletion, err)
+		}
+		return payload, nil
+	case !errors.Is(fileErr, ErrNoCompletion):
+		return nil, fileErr
+	default:
+		return nil, responseErr
+	}
+}
+
+func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
+	if capture == nil {
+		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
+	}
+	if capture.Truncated() {
+		return nil, fmt.Errorf("%w: Copilot final response exceeded the %d-byte capture limit",
+			ErrNoCompletion, len(capture.retainedBytes())+int(capture.Dropped()))
+	}
+	payload := bytes.TrimSpace(capture.retainedBytes())
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("%w: Copilot returned an empty final response", ErrNoCompletion)
+	}
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
+	}
+	if err := validateCopilotCompletion(mode, payload); err != nil {
+		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
+	}
+	return payload, nil
+}
+
+func validateCopilotCompletion(mode Mode, payload []byte) error {
+	validator, err := validate.New()
+	if err != nil {
+		return fmt.Errorf("build completion validator: %w", err)
+	}
+	kind := "result"
+	if mode == ModeReview {
+		kind = "verdict"
+	}
+	if err := validator.ValidateEnvelope(kind, payload); err != nil {
+		return fmt.Errorf("%s: %w", kind, err)
+	}
+	return nil
 }
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {

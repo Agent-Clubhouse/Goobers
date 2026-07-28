@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 )
 
@@ -478,6 +479,9 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		if arg == "--allow-all-tools" {
 			found = true
 		}
+		if strings.HasPrefix(arg, "--available-tools") {
+			t.Fatalf("empty tool declaration changed the default command: %v", runner.lastReq.Command)
+		}
 	}
 	if !found {
 		t.Fatalf("expected --allow-all-tools in default extra args: %v", runner.lastReq.Command)
@@ -518,6 +522,362 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		if strings.Contains(arg, "push-token-value") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
 		}
+	}
+}
+
+func TestCopilotAdapterToolAllowlist(t *testing.T) {
+	tests := []struct {
+		name          string
+		tools         []string
+		wantAvailable []string
+		wantIncluded  []string
+		wantOmitted   []string
+		wantIssues    bool
+		externalMCP   bool
+	}{
+		{
+			name:  "explicit empty preserves default",
+			tools: []string{},
+		},
+		{
+			name:          "concrete tools omit undeclared mutation",
+			tools:         []string{"view", "glob"},
+			wantAvailable: []string{"view", "glob"},
+			wantOmitted:   []string{"create"},
+		},
+		{
+			name:         "shipped shell group expands",
+			tools:        []string{"shell"},
+			wantIncluded: []string{"bash", "view", "create", "apply_patch", "rg", "glob"},
+			wantOmitted:  []string{"github-mcp-server-issue_write"},
+		},
+		{
+			name:         "shipped github group excludes shell",
+			tools:        []string{"github"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
+			wantOmitted:  []string{"bash", "powershell"},
+			wantIssues:   true,
+		},
+		{
+			name:         "shipped github and telemetry groups expand independently",
+			tools:        []string{"github", "telemetry"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
+			wantOmitted:  []string{"bash", "powershell", "create"},
+			wantIssues:   true,
+		},
+		{
+			name:         "external MCP tools are server-qualified without disabling declared GitHub",
+			tools:        []string{"github", "reachability"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
+			wantOmitted:  []string{"create", "context-github-mcp-server-issue_read"},
+			wantIssues:   true,
+			externalMCP:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			var capturedStdout bool
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0},
+				act: func(req ProcessRequest) error {
+					if len(tc.tools) == 0 {
+						if req.StdoutCapture != nil {
+							t.Fatal("empty tool declaration configured response capture")
+						}
+						return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+					}
+					if req.StdoutCapture == nil {
+						return errors.New("tool-constrained run did not capture stdout")
+					}
+					capturedStdout = true
+					_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+					return err
+				},
+			}
+			adapter := &CopilotAdapter{
+				Command:         []string{"copilot"},
+				Runner:          runner,
+				EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+			}
+			envelope := testEnvelope(workspace)
+			var mcpServers []apiv1.MCPServer
+			var creds *credentials.Set
+			if tc.externalMCP {
+				envelope = testEnvelope(workspace, "agent:model")
+				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+				creds = mcpTestCredentials(t, "agent:model", "model-token")
+			}
+
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       envelope,
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Tools:          tc.tools,
+				MCPServers:     mcpServers,
+				Credentials:    creds,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			const prefix = "--available-tools="
+			var available []string
+			for _, arg := range runner.lastReq.Command {
+				if value, ok := strings.CutPrefix(arg, prefix); ok {
+					available = strings.Split(value, ",")
+				}
+			}
+			if len(tc.tools) == 0 {
+				if available != nil || slices.Contains(runner.lastReq.Command, "--silent") {
+					t.Fatalf("empty tool declaration changed the default command: %v", runner.lastReq.Command)
+				}
+				return
+			}
+			if !capturedStdout {
+				t.Fatal("tool-constrained run did not use response completion")
+			}
+			if tc.wantAvailable != nil && !slices.Equal(available, tc.wantAvailable) {
+				t.Fatalf("available tools = %v, want %v", available, tc.wantAvailable)
+			}
+			for _, want := range tc.wantIncluded {
+				if !slices.Contains(available, want) {
+					t.Errorf("available tools missing %q: %v", want, available)
+				}
+			}
+			for _, omitted := range tc.wantOmitted {
+				if slices.Contains(available, omitted) {
+					t.Fatalf("omitted tool %q is available: %v", omitted, available)
+				}
+			}
+			if !slices.Contains(runner.lastReq.Command, "--allow-all-tools") {
+				t.Fatalf("non-interactive permission flag missing: %v", runner.lastReq.Command)
+			}
+			if !slices.Contains(runner.lastReq.Command, "--silent") ||
+				!slices.Contains(runner.lastReq.Command, "--output-format=text") {
+				t.Fatalf("response completion flags missing: %v", runner.lastReq.Command)
+			}
+			if got := slices.Contains(runner.lastReq.Command, "--add-github-mcp-toolset=issues"); got != tc.wantIssues {
+				t.Fatalf("GitHub issues toolset enabled = %t, want %t: %v", got, tc.wantIssues, runner.lastReq.Command)
+			}
+			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
+				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
+			}
+			promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+			if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+				t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
+			}
+			prompt := runner.lastReq.Command[promptIndex+1]
+			if !strings.Contains(prompt, "return your result as the entire final response") ||
+				strings.Contains(prompt, "write your result as JSON to") {
+				t.Fatalf("tool-constrained prompt does not use response completion: %q", prompt)
+			}
+			if got := string(out.Payload); got != `{"status":"success","summary":"done"}` {
+				t.Fatalf("payload = %q", got)
+			}
+			if _, err := os.Stat(filepath.Join(workspace, DefaultResultPath)); !os.IsNotExist(err) {
+				t.Fatalf("tool-constrained run wrote a completion file: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{
+			ExitCode:   0,
+			Transcript: []byte("copilot completed the task"),
+		},
+		act: func(req ProcessRequest) error {
+			if req.StdoutCapture == nil {
+				return errors.New("tool-constrained run did not capture stdout")
+			}
+			_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+			return err
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithTools([]string{"view"}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	if _, err := exec.Invoke(context.Background(), testEnvelope(workspace)); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(rec.spans) != 1 {
+		t.Fatalf("recorded spans = %d, want 1", len(rec.spans))
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 {
+		t.Fatalf("transcript events = %#v, want user and assistant events", events)
+	}
+	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+		t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
+	}
+	if events[0].Role != "user" || events[0].Content != runner.lastReq.Command[promptIndex+1] {
+		t.Fatalf("transcript prompt = %#v, want exact command prompt", events[0])
+	}
+	if !strings.Contains(events[0].Content, "return your result as the entire final response") ||
+		strings.Contains(events[0].Content, "write your result as JSON to") {
+		t.Fatalf("transcript recorded the wrong completion contract: %q", events[0].Content)
+	}
+}
+
+func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
+	run := func(tools []string) []string {
+		workspace := t.TempDir()
+		runner := &fakeProcessRunner{
+			result: ProcessResult{ExitCode: 0},
+			act: func(req ProcessRequest) error {
+				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		}
+		adapter := &CopilotAdapter{
+			Command: []string{"copilot", "--session-id", "00000000-0000-4000-8000-000000000001"},
+			Runner:  runner,
+		}
+		if _, err := adapter.Run(context.Background(), RunRequest{
+			Envelope:       testEnvelope(workspace),
+			Workspace:      workspace,
+			CompletionPath: DefaultResultPath,
+			Tools:          tools,
+		}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return runner.lastReq.Command
+	}
+
+	absent := run(nil)
+	empty := run([]string{})
+	if !slices.Equal(absent, empty) {
+		t.Fatalf("empty tool allowlist changed command:\nabsent: %v\nempty:  %v", absent, empty)
+	}
+}
+
+func TestCopilotAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
+	runner := &fakeProcessRunner{}
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"view,bash"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not contain a comma") {
+		t.Fatalf("Run error = %v, want comma-delimited tool rejection", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("process ran with ambiguous tool allowlist: %v", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.T) {
+	for _, conflictingArg := range []string{"--available-tools=view", "--output-format=json"} {
+		t.Run(conflictingArg, func(t *testing.T) {
+			runner := &fakeProcessRunner{}
+			workspace := t.TempDir()
+			adapter := &CopilotAdapter{
+				Command:   []string{"copilot"},
+				ExtraArgs: []string{conflictingArg},
+				Runner:    runner,
+			}
+
+			_, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Tools:          []string{"view"},
+			})
+			if err == nil || !strings.Contains(err.Error(), conflictingArg) {
+				t.Fatalf("Run error = %v, want configured argument conflict", err)
+			}
+			if len(runner.lastReq.Command) != 0 {
+				t.Fatalf("process ran with conflicting tool constraints: %v", runner.lastReq.Command)
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	workspace := t.TempDir()
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		if len(calls) == 1 {
+			_, _ = req.StdoutCapture.Write([]byte(`{"message":"not a result envelope"}`))
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(req.Dir, DefaultResultPath)), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(req.Dir, DefaultResultPath), []byte(`{}`), 0o600); err != nil {
+				return err
+			}
+		} else {
+			_, _ = req.StdoutCapture.Write([]byte(`{"status":"success","outputs":{},"summary":"done","metrics":{}}`))
+		}
+		return nil
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"view"},
+		Timeout:        time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(out.Payload); got != `{"status":"success","outputs":{},"summary":"done","metrics":{}}` {
+		t.Fatalf("payload = %q", got)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus one recovery", len(calls))
+	}
+	firstSession, firstOK := nativeSessionID(calls[0])
+	secondSession, secondOK := nativeSessionID(calls[1])
+	if !firstOK || !secondOK || firstSession != secondSession {
+		t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
+	}
+	promptIndex := slices.Index(calls[1].Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(calls[1].Command) {
+		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
+	}
+	if prompt := calls[1].Command[promptIndex+1]; !strings.Contains(prompt, "entire response") ||
+		!strings.Contains(prompt, "without returning the mandatory completion") {
+		t.Fatalf("recovery prompt = %q", prompt)
+	}
+}
+
+func TestCopilotAdapterResponseCompletionRejectsTruncation(t *testing.T) {
+	capture := newTranscriptBuffer(8)
+	_, _ = capture.Write([]byte(`{"status":"success"}`))
+
+	_, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	if !errors.Is(err, ErrNoCompletion) {
+		t.Fatalf("read completion error = %v, want ErrNoCompletion", err)
 	}
 }
 

@@ -6,13 +6,19 @@ import (
 )
 
 // renderPrompt composes the harness input: the goober's persona/instructions,
-// the stage goal and context, and an explicit completion-contract directive —
-// the local analog of the "completion tool" (GBO-013) — telling the harness
-// exactly where to write its result/verdict JSON. The concrete CLI input
-// format (flags, stdin vs. file) is an adapter implementation detail
-// (GBO-051); this is a plain-text rendering any harness that accepts a
+// the stage goal and context, and an explicit completion-contract directive.
+// The concrete CLI input and completion transport are adapter implementation
+// details (GBO-051); this is a plain-text rendering any harness that accepts a
 // prompt string/file can consume.
 func renderPrompt(req RunRequest) string {
+	return renderPromptWithCompletion(req, false)
+}
+
+func renderResponseCompletionPrompt(req RunRequest) string {
+	return renderPromptWithCompletion(req, true)
+}
+
+func renderPromptWithCompletion(req RunRequest, completionInResponse bool) string {
 	var b strings.Builder
 	if req.Instructions != "" {
 		b.WriteString(strings.TrimSpace(req.Instructions))
@@ -46,6 +52,11 @@ func renderPrompt(req RunRequest) string {
 		b.WriteString("\n")
 	}
 
+	if completionInResponse {
+		b.WriteString(renderResponseCompletionContract(req))
+		return b.String()
+	}
+
 	completionKind, schemaHint := completionContract(req)
 	fmt.Fprintf(&b, "## Completion contract\n\n"+
 		"When you are finished, write your %s as JSON to `%s` (relative to your "+
@@ -55,6 +66,16 @@ func renderPrompt(req RunRequest) string {
 		completionKind, req.CompletionPath, schemaHint)
 
 	return b.String()
+}
+
+func renderResponseCompletionContract(req RunRequest) string {
+	completionKind, schemaHint := completionContract(req)
+	return fmt.Sprintf("## Completion contract\n\n"+
+		"When you are finished, return your %s as the entire final response, matching this shape:\n\n%s\n\n"+
+		"The adapter records that response as the completion; do not write a completion file and do not wrap the JSON in Markdown. "+
+		"Do not consider the task complete until the final response is valid JSON. "+
+		"Never print credentials or tokens to stdout/stderr.\n",
+		completionKind, schemaHint)
 }
 
 func renderCompletionRecoveryPrompt(req RunRequest) string {
@@ -67,6 +88,18 @@ func renderCompletionRecoveryPrompt(req RunRequest) string {
 			"Report the actual outcome; do not claim success unless the task is complete. "+
 			"Do not finish this turn until the file exists and is valid JSON.",
 		completionKind, req.CompletionPath, schemaHint,
+	)
+}
+
+func renderResponseCompletionRecoveryPrompt(req RunRequest) string {
+	completionKind, schemaHint := completionContract(req)
+	return fmt.Sprintf(
+		"Your previous turn ended without returning the mandatory completion as valid JSON. "+
+			"Do not repeat completed work or make unrelated changes. Inspect the current state, then return "+
+			"the final %s as the entire response, matching this shape:\n\n%s\n\n"+
+			"Do not write a completion file or wrap the JSON in Markdown. "+
+			"Report the actual outcome; do not claim success unless the task is complete.",
+		completionKind, schemaHint,
 	)
 }
 
