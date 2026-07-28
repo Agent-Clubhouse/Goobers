@@ -370,8 +370,12 @@ func reachabilityProblems(m *Machine) []string {
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	for _, t := range def.Spec.Tasks {
-		if t.Inputs["kind"] == "ci-poll" && !toSet(t.Capabilities)[string(capability.GitHubPRWrite)] {
+		capabilities := toSet(t.Capabilities)
+		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
+		}
+		if t.Inputs["kind"] == "external-telemetry" && !capabilities[string(capability.TelemetryRead)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))
 		}
 		for _, c := range t.Capabilities {
 			if capability.Known(c) && !capability.StageDeclarable(c) {

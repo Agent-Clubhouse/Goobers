@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -28,50 +31,81 @@ const defaultPromptFlag = "-p"
 // defaultExtraArgs is used when ExtraArgs is nil. --allow-all-tools is
 // REQUIRED for the real CLI's non-interactive mode — without it, a session
 // blocks on an interactive permission prompt instead of exiting, which would
-// hang until Timeout fires. Tool-level sandboxing (restricting which tools
-// Copilot may use) is deferred to V1 (SEC-044); V0's capability enforcement
-// is the credential-scoping this adapter already does via EnvCapabilities.
+// hang until Timeout fires. Run separately restricts the tools visible to the
+// model when the goober declares a non-empty allowlist.
 var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
+
+const fallbackToDefaultOption = "fallback-to-default"
+
+const copilotModelDiscoveryTimeout = 30 * time.Second
+
+const copilotModelPolicyDisabled = "disabled"
+
+// Shipped goobers declare harness-neutral tool groups. Copilot filters the
+// concrete model-facing tool IDs within those groups.
+var copilotToolGroups = map[string][]string{
+	"shell": {
+		"bash", "read_bash", "stop_bash", "list_bash",
+		"powershell", "read_powershell", "stop_powershell", "list_powershell",
+		"view", "create", "edit", "str_replace_editor", "apply_patch",
+		"grep", "rg", "glob",
+	},
+	"github": {
+		"github-mcp-server-get_copilot_space",
+		"github-mcp-server-get_file_contents",
+		"github-mcp-server-list_copilot_spaces",
+		"github-mcp-server-search_code",
+		"github-mcp-server-search_repositories",
+		"github-mcp-server-search_users",
+		"github-mcp-server-add_issue_comment",
+		"github-mcp-server-get_label",
+		"github-mcp-server-issue_read",
+		"github-mcp-server-issue_write",
+		"github-mcp-server-list_issue_fields",
+		"github-mcp-server-list_issue_types",
+		"github-mcp-server-list_issues",
+		"github-mcp-server-search_issues",
+		"github-mcp-server-sub_issue_write",
+	},
+	"telemetry": {
+		"view", "grep", "rg", "glob",
+	},
+}
 
 type copilotModelCapabilities struct {
 	longContext     bool
 	reasoningEffort map[string]struct{}
 }
 
-func copilotEfforts(values ...string) map[string]struct{} {
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		out[value] = struct{}{}
-	}
-	return out
+// CopilotModelInfo is the model metadata needed to validate adapter options.
+type CopilotModelInfo struct {
+	ID                        string
+	PolicyState               string
+	SupportedReasoningEfforts []string
 }
 
-var copilotModels = map[string]copilotModelCapabilities{
-	"auto":                 {},
-	"claude-fable-5":       {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-sonnet-5":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-sonnet-4.6":    {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"claude-sonnet-4.5":    {},
-	"claude-haiku-4.5":     {},
-	"claude-opus-4.8-fast": {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.8":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.7":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.6":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"claude-opus-4.5":      {},
-	"gpt-5.6-sol":          {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-terra":        {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-luna":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.5":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.3-codex":        {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4-mini":         {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5-mini":           {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.1-pro-preview": {longContext: true,
-		reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.5-flash": {longContext: true,
-		reasoningEffort: copilotEfforts("none", "minimal", "low", "medium", "high")},
-	"kimi-k2.7-code":   {},
-	"mai-code-1-flash": {},
+// CopilotModelLister queries the installed, authenticated Copilot runtime.
+type CopilotModelLister interface {
+	ListModels(ctx context.Context, command, env []string) ([]CopilotModelInfo, error)
+}
+
+// models.list does not expose context-tier support. This table is used only to
+// validate that optional flag; model availability always comes from ModelLister.
+var copilotLongContextModels = map[string]bool{
+	"claude-fable-5":         true,
+	"claude-sonnet-5":        true,
+	"claude-sonnet-4.6":      true,
+	"claude-opus-4.8-fast":   true,
+	"claude-opus-4.8":        true,
+	"claude-opus-4.7":        true,
+	"claude-opus-4.6":        true,
+	"gpt-5.6-sol":            true,
+	"gpt-5.6-terra":          true,
+	"gpt-5.6-luna":           true,
+	"gpt-5.5":                true,
+	"gpt-5.4":                true,
+	"gemini-3.1-pro-preview": true,
+	"gemini-3.5-flash":       true,
 }
 
 // CopilotAdapter is the V0 harness adapter for the GitHub Copilot CLI
@@ -111,6 +145,9 @@ type CopilotAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
+	// ModelLister discovers models from the authenticated Copilot runtime.
+	// Defaults to the official Copilot SDK.
+	ModelLister CopilotModelLister
 	// VersionArgs are the args used to preflight-check the CLI responds
 	// (default {"--version"}).
 	VersionArgs []string
@@ -137,6 +174,9 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+
+	modelsMu        sync.Mutex
+	availableModels map[string]copilotModelCapabilities
 }
 
 // Name returns the adapter's registry name.
@@ -145,19 +185,186 @@ func (c *CopilotAdapter) Name() string { return "copilot-cli" }
 // ValidateConfig rejects model and option values the Copilot CLI adapter does
 // not know how to express. This is called during config admission.
 func (c *CopilotAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
-	_, err := normalizeCopilotConfig(model, options)
+	_, err := c.ResolveConfig(model, options)
 	return err
 }
 
-func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
+// ResolveConfig validates Copilot configuration and applies the explicit
+// fallback-to-default policy when a requested model is unavailable.
+func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	return c.resolveConfig(context.Background(), model, options)
+}
+
+func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	effectiveOptions, fallback, err := copilotFallbackOption(options)
+	if err != nil {
+		return ConfigResolution{}, err
+	}
+	if model == "" && fallback {
+		return ConfigResolution{}, fmt.Errorf("harness option %q requires an explicit model", fallbackToDefaultOption)
+	}
 	var capabilities copilotModelCapabilities
 	if model != "" {
+		availableModels, err := c.discoverModels(ctx)
+		if err != nil {
+			// Discovery failing is "cannot determine availability", not "the
+			// model is invalid". Config admission runs wherever the daemon or
+			// `goobers lint` runs — including CI runners and developer machines
+			// with no Copilot CLI installed or no authenticated session — so
+			// treating an unreachable harness as a validation error makes a
+			// config's validity depend on what happens to be installed on the
+			// validating machine. Accept the requested model, record that it
+			// went unchecked, and let the run itself fail later if the model is
+			// genuinely wrong.
+			//
+			// Capability-dependent option checks are skipped rather than run
+			// against zero-value capabilities, which would spuriously reject
+			// long_context and every reasoningEffort value. Shape validation
+			// (unknown options, non-string values, options that require an
+			// explicit model) is capability-independent and still applies.
+			if _, normalizeErr := normalizeResolvedCopilotConfig(model, effectiveOptions); normalizeErr != nil {
+				return ConfigResolution{}, normalizeErr
+			}
+			return ConfigResolution{
+				Model:          model,
+				HarnessOptions: effectiveOptions,
+				Warnings: []ConfigWarning{{
+					Kind: ConfigWarningModelUnverified,
+					Message: fmt.Sprintf(
+						"could not reach the Copilot harness to verify model %q: %v; accepting it unverified",
+						model, err),
+				}},
+			}, nil
+		}
 		var ok bool
-		capabilities, ok = copilotModels[model]
+		capabilities, ok = availableModels[model]
 		if !ok {
-			return nil, fmt.Errorf("unknown model %q", model)
+			validModels := make([]string, 0, len(availableModels))
+			for name := range availableModels {
+				validModels = append(validModels, name)
+			}
+			sort.Strings(validModels)
+			if !fallback {
+				return ConfigResolution{}, fmt.Errorf("unknown model %q; valid models: %s", model, strings.Join(validModels, ", "))
+			}
+			if _, err := normalizeCopilotConfig("", effectiveOptions, copilotModelCapabilities{}); err != nil {
+				return ConfigResolution{}, fmt.Errorf("fall back model %q to the harness default: %w", model, err)
+			}
+			return ConfigResolution{
+				HarnessOptions: effectiveOptions,
+				Warnings: []ConfigWarning{{
+					Kind:    ConfigWarningModelFallback,
+					Message: fmt.Sprintf("requested model %q is unavailable; using the harness default", model),
+				}},
+			}, nil
 		}
 	}
+	if _, err := normalizeCopilotConfig(model, effectiveOptions, capabilities); err != nil {
+		return ConfigResolution{}, err
+	}
+	return ConfigResolution{
+		Model:          model,
+		HarnessOptions: effectiveOptions,
+	}, nil
+}
+
+func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
+	c.modelsMu.Lock()
+	defer c.modelsMu.Unlock()
+	if c.availableModels != nil {
+		return c.availableModels, nil
+	}
+	command := resolveHarnessCommand(c.Command)
+	if len(command) == 0 {
+		return nil, fmt.Errorf("no command configured")
+	}
+	lister := c.ModelLister
+	if lister == nil {
+		lister = sdkCopilotModelLister{}
+	}
+	discoveryCtx, cancel := context.WithTimeout(ctx, copilotModelDiscoveryTimeout)
+	defer cancel()
+	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
+	if err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+	}
+	available := make(map[string]copilotModelCapabilities, len(models)+1)
+	autoDisabled := false
+	for _, model := range models {
+		if model.ID == "" {
+			continue
+		}
+		if model.PolicyState == copilotModelPolicyDisabled {
+			if model.ID == "auto" {
+				autoDisabled = true
+			}
+			continue
+		}
+		efforts := make(map[string]struct{}, len(model.SupportedReasoningEfforts))
+		for _, effort := range model.SupportedReasoningEfforts {
+			efforts[effort] = struct{}{}
+		}
+		available[model.ID] = copilotModelCapabilities{
+			longContext:     copilotLongContextModels[model.ID],
+			reasoningEffort: efforts,
+		}
+	}
+	if !autoDisabled {
+		available["auto"] = copilotModelCapabilities{}
+	}
+	if len(available) == 0 {
+		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+	}
+	c.availableModels = available
+	return c.availableModels, nil
+}
+
+func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]apiextensionsv1.JSON, bool, error) {
+	if len(options) == 0 {
+		return nil, false, nil
+	}
+	effective := make(map[string]apiextensionsv1.JSON, len(options))
+	fallback := false
+	for name, value := range options {
+		if name != fallbackToDefaultOption {
+			effective[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
+			continue
+		}
+		var configured *bool
+		if err := json.Unmarshal(value.Raw, &configured); err != nil {
+			return nil, false, fmt.Errorf("harness option %q must be a boolean: %w", name, err)
+		}
+		if configured == nil {
+			return nil, false, fmt.Errorf("harness option %q must be a boolean", name)
+		}
+		fallback = *configured
+	}
+	if len(effective) == 0 {
+		effective = nil
+	}
+	return effective, fallback, nil
+}
+
+func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON, capabilities copilotModelCapabilities) (map[string]string, error) {
+	normalized, err := normalizeResolvedCopilotConfig(model, options)
+	if err != nil {
+		return nil, err
+	}
+	if normalized["context"] == "long_context" && !capabilities.longContext {
+		return nil, fmt.Errorf("context value %q is not supported by model %q", normalized["context"], model)
+	}
+	if value, ok := normalized["reasoningEffort"]; ok {
+		if _, supported := capabilities.reasoningEffort[value]; !supported {
+			return nil, fmt.Errorf("reasoningEffort value %q is not supported by model %q", value, model)
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeResolvedCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
 	names := make([]string, 0, len(options))
 	for name := range options {
 		names = append(names, name)
@@ -181,16 +388,10 @@ func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSO
 				if model == "" {
 					return nil, fmt.Errorf("context value %q requires an explicit model", value)
 				}
-				if !capabilities.longContext {
-					return nil, fmt.Errorf("context value %q is not supported by model %q", value, model)
-				}
 			}
 		case "reasoningEffort":
 			if model == "" {
 				return nil, fmt.Errorf("reasoningEffort requires an explicit model")
-			}
-			if _, ok := capabilities.reasoningEffort[value]; !ok {
-				return nil, fmt.Errorf("reasoningEffort value %q is not supported by model %q", value, model)
 			}
 		}
 		normalized[name] = value
@@ -253,6 +454,59 @@ func firstOutputLine(output []byte) string {
 	return ""
 }
 
+func copilotAvailableTools(req RunRequest) []string {
+	var tools []string
+	seen := make(map[string]struct{})
+	appendTool := func(tool string) {
+		if _, ok := seen[tool]; ok {
+			return
+		}
+		seen[tool] = struct{}{}
+		tools = append(tools, tool)
+	}
+	for _, declaredTool := range req.Tools {
+		for _, server := range req.MCPServers {
+			appendTool(server.Name + "-" + declaredTool)
+		}
+		expanded := []string{declaredTool}
+		if group, ok := copilotToolGroups[strings.ToLower(declaredTool)]; ok {
+			expanded = group
+		}
+		for _, tool := range expanded {
+			appendTool(tool)
+		}
+	}
+	return tools
+}
+
+func validateCopilotTools(tools []string) error {
+	for i, tool := range tools {
+		if strings.Contains(tool, ",") {
+			return fmt.Errorf("harness: copilot-cli: tool allowlist entry %d %q must not contain a comma", i, tool)
+		}
+	}
+	return nil
+}
+
+func copilotDeclaresTool(declared []string, target string) bool {
+	for _, tool := range declared {
+		if strings.EqualFold(tool, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func copilotConstraintConflict(args []string) string {
+	for _, arg := range args {
+		if arg == "--available-tools" || strings.HasPrefix(arg, "--available-tools=") ||
+			arg == "--output-format" || strings.HasPrefix(arg, "--output-format=") {
+			return arg
+		}
+	}
+	return ""
+}
+
 func (c *CopilotAdapter) runner() ProcessRunner {
 	if c.Runner != nil {
 		return c.Runner
@@ -262,8 +516,9 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 
 // Run renders the prompt, runs the CLI non-interactively in req.Workspace with
 // capability-scoped credentials in its environment, prefers converted native
-// session events over the subprocess transcript when available, and reads back
-// the completion file at req.CompletionPath.
+// session events over the subprocess transcript when available, and captures
+// the completion through either the default file contract or the final response
+// used by tool-constrained sessions.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
@@ -274,17 +529,35 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
-	harnessOptions, err := normalizeCopilotConfig(req.Model, req.HarnessOptions)
+	resolution := ConfigResolution{
+		Model:          req.Model,
+		HarnessOptions: cloneHarnessOptions(req.HarnessOptions),
+	}
+	if !req.HarnessConfigResolved {
+		var err error
+		resolution, err = c.resolveConfig(ctx, req.Model, req.HarnessOptions)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+		}
+	}
+	harnessOptions, err := normalizeResolvedCopilotConfig(resolution.Model, resolution.HarnessOptions)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid resolved configuration: %w", err)
 	}
 	if len(req.MCPServers) > 0 {
 		if err := c.requireMCPModelCredential(ctx, req); err != nil {
 			return Outcome{}, err
 		}
 	}
+	if err := validateCopilotTools(req.Tools); err != nil {
+		return Outcome{}, err
+	}
 
+	completionInResponse := len(req.Tools) > 0
 	prompt := renderPrompt(req)
+	if completionInResponse {
+		prompt = renderResponseCompletionPrompt(req)
+	}
 	// Also write the rendered prompt to the workspace for human debugging —
 	// the CLI itself receives it inline (its -p/--prompt flag takes text,
 	// not a file path).
@@ -305,10 +578,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		extra = defaultExtraArgs
 	}
 	baseCommand := resolveHarnessCommand(c.Command)
+	if completionInResponse {
+		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
+		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
+		}
+	}
 	argv := append(baseCommand, flag, prompt)
 	promptArg := len(baseCommand) + 1
-	if req.Model != "" {
-		argv = append(argv, "--model", req.Model)
+	if resolution.Model != "" {
+		argv = append(argv, "--model", resolution.Model)
 	}
 	if value, ok := harnessOptions["context"]; ok {
 		argv = append(argv, "--context", value)
@@ -317,6 +596,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
+	if completionInResponse {
+		if copilotDeclaresTool(req.Tools, "github") {
+			argv = append(argv, "--add-github-mcp-toolset=issues")
+		}
+		argv = append(argv,
+			"--available-tools="+strings.Join(copilotAvailableTools(req), ","),
+			"--silent",
+			"--output-format=text",
+		)
+	}
 
 	env, err := c.credentialEnv(ctx, req)
 	if err != nil {
@@ -343,7 +632,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if err != nil {
 			return Outcome{}, err
 		}
-		argv = append(argv, "--disable-builtin-mcps")
+		if !copilotDeclaresTool(req.Tools, "github") {
+			argv = append(argv, "--disable-builtin-mcps")
+		}
 	}
 	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
@@ -373,20 +664,27 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 
 	runner := c.runner()
 	started := time.Now()
+	var responseCapture *syncBuffer
+	var stdoutCapture io.Writer
+	if completionInResponse {
+		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+		stdoutCapture = responseCapture
+	}
 	result, runErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
+		StdoutCapture:      stdoutCapture,
 	})
 	var payload []byte
 	var completionErr error
 	if runErr == nil {
-		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
 		if errors.Is(completionErr, ErrNoCompletion) {
-			// A clean Copilot exit can still omit the contract file. Give the
-			// same session one contract-only turn without extending its budget.
+			// A clean Copilot exit can still omit its completion contract. Give
+			// the same session one contract-only turn without extending its budget.
 			totalTimeout := req.Timeout
 			if totalTimeout <= 0 {
 				totalTimeout = DefaultTimeout
@@ -397,26 +695,36 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 				completionErr = nil
 			} else {
 				recoveryArgv := append([]string(nil), argv...)
-				recoveryArgv[promptArg] = renderCompletionRecoveryPrompt(req)
+				recoveryPrompt := renderCompletionRecoveryPrompt(req)
+				var recoveryCapture *syncBuffer
+				var recoveryStdout io.Writer
+				if completionInResponse {
+					recoveryPrompt = renderResponseCompletionRecoveryPrompt(req)
+					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+					recoveryStdout = recoveryCapture
+				}
+				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
 					Command:            recoveryArgv,
 					Dir:                req.Workspace,
 					Env:                env,
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
+					StdoutCapture:      recoveryStdout,
 				})
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if err != nil {
 					runErr = err
 					completionErr = nil
 				} else {
-					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
 				}
 			}
 		}
 	}
 	out := Outcome{
 		Transcript:             result.Transcript,
+		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
@@ -440,6 +748,64 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	out.Payload = payload
 	return out, nil
+}
+
+func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResponse bool) ([]byte, error) {
+	if !completionInResponse {
+		return readCompletion(req.Workspace, req.CompletionPath)
+	}
+	payload, responseErr := readCopilotResponseCompletion(req.Mode, capture)
+	if responseErr == nil {
+		return payload, nil
+	}
+	payload, fileErr := readCompletion(req.Workspace, req.CompletionPath)
+	switch {
+	case fileErr == nil:
+		if err := validateCopilotCompletion(req.Mode, payload); err != nil {
+			return nil, fmt.Errorf("%w: Copilot completion file failed validation: %w", ErrNoCompletion, err)
+		}
+		return payload, nil
+	case !errors.Is(fileErr, ErrNoCompletion):
+		return nil, fileErr
+	default:
+		return nil, responseErr
+	}
+}
+
+func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
+	if capture == nil {
+		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
+	}
+	if capture.Truncated() {
+		return nil, fmt.Errorf("%w: Copilot final response exceeded the %d-byte capture limit",
+			ErrNoCompletion, len(capture.retainedBytes())+int(capture.Dropped()))
+	}
+	payload := bytes.TrimSpace(capture.retainedBytes())
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("%w: Copilot returned an empty final response", ErrNoCompletion)
+	}
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
+	}
+	if err := validateCopilotCompletion(mode, payload); err != nil {
+		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
+	}
+	return payload, nil
+}
+
+func validateCopilotCompletion(mode Mode, payload []byte) error {
+	validator, err := validate.New()
+	if err != nil {
+		return fmt.Errorf("build completion validator: %w", err)
+	}
+	kind := "result"
+	if mode == ModeReview {
+		kind = "verdict"
+	}
+	if err := validator.ValidateEnvelope(kind, payload); err != nil {
+		return fmt.Errorf("%s: %w", kind, err)
+	}
+	return nil
 }
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {

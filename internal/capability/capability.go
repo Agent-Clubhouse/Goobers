@@ -98,8 +98,8 @@ const (
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
-	// TelemetryRead grants read access to the local telemetry rollup
-	// (stats/errors/spans) — internal/telemetry/query's gate.
+	// TelemetryRead grants read access to the local telemetry rollup and named,
+	// host-governed external operational telemetry connectors.
 	TelemetryRead Capability = "telemetry:read"
 	// JournalRead grants an agentic stage read-only, digest-verified access
 	// to ANOTHER run's journal (issue #103/T3: the Tutor's analyst stage

@@ -88,6 +88,7 @@ type mergePRServerState struct {
 	baseBranch      string
 	mergeQueueRules bool
 	rulesCalls      int
+	labels          []string
 	// enqueueCalls counts GraphQL enqueuePullRequest mutations, and
 	// enqueueVars records the last one's variables. Enqueueing goes through
 	// GraphQL, not the REST merge endpoint (issue #882) — mergeCalls
@@ -129,11 +130,16 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		writeFakeJSON(w, map[string]string{"login": st.mergeLogin})
 	})
 	mux.HandleFunc(prefix+"/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		labels := make([]map[string]string, 0, len(st.labels))
+		for _, label := range st.labels {
+			labels = append(labels, map[string]string{"name": label})
+		}
 		writeFakeJSON(w, map[string]interface{}{
 			"number": 9, "state": "open", "merged": false, "draft": st.draft,
 			"html_url": "https://github.com/" + owner + "/" + repo + "/pull/9",
 			"title":    "Implement structured merge messages",
 			"body":     "Implements the requested behavior.\n\nFixes #42",
+			"labels":   labels,
 			"head": map[string]interface{}{
 				"ref": st.headBranch, "sha": st.headSHA,
 				"repo": map[string]interface{}{
@@ -1208,6 +1214,38 @@ func TestMergePRAdvisoryModeNeverMerges(t *testing.T) {
 	}
 	if reason, _ := result["reason"].(string); !strings.Contains(reason, "advisory") {
 		t.Fatalf("reason = %q, want it to mention advisory mode", reason)
+	}
+}
+
+func TestMergePROptOutAddedAfterVerdictNeverMerges(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		labels: []string{noMergeReviewLabel},
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 || st.enqueueCalls != 0 {
+		t.Fatalf("landing calls = merge:%d enqueue:%d, want none after opt-out", st.mergeCalls, st.enqueueCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false after opt-out", result)
+	}
+	if result["landOutcome"] != mergeReviewOptOutOutcome {
+		t.Fatalf("result = %+v, want landOutcome=%s so routing terminates before refusal recording", result, mergeReviewOptOutOutcome)
+	}
+	if optedOut, _ := result["optedOut"].(bool); !optedOut {
+		t.Fatalf("result = %+v, want optedOut=true for the terminal routing gate", result)
+	}
+	if reason, _ := result["reason"].(string); !strings.Contains(reason, noMergeReviewLabel) {
+		t.Fatalf("reason = %q, want it to mention %s", reason, noMergeReviewLabel)
 	}
 }
 

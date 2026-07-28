@@ -299,6 +299,11 @@ goobers trace --json <run-id> "$GOOBERS_INSTANCE"
 goobers trace --transcripts <run-id> "$GOOBERS_INSTANCE"
 ```
 
+Onboarding metrics, including any time-to-first-PR value derived from these
+journals, stay in this local instance. Goobers sends no aggregate adoption or
+usage feed to the project maintainers. A user may choose to self-report a
+result, but there is no built-in reporting path (`SEC-048`).
+
 For the acceptance run, the implementation trace should show the claim,
 implement stage, reviewer verdict, local CI, branch push, PR open, CI poll, and
 issue close-out in order. The run journal under `gaggles/<gaggle>/runs/<run-id>/` and the

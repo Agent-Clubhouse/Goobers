@@ -48,9 +48,10 @@ type check struct {
 // Membership is disjoint and exhaustive: every merge-tier check belongs to
 // exactly one group (asserted by TestEveryMergeCheckHasAGroup).
 const (
-	// groupChecks is the fast fan-in: formatting, module hygiene, vet, the
-	// command builds, config validation, and the portal build/test/contract
-	// chain — everything except the three heavyweight steps below.
+	// groupChecks is the fast fan-in: formatting, module hygiene, the
+	// no-phone-home guard, vet, command builds, config validation, and the portal
+	// build/test/contract chain — everything except the three heavyweight steps
+	// below.
 	groupChecks = "checks"
 	// groupLint is golangci-lint (staticcheck/govet/revive/...) on its own runner.
 	groupLint = "lint"
@@ -290,6 +291,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			group:       groupChecks,
 		},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
+		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
 	}
 
@@ -469,6 +471,7 @@ func fastChecks(mergeChecks []check) []check {
 	result := make([]check, 0, len(mergeChecks))
 	for _, current := range mergeChecks {
 		if current.label == "fmt-check" ||
+			current.label == "no-phone-home" ||
 			current.label == "vet" ||
 			strings.HasPrefix(current.label, "build-") {
 			result = append(result, current)
