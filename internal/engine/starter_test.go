@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
@@ -77,6 +78,9 @@ func TestTemporalStarterStartsRun(t *testing.T) {
 	}
 	if !fs.gotOpts.WorkflowExecutionErrorWhenAlreadyStarted {
 		t.Error("expected WorkflowExecutionErrorWhenAlreadyStarted = true")
+	}
+	if fs.gotOpts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
+		t.Errorf("reuse policy = %v, want REJECT_DUPLICATE", fs.gotOpts.WorkflowIDReusePolicy)
 	}
 	if fs.gotOpts.TaskQueue != "goobers" {
 		t.Errorf("task queue = %q, want goobers", fs.gotOpts.TaskQueue)
