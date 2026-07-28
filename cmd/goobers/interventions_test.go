@@ -27,10 +27,26 @@ func interventionTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workf
 
 func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.EvaluatorKind, approvers []string) *workflow.Machine {
 	t.Helper()
+	return interventionTestMachineWithPassTarget(t, name, evaluator, approvers, "finish")
+}
+
+func interventionTerminalTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workflow.Machine {
+	t.Helper()
+	return interventionTestMachineWithPassTarget(t, "terminal-intervention", evaluator, nil, workflow.TerminalComplete)
+}
+
+func interventionTestMachineWithPassTarget(
+	t *testing.T,
+	name string,
+	evaluator apiv1.EvaluatorKind,
+	approvers []string,
+	passTarget string,
+) *workflow.Machine {
+	t.Helper()
 	review := apiv1.Gate{
 		Name: "review", Evaluator: evaluator,
 		Branches: map[string]string{
-			"pass":          "finish",
+			"pass":          passTarget,
 			"fail":          workflow.TargetEscalate,
 			"needs-changes": workflow.TargetEscalate,
 		},
@@ -43,20 +59,21 @@ func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.Eva
 	default:
 		t.Fatalf("unsupported test evaluator %q", evaluator)
 	}
+	tasks := []apiv1.Task{{
+		Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+		Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
+	}}
+	if passTarget != workflow.TerminalComplete {
+		tasks = append(tasks, apiv1.Task{
+			Name: "finish", Type: apiv1.TaskDeterministic, Goal: "finish",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
+		})
+	}
 	machine, err := workflow.Compile(workflow.Definition{
 		Name: name, Version: 1,
 		Spec: apiv1.WorkflowSpec{
 			Gaggle: "example", Start: "implement",
-			Tasks: []apiv1.Task{
-				{
-					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
-				},
-				{
-					Name: "finish", Type: apiv1.TaskDeterministic, Goal: "finish",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
-				},
-			},
+			Tasks: tasks,
 			Gates: []apiv1.Gate{review},
 		},
 	}, workflow.WithPreviewFeatures(true))
@@ -201,6 +218,61 @@ func newInterventionServiceTestRunWithDeterministic(
 		},
 	}}, instanceLog))
 	return service, filepath.Join(scoped.RunsDir(), runID)
+}
+
+func TestRunInterventionTerminalBranchesComplete(t *testing.T) {
+	for _, action := range []string{"approve", "override"} {
+		t.Run(action, func(t *testing.T) {
+			machine := interventionTerminalTestMachine(t, apiv1.EvaluatorAgentic)
+			runID := "run-terminal-" + action
+			service, runDir := newInterventionServiceTestRun(t, machine, runID, []journal.Event{
+				{Type: journal.EventGateStarted, Gate: "review"},
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+				{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+			})
+			input := httpapi.InterventionRequest{
+				RunID: runID, Stage: "review", Actor: "operator", Decision: "pass",
+				Rationale: "accepted terminal outcome",
+			}
+
+			var (
+				result httpapi.InterventionResult
+				err    error
+			)
+			if action == "approve" {
+				result, err = service.Approve(context.Background(), input)
+			} else {
+				result, err = service.Override(context.Background(), input)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", action, err)
+			}
+			if result.Phase != string(journal.PhaseCompleted) {
+				t.Fatalf("result = %+v, want completed", result)
+			}
+
+			reader, err := journal.OpenRead(runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var resumed journal.Event
+			for _, event := range events {
+				if event.Type == journal.EventRunResumed {
+					resumed = event
+				}
+			}
+			if resumed.Type != journal.EventRunResumed ||
+				resumed.Action != action ||
+				resumed.Target != "" ||
+				!resumed.Complete {
+				t.Fatalf("run.resumed = %+v", resumed)
+			}
+		})
+	}
 }
 
 func TestRunInterventionOverrideResumesAndJournalsAction(t *testing.T) {

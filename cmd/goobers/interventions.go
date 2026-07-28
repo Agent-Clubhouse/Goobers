@@ -165,10 +165,11 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 			)
 		}
+		target, complete := interventionResumeTarget(target)
 		result, err = s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
 			return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-				Target: target, Complete: target == workflow.TerminalComplete,
+				Target: target, Complete: complete,
 				Actor: input.Actor, Action: "approve", Gate: input.Stage, Decision: decision,
 				ExpectedTerminalSeq: resolved.terminalSeq,
 			})
@@ -220,10 +221,11 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 			fmt.Sprintf("gate %q was not evaluated in the current run segment", input.Stage),
 		)
 	}
+	target, complete := interventionResumeTarget(target)
 	result, err := s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-			Target: target, Complete: target == workflow.TerminalComplete,
+			Target: target, Complete: complete,
 			Actor: input.Actor, Action: "override", Gate: input.Stage, Decision: decision, Rationale: rationale,
 			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
@@ -669,6 +671,13 @@ func interventionBranch(machine *workflow.Machine, gateName, decision string) (a
 		)
 	}
 	return gate, target, nil
+}
+
+func interventionResumeTarget(target string) (string, bool) {
+	if target == workflow.TerminalComplete {
+		return "", true
+	}
+	return target, false
 }
 
 func unresolvedGatePause(events []journal.Event, gate string) (uint64, bool) {
