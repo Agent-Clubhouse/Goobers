@@ -729,6 +729,59 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRebasePRMultipleSiblingOverlapHandoffsShareOneCause(t *testing.T) {
+	const prBranch = "goobers/impl/run-multiple-sibling-overlaps"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	targetHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	verdict := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Location: "PR #66",
+			Message:  "PR #73 must reconcile its overlap with PR #66.",
+		}},
+	})
+	legacy := `**Post-merge remediation handoff**
+
+<!-- post-merge-remediation: {"displacingPullNumber":66,"reason":"file-overlap:first.go","overlappingFiles":["first.go"]} -->`
+	newerLegacy := `**Post-merge remediation handoff**
+
+<!-- post-merge-remediation: {"displacingPullNumber":72,"reason":"file-overlap:second.go","overlappingFiles":["second.go"]} -->`
+	st := &rebasePRServerState{
+		labels:   []string{needsRemediationLabel},
+		comments: []string{verdict, legacy, newerLegacy},
+	}
+	server := st.start(t, "your-org", "your-repo", 73)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "73",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "true",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if got := result["remediationCauses"]; got != "sibling-overlap" {
+		t.Fatalf("remediationCauses = %q, want one sibling-overlap cause for both handoffs", got)
+	}
+	st.mu.Lock()
+	migratedBodies := append([]string(nil), st.comments[1:]...)
+	st.mu.Unlock()
+	for i, body := range migratedBodies {
+		migrated, ok := parsePostMergeRemediationHandoff(body)
+		if !ok || migrated.Version != postMergeRemediationHandoffVersion ||
+			migrated.TargetHeadSHA != targetHeadSHA {
+			t.Fatalf("migrated handoff %d = %+v, ok=%v; want version %d pinned to %s",
+				i, migrated, ok, postMergeRemediationHandoffVersion, targetHeadSHA)
+		}
+	}
+}
+
 func TestRebasePRClosedSiblingOverlapCannotBypassPolicy(t *testing.T) {
 	const prBranch = "goobers/impl/run-closed-sibling-policy"
 	origin := initNonConflictingPRBranch(t, prBranch)

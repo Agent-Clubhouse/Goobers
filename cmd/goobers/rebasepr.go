@@ -128,15 +128,15 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
-	siblingHandoff, hasSiblingHandoff, err := trustedSiblingOverlapHandoff(
+	siblingHandoffs, hasSiblingHandoff, err := trustedSiblingOverlapHandoffs(
 		ctx, handoffProvider, repo, selectedNumber, attemptedHeadSHA,
 	)
 	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
-	if hasSiblingHandoff && hasSubstantiveFindings && siblingHandoff.verdict != nil {
+	if hasSiblingHandoff && hasSubstantiveFindings && siblingHandoffs.verdict != nil {
 		hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
-			siblingHandoff.verdict,
+			siblingHandoffs.verdict,
 			selectedPRNumber,
-			[]int{siblingHandoff.displacingPullNumber},
+			siblingHandoffs.displacingPullNumbers,
 			resolveMinSeverity(stderr),
 		)
 	}
@@ -376,29 +376,36 @@ func formatRemediationCauses(causes []remediationCause) string {
 	return strings.Join(values, ",")
 }
 
-type trustedSiblingHandoff struct {
-	displacingPullNumber int
-	verdict              *apiv1.Verdict
+type trustedSiblingHandoffs struct {
+	displacingPullNumbers []int
+	verdict               *apiv1.Verdict
 }
 
-func trustedSiblingOverlapHandoff(
+func trustedSiblingOverlapHandoffs(
 	ctx context.Context,
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	selectedNumber string,
 	targetHeadSHA string,
-) (trustedSiblingHandoff, bool, error) {
+) (trustedSiblingHandoffs, bool, error) {
 	comments, err := provider.ListComments(ctx, repo, selectedNumber)
 	if err != nil {
-		return trustedSiblingHandoff{}, false, err
+		return trustedSiblingHandoffs{}, false, err
 	}
 	if !hasPotentialSiblingOverlapHandoff(comments, targetHeadSHA) {
-		return trustedSiblingHandoff{}, false, nil
+		return trustedSiblingHandoffs{}, false, nil
 	}
 	author, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
-		return trustedSiblingHandoff{}, false, err
+		return trustedSiblingHandoffs{}, false, err
 	}
+	type matchingHandoff struct {
+		comment providers.Comment
+		handoff postMergeRemediationHandoff
+	}
+	var matches []matchingHandoff
+	seenPullNumbers := make(map[int]bool)
+	found := trustedSiblingHandoffs{verdict: gatherPRVerdict(comments, author)}
 	for i := len(comments) - 1; i >= 0; i-- {
 		if !isTrustedMergeReviewAuthor(comments[i].Author, author) {
 			continue
@@ -410,24 +417,33 @@ func trustedSiblingOverlapHandoff(
 		if handoff.TargetHeadSHA != "" && handoff.TargetHeadSHA != targetHeadSHA {
 			continue
 		}
-		found := trustedSiblingHandoff{
-			displacingPullNumber: handoff.DisplacingPullNumber,
-			verdict:              gatherPRVerdict(comments, author),
+		matches = append(matches, matchingHandoff{
+			comment: comments[i],
+			handoff: handoff,
+		})
+		if !seenPullNumbers[handoff.DisplacingPullNumber] {
+			seenPullNumbers[handoff.DisplacingPullNumber] = true
+			found.displacingPullNumbers = append(found.displacingPullNumbers, handoff.DisplacingPullNumber)
 		}
-		if handoff.Version == 0 {
-			handoff.Version = postMergeRemediationHandoffVersion
-			handoff.TargetHeadSHA = targetHeadSHA
-			body, err := renderPostMergeRemediationHandoff(handoff)
-			if err != nil {
-				return found, true, err
-			}
-			if err := provider.UpdateComment(ctx, repo, comments[i].ID, body); err != nil {
-				return found, true, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
-			}
-		}
-		return found, true, nil
 	}
-	return trustedSiblingHandoff{}, false, nil
+	if len(matches) == 0 {
+		return trustedSiblingHandoffs{}, false, nil
+	}
+	for _, match := range matches {
+		if match.handoff.Version != 0 {
+			continue
+		}
+		match.handoff.Version = postMergeRemediationHandoffVersion
+		match.handoff.TargetHeadSHA = targetHeadSHA
+		body, err := renderPostMergeRemediationHandoff(match.handoff)
+		if err != nil {
+			return found, true, err
+		}
+		if err := provider.UpdateComment(ctx, repo, match.comment.ID, body); err != nil {
+			return found, true, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
+		}
+	}
+	return found, true, nil
 }
 
 func hasPotentialSiblingOverlapHandoff(comments []providers.Comment, targetHeadSHA string) bool {
