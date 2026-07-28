@@ -590,6 +590,30 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// posting a new one.
 	prior, priorCommentID, _ := latestRemediationState(rawComments)
 
+	// #1808: the escalation comment advertises three unpark paths, one of which
+	// is "a human removes goobers:merge-escalated". That path did not work. The
+	// repass count lives in this checkpoint's comment payload, not in the label,
+	// so clearing the label let the PR back into the loop with its counter still
+	// over budget — and the very next cycle re-escalated for the same reason. On
+	// PR #1729 that round trip took under six minutes, with the count stuck at
+	// 12/10 throughout.
+	//
+	// It is also the only exit an operator can take directly: the other two
+	// require actually modifying the PR, so for anything blocked on something no
+	// agent can fix, the documented escape hatch was inert.
+	//
+	// An operator clearing the escalation is an explicit request for a fresh
+	// attempt, so drop the whole prior record rather than only the counter.
+	// Keeping LastDiffDigest would immediately re-escalate an unchanged diff via
+	// the stall check — a different reason, the same dead end. priorCommentID is
+	// deliberately preserved so this cycle still edits the sticky comment in
+	// place instead of posting a new one.
+	if prior.Escalated && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		pf(stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
+			selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
+		prior = remediationState{}
+	}
+
 	stalled := remediationStalled(prior, digest, current.BaseSHA)
 	cycles := prior.Cycles + 1
 	exhaustedCause, exceeded := exhaustedRemediationCause(prior.AttemptsByCause, causes, budgets)
