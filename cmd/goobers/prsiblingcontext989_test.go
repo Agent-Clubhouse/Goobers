@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // TestGatherSiblingContextComputesFileOverlap is #989: gather-sibling-context
@@ -45,9 +47,22 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 			{path: "e.go", status: "modified"},
 			{path: "f.go", status: "modified"},
 		})
+	server.addComment(selectedNumber, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Location: "PR #11",
+			Message:  "PR #10 must reconcile its overlap with PR #11.",
+		}},
+		Summary:   "The overlap needs reconciliation.",
+		Rationale: "The selected PR and a sibling edit the same files.",
+	}))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", "true")
+	t.Setenv("GOOBERS_INPUT_HASFAILINGCI", "false")
 	t.Setenv("GOOBERS_INPUT_NOVERDICTCACHE", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -64,7 +79,12 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 			Number  int      `json:"number"`
 			Overlap []string `json:"overlap"`
 		} `json:"siblings"`
-		OverlappingSiblings []int `json:"overlappingSiblings"`
+		OverlappingSiblings []int  `json:"overlappingSiblings"`
+		Head                string `json:"head"`
+		Base                string `json:"base"`
+		HasSubstantive      string `json:"hasSubstantiveFindings"`
+		HasFailingCI        string `json:"hasFailingCI"`
+		HasSiblingOverlap   string `json:"hasSiblingOverlap"`
 	}
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -82,5 +102,66 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 	}
 	if want := []int{overlapSibling}; !reflect.DeepEqual(ctx.OverlappingSiblings, want) {
 		t.Fatalf("overlappingSiblings = %v, want %v", ctx.OverlappingSiblings, want)
+	}
+	if ctx.Head != "goobers/implementation/run-10" || ctx.Base != "main" ||
+		ctx.HasSubstantive != "false" || ctx.HasFailingCI != "false" ||
+		ctx.HasSiblingOverlap != "true" {
+		t.Fatalf("routing outputs = head=%q base=%q substantive=%q failingCI=%q siblingOverlap=%q",
+			ctx.Head, ctx.Base, ctx.HasSubstantive, ctx.HasFailingCI, ctx.HasSiblingOverlap)
+	}
+}
+
+func TestVerdictHasIndependentSubstantiveFindingForPR(t *testing.T) {
+	const selectedNumber = 10
+	overlapFinding := apiv1.Finding{
+		Severity: apiv1.SeverityError,
+		Class:    apiv1.FindingSubstantive,
+		Location: "PR #11",
+		Message:  "PR #10 must reconcile its overlap with PR #11.",
+	}
+	tests := []struct {
+		name     string
+		findings []apiv1.Finding
+		want     bool
+	}{
+		{
+			name:     "overlap-only finding is deduplicated",
+			findings: []apiv1.Finding{overlapFinding},
+		},
+		{
+			name: "local defect remains independent",
+			findings: []apiv1.Finding{
+				overlapFinding,
+				{
+					Severity: apiv1.SeverityWarning,
+					Class:    apiv1.FindingSubstantive,
+					Location: "cmd/goobers/rebasepr.go:235",
+					Message:  "The local policy drops an unrelated cause.",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "sub-threshold local defect does not become a cause",
+			findings: []apiv1.Finding{
+				overlapFinding,
+				{
+					Severity: apiv1.SeverityInfo,
+					Class:    apiv1.FindingSubstantive,
+					Location: "cmd/goobers/rebasepr.go:235",
+					Message:  "Low-priority local observation.",
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verdict := &apiv1.Verdict{Findings: test.findings}
+			if got := verdictHasIndependentSubstantiveFindingForPR(
+				verdict, selectedNumber, []int{11}, apiv1.SeverityWarning,
+			); got != test.want {
+				t.Fatalf("independent substantive finding = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
