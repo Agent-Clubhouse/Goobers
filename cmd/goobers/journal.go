@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -162,29 +163,47 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 }
 
 func recordedBlobIntegrity(reader *journal.Reader, identity journal.RunIdentity, target journal.Ref) (apiv1.Integrity, error) {
+	var grades []apiv1.Integrity
+	record := func(source string, integrity, refIntegrity apiv1.Integrity) error {
+		if !integrity.Valid() || !refIntegrity.Valid() {
+			return fmt.Errorf("%s has missing or invalid integrity metadata (record %q, ref %q)",
+				source, integrity, refIntegrity)
+		}
+		if integrity != refIntegrity {
+			return fmt.Errorf("%s has contradictory integrity metadata (record %q, ref %q)",
+				source, integrity, refIntegrity)
+		}
+		grades = append(grades, integrity)
+		return nil
+	}
+
 	for _, input := range identity.Inputs {
 		if input.Ref.Path == target.Path && input.Ref.Digest == target.Digest {
-			if input.Ref.Integrity != "" {
-				return input.Ref.Integrity, nil
+			if err := record(fmt.Sprintf("input %q", input.Name), input.Integrity, input.Ref.Integrity); err != nil {
+				return "", err
 			}
-			return input.Integrity, nil
 		}
 	}
 	events, err := reader.Events()
 	if err != nil {
 		return "", err
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
+	for _, event := range events {
 		if event.Ref == nil || event.Ref.Path != target.Path || event.Ref.Digest != target.Digest {
 			continue
 		}
-		if event.Ref.Integrity != "" {
-			return event.Ref.Integrity, nil
+		if err := record(fmt.Sprintf("event seq %d", event.Seq), event.Integrity, event.Ref.Integrity); err != nil {
+			return "", err
 		}
-		return event.Integrity, nil
 	}
-	return "", nil
+	if len(grades) == 0 {
+		return "", fmt.Errorf("no journal reference matches %q at digest %q", target.Path, target.Digest)
+	}
+	weakest := apiv1.WeakestIntegrity(grades...)
+	if !weakest.Valid() {
+		return "", fmt.Errorf("matching references for %q have no valid aggregate integrity", target.Path)
+	}
+	return weakest, nil
 }
 
 // readSecret returns the exact secret bytes from file (if non-empty) or stdin.

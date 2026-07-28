@@ -126,6 +126,63 @@ func TestJournalRedactRemovesLeakedSecret(t *testing.T) {
 	}
 }
 
+func TestJournalRedactUsesWeakestIntegrityForDeduplicatedArtifact(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	const runID = "redact-deduplicated-fixture"
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "default-implement",
+		WorkflowVersion: 1,
+		Gaggle:          "example",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create fixture run: %v", err)
+	}
+	data := []byte("TOKEN=" + cliLeak + "\n")
+	unapprovedRef, err := run.RecordArtifactWithIntegrity("unapproved.env", data, apiv1.IntegrityUnapproved)
+	if err != nil {
+		t.Fatalf("record unapproved artifact: %v", err)
+	}
+	trustedRef, err := run.RecordArtifactWithIntegrity("trusted.env", data, apiv1.IntegrityTrusted)
+	if err != nil {
+		t.Fatalf("record trusted artifact: %v", err)
+	}
+	if unapprovedRef.Path != trustedRef.Path || unapprovedRef.Digest != trustedRef.Digest {
+		t.Fatalf("identical artifacts did not deduplicate: unapproved=%+v trusted=%+v", unapprovedRef, trustedRef)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close fixture run: %v", err)
+	}
+
+	secretFile := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secretFile, []byte(cliLeak), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runArgs(t, "journal", "redact",
+		"--run", runID, "--path", unapprovedRef.Path, "--reason", "remove leaked token",
+		"--secret-file", secretFile, root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRedaction || last.Ref == nil ||
+		last.Integrity != apiv1.IntegrityUnapproved ||
+		last.Ref.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("redaction elevated deduplicated artifact integrity: %+v", last)
+	}
+}
+
 func TestJournalRedactRejectsAmbiguousRunIDPrefix(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
