@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
 import type { RequestOptions, RunList, RunListOptions } from "./api/types";
-import { loadOperationalOverview, loadOperationalSnapshot } from "./operationalData";
+import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
+import {
+  INVENTORY_CACHE_TTL_MS,
+  loadOperationalOverview,
+  loadOperationalSnapshot,
+} from "./operationalData";
 import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 class ConcurrencyTrackingClient extends FixtureDaemonClient {
@@ -147,6 +152,37 @@ describe("loadOperationalOverview", () => {
     expect(overview.groups).toEqual({ active: [], attention: [], recent: [] });
   });
 
+  it("keeps gaggle and workflow inventory available when a shared goober load fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const cache = new SessionDataCache();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi
+      .spyOn(client, "listGoobers")
+      .mockRejectedValue(new Error("goober inventory unavailable"));
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+
+    try {
+      const [snapshot, overview] = await Promise.allSettled([
+        loadOperationalSnapshot(client, undefined, cache),
+        loadOperationalOverview(client, undefined, { cache }),
+      ]);
+
+      expect(snapshot.status).toBe("rejected");
+      expect(overview.status).toBe("fulfilled");
+      if (overview.status !== "fulfilled") {
+        throw overview.reason;
+      }
+      expect(listGaggles).toHaveBeenCalledOnce();
+      expect(listGoobers).toHaveBeenCalledTimes(2);
+      expect(listWorkflows).toHaveBeenCalledTimes(2);
+      expect(overview.value.gaggleCount).toBe(2);
+      expect(overview.value.workflowNames.size).toBe(2);
+      expect(overview.value.sectionErrors?.inventory).toBeUndefined();
+    } finally {
+      cache.dispose();
+    }
+  });
+
   it("keeps the other four phase groups when a single phase query fails (#1709)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const real = client.listRuns.bind(client);
@@ -201,5 +237,42 @@ describe("loadOperationalOverview", () => {
     });
 
     expect(listWorkflows).toHaveBeenCalled();
+  });
+});
+
+describe("operational inventory cache", () => {
+  it("shares inventory across page loaders until the longer inventory TTL expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const cache = new SessionDataCache();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+
+    try {
+      await loadOperationalOverview(client, undefined, { cache });
+      expect(INVENTORY_CACHE_TTL_MS).toBeGreaterThan(DATA_CACHE_TTL_MS);
+      listGaggles.mockClear();
+      listGoobers.mockClear();
+      listWorkflows.mockClear();
+
+      vi.setSystemTime(1_000 + DATA_CACHE_TTL_MS + 1);
+      await loadOperationalSnapshot(client, undefined, cache);
+
+      expect(listGaggles).not.toHaveBeenCalled();
+      expect(listGoobers).toHaveBeenCalledTimes(2);
+      expect(listWorkflows).not.toHaveBeenCalled();
+
+      vi.setSystemTime(1_000 + INVENTORY_CACHE_TTL_MS);
+      await loadOperationalOverview(client, undefined, { cache });
+
+      expect(listGaggles).toHaveBeenCalledOnce();
+      expect(listGoobers).toHaveBeenCalledTimes(2);
+      expect(listWorkflows).toHaveBeenCalledTimes(2);
+    } finally {
+      cache.dispose();
+      vi.useRealTimers();
+    }
   });
 });

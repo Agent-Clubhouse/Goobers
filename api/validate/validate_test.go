@@ -219,6 +219,8 @@ spec:
       goal: Query matching backlog items.
       run:
         command: ["goobers", "backlog-query"]
+      capabilities:
+        - github:issues:write
       inputs:
         requireLabels: area:runner
         excludeLabels: goobers:claimed
@@ -334,6 +336,8 @@ spec:
       goal: Query matching backlog items.
       run:
         command: ["goobers", "backlog-query"]
+      capabilities:
+        - github:issues:write
       inputs:
 %s%s`, field("    ", "fieldPredicate", tt.gagglePredicate),
 				field("      ", "fieldPredicate", tt.triggerPredicate),

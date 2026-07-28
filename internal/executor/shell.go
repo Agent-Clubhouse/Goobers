@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -215,45 +216,12 @@ func stageInvokesProviderBuiltin(command []string) bool {
 	return ok
 }
 
-const (
-	gatherContextCommand            = "gather-implement-context"
-	implementationContextResultFile = "implementation-context.json"
-)
-
-var providerStageResultFiles = map[string]string{
-	"apply-verdict":          "verdict-result.json",
-	"backlog-dedupe":         "dedupe-candidates.json",
-	"backlog-health":         "backlog-health.json",
-	"backlog-query":          "claimed-item.json",
-	"elect-lander":           "election.json",
-	"gather-issue-context":   "remediation-brief.json",
-	"gather-ci-failures":     "remediation-brief.json",
-	"gather-pr-context":      "remediation-brief.json",
-	"gather-review-threads":  "remediation-brief.json",
-	"gather-sibling-context": "sibling-context.json",
-	"issue-close-out":        "issue-close-out-result.json",
-	"merge-pr":               "merge-result.json",
-	"merge-queue-poll":       "queue-result.json",
-	"open-pr":                "pr-result.json",
-	"post-merge":             "post-merge-result.json",
-	"pr-select":              "selected-pr.json",
-	"push-remediated":        "push-remediated-result.json",
-	"rebase-pr":              "rebase-result.json",
-	"reconcile-post-merge":   "reconcile-post-merge-result.json",
-	"remediation-checkpoint": "checkpoint-result.json",
-	"respond-to-findings":    "remediation-response.json",
-	"set-milestone":          "milestone-result.json",
-	"update-behind-pr":       "update-behind-result.json",
-	gatherContextCommand:     implementationContextResultFile,
-}
-
 // ProviderStageResultFile returns the shared result-file default for a
 // provider-backed workflow command. The CLI registry and shell executor both
 // consume this registry so newly introduced commands cannot acquire only half
 // of the command/result-file contract.
 func ProviderStageResultFile(command string) (string, bool) {
-	resultFile, ok := providerStageResultFiles[command]
-	return resultFile, ok
+	return providerstage.ResultFile(command)
 }
 
 // additionalRepoPaths projects the invocation envelope's read-only reference
