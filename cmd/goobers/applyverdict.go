@@ -340,7 +340,9 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // longer exists is void, not actionable). Managed PRs receive a SHA-pinned
 // native GitHub review plus the existing prose comment handoff consumed by
 // merge, cache, and remediation paths; non-pass verdicts additionally retain
-// their decision labels. Advisory PRs receive only the non-blocking comment.
+// their decision labels, except that an existing merge escalation suppresses
+// needs-remediation until the escalation is explicitly cleared. Advisory PRs
+// receive only the non-blocking comment.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -711,6 +713,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if oscillated {
 		update.RemoveLabels = []string{needsRemediationLabel}
 	}
+	escalationSuppressedRemediation := label == needsRemediationLabel &&
+		hasAnyLabel(current.Labels, []string{remediationEscalatedLabel})
+	if escalationSuppressedRemediation {
+		update.AddLabels = nil
+		update.RemoveLabels = []string{needsRemediationLabel}
+	}
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
@@ -730,7 +738,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "queued an immediate %s re-tick so the crowned lander is selected without waiting for the next poll\n", workflowName)
 	}
 
-	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
+	if escalationSuppressedRemediation {
+		pf(stdout, "published %s verdict for PR #%d without re-applying %s because %s is present\n",
+			posted.Decision, selectedNumber, needsRemediationLabel, remediationEscalatedLabel)
+	} else {
+		pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
+	}
 	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
 }
 
