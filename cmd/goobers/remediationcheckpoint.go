@@ -541,83 +541,118 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	hasObservedCause := len(causes) > 0
-	attemptMatchesLiveHead := false
-	if conflicted && !forced && attemptedHeadSHA != "" {
-		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
+	var (
+		digest               string
+		structuralCollisions []structuralCollision
+		rawComments          []providers.Comment
+	)
+	forceHeadRefresh := false
+	forceBaseRefresh := false
+	stableCheckpoint := false
+	const maxCheckpointRefreshes = 3
+	for refreshAttempt := 0; refreshAttempt < maxCheckpointRefreshes; refreshAttempt++ {
+		attemptMatchesLiveHead := false
+		if conflicted && !forced && attemptedHeadSHA != "" {
+			liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
+			}
+			if liveCurrent.State != "open" || liveCurrent.Merged {
+				return moot()
+			}
+			current = &liveCurrent
+			attemptMatchesLiveHead = attemptedHeadSHA == current.HeadSHA
 		}
-		if liveCurrent.State != "open" || liveCurrent.Merged {
+
+		digest = ""
+		if !forced {
+			onBranch, err := currentBranchIs(".", current.Head)
+			if err != nil {
+				pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, err)
+				return 1
+			}
+			refreshBranch := forceHeadRefresh || !onBranch
+			if onBranch && conflicted && attemptedHeadSHA != "" {
+				localHeadSHA, err := resolveHead(".")
+				if err != nil {
+					pf(stderr, "error: resolve current head for PR #%d: %v\n", selectedNumber, err)
+					return 1
+				}
+				// A conflicted rebase was aborted, so there is no local rebase to
+				// preserve when a concurrent push makes this checkout stale.
+				refreshBranch = refreshBranch || localHeadSHA != current.HeadSHA
+			}
+			if refreshBranch {
+				fetchedSHA, err := checkoutExistingBranch(".", current.Head, pushToken)
+				if err != nil {
+					pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
+					return 1
+				}
+				current.HeadSHA = fetchedSHA
+				if conflicted && attemptedHeadSHA != "" {
+					attemptMatchesLiveHead = attemptedHeadSHA == fetchedSHA
+				}
+			}
+			if forceBaseRefresh {
+				if _, err := fetchExistingBranch(".", current.Base, pushToken); err != nil {
+					pf(stderr, "error: refresh PR #%d's base branch %q: %v\n", selectedNumber, current.Base, err)
+					return 1
+				}
+			}
+			digest, err = diffDigest(".", current.BaseSHA)
+			if err != nil {
+				pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
+				return 1
+			}
+		}
+
+		structuralCollisions = nil
+		if conflicted && !forced && attemptMatchesLiveHead {
+			conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			structuralCollisions, err = findStructuralCollisions(
+				ctx, provider, repo, *current, base, headPrefix, conflictLocations,
+				".", pushToken, providerInput("rebaseBaseSha", ""),
+			)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
+			}
+		}
+
+		rawComments, err = provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
+		}
+		// Keep this read independent from current: assigning through the value
+		// current points at would pair newly read metadata with the old digest.
+		lateCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+		}
+		if lateCurrent.State != "open" || lateCurrent.Merged {
 			return moot()
 		}
-		current = &liveCurrent
-		attemptMatchesLiveHead = attemptedHeadSHA == current.HeadSHA
+		headChanged := lateCurrent.Head != current.Head || lateCurrent.HeadSHA != current.HeadSHA
+		baseChanged := lateCurrent.Base != current.Base || lateCurrent.BaseSHA != current.BaseSHA
+		current = &lateCurrent
+		if !forced && (headChanged || baseChanged) {
+			forceHeadRefresh = headChanged
+			forceBaseRefresh = baseChanged
+			continue
+		}
+		stableCheckpoint = true
+		break
 	}
-
-	var digest string
-	if !forced {
-		onBranch, err := currentBranchIs(".", current.Head)
-		if err != nil {
-			pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, err)
-			return 1
-		}
-		refreshBranch := !onBranch
-		if onBranch && conflicted && attemptedHeadSHA != "" {
-			localHeadSHA, err := resolveHead(".")
-			if err != nil {
-				pf(stderr, "error: resolve current head for PR #%d: %v\n", selectedNumber, err)
-				return 1
-			}
-			// A conflicted rebase was aborted, so there is no local rebase to
-			// preserve when a concurrent push makes this checkout stale.
-			refreshBranch = localHeadSHA != current.HeadSHA
-		}
-		if refreshBranch {
-			fetchedSHA, err := checkoutExistingBranch(".", current.Head, pushToken)
-			if err != nil {
-				pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
-				return 1
-			}
-			if conflicted && attemptedHeadSHA != "" {
-				current.HeadSHA = fetchedSHA
-				attemptMatchesLiveHead = attemptedHeadSHA == fetchedSHA
-			}
-		}
-		digest, err = diffDigest(".", current.BaseSHA)
-		if err != nil {
-			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
-			return 1
-		}
-	}
-
-	var structuralCollisions []structuralCollision
-	if conflicted && !forced && attemptMatchesLiveHead {
-		conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		structuralCollisions, err = findStructuralCollisions(
-			ctx, provider, repo, *current, base, headPrefix, conflictLocations,
-			".", pushToken, providerInput("rebaseBaseSha", ""),
+	if !stableCheckpoint {
+		return failProviderStage(
+			stderr,
+			fmt.Sprintf("stabilize pull request #%d", selectedNumber),
+			fmt.Errorf("head or base changed during %d consecutive checkpoint reads", maxCheckpointRefreshes),
+			"",
 		)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
-		}
-	}
-
-	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
-	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
-	}
-	// Close the race between the initial refresh and the first provider
-	// mutation; a terminal PR is a complete no-op, not a provider failure.
-	refreshed, err = provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
-	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
-	}
-	if refreshed.State != "open" || refreshed.Merged {
-		return moot()
 	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded

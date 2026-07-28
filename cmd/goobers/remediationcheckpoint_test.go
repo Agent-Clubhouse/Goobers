@@ -77,6 +77,8 @@ type remediationCheckpointServerState struct {
 	pullListRequests    int
 	pullReadStatus      int
 	deleteCommentOnEdit bool
+	headAfterComments   string
+	baseAfterComments   string
 }
 
 type remediationCheckpointSibling struct {
@@ -236,6 +238,14 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		if st.terminalOnComments {
 			st.state = "closed"
 			st.merged = st.mergeOnComments
+		}
+		if st.headAfterComments != "" {
+			st.headSHA = st.headAfterComments
+			st.headAfterComments = ""
+		}
+		if st.baseAfterComments != "" {
+			st.baseSHA = st.baseAfterComments
+			st.baseAfterComments = ""
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
@@ -1012,6 +1022,138 @@ func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidenceWithPriorChe
 	}
 	if state.LastDiffDigest == attemptedDigest {
 		t.Fatalf("checkpoint digest = %q, want refreshed concurrent-head digest rather than prior attempted-head digest", state.LastDiffDigest)
+	}
+}
+
+func TestRemediationCheckpointRecomputesDigestWhenHeadChangesBeforePublication(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	baseSHA, initialHeadSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+	initialDigest, err := diffDigest(".", baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest initial head: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: initialDigest, HeadSHA: initialHeadSHA, BaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", "--branch", branch, origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "concurrent.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatalf("write concurrent change: %v", err)
+	}
+	runGitT(t, concurrent, "add", "concurrent.txt")
+	runGitT(t, concurrent, "commit", "-m", "concurrent PR update")
+	runGitT(t, concurrent, "push", "origin", "HEAD")
+	advancedHeadSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	advancedDigest, err := diffDigest(concurrent, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest advanced head: %v", err)
+	}
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: initialHeadSHA, baseSHA: baseSHA,
+		labels:            []string{needsRemediationLabel},
+		comments:          []string{priorComment},
+		headAfterComments: advancedHeadSHA,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want ordinary checkpoint for the advanced head", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, concurrent head must not be escalated using the prior head's digest", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.Cycles != 2 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary cycle 2", state, ok)
+	}
+	if state.HeadSHA != advancedHeadSHA || state.LastDiffDigest != advancedDigest {
+		t.Fatalf(
+			"checkpoint head/digest = %q/%q, want recomputed %q/%q",
+			state.HeadSHA, state.LastDiffDigest, advancedHeadSHA, advancedDigest,
+		)
+	}
+}
+
+func TestRemediationCheckpointRecomputesDigestWhenBaseChangesBeforePublication(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	initialBaseSHA, headSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+	initialDigest, err := diffDigest(".", initialBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest initial base: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: initialDigest, HeadSHA: headSHA, BaseSHA: initialBaseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	runGitT(t, concurrent, "merge", "--no-ff", "origin/"+branch, "-m", "merge PR into advancing base")
+	runGitT(t, concurrent, "push", "origin", "main")
+	advancedBaseSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	runGitT(t, concurrent, "checkout", branch)
+	advancedDigest, err := diffDigest(concurrent, advancedBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest advanced base: %v", err)
+	}
+	if advancedDigest == initialDigest {
+		t.Fatalf("test setup produced identical digests %q; base race would not be observable", advancedDigest)
+	}
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: initialBaseSHA,
+		labels:            []string{needsRemediationLabel},
+		comments:          []string{priorComment},
+		baseAfterComments: advancedBaseSHA,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want ordinary checkpoint for the advanced base", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, concurrent base advance must not be escalated using the prior base's digest", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.Cycles != 2 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary cycle 2", state, ok)
+	}
+	if state.BaseSHA != advancedBaseSHA || state.LastDiffDigest != advancedDigest {
+		t.Fatalf(
+			"checkpoint base/digest = %q/%q, want recomputed %q/%q",
+			state.BaseSHA, state.LastDiffDigest, advancedBaseSHA, advancedDigest,
+		)
 	}
 }
 
