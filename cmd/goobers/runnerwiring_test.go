@@ -1569,9 +1569,10 @@ func TestCIPollSelectsADOFromInvocationRepository(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests/401", func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
-			"pullRequestId": 401,
-			"status":        "active",
-			"mergeStatus":   "succeeded",
+			"pullRequestId":         401,
+			"status":                "active",
+			"mergeStatus":           "succeeded",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1579,7 +1580,8 @@ func TestCIPollSelectsADOFromInvocationRepository(t *testing.T) {
 	mux.HandleFunc("/organization/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []map[string]interface{}{{
 			"id": 1, "status": "completed", "result": "succeeded",
-			"definition": map[string]interface{}{"id": 1, "name": "ci"},
+			"definition":  map[string]interface{}{"id": 1, "name": "ci"},
+			"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
 		}}}); err != nil {
 			t.Fatal(err)
 		}
@@ -1652,9 +1654,10 @@ func TestCIPollADOPATUsesProviderCredentialOverride(t *testing.T) {
 	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests/401", func(w http.ResponseWriter, r *http.Request) {
 		checkAuthorization(r)
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
-			"pullRequestId": 401,
-			"status":        "active",
-			"mergeStatus":   "succeeded",
+			"pullRequestId":         401,
+			"status":                "active",
+			"mergeStatus":           "succeeded",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1663,7 +1666,8 @@ func TestCIPollADOPATUsesProviderCredentialOverride(t *testing.T) {
 		checkAuthorization(r)
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []map[string]interface{}{{
 			"id": 1, "status": "completed", "result": "succeeded",
-			"definition": map[string]interface{}{"id": 1, "name": "ci"},
+			"definition":  map[string]interface{}{"id": 1, "name": "ci"},
+			"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
 		}}}); err != nil {
 			t.Fatal(err)
 		}

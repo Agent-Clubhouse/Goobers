@@ -748,8 +748,9 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if current.AutoCompleteSetBy.ID != "" {
 		return EnqueuePullRequestResult{Number: number, Message: "auto-complete already enabled"}, nil
 	}
-	if current.CreatedBy.ID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s returned no creator identity for auto-complete", req.PullID)
+	currentUserID, err := p.currentUserID(ctx)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
 	}
 	completionOptions := map[string]interface{}{
 		"bypassPolicy":       false,
@@ -759,7 +760,7 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 		completionOptions["mergeStrategy"] = strategy
 	}
 	body := map[string]interface{}{
-		"autoCompleteSetBy": map[string]string{"id": current.CreatedBy.ID},
+		"autoCompleteSetBy": map[string]string{"id": currentUserID},
 		"completionOptions": completionOptions,
 	}
 	if req.ExpectedHeadSHA != "" {
@@ -1586,6 +1587,30 @@ func (p *ADOProvider) buildURL(repo RepositoryRef, elems ...string) (string, err
 	return addQuery(endpoint, url.Values{"api-version": []string{"7.1"}})
 }
 
+func (p *ADOProvider) currentUserID(ctx context.Context) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
+	if err != nil {
+		return "", err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"api-version":    []string{"7.1-preview.1"},
+		"connectOptions": []string{"1"},
+		"lastChangeId":   []string{"-1"},
+		"lastChangeId64": []string{"-1"},
+	})
+	if err != nil {
+		return "", err
+	}
+	var out adoConnectionData
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return "", err
+	}
+	if out.AuthenticatedUser.ID == "" {
+		return "", fmt.Errorf("ado connection data returned no authenticated user identity")
+	}
+	return out.AuthenticatedUser.ID, nil
+}
+
 func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo RepositoryRef, pullID, repositoryID, headSHA string) (CheckState, []CheckDetail, error) {
 	endpoint, err := p.buildURL(repo, "builds")
 	if err != nil {
@@ -2079,6 +2104,10 @@ type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
+}
+
+type adoConnectionData struct {
+	AuthenticatedUser adoIdentity `json:"authenticatedUser"`
 }
 
 type adoReviewer struct {

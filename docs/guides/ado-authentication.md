@@ -95,8 +95,9 @@ Azure DevOps votes and builds map to the provider-neutral lifecycle as follows:
 - `completed` pull requests are merged and `abandoned` pull requests are closed
   without merge. Closing an active pull request abandons it; merging completes
   it with the requested merge strategy. Azure DevOps auto-complete backs the
-  explicit enqueue/watch methods, while normal policy detection remains direct
-  because Azure Repos has no native merge queue.
+  explicit enqueue/watch methods and is registered to the authenticated caller
+  resolved from Azure DevOps connection data, while normal policy detection
+  remains direct because Azure Repos has no native merge queue.
 
 Pull-request descriptions are bounded to Azure DevOps' 4,000 UTF-16-code-unit
 limit while preserving the Goobers run footer.

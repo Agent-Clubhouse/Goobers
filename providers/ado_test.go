@@ -1056,7 +1056,7 @@ func TestADOProviderAutoCompleteLifecycle(t *testing.T) {
 			body := map[string]interface{}{
 				"pullRequestId": 12,
 				"status":        status,
-				"createdBy":     map[string]string{"id": "actor-id"},
+				"createdBy":     map[string]string{"id": "creator-id"},
 			}
 			if autoComplete {
 				body["autoCompleteSetBy"] = map[string]string{"id": "actor-id"}
@@ -1076,6 +1076,19 @@ func TestADOProviderAutoCompleteLifecycle(t *testing.T) {
 		default:
 			t.Fatalf("unexpected method %s", r.Method)
 		}
+	})
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		query := r.URL.Query()
+		if query.Get("api-version") != "7.1-preview.1" ||
+			query.Get("connectOptions") != "1" ||
+			query.Get("lastChangeId") != "-1" ||
+			query.Get("lastChangeId64") != "-1" {
+			t.Fatalf("unexpected connection data query: %s", r.URL.RawQuery)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]string{"id": "actor-id"},
+		})
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
