@@ -1,18 +1,20 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS PR SELECT" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers pr-select \- select one eligible open PR for merge-review (a workflow stage)
+goobers pr-select \- select one managed or advisory open PR for merge-review (a workflow stage)
 .SH SYNOPSIS
 \fBgoobers pr-select\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
 Usage: goobers pr-select [path]
 
-Select at most one open, non-draft, green-CI goober-authored PR for
-merge-review to evaluate this cycle (a workflow stage). Before selection,
+Select at most one open, non-draft, green-CI PR for merge-review to
+evaluate this cycle (a workflow stage). authorScope defaults to goobers;
+set it to any to admit PRs outside headPrefixes as advisory-only. PRs
+labeled goobers:no-merge-review are always excluded. Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
-selected PR's number/head/base/headSha/baseSha/url to the declared
+selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared
 result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 2 = usage/IO error.
 .fi

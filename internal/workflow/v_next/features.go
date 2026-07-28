@@ -434,6 +434,7 @@ const (
 	featureTaskNext                       FeatureID = "task.next"
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
+	featureStageExternalTelemetry         FeatureID = "stage.external-telemetry"
 	featureStageCommand                   FeatureID = "stage.run.command"
 	featureStageScript                    FeatureID = "stage.run.script"
 	featureStageEnv                       FeatureID = "stage.run.env"
@@ -566,6 +567,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskNext,
 		featureStageShell,
 		featureStageCIPoll,
+		featureStageExternalTelemetry,
 		featureStageCommand,
 		featureStageScript,
 		featureStageEnv,
@@ -929,6 +931,8 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageShell)
 	case "ci-poll":
 		used.add(featureStageCIPoll)
+	case "external-telemetry":
+		used.add(featureStageExternalTelemetry)
 	}
 	if task.Run.Network == apiv1.NetworkNone {
 		used.add(featureStageNetworkNone)

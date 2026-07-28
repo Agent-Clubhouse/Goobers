@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
@@ -15,10 +16,10 @@ import (
 type StartResult struct {
 	// RunID is the run/workflow id the run executes under.
 	RunID string
-	// AlreadyRunning is true when a run with the same id was already in flight,
-	// so this Start was a no-op. This is the engine's exactly-once guarantee: a
-	// deterministic RunID (e.g. one per backlog item) makes a duplicate Start
-	// idempotent rather than launching a second run.
+	// AlreadyRunning is true when a run with the same id was already claimed,
+	// whether it is still running or closed, so this Start was a no-op. This is
+	// the engine's exactly-once guarantee: a deterministic RunID makes a
+	// duplicate Start idempotent rather than launching a second run.
 	AlreadyRunning bool
 }
 
@@ -54,8 +55,8 @@ type workflowStarter interface {
 }
 
 // TemporalStarter starts engine runs on a Temporal task queue. It sets the run's
-// WorkflowID to RunInput.RunID and asks Temporal to error if that id is already
-// running, which it maps to a non-error AlreadyRunning result.
+// WorkflowID to RunInput.RunID and asks Temporal to reject reuse whether the
+// first run is open or closed, mapping that rejection to AlreadyRunning.
 type TemporalStarter struct {
 	client    workflowStarter
 	taskQueue string
@@ -75,6 +76,7 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 	opts := client.StartWorkflowOptions{
 		ID:                                       in.RunID,
 		TaskQueue:                                s.taskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)

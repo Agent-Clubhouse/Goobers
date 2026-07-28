@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,6 +192,43 @@ func TestDigestStability(t *testing.T) {
 			t.Errorf("identical content did not dedup: %s vs %s", a.Path, b.Path)
 		}
 		_ = run.Close()
+	}
+}
+
+func TestRecordArtifactBoundedChecksScrubbedSize(t *testing.T) {
+	root := t.TempDir()
+	registry, scrubber := DefaultScrubber()
+	run, err := Create(root, testIdentity(), nil, WithScrubber(scrubber), WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	const secret = "secret"
+	registry.Register([]byte(secret))
+	raw := []byte(strings.Repeat(secret, 171))
+	if _, err := run.RecordArtifactBounded("expanded.json", raw, len(raw)); err == nil ||
+		!strings.Contains(err.Error(), "after redaction") {
+		t.Fatalf("expanded artifact error = %v", err)
+	}
+	if run.seq != 1 {
+		t.Fatalf("rejected artifact advanced journal sequence to %d", run.seq)
+	}
+
+	scrubbed := []byte(strings.Repeat(Redacted, 171))
+	ref, err := run.RecordArtifactBounded("bounded.json", raw, len(scrubbed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Size != int64(len(scrubbed)) {
+		t.Fatalf("persisted artifact size = %d, limit %d", ref.Size, len(scrubbed))
+	}
+	data, err := os.ReadFile(filepath.Join(root, testIdentity().RunID, ref.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(scrubbed) {
+		t.Fatalf("persisted artifact was not scrubbed: %q", data)
 	}
 }
 

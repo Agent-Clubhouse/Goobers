@@ -2946,6 +2946,23 @@ a.telemetry-error-row:hover {
   color: var(--active);
 }
 
+.replay-chapter-cluster {
+  color: var(--accent);
+}
+
+.replay-chapter-cluster .replay-chapter-shape {
+  border-radius: 999px;
+  min-width: 24px;
+  padding: 0 4px;
+  width: auto;
+}
+
+.replay-chapter-cluster.replay-chapter-selected .replay-chapter-shape {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 3px currentColor;
+}
+
 .replay-chapter-shape {
   align-items: center;
   background: color-mix(in srgb, currentColor 13%, var(--panel));
@@ -3012,9 +3029,107 @@ a.telemetry-error-row:hover {
 }
 
 .replay-chapter:focus-visible,
+.replay-chapter-cluster-heading button:focus-visible,
+.replay-chapter-cluster-option:focus-visible,
 .replay-idle-gap:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+.replay-chapter-cluster-panel {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  bottom: calc(100% - 8px);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 16%, transparent);
+  box-sizing: border-box;
+  left: 50%;
+  max-width: 360px;
+  padding: 9px;
+  position: absolute;
+  transform: translateX(-50%);
+  width: calc(100% - 12px);
+  z-index: 10;
+}
+
+.replay-chapter-cluster-heading {
+  align-items: center;
+  display: grid;
+  gap: 2px 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-bottom: 7px;
+}
+
+.replay-chapter-cluster-heading strong {
+  font-size: 11px;
+}
+
+.replay-chapter-cluster-heading span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.replay-chapter-cluster-heading button {
+  background: transparent;
+  border: 0;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 16px;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  padding: 2px 5px;
+}
+
+.replay-chapter-cluster-panel ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 0;
+}
+
+.replay-chapter-cluster-option {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 17px minmax(0, 1fr);
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.replay-chapter-cluster-option:hover {
+  background: var(--surface-soft);
+  border-color: color-mix(in srgb, currentColor 35%, var(--line));
+}
+
+.replay-chapter-cluster-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.replay-chapter-cluster-copy strong,
+.replay-chapter-cluster-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-chapter-cluster-copy strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.replay-chapter-cluster-copy span {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .replay-idle-gap {

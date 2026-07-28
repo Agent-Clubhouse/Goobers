@@ -8,10 +8,12 @@ goobers gather-sibling-context \- load other open PRs as review evidence (a work
 .nf
 Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]
 
-Load the other open goober-authored PRs' touched files + state as
+Load the other open PRs' touched files + state as
 evidence for the holistic review (a workflow stage, follows
-pr-select). Requires selectedNumber/selectedHead/selectedBase inputs
-(Task.InputsFrom pr-select's own outputs). Sibling files are memoized
+pr-select). authorScope=any permits an outside-headPrefixes selection and
+requires pr-select's advisoryMode output. Managed selections retain their
+namespace-wide goober sibling set; advisory selections see every open PR.
+Requires selectedNumber from Task.InputsFrom. Sibling files are memoized
 per head SHA under the instance scheduler dir, while check state is
 always refreshed; --no-cache bypasses the file memo entirely (neither
 read nor written) to force a fully fresh gather. Separately, this stage

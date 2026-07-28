@@ -57,6 +57,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.tools` | 1.4 | ga | supported | dev |
 | `goober.spec.workflows` | 1.4 | ga | supported | dev |
 | `stage.ci-poll` | 1.4 | ga | supported | dev |
+| `stage.external-telemetry` | 1.4 | ga | supported | dev |
 | `stage.resultFile` | 1.4 | ga | supported | dev |
 | `stage.run.command` | 1.4 | ga | supported | dev |
 | `stage.run.env` | 1.4 | ga | supported | dev |
@@ -159,6 +160,7 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 | `goober.spec.tools` | 2.0 | ga | supported | dev |
 | `goober.spec.workflows` | 2.0 | ga | supported | dev |
 | `stage.ci-poll` | 2.0 | ga | supported | dev |
+| `stage.external-telemetry` | 2.0 | ga | supported | dev |
 | `stage.resultFile` | 2.0 | ga | supported | dev |
 | `stage.run.command` | 2.0 | ga | supported | dev |
 | `stage.run.env` | 2.0 | ga | supported | dev |
