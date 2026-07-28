@@ -197,15 +197,17 @@ clobber the push.
 ## 6. Loop control — the correctness backbone
 
 Four things must be **durable state on the PR** (label/sticky-comment/journal), because
-the loop now spans many runs across two workflows. V0.5 ships all four, tuned
-**liberally** per G3.
+the loop now spans many runs across two workflows. V0.5 ships all four, with
+cause-specific loop budgets declared by the workflow.
 
-### D4 — Per-PR repass budget → escalate
+### D4 — Per-cause PR repass budgets → escalate
 
-Lift the in-run `DefaultMaxRepasses=3 → @escalate` to PR altitude: a durable per-PR
-cycle counter. On exhaustion → `goobers:merge-escalated`, stop selecting, a human looks.
-**V0.5 default is liberal** (e.g. 10 cycles, config-overridable) — per G3 we would
-rather over-spend and leave a trail than starve a nearly-done PR.
+Lift in-run repass control to PR altitude as durable attempt counters for conflict,
+substantive findings, failing CI, and sibling overlap. Each counter has an independent
+budget declared in the workflow YAML (default 2 per cause); a distinct cause does not
+consume another cause's allowance. When one counter is exhausted, apply
+`goobers:merge-escalated`, stop selecting, and name that cause in the human-facing
+reason. There is no compiled flat cycle budget.
 
 ### D5 — No-progress / same-diff escalation (minimal in V0.5)
 
@@ -213,7 +215,7 @@ If `pr-remediation` pushes a **byte-identical diff** to its previous push, it is
 (#316 at PR altitude) → escalate. V0.5 ships this cheap check. **Richer oscillation
 detection** — hashing each verdict's finding-set and escalating on a revisited
 state (A→B→A) — is **V1** (§9); it is a robustness upgrade, not a foundation, and the
-liberal budget (D4) is the V0.5 backstop until it lands.
+independent per-cause budgets (D4) are the V0.5 backstop until it lands.
 
 ### D6 — SHA-pinned verdicts
 
@@ -331,8 +333,9 @@ Foundations first; each is intended to be a single reviewable PR.
 7. **`pr-remediation`: rebase-first, finding-driven routing** (§5 D3) — deterministic
    `force-with-lease` rebase; route to the shared `implement → review → local-ci → gates`
    chain only on conflict or substantive findings.
-8. **Loop-control state: per-PR repass budget + same-diff escalation** (§6 D4/D5) —
-   durable counter, liberal default, escalate label.
+8. **Loop-control state: per-cause PR repass budgets + same-diff escalation** (§6
+   D4/D5) — durable counters with YAML-declared defaults of 2 per cause; escalation
+   names the exhausted cause.
 9. **Reframe #353** as the integration-review-altitude umbrella for this design (edit).
 
 V1 / V1.1 follow-ons (filed, milestoned V1): native review protocol; winner-election +

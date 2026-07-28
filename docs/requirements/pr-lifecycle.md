@@ -285,10 +285,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   versioned **remediation-brief** artifact (verdict + PR thread + base state);
   structured evidence travels as journal artifacts, only routing scalars via
   `inputsFrom`. Additional brief gatherers (CI failures, review threads,
-  issue context) and the declared `remediate`/`minSeverity`/`maxCycles`
-  policy inputs are **prescriptive** — owned by
-  `pr-remediation-capability.md` D1/D2 (V1); the shipped scope hardcodes
-  `conflict ∨ substantive ∨ failing-CI`.
+  issue context) and the declared `remediate`/`minSeverity` policy inputs are
+  **prescriptive** — owned by `pr-remediation-capability.md` D1/D2 (V1); the
+  shipped scope hardcodes `conflict ∨ substantive ∨ failing-CI`. Per-cause
+  attempt budgets are shipped as workflow-declared inputs (PRL-054).
 - **PRL-052 (MUST, Shipped):** Routing MUST be **finding-driven, never
   rebase-driven** (D3): a clean rebase with no substantive finding and green
   CI force-pushes and clears the label (done); failing CI pushes the clean
@@ -301,12 +301,20 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   re-resolved at push time, which makes the lease tautological. On lease
   failure the loop loses gracefully and re-selects next tick.
 - **PRL-054 (MUST, Shipped):** Loop control MUST run **before** the agentic
-  chain each cycle (D4/D5): a durable per-PR cycle counter (liberal default
-  10, overridable) and a stall check that escalates on a **byte-identical
-  diff at an unchanged base** — a clean rebase that reproduces the same diff
-  while advancing the base is progress, not a stall (#832). Escalation
-  applies `goobers:merge-escalated`, clears `needs-remediation`, and records
-  the reason plus a head/live-base-tip snapshot on the sticky state comment.
+  chain each cycle (D4/D5): durable per-PR attempt counters for conflict,
+  substantive findings, failing CI, and sibling overlap, with independent
+  budgets declared in the workflow YAML (default 2 per cause), plus a stall
+  check that escalates on a **byte-identical diff at an unchanged base**.
+  Distinct causes MUST NOT consume one another's allowance, and stage or
+  infrastructure failures without an observed remediation cause MUST NOT be
+  charged to one, but MUST still persist and compare the independent stall
+  digest. Open sibling overlap MUST be classified before loop control and MUST
+  supersede the holistic verdict's substantive signal so one overlap cannot
+  consume both budgets. A clean rebase that reproduces the same diff while
+  advancing the base is progress, not a stall (#832). Escalation applies
+  `goobers:merge-escalated`, clears `needs-remediation`, and records the
+  exhausted cause (when budget-driven), reason, and head/live-base-tip snapshot
+  on the sticky state comment.
   At merge-review altitude, `apply-verdict` MUST content-hash each canonical
   finding set (independent of finding and blocker ordering), retain a bounded
   history on the trusted sticky status comment, and escalate immediately when
@@ -487,9 +495,10 @@ Verified open issues this spec expects to be closed against these IDs:
 - **PRL-Q3:** Native-queue arbitration (#1071): should enqueue be withheld
   for cluster members until election resolves, or should election consume the
   queue's own ordering as its policy input?
-- **PRL-Q4:** Declared remediation policy (PRR D2: `remediate` cause list,
-  `minSeverity`, per-cause `maxCycles` per #953) — DSL shape agreed in the
-  design doc, unimplemented; until then remediation scope is compiled-in.
+- **PRL-Q4:** Declared remediation scope policy (PRR D2: `remediate` cause
+  list and `minSeverity`) — DSL shape agreed in the design doc, unimplemented;
+  until then remediation scope is compiled-in. Per-cause budget inputs shipped
+  under PRL-054 (#953).
 - **PRL-Q5:** Escalation-reason taxonomy: PRL-060 requires *a* reason;
   a closed vocabulary ("could not converge" / "out of budget" / "not in
   declared policy" / "approach rejected") would make the escalated bucket
