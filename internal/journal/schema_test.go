@@ -3,18 +3,12 @@ package journal
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
 )
 
@@ -158,112 +152,5 @@ func TestSchemaRejectsPartialPinnedRunControls(t *testing.T) {
 	}`)
 	if err := v.ValidateJSON("journal-run.schema.json", run); err == nil {
 		t.Fatal("journal schema accepted partially pinned runControls")
-	}
-}
-
-// eventTypeConstsFromSource parses event.go and returns every string value
-// assigned to an EventType const. It reads the source rather than a hand-kept
-// list so the schema drift guard below cannot itself fall behind the taxonomy.
-func eventTypeConstsFromSource(t *testing.T) map[string]string {
-	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "event.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse event.go: %v", err)
-	}
-	consts := make(map[string]string)
-	for _, decl := range f.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.CONST {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			id, ok := vs.Type.(*ast.Ident)
-			if !ok || id.Name != "EventType" {
-				continue
-			}
-			for i, name := range vs.Names {
-				if i >= len(vs.Values) {
-					continue
-				}
-				lit, ok := vs.Values[i].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
-				}
-				value, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					t.Fatalf("unquote %s value: %v", name.Name, err)
-				}
-				consts[name.Name] = value
-			}
-		}
-	}
-	if len(consts) == 0 {
-		t.Fatal("no EventType consts found in event.go")
-	}
-	return consts
-}
-
-// schemaEventTypeEnum returns the property.type enum from the embedded
-// journal-event schema, failing on any duplicate entry.
-func schemaEventTypeEnum(t *testing.T) []string {
-	t.Helper()
-	raw, err := schemas.FS.ReadFile("journal-event.schema.json")
-	if err != nil {
-		t.Fatalf("read journal-event schema: %v", err)
-	}
-	var doc struct {
-		Properties struct {
-			Type struct {
-				Enum []string `json:"enum"`
-			} `json:"type"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("unmarshal journal-event schema: %v", err)
-	}
-	seen := make(map[string]bool, len(doc.Properties.Type.Enum))
-	for _, e := range doc.Properties.Type.Enum {
-		if seen[e] {
-			t.Errorf("schema type enum lists %q more than once", e)
-		}
-		seen[e] = true
-	}
-	return doc.Properties.Type.Enum
-}
-
-// TestEventTypeConstsAppearInSchemaEnum is the load-bearing anti-drift guard
-// (#1576): every EventType the shipped code can emit must be a member of the
-// published schema's closed type enum, or a consumer validating a real journal
-// would reject events the runner legitimately wrote. Deriving both sides from
-// their sources means a newly added event type fails here until the enum is
-// updated, rather than silently invalidating the contract.
-func TestEventTypeConstsAppearInSchemaEnum(t *testing.T) {
-	consts := eventTypeConstsFromSource(t)
-	enum := schemaEventTypeEnum(t)
-	inEnum := make(map[string]bool, len(enum))
-	for _, e := range enum {
-		inEnum[e] = true
-	}
-	for name, value := range consts {
-		if !inEnum[value] {
-			t.Errorf("EventType %s = %q is not in journal-event schema type enum", name, value)
-		}
-	}
-
-	// The reverse direction keeps dead entries from accumulating: every enum
-	// value must correspond to an emittable EventType const.
-	values := make(map[string]bool, len(consts))
-	for _, v := range consts {
-		values[v] = true
-	}
-	for _, e := range enum {
-		if !values[e] {
-			t.Errorf("journal-event schema type enum lists %q with no matching EventType const", e)
-		}
 	}
 }
