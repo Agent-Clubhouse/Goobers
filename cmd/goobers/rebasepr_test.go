@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -677,6 +678,15 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	origin := initNonConflictingPRBranch(t, prBranch)
 	wt := prWorktree(t, origin, prBranch)
 	targetHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	verdict := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Location: "PR #66",
+			Message:  "PR #67 must reconcile its overlap with PR #66.",
+		}},
+	})
 	handoff, err := renderPostMergeRemediationHandoff(postMergeRemediationHandoff{
 		DisplacingPullNumber: 66,
 		TargetHeadSHA:        targetHeadSHA,
@@ -688,14 +698,14 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	}
 	st := &rebasePRServerState{
 		labels:   []string{needsRemediationLabel},
-		comments: []string{handoff},
+		comments: []string{verdict, handoff},
 	}
 	server := st.start(t, "your-org", "your-repo", 67)
 	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
 		"selectedNumber":         "67",
 		"head":                   prBranch,
 		"base":                   "main",
-		"hasSubstantiveFindings": "false",
+		"hasSubstantiveFindings": "true",
 		"hasFailingCI":           "false",
 	})
 
@@ -709,13 +719,62 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
 		!strings.Contains(string(data), `"remediationCauses":"sibling-overlap"`) {
-		t.Fatalf("rebase-result.json = %s, want sibling-only overlap routed to checkpoint", data)
+		t.Fatalf("rebase-result.json = %s, want matching stale substantive finding reclassified as sibling-overlap", data)
 	}
 	remoteHeadSHA := strings.TrimSpace(runGitOutputT(
 		t, filepath.Dir(origin), "--git-dir="+origin, "rev-parse", "refs/heads/"+prBranch,
 	))
 	if remoteHeadSHA != targetHeadSHA {
 		t.Fatalf("remote head = %q, want unchanged %q until sibling-overlap remediation is complete", remoteHeadSHA, targetHeadSHA)
+	}
+}
+
+func TestRebasePRClosedSiblingOverlapCannotBypassPolicy(t *testing.T) {
+	const prBranch = "goobers/impl/run-closed-sibling-policy"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	targetHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	verdict := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Location: "PR #72",
+			Message:  "PR #73 must reconcile its overlap with PR #72.",
+		}},
+	})
+	handoff, err := renderPostMergeRemediationHandoff(postMergeRemediationHandoff{
+		DisplacingPullNumber: 72,
+		TargetHeadSHA:        targetHeadSHA,
+		Reason:               "file-overlap:shared.go",
+		OverlappingFiles:     []string{"shared.go"},
+	})
+	if err != nil {
+		t.Fatalf("renderPostMergeRemediationHandoff: %v", err)
+	}
+	st := &rebasePRServerState{
+		labels:   []string{needsRemediationLabel},
+		comments: []string{verdict, handoff},
+	}
+	server := st.start(t, "your-org", "your-repo", 73)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "73",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "true",
+		"remediate":              "substantive",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if result["remediationCauses"] != "" ||
+		result["policyExcluded"] != "true" ||
+		!strings.Contains(fmt.Sprint(result["policyExcludedReason"]), "only detected cause(s) (sibling-overlap)") {
+		t.Fatalf("policy output = causes=%q excluded=%q reason=%q, want only sibling-overlap excluded",
+			result["remediationCauses"], result["policyExcluded"], result["policyExcludedReason"])
 	}
 }
 
