@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -159,6 +160,37 @@ func TestExplainLifecycleIgnoresNextDSLPrefixFeatures(t *testing.T) {
 	}
 }
 
+func TestExplainRejectsSelectorsUnavailableInBuiltInDSL(t *testing.T) {
+	for _, selector := range []string{
+		"workflow.spec.tasks[].run.script",
+		"workflow.spec.tasks[].workspace",
+		"workflow.spec.gates[].agentic.workspace",
+		"workflow.spec.parallels",
+	} {
+		t.Run(selector, func(t *testing.T) {
+			_, err := Explain(selector)
+			if !errors.Is(err, ErrUnavailableSelector) {
+				t.Fatalf("error = %v, want ErrUnavailableSelector", err)
+			}
+			if !strings.Contains(err.Error(), selector) ||
+				!strings.Contains(err.Error(), supportmatrix.CurrentDSLVersion) {
+				t.Fatalf("error %q does not identify selector %q and DSL %s", err, selector, supportmatrix.CurrentDSLVersion)
+			}
+		})
+	}
+}
+
+func TestExplainFiltersAllowedValuesUnavailableInBuiltInDSL(t *testing.T) {
+	got, err := Explain("workflow.spec.tasks[].run.workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{"repo", "scratch"}
+	if !reflect.DeepEqual(got.AllowedValues, want) {
+		t.Fatalf("allowed values = %#v, want %#v", got.AllowedValues, want)
+	}
+}
+
 func TestExplainDerivesTypeAndExampleFromConst(t *testing.T) {
 	got, err := Explain("goober.apiVersion")
 	if err != nil {
@@ -270,7 +302,9 @@ func assertSelectableGuidance(
 	if err != nil {
 		t.Fatalf("resolve %s: %v", selector, err)
 	}
-	if _, err := Explain(selector); err != nil {
+	if _, err := Explain(selector); errors.Is(err, ErrUnavailableSelector) {
+		return
+	} else if err != nil {
 		t.Errorf("%s: %v", selector, err)
 		return
 	}

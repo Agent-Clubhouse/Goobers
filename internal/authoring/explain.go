@@ -21,6 +21,10 @@ import (
 // ErrUnknownSelector identifies a selector absent from the built-in schemas.
 var ErrUnknownSelector = errors.New("unknown selector")
 
+// ErrUnavailableSelector identifies a schema selector absent from the built-in
+// DSL version.
+var ErrUnavailableSelector = errors.New("unavailable selector")
+
 // Explanation combines field facts from an embedded schema with lifecycle
 // metadata from the built-in schema and DSL feature registries.
 type Explanation struct {
@@ -119,7 +123,14 @@ func Explain(selector string) (Explanation, error) {
 			explanation.AllowedValues = schemaAllowedValues(items, item)
 		}
 	}
-	explanation.Stability, explanation.SinceVersion = selectorLifecycle(parts, contractEntry)
+	explanation.Stability, explanation.SinceVersion, err = selectorLifecycle(selector, parts, contractEntry)
+	if err != nil {
+		return Explanation{}, err
+	}
+	explanation.AllowedValues, err = selectorAllowedValues(parts, explanation.AllowedValues)
+	if err != nil {
+		return Explanation{}, fmt.Errorf("explain %q: %w", selector, err)
+	}
 	explanation.Example, err = r.schemaExample(currentDoc, declared, resolved, 0)
 	if err != nil {
 		return Explanation{}, fmt.Errorf("explain %q: %w", selector, err)
@@ -153,41 +164,123 @@ func projectFacts(selector string, declared, resolved map[string]any, required *
 	return explanation
 }
 
-func selectorLifecycle(parts []selectorPart, entry schemas.Entry) (string, string) {
+func selectorLifecycle(requestedSelector string, parts []selectorPart, entry schemas.Entry) (string, string, error) {
 	selector := normalizedSelector(parts)
-	candidates := []string{selector}
-	switch {
-	case strings.HasPrefix(selector, "workflow.spec.tasks."):
-		candidates = append(candidates, "task."+strings.TrimPrefix(selector, "workflow.spec.tasks."))
-	case strings.HasPrefix(selector, "workflow.spec.gates."):
-		candidates = append(candidates, "gate."+strings.TrimPrefix(selector, "workflow.spec.gates."))
-	case strings.HasPrefix(selector, "workflow.spec.triggers."):
-		candidates = append(candidates, "trigger."+strings.TrimPrefix(selector, "workflow.spec.triggers."))
+	allFeatures := workflow.AllFeatures()
+	versionFeatures, err := workflow.FeaturesAtDSLVersion(allFeatures, supportmatrix.CurrentDSLVersion)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve built-in DSL features: %w", err)
 	}
-	for _, candidate := range candidates {
-		if feature, ok := workflow.LookupFeature(workflow.FeatureID(candidate)); ok {
-			return string(feature.Level), feature.SinceVersion
+
+	for _, candidate := range selectorFeatureCandidates(selector) {
+		if feature, ok := lookupFeature(versionFeatures, candidate); ok {
+			return string(feature.Level), feature.SinceVersion, nil
 		}
-		if stability, sinceVersion, ok := featurePrefixLifecycle(candidate); ok {
-			return stability, sinceVersion
+		if stability, sinceVersion, ok := featurePrefixLifecycle(candidate, versionFeatures); ok {
+			return stability, sinceVersion, nil
+		}
+		if featureCandidateKnown(versionFeatures, candidate) {
+			continue
+		}
+		if featureCandidateKnown(allFeatures, candidate) {
+			return "", "", unavailableSelector(requestedSelector)
 		}
 	}
 	for parent := selector; strings.Contains(parent, "."); {
 		parent = parent[:strings.LastIndex(parent, ".")]
-		if feature, ok := workflow.LookupFeature(workflow.FeatureID(parent)); ok {
-			return string(feature.Level), feature.SinceVersion
+		if feature, ok := lookupFeature(versionFeatures, parent); ok {
+			return string(feature.Level), feature.SinceVersion, nil
+		}
+		if _, ok := lookupFeature(allFeatures, parent); ok {
+			return "", "", unavailableSelector(requestedSelector)
 		}
 	}
-	return entry.Stability, entry.SinceVersion
+	return entry.Stability, entry.SinceVersion, nil
 }
 
-func featurePrefixLifecycle(prefix string) (string, string, bool) {
-	var stability, sinceVersion string
-	found := false
+func selectorFeatureCandidates(selector string) []string {
+	candidates := []string{selector}
+	switch {
+	case strings.HasPrefix(selector, "workflow.spec.tasks."):
+		suffix := strings.TrimPrefix(selector, "workflow.spec.tasks.")
+		switch {
+		case suffix == "run" || strings.HasPrefix(suffix, "run."):
+			candidates = append(candidates, "stage."+suffix)
+		case suffix == "workspace":
+			candidates = append(candidates, "stage.workspace")
+		default:
+			candidates = append(candidates, "task."+suffix)
+		}
+	case strings.HasPrefix(selector, "workflow.spec.gates."):
+		suffix := strings.TrimPrefix(selector, "workflow.spec.gates.")
+		switch {
+		case suffix == "automated" || strings.HasPrefix(suffix, "automated."),
+			suffix == "agentic" || strings.HasPrefix(suffix, "agentic."),
+			suffix == "human" || strings.HasPrefix(suffix, "human."):
+			candidates = append(candidates, "gate.evaluator."+suffix)
+		default:
+			candidates = append(candidates, "gate."+suffix)
+		}
+	case strings.HasPrefix(selector, "workflow.spec.triggers."):
+		candidates = append(candidates, "trigger."+strings.TrimPrefix(selector, "workflow.spec.triggers."))
+	}
+	return candidates
+}
+
+func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
+	if normalizedSelector(parts) != "workflow.spec.tasks.run.workspace" || values == nil {
+		return values, nil
+	}
 	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), supportmatrix.CurrentDSLVersion)
 	if err != nil {
-		return "", "", false
+		return nil, fmt.Errorf("resolve built-in DSL features: %w", err)
 	}
+	filtered := make([]any, 0, len(values))
+	for _, value := range values {
+		workspace, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("run.workspace schema value %#v is not a string", value)
+		}
+		var featureID string
+		switch workspace {
+		case "repo", "scratch":
+			featureID = "stage.run.workspace." + workspace
+		case "repo-readonly":
+			featureID = "stage.workspace.repo-readonly"
+		default:
+			return nil, fmt.Errorf("run.workspace schema value %q has no feature mapping", workspace)
+		}
+		if _, ok := lookupFeature(features, featureID); ok {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered, nil
+}
+
+func lookupFeature(features []workflow.Feature, id string) (workflow.Feature, bool) {
+	for _, feature := range features {
+		if feature.ID == workflow.FeatureID(id) {
+			return feature, true
+		}
+	}
+	return workflow.Feature{}, false
+}
+
+func featureCandidateKnown(features []workflow.Feature, candidate string) bool {
+	if _, ok := lookupFeature(features, candidate); ok {
+		return true
+	}
+	for _, feature := range features {
+		if strings.HasPrefix(string(feature.ID), candidate+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func featurePrefixLifecycle(prefix string, features []workflow.Feature) (string, string, bool) {
+	var stability, sinceVersion string
+	found := false
 	for _, feature := range features {
 		if !strings.HasPrefix(string(feature.ID), prefix+".") {
 			continue
@@ -853,6 +946,15 @@ func parseSelector(selector string) ([]selectorPart, error) {
 
 func unknownSelector(selector string) error {
 	return fmt.Errorf("%w %q", ErrUnknownSelector, selector)
+}
+
+func unavailableSelector(selector string) error {
+	return fmt.Errorf(
+		"%w %q in built-in DSL version %s",
+		ErrUnavailableSelector,
+		selector,
+		supportmatrix.CurrentDSLVersion,
+	)
 }
 
 func (r *registry) load(kind string) (*schemaDocument, error) {

@@ -222,6 +222,7 @@ func TestAuthoringCommandsRejectUnknownAndInvalidInput(t *testing.T) {
 	}{
 		{args: []string{"schema", "not-a-schema"}, want: `unknown schema kind "not-a-schema"`},
 		{args: []string{"explain", "workflow.stages[].gate"}, want: `unknown selector "workflow.stages[].gate"`},
+		{args: []string{"explain", "workflow.spec.tasks[].run.script"}, want: `unavailable selector "workflow.spec.tasks[].run.script" in built-in DSL version 1.4`},
 	} {
 		code, stdout, stderr := runArgs(t, test.args...)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, test.want) {
