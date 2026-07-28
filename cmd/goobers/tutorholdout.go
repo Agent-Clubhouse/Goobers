@@ -121,11 +121,15 @@ func prepareTutorHoldout(
 	if err != nil {
 		return nil, err
 	}
-	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames)
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("load instance config for Tutor version resolution: %w", err)
+	}
+	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames, cfg.Runner.EnvPassthrough)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live pre-promotion versions: %w", err)
 	}
-	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames)
+	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames, cfg.Runner.EnvPassthrough)
 	if err != nil {
 		return nil, fmt.Errorf("resolve proposed post-promotion versions: %w", err)
 	}
@@ -338,7 +342,7 @@ func workflowUsesGoober(workflow apiv1.Workflow, goober string) bool {
 	return false
 }
 
-func tutorConfigVersions(configDir, gaggle string, names []string) (map[string]tutorVersionAxes, error) {
+func tutorConfigVersions(configDir, gaggle string, names, envPassthrough []string) (map[string]tutorVersionAxes, error) {
 	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
 		return nil, &configReportError{report: report, err: err}
@@ -348,7 +352,9 @@ func tutorConfigVersions(configDir, gaggle string, names []string) (map[string]t
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions)
+	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, envPassthrough,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +593,13 @@ func reconcileTutorHoldoutTargets(root string, record *tutorHoldoutRecord) (map[
 	for i := range record.Targets {
 		names[i] = record.Targets[i].Workflow
 	}
-	liveVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), record.Gaggle, names)
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("load instance config for Tutor reconciliation: %w", err)
+	}
+	liveVersions, err := tutorConfigVersions(
+		instance.NewLayout(root).ConfigDir(), record.Gaggle, names, cfg.Runner.EnvPassthrough,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live reconciled Tutor config: %w", err)
 	}

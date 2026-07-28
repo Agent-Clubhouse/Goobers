@@ -1,18 +1,21 @@
 package dslauthor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +31,97 @@ const (
 	recordedAuthoringPathSHA256 = "7a1f2732053c6b29bd2955a03718786e911989f2851d4c40dafc684f2a741be1"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
+
+// TestMain doubles the test binary as the Copilot SDK stdio server used by
+// selectedBinary.validate; that helper hard-links this executable as "copilot".
+func TestMain(m *testing.M) {
+	if filepath.Base(os.Args[0]) == "copilot" {
+		if err := serveTestCopilotModels(os.Stdin, os.Stdout); err != nil && !errors.Is(err, io.EOF) {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func serveTestCopilotModels(input io.Reader, output io.Writer) error {
+	reader := bufio.NewReader(input)
+	for {
+		payload, err := readTestCopilotRPCFrame(reader)
+		if err != nil {
+			return err
+		}
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return fmt.Errorf("decode Copilot SDK request: %w", err)
+		}
+		var result any
+		switch request.Method {
+		case "connect":
+			result = map[string]any{"ok": true, "protocolVersion": 3, "version": "test"}
+		case "models.list":
+			result = map[string]any{"models": []map[string]any{{
+				"id":   "gpt-5.6-sol",
+				"name": "GPT-5.6 Sol",
+			}}}
+		default:
+			return fmt.Errorf("unexpected Copilot SDK method %q", request.Method)
+		}
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("encode Copilot SDK result: %w", err)
+		}
+		response, err := json.Marshal(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result:  resultJSON,
+		})
+		if err != nil {
+			return fmt.Errorf("encode Copilot SDK response: %w", err)
+		}
+		if _, err := fmt.Fprintf(output, "Content-Length: %d\r\n\r\n", len(response)); err != nil {
+			return fmt.Errorf("write Copilot SDK response header: %w", err)
+		}
+		if _, err := output.Write(response); err != nil {
+			return fmt.Errorf("write Copilot SDK response: %w", err)
+		}
+	}
+}
+
+func readTestCopilotRPCFrame(reader *bufio.Reader) ([]byte, error) {
+	contentLength := 0
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || name != "Content-Length" {
+			return nil, fmt.Errorf("invalid Copilot SDK header %q", line)
+		}
+		contentLength, err = strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || contentLength <= 0 {
+			return nil, fmt.Errorf("invalid Copilot SDK content length %q", value)
+		}
+	}
+	payload := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
 
 type fixtureDocument struct {
 	Scenarios  []fixtureScenario `json:"scenarios"`
@@ -229,11 +323,12 @@ func runCapturedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 			Workspace:       root,
 			ContextPointers: contextPointers,
 		},
-		Instructions:   authoringInvocationInstructions,
-		Workspace:      root,
-		CompletionPath: harness.DefaultResultPath,
-		Model:          capture.Model,
-		ContextPaths:   contextPaths,
+		Instructions:          authoringInvocationInstructions,
+		Workspace:             root,
+		CompletionPath:        harness.DefaultResultPath,
+		Model:                 capture.Model,
+		HarnessConfigResolved: true,
+		ContextPaths:          contextPaths,
 	})
 	if err != nil {
 		t.Fatalf("replay captured installed-skill invocation: %v", err)
@@ -702,6 +797,16 @@ func (b *selectedBinary) run(t *testing.T, args ...string) []byte {
 
 func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
 	t.Helper()
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperDir := t.TempDir()
+	if err := os.Link(testExecutable, filepath.Join(helperDir, "copilot")); err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+	t.Setenv("PATH", helperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	args := []string{"validate", "--json", "--source-tree", root}
 	if existing {
 		args = []string{"validate", "--json", root}
