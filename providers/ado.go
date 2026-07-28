@@ -365,6 +365,10 @@ func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequ
 	if err != nil {
 		return PullRequestResult{}, err
 	}
+	var current adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
+		return PullRequestResult{}, err
+	}
 	body := map[string]interface{}{
 		"title":       req.Title,
 		"description": adoPullRequestDescription(req.Body, req.RunID),
@@ -378,18 +382,24 @@ func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequ
 		out.PullRequestID = existing.PullRequestID
 	}
 	if out.URL == "" {
-		out.URL = existing.URL
+		out.URL = current.URL
+		if out.URL == "" {
+			out.URL = existing.URL
+		}
 	}
 	if out.Links.Web.Href == "" {
-		out.Links.Web.Href = existing.Links.Web.Href
+		out.Links.Web.Href = current.Links.Web.Href
+		if out.Links.Web.Href == "" {
+			out.Links.Web.Href = existing.Links.Web.Href
+		}
 	}
 	p.recordPullRequestMutation(ctx, req.Repository, out, "update", req.RunID, map[string]FieldDigest{
 		"title": {
-			Before: digestString(existing.Title),
+			Before: digestString(current.Title),
 			After:  digestString(req.Title),
 		},
 		"description": {
-			Before: digestString(existing.Description),
+			Before: digestString(current.Description),
 			After:  digestString(body["description"].(string)),
 		},
 	})
@@ -1421,67 +1431,84 @@ func (p *ADOProvider) buildURL(repo RepositoryRef, elems ...string) (string, err
 }
 
 func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo RepositoryRef, pullID, repositoryID, headSHA string) (CheckState, []CheckDetail, error) {
-	endpoint, err := p.buildURL(repo, "builds")
+	base, err := p.buildURL(repo, "builds")
 	if err != nil {
 		return "", nil, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{
+	values := url.Values{
 		"$top":           []string{"100"},
 		"branchName":     []string{"refs/pull/" + pullID + "/merge"},
 		"queryOrder":     []string{"queueTimeDescending"},
 		"reasonFilter":   []string{"pullRequest"},
 		"repositoryId":   []string{repositoryID},
 		"repositoryType": []string{"TfsGit"},
-	})
-	if err != nil {
-		return "", nil, err
 	}
-	var out adoBuildsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", nil, err
+	var checks []CheckDetail
+	seenDefinitions := make(map[string]bool)
+	continuation := ""
+	for {
+		if continuation != "" {
+			values.Set("continuationToken", continuation)
+		}
+		endpoint, err := addQuery(base, values)
+		if err != nil {
+			return "", nil, err
+		}
+		resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
+		if err != nil {
+			return "", nil, err
+		}
+		var page adoBuildsResponse
+		if err := readJSONResponse(resp, http.MethodGet, endpoint, &page); err != nil {
+			return "", nil, err
+		}
+		for _, build := range page.Value {
+			sourceSHA := build.TriggerInfo["pr.sourceSha"]
+			if sourceSHA == "" || headSHA == "" || !strings.EqualFold(sourceSHA, headSHA) {
+				continue
+			}
+			key := strconv.Itoa(build.Definition.ID)
+			if build.Definition.ID == 0 {
+				key = build.Definition.Name
+			}
+			if key != "" && seenDefinitions[key] {
+				continue
+			}
+			if key != "" {
+				seenDefinitions[key] = true
+			}
+			name := build.Definition.Name
+			if name == "" {
+				name = build.BuildNumber
+			}
+			if name == "" {
+				name = fmt.Sprintf("build %d", build.ID)
+			}
+			buildURL := build.URL
+			if build.Links.Web.Href != "" {
+				buildURL = build.Links.Web.Href
+			}
+			conclusion := build.Result
+			if conclusion == "" {
+				conclusion = build.Status
+			}
+			checks = append(checks, CheckDetail{
+				Name:       name,
+				State:      adoBuildState(build.Status, build.Result),
+				Conclusion: conclusion,
+				URL:        buildURL,
+				Summary:    build.BuildNumber,
+			})
+		}
+		next := strings.TrimSpace(page.ContinuationToken)
+		if next == "" {
+			next = strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
+		}
+		if next == "" {
+			return combinedCheckState(checks), checks, nil
+		}
+		continuation = next
 	}
-
-	checks := make([]CheckDetail, 0, len(out.Value))
-	seenDefinitions := make(map[string]bool, len(out.Value))
-	for _, build := range out.Value {
-		sourceSHA := build.TriggerInfo["pr.sourceSha"]
-		if sourceSHA == "" || headSHA == "" || !strings.EqualFold(sourceSHA, headSHA) {
-			continue
-		}
-		key := strconv.Itoa(build.Definition.ID)
-		if build.Definition.ID == 0 {
-			key = build.Definition.Name
-		}
-		if key != "" && seenDefinitions[key] {
-			continue
-		}
-		if key != "" {
-			seenDefinitions[key] = true
-		}
-		name := build.Definition.Name
-		if name == "" {
-			name = build.BuildNumber
-		}
-		if name == "" {
-			name = fmt.Sprintf("build %d", build.ID)
-		}
-		buildURL := build.URL
-		if build.Links.Web.Href != "" {
-			buildURL = build.Links.Web.Href
-		}
-		conclusion := build.Result
-		if conclusion == "" {
-			conclusion = build.Status
-		}
-		checks = append(checks, CheckDetail{
-			Name:       name,
-			State:      adoBuildState(build.Status, build.Result),
-			Conclusion: conclusion,
-			URL:        buildURL,
-			Summary:    build.BuildNumber,
-		})
-	}
-	return combinedCheckState(checks), checks, nil
 }
 
 func (p *ADOProvider) pullRequestCommentsSince(ctx context.Context, repo RepositoryRef, pullID string, since time.Time) ([]PullRequestComment, error) {
@@ -1909,7 +1936,8 @@ type adoPRLinks struct {
 }
 
 type adoBuildsResponse struct {
-	Value []adoBuild `json:"value"`
+	Value             []adoBuild `json:"value"`
+	ContinuationToken string     `json:"continuationToken"`
 }
 
 type adoBuild struct {
