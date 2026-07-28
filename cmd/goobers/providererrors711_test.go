@@ -180,3 +180,53 @@ func TestBacklogQueryNetworkErrorWritesTypedErrorResult(t *testing.T) {
 		t.Fatalf("errorRetryable = %v, want true — a network blip is unrelated to the request's content", out[executor.OutputErrorRetryable])
 	}
 }
+
+func TestBacklogQueryUnclassifiedProviderErrorKeepsGenericEnvelope(t *testing.T) {
+	root := initDemo(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+	}))
+	t.Cleanup(srv.Close)
+
+	previous := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return providers.NewGitHubProvider(token, append(opts, func(p *providers.GitHubProvider) {
+			p.BaseURL = srv.URL
+		})...)
+	}
+	t.Cleanup(func() { newGitHubProvider = previous })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-1760-provider-error")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderrOut := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("backlog-query under a 422: code = %d, stderr = %q, want 1", code, stderrOut)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if out[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", out[executor.OutputErrorCode], errorCodeProvider)
+	}
+	if out[executor.OutputErrorRetryable] != false {
+		t.Fatalf("errorRetryable = %v, want false", out[executor.OutputErrorRetryable])
+	}
+	if message, _ := out[executor.OutputErrorMessage].(string); !strings.Contains(message, "status 422") {
+		t.Fatalf("errorMessage = %q, want provider status", message)
+	}
+	if len(out) != 3 {
+		t.Fatalf("claimed-item.json = %v, want only the generic provider failure envelope", out)
+	}
+}

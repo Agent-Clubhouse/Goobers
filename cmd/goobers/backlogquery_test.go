@@ -547,9 +547,8 @@ func TestBacklogQueryUnlabeledItemNeverClaimed(t *testing.T) {
 	assertNoWorkResultFile(t, workDir)
 }
 
-// assertNoWorkResultFile confirms the default resultFile carries the
-// structured OutputNoWork signal internal/executor/shell.go's ResultNoWork
-// mapping reads (issue #233) — not just a human-facing stdout line.
+// assertNoWorkResultFile confirms the default resultFile carries only the
+// structured no-work outcome, not a generic provider failure envelope.
 func assertNoWorkResultFile(t *testing.T, workDir string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
@@ -565,6 +564,18 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 	}
 	if got["claimed"] != false {
 		t.Fatalf("claimed-item.json = %v, want claimed:false", got)
+	}
+	for _, key := range []string{
+		executor.OutputErrorCode,
+		executor.OutputErrorMessage,
+		executor.OutputErrorRetryable,
+	} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("claimed-item.json = %v, business no-work must not use the generic provider failure envelope", got)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("claimed-item.json = %v, want only claimed and noWork", got)
 	}
 }
 
