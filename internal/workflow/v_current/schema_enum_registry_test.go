@@ -40,15 +40,15 @@ import (
 //     existing one) cannot silently opt out of the guard.
 
 // enumRule binds one schema enum location to the Go const set that must equal
-// it. exclude names const values that are deliberately absent from the schema
-// (a documented subset), so the guard is "parity modulo declared exclusions",
-// never naive equality.
+// it. exclude, when set, returns const values that are deliberately absent from
+// the schema (a documented subset), so the guard is "parity modulo declared
+// exclusions", never naive equality.
 type enumRule struct {
 	schema  string // schema file name in api/schemas
 	path    string // slash-joined JSON path to the enum array (see enumPath)
 	source  string // human description of the Go source of truth
 	want    func(t *testing.T) []string
-	exclude []string
+	exclude func(t *testing.T) []string
 }
 
 // goConsts returns a want func that extracts every string value of const type
@@ -59,14 +59,28 @@ func goConsts(relPath, typeName string) func(t *testing.T) []string {
 	}
 }
 
-// stageDeclarableCapabilities is the capability vocabulary a workflow task or
-// goober may declare: the canonical registry minus the runner-only entries
-// (configrepo:read) that StageDeclarable withholds. It is the source of truth
-// for every `capabilities` enum and the mcpCredentialRef `capability` enum.
-func stageDeclarableCapabilities(_ *testing.T) []string {
+// allCapabilities is the full canonical capability registry — the want set for
+// every `capabilities` enum and the mcpCredentialRef `capability` enum. The
+// runner-only entries it contains are then subtracted via runnerOnlyCapabilities
+// so the exclusion flows through the rule.exclude mechanism rather than being
+// pre-filtered, giving that "parity modulo declared exclusions" path real
+// coverage.
+func allCapabilities(_ *testing.T) []string {
+	out := make([]string, 0, len(capability.All()))
+	for _, c := range capability.All() {
+		out = append(out, string(c))
+	}
+	return out
+}
+
+// runnerOnlyCapabilities are the canonical capabilities a stage or goober may
+// NOT declare (StageDeclarable withholds them, e.g. configrepo:read), so they
+// are absent from the schema enums by design. Deriving them from StageDeclarable
+// keeps the exclusion self-maintaining as the registry grows.
+func runnerOnlyCapabilities(_ *testing.T) []string {
 	var out []string
 	for _, c := range capability.All() {
-		if capability.StageDeclarable(string(c)) {
+		if !capability.StageDeclarable(string(c)) {
 			out = append(out, string(c))
 		}
 	}
@@ -79,11 +93,13 @@ func stageDeclarableCapabilities(_ *testing.T) []string {
 func policyActionVocabulary(_ *testing.T) []string { return knownPolicyActions() }
 
 var constBackedEnums = []enumRule{
-	// --- capabilities (4 locations, one vocabulary) ---
-	{schema: "goober.schema.json", path: "properties/spec/properties/capabilities/items/enum", source: "internal/capability.StageDeclarable(All())", want: stageDeclarableCapabilities},
-	{schema: "workflow.schema.json", path: "$defs/task/properties/capabilities/items/enum", source: "internal/capability.StageDeclarable(All())", want: stageDeclarableCapabilities},
-	{schema: "invocation.schema.json", path: "properties/capabilities/items/enum", source: "internal/capability.StageDeclarable(All())", want: stageDeclarableCapabilities},
-	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/capability/enum", source: "internal/capability.StageDeclarable(All())", want: stageDeclarableCapabilities},
+	// --- capabilities (4 locations, one vocabulary). The runner-only entries
+	// StageDeclarable withholds are subtracted via exclude, exercising the
+	// "parity modulo declared exclusions" path. ---
+	{schema: "goober.schema.json", path: "properties/spec/properties/capabilities/items/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/capabilities/items/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
+	{schema: "invocation.schema.json", path: "properties/capabilities/items/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
+	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/capability/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
 
 	// --- policy actions (3 locations, one vocabulary) ---
 	{schema: "goober.schema.json", path: "properties/spec/properties/policyActions/items/enum", source: "compiler policy-action vocabulary", want: policyActionVocabulary},
@@ -164,8 +180,12 @@ func TestSchemaEnumsMatchGoConsts(t *testing.T) {
 			if len(want) == 0 {
 				t.Fatalf("no Go consts found for %s — wrong source/type mapping", rule.source)
 			}
-			exclude := make(map[string]bool, len(rule.exclude))
-			for _, e := range rule.exclude {
+			var excluded []string
+			if rule.exclude != nil {
+				excluded = rule.exclude(t)
+			}
+			exclude := make(map[string]bool, len(excluded))
+			for _, e := range excluded {
 				exclude[e] = true
 			}
 			var filtered []string
@@ -177,7 +197,7 @@ func TestSchemaEnumsMatchGoConsts(t *testing.T) {
 
 			if diff := setDiff(filtered, got); diff != "" {
 				t.Fatalf("enum at %s drifted from %s (parity modulo exclusions %v):\n%s",
-					rule.path, rule.source, rule.exclude, diff)
+					rule.path, rule.source, excluded, diff)
 			}
 		})
 	}
@@ -202,10 +222,10 @@ func TestEverySchemaEnumIsClassified(t *testing.T) {
 		for path := range collectSchemaEnums(t, name) {
 			key := name + "\x00" + path
 			seen[key] = true
-			_, isConst := registeredKeyFor(registered, key)
-			_, isLiteral := notConstBackedEnums[key]
-			if !isConst && !isLiteral {
-				t.Errorf("unclassified schema enum %s at %s: register it in constBackedEnums (with its Go const type) or, if it has no Go const source, add it to notConstBackedEnums with a reason", name, path)
+			if !registered[key] {
+				if _, isLiteral := notConstBackedEnums[key]; !isLiteral {
+					t.Errorf("unclassified schema enum %s at %s: register it in constBackedEnums (with its Go const type) or, if it has no Go const source, add it to notConstBackedEnums with a reason", name, path)
+				}
 			}
 		}
 	}
@@ -222,13 +242,6 @@ func TestEverySchemaEnumIsClassified(t *testing.T) {
 			t.Errorf("notConstBackedEnums entry %q refers to an enum that no longer exists in the schema", humanKey(key))
 		}
 	}
-}
-
-func registeredKeyFor(registered map[string]bool, key string) (string, bool) {
-	if registered[key] {
-		return key, true
-	}
-	return "", false
 }
 
 func humanKey(key string) string {
