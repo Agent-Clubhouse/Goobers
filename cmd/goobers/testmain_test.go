@@ -90,6 +90,7 @@ func TestMain(m *testing.M) {
 			})...)
 		}
 	}
+	copilotModelLister = testCopilotModelLister{}
 
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
@@ -104,7 +105,6 @@ func TestMain(m *testing.M) {
 	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
-	copilotModelLister = testCopilotModelLister{}
 
 	baseAPIListenAddress := apiListenAddress
 	apiListenAddress = func(c *instance.Config) string {
