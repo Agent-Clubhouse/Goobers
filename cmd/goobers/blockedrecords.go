@@ -556,7 +556,7 @@ func sameBlockedRecord(a, b blockedRecord) bool {
 // caller must persist it. It returns warnings rather than an error so a single
 // unresolvable record never stalls every backlog tick (#971); the caller
 // surfaces them on stderr.
-func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, skipped []blockedEligibilitySkip, changed bool, warnings []string) {
+func filterBlockedEligibility(ctx context.Context, provider backlogIssueProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, skipped []blockedEligibilitySkip, changed bool, warnings []string) {
 	if len(recs) == 0 {
 		return eligible, nil, false, nil
 	}
