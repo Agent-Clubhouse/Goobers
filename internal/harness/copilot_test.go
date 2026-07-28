@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -728,6 +729,38 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 	if !strings.Contains(events[0].Content, "return your result as the entire final response") ||
 		strings.Contains(events[0].Content, "write your result as JSON to") {
 		t.Fatalf("transcript recorded the wrong completion contract: %q", events[0].Content)
+	}
+}
+
+func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "goober.yaml"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read curator definition: %v", err)
+			}
+			var curator apiv1.Goober
+			if err := yaml.Unmarshal(raw, &curator); err != nil {
+				t.Fatalf("unmarshal curator definition: %v", err)
+			}
+			if want := []string{"github", "shell"}; !slices.Equal(curator.Spec.Tools, want) {
+				t.Fatalf("curator tools = %v, want %v", curator.Spec.Tools, want)
+			}
+
+			available := copilotAvailableTools(RunRequest{Tools: curator.Spec.Tools})
+			for _, required := range []string{
+				"github-mcp-server-issue_read",
+				"view",
+				"bash",
+			} {
+				if !slices.Contains(available, required) {
+					t.Errorf("curator tool expansion missing %q: %v", required, available)
+				}
+			}
+		})
 	}
 }
 
