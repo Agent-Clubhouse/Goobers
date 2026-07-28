@@ -9,6 +9,13 @@
 > different GitHub owners and different stacks; shared agent-model token, per-repo-scoped gh
 > PATs; otherwise isolated). The concrete repos/accounts live in the operator's private
 > instance config — this doc is the generic design.
+>
+> **2026-07-27 addendum:** a live grounding walkthrough (the `clubhouse-site` gaggle reading
+> `Clubhouse`/`Goobers` via `additionalRepos`) found that MGV-10 (#1285, shipped) never
+> actually resolved OQ-1 below — it built read-only *capability routing* on top of the
+> existing single-token-per-repo model instead of giving OQ-1's DSL surface a real answer.
+> §4 G6 and the resolved OQ-1 below are that answer. See §5 for the new MGV-13..19 work
+> items this generalization decomposes into.
 
 ## Terminology (two orthogonal axes — do not conflate)
 
@@ -167,6 +174,74 @@ scoping + conformance-test proof today, with OS/identity enforcement as required
 future security work.** The conformance test (MGV-9) must assert the *scoping* invariant so a
 regression is caught even before the OS rungs land.
 
+### G6 — Credential decoupling: tokens as first-class objects, not repo-owned (resolves OQ-1)
+
+**The gap.** MGV-10 (#1285) gave `additionalRepos` consumers a *read-only capability*, not a
+*read-only credential*. Concretely: `clubhouse-site`'s `additionalRepos: [Clubhouse, Goobers]`
+resolves its checkout token by `(owner, name)` lookup against those repos' **own** `RepoRef`
+entries — the exact same `clubhouse_pat` / `dev5-github-token` their owning gaggles use to
+push and open PRs. `AdditionalReadGrants` (`internal/credentials/scoping.go`) only ever
+*emits* a `contents:read` capability grant for that consumer, never a write grant — but the
+`Ref` it hands out points at the same fully-write-scoped secret. Read-only is enforced
+**by construction in the routing code**, not because the credential material itself is
+narrower. A leaked env var, log line, or workspace file from the site gaggle is a live,
+fully write-capable token to Clubhouse or Goobers, not a read-only one. This is a real
+defense-in-depth gap, not a hypothetical: it's the same class of blast-radius problem TBH-1
+(`docs/design/trust-boundary-hardening.md`) exists to close for daemon-initiated mutations,
+just on the credential-provisioning side instead.
+
+**Why this wasn't caught by MGV-5/MGV-10 already.** `RepoRef` (`internal/instance/config.go`)
+is strictly 1:1 with its credential — one `Token` or one `Auth` per repo entry — and
+`GaggleSpec.AdditionalRepos` (`api/v1alpha1/gaggle_types.go`) carries no credential-override
+field at all. There is currently no DSL surface to say "grant this gaggle repo X, but with
+token Y" — only "grant this gaggle repo X" (implicitly: repo X's own token, capability-gated
+after the fact). Capability scoping throughout `internal/credentials` is call-site-procedural
+(a `Grant{Capability, Ref}` computed per resolution), not a property the credential object
+itself declares — there is no `Credential.Scopes` concept anywhere in the codebase today.
+
+**The fix: invert the ownership.** A credential should be a first-class object that declares
+its own repo binding(s) and its own capability scope, independent of which `RepoRef` entry
+"owns" it — not the other way around. This isn't a novel idea for this codebase:
+`internal/githubapp/source.go`'s `Config.Repositories []string` already does exactly this for
+GitHub App installation tokens (down-scoped **by GitHub's own API at mint time**, built for
+MGV-5/#1012 for the identical reason — "a token leaked from one gaggle's stage cannot reach a
+sibling gaggle's repo"). G6 generalizes that shape from App tokens to the general credential
+model, PATs included:
+
+- **Schema.** A top-level `credentials:` list (building on the existing per-capability
+  `Credentials []CredentialGrant`, `internal/instance/config.go:75` — this is not starting
+  from zero, that list already isn't repo-owned). Each entry: `name`, `repos: [{owner,name},
+  ...]` (one or many — mirrors the App `Repositories` precedent directly), a declared
+  capability/scope, and a source (PAT ref, App auth, future OIDC). A `RepoRef`'s existing
+  single `Token`/`Auth` becomes sugar for an implicit single-repo credential entry —
+  fully backward compatible for the one-repo-one-token case that works today.
+- **`additionalRepos` gets an explicit, required `credential:` reference.** No implicit
+  fallback to the referenced repo's own token. If a gaggle's `additionalRepos` entry doesn't
+  name a credential explicitly scoped for that repo, `goobers validate` **rejects the config**
+  — a schema-time failure, not a runtime capability-derivation nicety. This is what actually
+  delivers "only use provided": the daemon should not be *able* to silently reuse a
+  write-scoped token for a read-only reference the way it does today.
+- **Keep `AdditionalReadGrants`'s existing in-code narrowing as a backstop, not a
+  replacement.** Even a correctly-scoped read-only credential should never be routed a write
+  capability by the runner — belt-and-suspenders, matching this codebase's established
+  practice elsewhere (e.g. the merge-queue sibling-collision re-verify). A future bug widening
+  the routing logic is still caught even if the credential itself is already narrow.
+- **Out of scope for G6:** OS/store-side secret ACLs that deny cross-gaggle *resolution*
+  outright — that's #685 (V2), tracked separately in G5's isolation-debt list above. G6 is
+  entirely a V1, in-process schema and routing change.
+
+**Relationship to other in-flight credential work.** UNOP-7 (#1295 and children #1779/#1780,
+2026-07-27) is solving an adjacent problem — GitHub App vs. machine-account-PAT as the
+*daemon's own* identity — with the same underlying shape: "the credential model needs to
+express more than one flat secret per identity." G6 and UNOP-7 should share the App-token
+minting/down-scoping plumbing where they overlap (§ MGV-16 below) rather than growing two
+independent App-auth code paths.
+
+**Blast radius.** The schema/resolution core (G6 itself, MGV-13/14/15) is **high** — it's the
+credential path every gaggle runs on, same posture as MGV-5. The additive pieces that build on
+it once the schema exists (App-token minting for read grants, migration diagnostics, the
+conformance-test extension, docs) are **low** and independently shippable. See §5.
+
 ## 5. Decomposition — dispatchable work items
 
 | ID | Issue | Item | Risk | Status |
@@ -180,8 +255,26 @@ regression is caught even before the OS rungs land.
 | MGV-7 | #775/#161 | #34-H3/H4 multi-gaggle daemon loop / fairness | Med | #775 ready; rest supervised |
 | MGV-8 | #804/#369 | G4 — actor-aware mixed-mode | High + PO | **hold — mixed-mode gaggle off until it lands** |
 | MGV-9 | *(new)* | G5 — 2-gaggle isolation-conformance test (no cross-gaggle env creds / resolution / git reach) | Low (test-only) | **approvable — proves the isolation claim** |
+| MGV-10 | #1285 | Read-only reference-repo grants (`AdditionalReadGrants`, capability-level) | Med | **shipped** — the capability-routing half of G6; superseded as sole enforcement by MGV-13/14/15 |
+| MGV-11 | #1286 | Read-only checkout of `AdditionalRepos` into a gaggle workspace | Low-Med | **shipped** |
+| MGV-12 | #1287 | Live two-owner A+B multi-gaggle validation run | — | design's first-validation milestone; needs-human (operator must provision real repos+PATs) |
+| MGV-13 | #1794 | G6 — credential schema: first-class `credentials:` list, repo(s)-bound not repo-owned | **High** (core creds, same posture as MGV-5) | supervised — not auto-approved |
+| MGV-14 | #1795 | G6 — `additionalRepos` requires explicit `credential:`; `goobers validate` fails closed without one | **High + breaking** (changes accepted-config shape) | supervised — not auto-approved, PO review for the breaking change |
+| MGV-15 | #1796 | G6 — `AdditionalReadGrants` consumes the explicit credential when present; write-grant backstop retained regardless | **High** (core creds path) | supervised — not auto-approved |
+| MGV-16 | #1797 | G6 — generalize `internal/githubapp` down-scoped token minting as a provisionable read-only credential source (shares plumbing with UNOP-7/#1780) | Low (additive, net-new capability) | **approvable** once MGV-13 lands |
+| MGV-17 | #1798 | G6 — `goobers validate`/`lint` migration diagnostic: warn (not yet fail) on `additionalRepos` entries lacking an explicit credential, ahead of MGV-14 | Low (additive, non-disruptive) | **approvable** |
+| MGV-18 | #1799 | G6 — isolation-conformance test extension (builds on MGV-9): real distinct read-credential bytes, no derivable write grant even adversarially, leaked read-credential can't authenticate a push | Low (test-only) | **approvable** |
+| MGV-19 | #1800 | G6 — instance-config authoring docs for the new credential model, worked `clubhouse-site` example | Low (docs-only) | **approvable** |
 
 > **Isolation debt (not work items in this sprint, tracked as outstanding security posture, §4.5 G5):** OS-native sandbox rungs #165/#166/#167 (#35), and per-gaggle workload identity + store secret ACLs #685 (V2). MGV-9 proves *scoping*; these enforce it.
+>
+> **G6 sequencing:** MGV-13 (schema) → MGV-14 (required field + fail-closed validation) →
+> MGV-15 (grant routing consumes it). MGV-16/17/18/19 are independently shippable once MGV-13
+> lands; none of them depend on MGV-14/15. MGV-17 (migration warning) should land *before*
+> MGV-14 flips validation to fail-closed, so existing instance configs get advance notice
+> rather than a surprise break. None of G6 touches the workflow-authoring DSL
+> (`internal/workflow/v_current`/`v_next`) — this is instance/gaggle config schema
+> (`api/v1alpha1/gaggle_types.go`, `internal/instance`) only.
 
 ## 6. Recommended sequencing
 
@@ -201,10 +294,16 @@ harder mixed-mode case.
 
 ## 7. Open questions (PO)
 
-- **OQ-1 — credential config surface:** per-gaggle `credentials:` block on `GaggleSpec`,
-  per-repo token on each repo entry, and/or a top-level grant with `gaggle:`/`repo:`
-  selectors? *(Recommend: token on each repo entry + optional gaggle block; top-level stays
-  the shared default — reads cleanly for "shared agent token + per-repo PAT.")*
+- **OQ-1 — credential config surface — resolved (2026-07-27), see §4 G6:** a top-level
+  `credentials:` list, each entry bound to one or more repos and declaring its own capability
+  scope — not a per-repo-entry token and not a per-gaggle block. A `RepoRef`'s existing single
+  `Token`/`Auth` is sugar for an implicit single-repo credential (fully backward compatible).
+  `additionalRepos` entries require an explicit `credential:` reference, fail-closed at
+  `goobers validate` time if absent. The original recommendation below (token on each repo
+  entry) is what MGV-10 effectively built and is what created the gap G6 fixes — a
+  repo-owned token can't express "this consumer gets a different, narrower credential than
+  the repo's own." *Original recommendation, superseded: token on each repo entry + optional
+  gaggle block; top-level stays the shared default.*
 - **OQ-2 — CI command surface:** on `GaggleSpec` or per-workflow input? *(Recommend:
   `GaggleSpec` default, overridable per workflow.)*
 - **OQ-3 — multi-repo-per-gaggle CI:** when a gaggle spans repos (server+client), is CI one
