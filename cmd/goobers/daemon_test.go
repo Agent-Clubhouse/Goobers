@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
@@ -441,6 +442,48 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
 	if count := strings.Count(stdout.String(), warning); count != 1 {
 		t.Fatalf("stdout = %q, warning count = %d, want exactly one", stdout.String(), count)
+	}
+}
+
+func TestUpDrainsOnSupervisorStopRequest(t *testing.T) {
+	root := initDeterministicDemo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
+
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(lockPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon did not publish its lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.MkdirAll(selfupdate.UpdatesDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(selfupdate.StopRequestPath(root), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runUpContext did not drain after supervisor stop request")
+	}
+	if _, err := os.Stat(selfupdate.StopRequestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("supervisor stop request was not consumed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "shutdown complete") {
+		t.Fatalf("stdout = %q, want clean shutdown", stdout.String())
 	}
 }
 

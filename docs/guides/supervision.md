@@ -1,7 +1,9 @@
 # Daemon supervision (systemd · launchd · Windows Service)
 
-Runs the `goobers` daemon (`goobers up`) as a supervised, auto-restarting
-background service on each platform, instead of a foreground shell. This
+Runs the `goobers` daemon as a supervised, auto-restarting background service on
+each platform, instead of a foreground shell. The registered service uses an
+internal stable host, which launches `goobers up` from the instance's mutable
+binary slot and owns self-update rollback. This
 resolves **DEP-Q6** (`docs/requirements/deployment.md`): tier 1–2 daemon
 supervision is **systemd** on Linux, **launchd** on macOS, and a **Windows
 Service** wrapper on Windows.
@@ -18,7 +20,8 @@ goobers service uninstall /absolute/path/to/instance
 backoff configured. `uninstall` drives the graceful shutdown contract before
 removing the registration. `status --json` exposes the same state for scripts.
 An existing registration is not overwritten; uninstall it first when changing
-the binary or instance path. The platform sections below document the generated
+the stable host binary or instance path. Ordinary product updates do not rewrite
+the registration. The platform sections below document the generated
 registration and its native supervisor commands for troubleshooting.
 
 **One shutdown contract, three triggers.** The daemon has a single
@@ -35,6 +38,37 @@ in-flight runs (up to `drainGrace` = 30s + a 5s HTTP grace, see
 A second SIGTERM/SIGINT force-exits immediately (the wedged-shutdown backstop in
 `internal/signals`); the supervisors' hard-kill timeouts below are the final
 fallback beyond that.
+
+## Supervised self-update
+
+The checked-in `self-update` workflow runs hourly and defaults to
+`policy: on-release`. It downloads the latest tagged release and verifies its
+`SHA256SUMS`; `manual` requires a fixed release tag, while `on-main` resolves
+the configured product repository branch and builds that pinned commit. Both
+alternatives are explicit edits to the workflow input. Every candidate must
+pass `--version`, `goobers validate`, and `goobers config diff` before the
+workflow writes a handoff request.
+
+The stable service host then asks the daemon to stop admitting work and drain,
+retains the active binary, starts the candidate, and requires the configured
+number of fresh scheduler heartbeat ticks within a bounded window. Failure
+restores the retained binary and creates an idempotent escalation issue in the
+configured product repository. The instance journal records
+`daemon.update.drain_started`, `daemon.update.restarted`,
+`daemon.update.healthy`, `daemon.update.rolled_back`, and
+`daemon.update.escalated`.
+
+Binary state has fixed locations under the instance:
+
+```text
+updates/current/goobers[.exe]   # binary launched by the stable host
+updates/previous/goobers[.exe]  # retained rollback binary
+updates/staged/                 # validated candidates
+updates/request.json            # durable handoff while an update is active
+```
+
+Self-update never writes the config repository. Config delivery remains the
+Workflow CD responsibility.
 
 > **Credentials & PATH.** Run the daemon as the user that owns the instance's
 > provider token, so it inherits per-user credentials — this is why the Linux
@@ -71,8 +105,9 @@ systemctl --user status  goobers      # status
 journalctl --user -u goobers -f       # logs (follow)
 ```
 
-**Upgrade:** replace the binary, then `systemctl --user restart goobers`. If you
-edit the unit file, `systemctl --user daemon-reload` first.
+**Upgrade:** use the `self-update` workflow. Replacing the stable host itself is
+an operator maintenance action: uninstall and reinstall the service with the
+new host binary.
 
 `TimeoutStopSec=45` in the template gives the drain window headroom before
 systemd escalates to `SIGKILL`. For a **system-wide** install instead, drop the
@@ -107,8 +142,9 @@ launchctl bootout gui/$(id -u)/com.agent-clubhouse.goobers        # graceful sto
 tail -f "$LOG_DIR"/goobers.err.log                                # logs
 ```
 
-**Upgrade:** replace the binary, then `launchctl kickstart -k …`. If you edit the
-plist, `launchctl bootout …` then `launchctl bootstrap …` again.
+**Upgrade:** use the `self-update` workflow. Replacing the stable host itself is
+an operator maintenance action: unload and reinstall the LaunchAgent with the
+new host binary.
 
 `ExitTimeOut=45` allows the drain window before launchd sends `SIGKILL`;
 `KeepAlive.SuccessfulExit=false` restarts on crashes without fighting an operator
@@ -118,13 +154,12 @@ stop.
 
 ## Windows (Windows Service)
 
-Unlike the unix unit files, Windows services are not config-only — the process
-must speak the Service Control Manager (SCM) protocol. That handler ships in
-[`internal/winsvc`](../../internal/winsvc): when `goobers up` detects it was
-launched by the SCM (`svc.IsWindowsService()`), it runs under the SCM and
-translates `SERVICE_CONTROL_STOP`/`SHUTDOWN` into the **same** context
-cancellation `SIGTERM` drives on unix — so the graceful drain is identical. Off
-Windows the handler is a no-op stub, so the unix signal path is untouched.
+Unlike the unix unit files, Windows services are not config-only — the stable
+service host must speak the Service Control Manager (SCM) protocol. That handler
+ships in [`internal/winsvc`](../../internal/winsvc) and translates
+`SERVICE_CONTROL_STOP`/`SHUTDOWN` into cancellation of the supervisor context.
+The host writes the same cross-platform daemon drain request used for update
+handoffs, so the graceful drain remains identical.
 
 Run `goobers service install <instance-root>` from an elevated PowerShell or
 Command Prompt. Its native equivalent is below. First put
@@ -134,7 +169,7 @@ Command Prompt. Its native equivalent is below. First put
 
 ```powershell
 # Create the service (note the spaces after '=' in sc.exe syntax):
-sc.exe create goobers binPath= "\"C:\Program Files\goobers\goobers.exe\" up \"C:\ProgramData\goobers\instance\"" start= auto DisplayName= "Goobers daemon"
+sc.exe create goobers binPath= "\"C:\Program Files\goobers\goobers.exe\" __service-supervise \"C:\ProgramData\goobers\instance\"" start= auto DisplayName= "Goobers daemon"
 sc.exe description goobers "Goobers agent-workforce daemon (scheduler + local runner)"
 sc.exe failure goobers reset= 86400 actions= restart/5000/restart/30000/restart/60000
 sc.exe failureflag goobers 1

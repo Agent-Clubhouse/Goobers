@@ -18,6 +18,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'config'
         'speech'
         'up'
+        'self-update'
         'service'
         'worker'
         'dashboard'

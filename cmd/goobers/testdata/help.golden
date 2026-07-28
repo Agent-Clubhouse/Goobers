@@ -28,6 +28,8 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers self-update [--policy manual|on-release|on-main] [path]
+                                stage and request a supervised binary update
   goobers service install|uninstall|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
@@ -159,6 +161,8 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers self-update [--policy manual|on-release|on-main] [path]
+                                stage and request a supervised binary update
   goobers service install|uninstall|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
@@ -1266,14 +1270,26 @@ Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
 
+### self-update
+Usage: goobers self-update [flags] [path]
+
+Detect, stage, and smoke-check a binary target, then hand it to the stable
+service supervisor. Policies are manual, on-release (default), and on-main.
+Manual requires --target with a release tag; on-main fetches and builds the
+configured branch at its resolved commit. This command never changes the
+config repository.
+
+Flags may also arrive as workflow inputs: policy, owner, repository, branch,
+target, healthTicks, healthTimeout, and resultFile.
+
 ### service
 Usage: goobers service <subcommand> [path]
 
 Install and manage the goobers daemon under the current platform's user
 supervisor: systemd on Linux, launchd on macOS, or the Windows Service
-Control Manager. The managed daemon runs `goobers up <path>`, receives the
-same graceful-shutdown trigger as a foreground daemon, and restarts after
-an unexpected exit with supervisor backoff.
+Control Manager. The stable service host launches the instance's mutable
+binary, receives the same graceful-shutdown trigger as a foreground daemon,
+and owns validated self-update handoff, health checks, and rollback.
 
 Subcommands:
   install     install, enable, and start the service
@@ -1290,7 +1306,8 @@ Install, enable, and start the goobers daemon for the instance at <path>.
 Linux and macOS install a per-user service so provider credentials retain
 the current user's ownership. Windows installation must run from an
 elevated terminal. An existing installation is never overwritten; uninstall
-it first when changing the binary or instance path.
+it first when changing the stable host binary or instance path. Product
+binary updates use the self-update workflow instead.
 
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.

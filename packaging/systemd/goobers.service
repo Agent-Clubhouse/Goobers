@@ -26,19 +26,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# `goobers up` runs the daemon in the foreground and blocks until stopped — the
-# shape systemd's Type=simple expects. The trailing path is the instance root.
-ExecStart=%GOOBERS_BIN% up %INSTANCE_ROOT%
+# The stable service host launches the mutable binary under <instance>/updates,
+# owns self-update health checks and rollback, and blocks until stopped.
+ExecStart=%GOOBERS_BIN% __service-supervise %INSTANCE_ROOT%
 WorkingDirectory=%INSTANCE_ROOT%
 
-# Graceful shutdown: `goobers up` drains in-flight runs on SIGTERM (the daemon's
-# single shutdown path). SIGTERM is systemd's default KillSignal; it is stated
-# here for clarity. TimeoutStopSec must exceed the daemon's own drain budget
+# Graceful shutdown: the stable host turns SIGTERM into the daemon's
+# cross-platform drain request. SIGTERM is systemd's default KillSignal; it is
+# stated here for clarity. TimeoutStopSec must exceed the daemon's drain budget
 # (drainGrace 30s + HTTP shutdown grace 5s in cmd/goobers/up.go) so a legitimate
-# drain completes before systemd escalates to SIGKILL. A second SIGTERM would
-# force-exit the daemon immediately (internal/signals), so KillMode=mixed +
-# SendSIGKILL is left at defaults as the final backstop.
+# drain completes before systemd escalates to SIGKILL. SendSIGKILL is left at
+# its default as the final backstop.
 KillSignal=SIGTERM
+KillMode=mixed
 TimeoutStopSec=45
 
 Restart=on-failure

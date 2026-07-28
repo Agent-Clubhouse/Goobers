@@ -37,7 +37,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "self-update.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -105,6 +105,36 @@ func TestSelfhostCuratorDeclaresRoadmapMutation(t *testing.T) {
 	t.Fatal("curate task not found")
 }
 
+func TestSelfhostSelfUpdateDefaultsToTaggedReleases(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "self-update.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var update apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &update); err != nil {
+		t.Fatal(err)
+	}
+	if len(update.Spec.Triggers) != 1 || update.Spec.Triggers[0].Type != apiv1.TriggerSchedule {
+		t.Fatalf("triggers = %+v, want one schedule trigger", update.Spec.Triggers)
+	}
+	if len(update.Spec.Tasks) != 1 {
+		t.Fatalf("tasks = %d, want one deterministic stage", len(update.Spec.Tasks))
+	}
+	task := update.Spec.Tasks[0]
+	if task.Inputs["policy"] != "on-release" {
+		t.Fatalf("policy = %q, want on-release", task.Inputs["policy"])
+	}
+	if task.Run == nil || !slices.Equal(task.Run.Command, []string{"goobers", "self-update"}) {
+		t.Fatalf("command = %+v", task.Run)
+	}
+	if !containsString(task.Capabilities, "contents:read") ||
+		!containsString(task.Capabilities, "github:issues:write") ||
+		!containsString(task.PolicyActions, "create-issue") {
+		t.Fatalf("rollback escalation declarations = capabilities %v, actions %v", task.Capabilities, task.PolicyActions)
+	}
+}
+
 func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 	actions := map[string]bool{}
@@ -123,7 +153,7 @@ func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 		}
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "self-update.yaml"} {
 		var workflow apiv1.Workflow
 		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 		if err != nil {
