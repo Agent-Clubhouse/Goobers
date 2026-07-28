@@ -267,11 +267,13 @@ $ goobers backlog-dedupe
 snapshot ready-pool depth and age (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-health [path]
+Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
-persist the paginated ready-transition ledger for telemetry rollups. Exit
-codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
+persist the paginated ready-transition ledger for telemetry rollups.
+--feedback instead de-readies items whose consecutive failed/escalated
+implementation runs meet the implementationFailureThreshold input (minimum 2).
+Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 ~~~
 
 **Examples**

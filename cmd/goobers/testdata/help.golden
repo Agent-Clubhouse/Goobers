@@ -340,11 +340,13 @@ Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
 error, 2 = usage error.
 
 ### backlog-health
-Usage: goobers backlog-health [path]
+Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
-persist the paginated ready-transition ledger for telemetry rollups. Exit
-codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
+persist the paginated ready-transition ledger for telemetry rollups.
+--feedback instead de-readies items whose consecutive failed/escalated
+implementation runs meet the implementationFailureThreshold input (minimum 2).
+Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 
 ### backlog-query
 Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
