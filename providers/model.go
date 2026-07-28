@@ -403,14 +403,25 @@ type PullRequestPollRequest struct {
 	Repository    RepositoryRef `json:"repository"`
 	PullID        string        `json:"pullId"`
 	CommentsSince *time.Time    `json:"commentsSince,omitempty"`
+	// HumanPolicyConfigurationIDs names the branch/required-check policies the
+	// agent loop cannot fix by re-implementing — human/merge-time policies such
+	// as merge strategy, required reviewers, comment resolution, or
+	// proof-of-presence. A provider excludes these from the gating set it
+	// reduces to CheckState, so a rejection there does NOT drive the fail branch
+	// (which would loop forever on a policy only a human can satisfy). The
+	// values are provider-interpreted opaque identities: the Azure DevOps
+	// provider matches them against branch-policy *configuration* ids. Empty
+	// means every required blocking policy gates (fail-closed default); loops
+	// with human-only policies declare them here as configuration.
+	HumanPolicyConfigurationIDs []string `json:"humanPolicyConfigurationIds,omitempty"`
 }
 
 // PullRequestPollResult is the deterministic stage-output envelope a repass gate
 // branches on: mergeability, review decision, combined check state + failure
-// detail refs, and comments since the last poll (BL-031). Draft/HeadSHA/BaseSHA
-// (issue #360) are the live signal a conjunctive auto-merge action re-checks
-// against a previously-computed verdict's SHA-pin before acting on it — never
-// trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
+// detail refs, and comments since the last poll (BL-031). Draft, labels,
+// HeadSHA, and BaseSHA are live signals a conjunctive auto-merge action
+// re-checks before acting on a previously computed verdict — never trust a
+// caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
 	Number    int        `json:"number"`
 	Title     string     `json:"title,omitempty"`
@@ -419,6 +430,7 @@ type PullRequestPollResult struct {
 	MergedAt  *time.Time `json:"mergedAt,omitempty"`
 	Mergeable *bool      `json:"mergeable,omitempty"`
 	Draft     bool       `json:"draft"`
+	Labels    []string   `json:"labels,omitempty"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete
@@ -467,6 +479,27 @@ type ClosePullRequestResult struct {
 	Number int    `json:"number"`
 	Merged bool   `json:"merged"`
 	State  string `json:"state"`
+}
+
+// PullRequestStatusRequest publishes a provider-native pull-request status
+// (Azure DevOps PR status) that a repository's status-check branch policy can
+// gate on. It is the seam by which goobers publishes its own evidence — an
+// agentic reviewer verdict or a local-CI result — into the provider's policy
+// engine so the validation loop can prove PR correctness against that repo's
+// required policies (#772).
+type PullRequestStatusRequest struct {
+	Repository  RepositoryRef `json:"repository"`
+	PullID      string        `json:"pullId"`
+	Genre       string        `json:"genre,omitempty"`
+	Name        string        `json:"name"`
+	State       CheckState    `json:"state"`
+	Description string        `json:"description,omitempty"`
+	TargetURL   string        `json:"targetUrl,omitempty"`
+}
+
+// PullRequestStatusResult reports the published status's provider-assigned id.
+type PullRequestStatusResult struct {
+	ID int `json:"id"`
 }
 
 // UpdateBranchRequest asks a provider to incorporate the current base branch
@@ -652,6 +685,16 @@ type EnqueuePullRequestResult struct {
 	Message  string `json:"message,omitempty"`
 }
 
+// DequeuePullRequestRequest removes a pull request that a caller previously
+// observed in GitHub's merge queue. PullRequestNodeID comes from
+// PollMergeQueueEntryResult so the dequeue is one mutation with no intervening
+// lookup race.
+type DequeuePullRequestRequest struct {
+	Repository        RepositoryRef `json:"repository"`
+	PullID            string        `json:"pullId"`
+	PullRequestNodeID string        `json:"pullRequestNodeId"`
+}
+
 // MergeQueueEntryState normalizes the possible outcomes of watching a pull
 // request already enqueued via EnqueuePullRequest resolve (issue #758).
 type MergeQueueEntryState string
@@ -693,6 +736,12 @@ type PollMergeQueueEntryRequest struct {
 // entry state.
 type PollMergeQueueEntryResult struct {
 	State MergeQueueEntryState `json:"state"`
+	// PullRequestNodeID is the provider-native identity required to remove
+	// this pull request from GitHub's merge queue.
+	PullRequestNodeID string `json:"pullRequestNodeId,omitempty"`
+	// Labels are read in the same live query as the queue entry so a watcher
+	// can honor an opt-out without a second, racy provider read.
+	Labels []string `json:"labels,omitempty"`
 	// MergeSHA, on a merged outcome, is the commit that actually landed on
 	// the base branch — never the pull request's head SHA, which under the
 	// squash method a merge queue requires is a different commit entirely.

@@ -39,6 +39,7 @@
         "error",
         "redaction",
         "repaired",
+        "runner.annotation",
         "runner.isolation.posture",
         "parallel.started",
         "branch.started",
@@ -54,11 +55,17 @@
         "claim.released",
         "claim.force_released",
         "claim_lock_slow",
+        "claims_lock_timeout",
         "config.reloaded",
         "config.reload.rejected",
         "daemon.started",
         "daemon.clean_shutdown",
-        "daemon.dirty_restart"
+        "daemon.dirty_restart",
+        "daemon.update.drain_started",
+        "daemon.update.restarted",
+        "daemon.update.healthy",
+        "daemon.update.rolled_back",
+        "daemon.update.escalated"
       ],
       "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
     },
@@ -92,7 +99,7 @@
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "actor": {
-      "description": "Operator identity for an auditable intervention such as stage.rerun.requested.",
+      "description": "Human/operator identity for an auditable intervention such as stage.rerun.requested or run.resumed.",
       "type": "string",
       "minLength": 1,
       "x-conformance": "normative"
@@ -126,12 +133,6 @@
     "status": {
       "description": "Terminal status for run.finished / stage.finished, or the prior terminal phase for run.resumed.",
       "type": "string",
-      "x-conformance": "normative"
-    },
-    "actor": {
-      "description": "Human principal that requested a run.resumed action.",
-      "type": "string",
-      "minLength": 1,
       "x-conformance": "normative"
     },
     "workflowVersion": {

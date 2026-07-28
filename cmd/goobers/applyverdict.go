@@ -77,6 +77,54 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 // NOT all-blocked (an empty needs-changes verdict with no findings at all is
 // not a cross-PR-ordering situation; it falls through to needs-remediation
 // like today).
+// findingIsRealDefect reports whether a finding is a genuine reason to withhold
+// landing authority, as opposed to an ordering note or a nit.
+//
+// Two things make a finding harmless for sequencing: it is a cross-pr-blocked
+// ordering finding, or it is severity `info`. Everything else — including an
+// unset or unrecognised severity — counts as a real defect, so this fails
+// closed: a malformed verdict can never launder itself into landing authority.
+//
+// Severity used to be ignored entirely here, which deadlocked whole clusters
+// (#1726). The trigger is mundane: two PRs that both run `make generate`
+// produce a byte-identical patch, so they cluster, so the winner picks up
+// `info` findings that say in their own text "there is no semantic conflict" —
+// and those findings then withheld the crown. Live on 2026-07-26 that stalled
+// PRs #1717/#1719/#1723/#1724 for over two hours on a verdict whose own summary
+// called the winner "merge-ready". It recurs for every committed generated
+// artifact whenever more than one PR is open.
+//
+// This mirrors the severity floor pr-remediation already applies via
+// resolveMinSeverity/verdictHasSubstantiveFindingForPR (#941/PRR-6), including
+// its treatment of an unset severity as significant.
+func findingIsRealDefect(finding apiv1.Finding) bool {
+	if finding.Class == apiv1.FindingCrossPRBlocked {
+		return false
+	}
+	return finding.Severity != apiv1.SeverityInfo
+}
+
+// electableUnderOrdering reports whether findings leave the selected PR safely
+// crownable: it must be sequencing-blocked (at least one ordering finding, which
+// is what makes it a cluster member at all) and carry no real defect.
+//
+// Deliberately separate from allCrossPRBlocked rather than a change to it:
+// allCrossPRBlocked also drives verdictLabel's blocked-on-sibling vs
+// needs-remediation choice for every needs-changes PR, clustered or not, and
+// widening that would change labelling far outside the election.
+func electableUnderOrdering(findings []apiv1.Finding) bool {
+	ordering := false
+	for _, finding := range findings {
+		if findingIsRealDefect(finding) {
+			return false
+		}
+		if finding.Class == apiv1.FindingCrossPRBlocked {
+			ordering = true
+		}
+	}
+	return ordering
+}
+
 func allCrossPRBlocked(findings []apiv1.Finding) bool {
 	if len(findings) == 0 {
 		return false
@@ -131,9 +179,13 @@ func parseOverlappingSiblings(csv string) []int {
 // verdict's findings so sequencing routing uses ground truth, not only the LLM
 // reviewer's classification. Conservative and additive:
 //
-//   - If a real defect is present (any non-cross-pr-blocked finding), the
-//     findings are returned UNCHANGED — a real bug takes priority over
-//     sequencing and must route to remediation, never be merged as a lander.
+//   - If a real defect is present (see findingIsRealDefect — a non-ordering
+//     finding above `info` severity), the findings are returned UNCHANGED — a
+//     real bug takes priority over sequencing and must route to remediation,
+//     never be merged as a lander. Severity matters here for the same reason it
+//     matters when crowning (#1726): an `info` nit about identical generated
+//     churn used to suppress the backstop, so no ordering finding was ever
+//     synthesised and the cluster could not elect anyone.
 //   - Otherwise, if overlappingSiblings is non-empty, a cross-pr-blocked
 //     finding carrying that full set is appended, so allCrossPRBlocked /
 //     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
@@ -147,7 +199,7 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 		return findings
 	}
 	for _, f := range findings {
-		if f.Class != apiv1.FindingCrossPRBlocked {
+		if findingIsRealDefect(f) {
 			return findings
 		}
 	}
@@ -269,9 +321,10 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"Read the holistic review gate's Verdict from this run's own journal,\n" +
 	"cross-check its optional SHA echo against the deterministic review\n" +
 	"pin, re-check that pin against the PR's current head/base, and — if\n" +
-	"still valid — post the verdict as a native GitHub review and retain\n" +
-	"the PR-comment handoff. Non-pass verdicts also apply a remediation\n" +
-	"label. A\n" +
+	"still valid — publish the verdict. Managed PRs receive a native GitHub\n" +
+	"review plus the PR-comment handoff; non-pass verdicts also receive a\n" +
+	"remediation label. advisoryMode=true publishes only the non-blocking\n" +
+	"comment, without closing, labeling, electing, or merging the PR. A\n" +
 	"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
@@ -284,10 +337,10 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // new plumbing), cross-checks its SHA echo against gather-sibling-context's
 // authoritative pin, and re-checks that pin against the PR's CURRENT head/base
 // before acting (design doc §6 D6: a verdict computed against a state that no
-// longer exists is void, not actionable). It then publishes the verdict as a
-// SHA-pinned native GitHub review. Every verdict also retains the existing prose
-// comment handoff consumed by merge, cache, and remediation paths; non-pass
-// verdicts additionally retain their decision labels.
+// longer exists is void, not actionable). Managed PRs receive a SHA-pinned
+// native GitHub review plus the existing prose comment handoff consumed by
+// merge, cache, and remediation paths; non-pass verdicts additionally retain
+// their decision labels. Advisory PRs receive only the non-blocking comment.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -336,6 +389,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
 		return 1
 	}
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
 
 	runID, workflowName, err := providerRunContext()
 	if err != nil {
@@ -374,10 +432,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	provider := newCachedGitHubProvider(root, token)
 
-	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	if advisoryMode {
+		return applyAdvisoryVerdict(
+			ctx, provider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
+			*verdict, runID, resultFile, stdout, stderr,
+		)
+	}
+
+	base := providerInput("base", "main")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
@@ -406,12 +471,35 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
+	if hasAnyLabel(current.Labels, []string{noMergeReviewLabel}) {
+		pln(stdout, "PR opted out of merge-review since selection — verdict moot, nothing to apply")
+		return writeApplyVerdictResultWithReason(
+			resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "",
+			"PR carries "+noMergeReviewLabel, stderr,
+		)
+	}
 
 	// D6: gather-sibling-context's deterministic pin is authoritative. The
 	// reviewer's optional echo can disprove that it reviewed the gathered diff,
 	// but omitting the echo cannot bypass the current-state check.
 	if reason := verdictPinVoidReason(*verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
 		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		// Voiding used to publish nothing at all, which left whatever verdict was
+		// already on the PR standing as if it were current. pr-remediation reads
+		// that comment, so it kept fixing findings from a superseded head, pushing
+		// — which moved the head again — and voiding the next review in turn. PR
+		// #1719 burned 3 hours over 4 cycles that way, each including a full local
+		// `make ci`, against a review that could no longer see any of its own
+		// fixes (#1733).
+		//
+		// Marking the standing verdict stale breaks that loop at its information
+		// source: remediation can tell "no current review" from "these findings
+		// still stand". Best-effort — a comment write must never turn a moot
+		// verdict into a stage failure, since the re-review next cycle is what
+		// actually resolves this.
+		if cerr := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); cerr != nil {
+			pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
 
@@ -646,6 +734,61 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
 }
 
+func applyAdvisoryVerdict(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	selectedNumberStr, selectedHeadSHA, selectedBaseSHA string,
+	verdict apiv1.Verdict,
+	runID, resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
+	}
+	if hasAnyLabel(current.Labels, []string{noMergeReviewLabel}) {
+		pln(stdout, "PR opted out of merge-review since selection — verdict moot, nothing to apply")
+		return writeApplyVerdictResultWithReason(
+			resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "",
+			"PR carries "+noMergeReviewLabel, stderr,
+		)
+	}
+	if reason := verdictPinVoidReason(verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
+		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
+	}
+	if _, err := nativeReviewDecision(verdict.Decision); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	verdict.HeadSHA = selectedHeadSHA
+	verdict.BaseSHA = selectedBaseSHA
+	if verdict.Digest == "" {
+		verdict.Digest = providerInput("reviewDigest", "")
+	}
+	if verdict.SourceRunID == "" {
+		verdict.SourceRunID = runID
+	}
+	comment := renderVerdictComment(verdict)
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
+	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post advisory verdict comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "published advisory %s verdict for PR #%d at %s; no remediation or merge action taken\n",
+		verdict.Decision, selectedNumber, current.HeadSHA)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), verdictAuthor, stderr)
+}
+
 // reconcileMergeReviewStatusComment keeps the oldest marked comment authored
 // by the provider's authenticated identity as the canonical status, then
 // removes its marked duplicates. Relisting after every create/update makes
@@ -657,6 +800,38 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 		return fmt.Errorf("resolve merge-review status author: %w", err)
 	}
 	return reconcileMergeReviewStatusCommentAs(ctx, provider, repo, prNumber, author, body)
+}
+
+// markMergeReviewVerdictStale rewrites the standing merge-review status comment
+// to say its verdict no longer describes the PR's current head, naming why.
+//
+// It edits the existing comment rather than posting a new one, so a PR whose
+// head moves repeatedly does not accumulate a comment per voided cycle. If no
+// status comment exists yet there is nothing to invalidate and this is a no-op:
+// posting "the verdict is stale" on a PR that never had a verdict would be
+// noise, not information.
+func markMergeReviewVerdictStale(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, reason string) error {
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve authenticated login: %w", err)
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(prNumber))
+	if err != nil {
+		return fmt.Errorf("list merge-review status comments: %w", err)
+	}
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return nil
+	}
+	body := fmt.Sprintf(
+		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer describes this pull request: %s.\n\n"+
+			"No current review stands. merge-review will re-review this PR on its next cycle; "+
+			"findings from the superseded review may already be resolved and should not be acted on.",
+		mergeReviewStatusMarker, reason)
+	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
+		return fmt.Errorf("update merge-review status comment: %w", err)
+	}
+	return nil
 }
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
@@ -1096,12 +1271,14 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 }
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
+	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
 	out := map[string]string{
 		"selectedNumber":            strconv.Itoa(selectedNumber),
 		"selectedHeadSha":           headSHA,
 		"selectedBaseSha":           baseSHA,
 		"decision":                  decision,
 		"verdictAuthor":             verdictAuthor,
+		"advisoryMode":              strconv.FormatBool(advisoryMode),
 		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
 	}
 	if reason != "" {

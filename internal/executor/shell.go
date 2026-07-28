@@ -119,6 +119,12 @@ type ArtifactRecorder interface {
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 }
 
+// BoundedArtifactRecorder applies a byte limit to the final persisted artifact.
+type BoundedArtifactRecorder interface {
+	ArtifactRecorder
+	RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error)
+}
+
 // ShellExecutor runs deterministic shell stages (invoke.Deterministic) in the
 // worktree the caller hands it via InvocationEnvelope.Workspace.
 type ShellExecutor struct {
@@ -331,6 +337,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
 			RepoNameEnvVar+"="+env.RepoRef.Name,
 		)
+		if env.RepoRef.Project != "" {
+			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
+		}
 	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)

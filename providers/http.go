@@ -347,6 +347,16 @@ func statusLabel(status WorkItemStatus) string {
 	return statusLabelPrefix + string(status)
 }
 
+// StatusLabelFor returns the provider-visible status label that mirrors a work
+// item's Goobers processing status (e.g. goobers/status:claimed). Exported so a
+// caller translating the generic claim marker (LabelClaimed, "goobers:claimed",
+// the GitHub plain-label convention) to Azure DevOps's status-label convention
+// removes the right tag — an ADO claim is written as a status label, not a plain
+// one, so removing LabelClaimed verbatim silently no-ops on an ADO board.
+func StatusLabelFor(status WorkItemStatus) string {
+	return statusLabel(status)
+}
+
 func replaceStatusLabel(labels []string, status WorkItemStatus) []string {
 	next := make([]string, 0, len(labels)+1)
 	for _, label := range labels {

@@ -404,7 +404,16 @@ func (r *Run) Checkpoint() error {
 // appends an artifact.recorded event. Identical content deduplicates to one
 // blob. The returned Ref's Digest commits to the scrubbed bytes.
 func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
-	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data)
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data, 0)
+}
+
+// RecordArtifactBounded is RecordArtifact with a byte limit applied after
+// journal redaction, at the same boundary that writes and digests the artifact.
+func (r *Run) RecordArtifactBounded(name string, data []byte, maxBytes int) (Ref, error) {
+	if maxBytes <= 0 {
+		return Ref{}, fmt.Errorf("journal: artifact %q byte limit must be positive", name)
+	}
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data, maxBytes)
 }
 
 // ContextManifestArtifactName is the stable journal name for the context
@@ -419,16 +428,24 @@ func ContextManifestArtifactName(stage string, attempt int) string {
 func (r *Run) RecordStageArtifact(stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
 	return r.recordArtifact(Event{
 		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
-	}, data)
+	}, data, 0)
 }
 
-func (r *Run) recordArtifact(ev Event, data []byte) (Ref, error) {
+func (r *Run) recordArtifact(ev Event, data []byte, maxBytes int) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return Ref{}, ErrClosed
 	}
 	scrubbed := r.scrubber.Scrub(data)
+	if maxBytes > 0 && len(scrubbed) > maxBytes {
+		return Ref{}, fmt.Errorf(
+			"journal: artifact %q is %d bytes after redaction, exceeds %d-byte limit",
+			ev.Name,
+			len(scrubbed),
+			maxBytes,
+		)
+	}
 	digest := Digest(scrubbed)
 	relPath, err := artifactPath(digest)
 	if err != nil {

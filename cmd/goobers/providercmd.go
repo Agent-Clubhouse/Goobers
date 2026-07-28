@@ -145,11 +145,12 @@ func providerRepo(root string) (providers.RepositoryRef, error) {
 	routed := providers.RepositoryRef{
 		Provider: providers.ProviderKind(os.Getenv(executor.RepoProviderEnvVar)),
 		Owner:    os.Getenv(executor.RepoOwnerEnvVar),
+		Project:  os.Getenv(executor.RepoProjectEnvVar),
 		Name:     os.Getenv(executor.RepoNameEnvVar),
 	}
-	if routed.Provider != "" || routed.Owner != "" || routed.Name != "" {
-		if routed.Provider != providers.ProviderGitHub || routed.Owner == "" || routed.Name == "" {
-			return providers.RepositoryRef{}, fmt.Errorf("invalid routed repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
+	if routed.Provider != "" || routed.Owner != "" || routed.Project != "" || routed.Name != "" {
+		if err := validateRoutedRepo(routed); err != nil {
+			return providers.RepositoryRef{}, err
 		}
 		return routed, nil
 	}
@@ -162,10 +163,34 @@ func providerRepo(root string) (providers.RepositoryRef, error) {
 		return providers.RepositoryRef{}, fmt.Errorf("no repo configured in %s", l.ConfigFile())
 	}
 	repo := cfg.Repos[0]
-	if repo.Provider != "github" {
+	switch providers.ProviderKind(repo.Provider) {
+	case providers.ProviderGitHub:
+		return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
+	case providers.ProviderADO:
+		return providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}, nil
+	default:
 		return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not yet support repository provider %q", repo.Provider)
 	}
-	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
+}
+
+// validateRoutedRepo enforces the per-provider identity a routed repository
+// must carry: GitHub needs owner+name; Azure DevOps needs organization (owner),
+// project, and repo name.
+func validateRoutedRepo(routed providers.RepositoryRef) error {
+	switch routed.Provider {
+	case providers.ProviderGitHub:
+		if routed.Owner == "" || routed.Name == "" {
+			return fmt.Errorf("invalid routed github repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
+		}
+		return nil
+	case providers.ProviderADO:
+		if routed.Owner == "" || routed.Project == "" || routed.Name == "" {
+			return fmt.Errorf("invalid routed ado repository in %s/%s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoProjectEnvVar, executor.RepoNameEnvVar)
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid routed repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
+	}
 }
 
 // providerToken reads the capability-scoped credential the runner already

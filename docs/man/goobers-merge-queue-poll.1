@@ -1,7 +1,7 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS MERGE QUEUE POLL" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers merge-queue-poll \- watch an enqueued PR until merged or evicted (a workflow stage)
+goobers merge-queue-poll \- watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 .SH SYNOPSIS
 \fBgoobers merge-queue-poll\fR [\fIoptions\fR]
 .SH DESCRIPTION
@@ -17,8 +17,10 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
-or still-pending-timeout — see the result file's queueOutcome field),
+not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
+the pull request and reports skipped without remediation. Exit codes:
+0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
+see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 .fi

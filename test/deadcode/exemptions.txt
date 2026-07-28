@@ -6,7 +6,6 @@ github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contrac
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
-github.com/goobers/goobers/internal/credentials.NewResolver # Ergonomic env/file resolver constructor retained as public API, exercised across package tests.
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
@@ -26,6 +25,9 @@ github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
+github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
+github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
 
 # Build-time generators exercised by drift tests and make docs.
 github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
@@ -50,6 +52,7 @@ github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-me
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
+github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
 github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
 github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
 github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.

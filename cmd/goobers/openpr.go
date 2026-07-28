@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,15 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
+
+// openPRProvider is the narrow surface open-pr needs: the mid-flight issue
+// staleness re-check (GetWorkItem) and the PR open/update itself. Both the
+// GitHub and ADO providers satisfy it, so open-pr is provider-neutral once the
+// backend is resolved from instance config.
+type openPRProvider interface {
+	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
+	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
+}
 
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
@@ -43,12 +53,22 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	var provider openPRProvider
+	if repo.Provider == providers.ProviderADO {
+		adoProvider, err := newADOProviderForStage(root, repo)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		provider = adoProvider
+	} else {
+		token, err := providerToken(capability.GitHubPRWrite)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {
@@ -252,8 +272,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// tuning gets the lighter one. Best-effort — labeling failures never fail
 	// an already-opened PR, same posture as flagScopeDrift.
 	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
-		if lerr := labelGateEdit(ctx, provider, repo, result.Number, kind, subject); lerr != nil {
-			pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+		if gh, ok := provider.(*providers.GitHubProvider); ok {
+			if lerr := labelGateEdit(ctx, gh, repo, result.Number, kind, subject); lerr != nil {
+				pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)
+			}
 		}
 	}
 

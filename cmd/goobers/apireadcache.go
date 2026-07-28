@@ -148,6 +148,25 @@ func newCachedGitHubProvider(root, token string, opts ...func(*providers.GitHubP
 	return newGitHubProvider(token, append(opts, apiReadCacheOption(root))...)
 }
 
+func invalidateCurrentProviderSnapshot(root string) error {
+	snapshotID := os.Getenv(providersnapshot.EnvVar)
+	if snapshotID == "" {
+		return nil
+	}
+	schedulerDir := layoutFor(root).SchedulerDir()
+	cache := newAPIReadCache(schedulerDir, snapshotID, nil)
+	return withFileLock(filepath.Join(schedulerDir, apiReadCacheLockName), func() error {
+		entries := cache.readDiskUnlocked()
+		prefix := "snapshot\x00" + snapshotID + "\x00"
+		for key := range entries {
+			if strings.HasPrefix(key, prefix) {
+				delete(entries, key)
+			}
+		}
+		return cache.writeDisk(evictAPIReadCache(entries))
+	})
+}
+
 // Do implements providers.HTTPClient. Only idempotent GETs are cached; every
 // other method and any error path is a straight pass-through.
 func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {

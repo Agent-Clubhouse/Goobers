@@ -461,6 +461,10 @@ func init() {
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
 			withExamples("goobers open-pr"),
+		command("report-pr-status", apicontract.ActionWorkflowExecution, runReportPRStatus).
+			withSynopsis(synopsisByID["report-pr-status"]).
+			withHelp("publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)", reportPRStatusHelp).
+			withExamples("goobers report-pr-status"),
 		command("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).
@@ -483,7 +487,7 @@ func init() {
 			withExamples("goobers record-merge-refusal"),
 		command("merge-queue-poll", apicontract.ActionWorkflowExecution, runMergeQueuePoll).
 			withSynopsis(synopsisByID["merge-queue-poll"]).
-			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
+			withHelp("watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
 			withSynopsis(synopsisByID["reconcile-post-merge"]).
@@ -507,7 +511,7 @@ func init() {
 			withExamples("goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
 			withSynopsis(synopsisByID["pr-select"]).
-			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
+			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
 		command("gather-sibling-context", apicontract.ActionWorkflowExecution, runGatherSiblingContext).
 			withSynopsis(synopsisByID["gather-sibling-context"]).
@@ -519,7 +523,7 @@ func init() {
 			withExamples("goobers gather-implement-context"),
 		command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict).
 			withSynopsis(synopsisByID["apply-verdict"]).
-			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
+			withHelp("publish a managed or advisory merge-review verdict (a workflow stage)", applyVerdictHelp).
 			withExamples("goobers apply-verdict"),
 		command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander).
 			withSynopsis(synopsisByID["elect-lander"]).
@@ -551,8 +555,8 @@ func init() {
 			withExamples("goobers rebase-pr"),
 		command("remediation-checkpoint", apicontract.ActionWorkflowExecution, runRemediationCheckpoint).
 			withSynopsis(synopsisByID["remediation-checkpoint"]).
-			withHelp("durable per-PR repass budget + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
-			withExamples("goobers remediation-checkpoint --budget 3"),
+			withHelp("durable per-cause attempt budgets + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
+			withExamples("goobers remediation-checkpoint"),
 		command("push-remediated", apicontract.ActionWorkflowExecution, runPushRemediated).
 			withSynopsis(synopsisByID["push-remediated"]).
 			withHelp("force-push the remediated branch and clear needs-remediation (a workflow stage)", pushRemediatedHelp).

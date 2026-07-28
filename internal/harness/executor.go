@@ -393,7 +393,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	invoke.ReportAgentUsage(ctx, out.Metrics)
 	if out.TranscriptSchema == "" {
-		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
+		prompt := out.RenderedPrompt
+		if len(prompt) == 0 {
+			prompt = []byte(renderPrompt(req))
+		}
+		prompt = e.scrubber.Scrub(prompt)
 		output := e.scrubber.Scrub(out.Transcript)
 		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
 		if err != nil {

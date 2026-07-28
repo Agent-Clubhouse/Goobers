@@ -17,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/externaltelemetry/adx"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/githubapp"
@@ -36,6 +38,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
@@ -549,22 +552,36 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 type ciPollKindExecutor struct {
 	injector *credentials.Injector
 	recorder executor.ArtifactRecorder
+	// adoRepo is set when this gaggle's repo is Azure DevOps. When set, ci-poll
+	// builds its poller from instance config (adoauth.Provider shells out to
+	// `az` for the token) rather than materializing a GitHub capability token —
+	// mirroring the CLI PR stages' provider resolution.
+	adoRepo   *instance.RepoRef
+	registrar providers.SecretRegistrar
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	set, err := e.injector.Materialize(ctx, env.Capabilities)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
-	}
-	token, err := set.Token(ctx, string(capability.GitHubPRWrite))
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
-	}
 	var poller executor.PRPoller
-	if newPRPoller != nil {
-		poller = newPRPoller(token)
+	if e.adoRepo != nil {
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
+		}
+		poller = provider
 	} else {
-		poller = providers.NewGitHubProvider(token)
+		set, err := e.injector.Materialize(ctx, env.Capabilities)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
+		}
+		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
+		}
+		if newPRPoller != nil {
+			poller = newPRPoller(token)
+		} else {
+			poller = providers.NewGitHubProvider(token)
+		}
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {
@@ -579,7 +596,10 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 
 // buildCIPollExecutor builds the registered ci-poll kind for a repo-backed
 // instance. Credential resolution stays lazy until that kind is dispatched.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder) (executor.KindExecutor, error) {
+// When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
+// resolves its poller from instance config (adoauth.Provider shells out to
+// `az` for the token) instead of a GitHub capability token.
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -589,7 +609,53 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder}, nil
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
+}
+
+// buildExternalTelemetryExecutor validates every registered plugin
+// configuration before a run and constructs the registered query kind.
+func buildExternalTelemetryExecutor(
+	config externaltelemetry.Configuration,
+	recorder executor.ArtifactRecorder,
+	registrar externaltelemetry.SecretRegistrar,
+) (executor.KindExecutor, error) {
+	if recorder == nil {
+		return nil, errors.New("build external telemetry executor: artifact recorder is nil")
+	}
+	registry, err := buildExternalTelemetryRegistry(config, registrar)
+	if err != nil {
+		return nil, err
+	}
+	query, err := executor.NewTelemetryQueryExecutor(&externaltelemetry.Host{
+		Registry: registry,
+	}, recorder)
+	if err != nil {
+		return nil, err
+	}
+	return query, nil
+}
+
+func buildExternalTelemetryRegistry(
+	config externaltelemetry.Configuration,
+	registrar externaltelemetry.SecretRegistrar,
+) (*externaltelemetry.Registry, error) {
+	registry := externaltelemetry.NewRegistry()
+	factories := []externaltelemetry.Factory{
+		externaltelemetry.FakeFactory{},
+		adx.Factory{},
+	}
+	factories = append(factories, connectorapi.RegisteredFactories()...)
+	for _, factory := range factories {
+		if err := registry.Register(factory); err != nil {
+			return nil, err
+		}
+	}
+	for _, connector := range config.Connectors {
+		if err := registry.Configure(connector, nil, registrar); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -602,22 +668,58 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // token per call — honoring credentials.Resolver's re-read-on-resolve rotation
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
+//
+// On Azure DevOps there is no static repo token to resolve (azure-cli auth
+// shells out to `az`), so the ADO branch builds a provider straight from
+// instance config (adoauth) and routes the work-item mutation to the backlog
+// project the PBI lives in — mirroring the provider-chain stages. Without this
+// every ADO run's failure/park/escalation handler no-ops (token ref not found),
+// leaking the goobers/status:claimed marker and never applying needs-human.
 type escalationCommenter struct {
 	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
+	layout   instance.Layout
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	// PR remediation uses pr/<number> as its internal claim key; provider work
+	// item endpoints use the shared bare issue/PR number.
+	req.ID = blockedLookupID(req.ID)
+	if req.Repository.Provider == providers.ProviderADO {
+		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+		}
+		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
+		req.RemoveLabels = adoParkRemovalLabels(req.RemoveLabels)
+		return provider.UpdateWorkItem(ctx, req)
+	}
 	ref := req.Repository.Owner + "/" + req.Repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {
 		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
-	// PR remediation uses pr/<number> as its internal claim key; provider work
-	// item endpoints use the shared bare issue/PR number.
-	req.ID = blockedLookupID(req.ID)
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
+}
+
+// adoParkRemovalLabels rewrites a park/close removal set for an Azure DevOps
+// board. GitHub mirrors a claim with the plain LabelClaimed ("goobers:claimed")
+// tag, but ADO's ClaimWorkItem writes the status-label form
+// ("goobers/status:claimed") — so removing LabelClaimed verbatim never matches
+// and the claim marker leaks past a park. Every other label (e.g. LabelReady,
+// which ADO boards don't carry) passes through untouched: an absent tag removal
+// is a harmless no-op.
+func adoParkRemovalLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label == providers.LabelClaimed {
+			out = append(out, providers.StatusLabelFor(providers.WorkItemStatusClaimed))
+			continue
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
@@ -632,7 +734,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 // (#63); #20's escalation surfacing is a provider comment on the driving issue,
 // not a label change (the goobers:needs-human marker is the curator's output,
 // a distinct flow).
-func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) *gate.EscalationNotifier {
+func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) *gate.EscalationNotifier {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -640,6 +742,7 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 		Poster: &escalationCommenter{
 			resolver: resolver,
 			reg:      reg,
+			layout:   l,
 		},
 	}
 }
@@ -672,6 +775,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	poster := &escalationCommenter{
 		resolver: resolver,
 		reg:      reg,
+		layout:   l,
 	}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
@@ -699,6 +803,15 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		if blockedRepositoryEmpty(repoRef) {
 			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
 		}
+		// Scope blocked records to the backlog project, not the code repo.
+		// Work items live in the gaggle's backlog project (e.g. "Example Backlog"), which
+		// is a different ADO project than the code repo ("Example Service").
+		// The selection guard (filterBlockedEligibility) evaluates records
+		// against the backlog repo, so records must be keyed/stored under the
+		// backlog repo or a parked parent is never skipped and gets re-claimed.
+		// Idempotent for GitHub (backlog == code repo) and re-applied safely by
+		// escalationCommenter before the work-item call.
+		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,
@@ -783,6 +896,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	poster := &escalationCommenter{
 		resolver: resolver,
 		reg:      reg,
+		layout:   l,
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
@@ -1545,6 +1659,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
+		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
+	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
@@ -1637,11 +1754,22 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err := kinds.Register(executor.KindShell, shell); err != nil {
 				return nil, err
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec)
+			var adoRepo *instance.RepoRef
+			if r, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
+				adoRepo = &r
+			}
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, reg)
 			if err != nil {
 				return nil, err
 			}
 			if err := kinds.Register(executor.KindCIPoll, ciPoll); err != nil {
+				return nil, err
+			}
+			telemetryQuery, err := buildExternalTelemetryExecutor(cfg.ExternalTelemetry, rec, reg)
+			if err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindExternalTelemetry, telemetryQuery); err != nil {
 				return nil, err
 			}
 			return executor.NewTaskExecutor(kinds)
@@ -1751,7 +1879,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		AgentProvenance:        agentProvenance,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
-		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
+		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),
 		// Resolve the driving item(s) from the claim ledger when a run has no
 		// Item snapshot (#796): scheduled implementation runs self-select their
 		// item mid-run, so notifyTerminalGate would otherwise never comment on an

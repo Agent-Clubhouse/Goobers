@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -34,6 +35,39 @@ func intersectSorted(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func verdictHasIndependentSubstantiveFindingForPR(
+	verdict *apiv1.Verdict,
+	prNumber int,
+	overlappingSiblings []int,
+	minSeverity apiv1.Severity,
+) bool {
+	if verdict == nil {
+		return false
+	}
+	target := strconv.Itoa(prNumber)
+	overlapping := make(map[string]bool, len(overlappingSiblings))
+	for _, number := range overlappingSiblings {
+		overlapping[strconv.Itoa(number)] = true
+	}
+	for _, finding := range verdict.Findings {
+		if !substantiveFindingAppliesToPR(finding, target, minSeverity) {
+			continue
+		}
+		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+		overlapAttributable := len(locationRefs) > 0
+		for _, match := range locationRefs {
+			if len(match) < 2 || !overlapping[match[1]] {
+				overlapAttributable = false
+				break
+			}
+		}
+		if !overlapAttributable {
+			return true
+		}
+	}
+	return false
 }
 
 // siblingPR is one OTHER open PR's evidence for the holistic review — what
@@ -74,10 +108,12 @@ type siblingPR struct {
 // head SHA is unchanged since the last gather reuses its cached files.
 // Check state is always refreshed because CI can be rerun on the same SHA.
 const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n" +
-	"Load the other open goober-authored PRs' touched files + state as\n" +
+	"Load the other open PRs' touched files + state as\n" +
 	"evidence for the holistic review (a workflow stage, follows\n" +
-	"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n" +
-	"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n" +
+	"pr-select). authorScope=any permits an outside-headPrefixes selection and\n" +
+	"requires pr-select's advisoryMode output. Managed selections retain their\n" +
+	"namespace-wide goober sibling set; advisory selections see every open PR.\n" +
+	"Requires selectedNumber from Task.InputsFrom. Sibling files are memoized\n" +
 	"per head SHA under the instance scheduler dir, while check state is\n" +
 	"always refreshed; --no-cache bypasses the file memo entirely (neither\n" +
 	"read nor written) to force a fully fresh gather. Separately, this stage\n" +
@@ -131,7 +167,22 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
+	headPrefixes := mergeReviewHeadPrefixes()
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
+		return 1
+	}
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
+	managedHeadPrefix := providerBranchNamespace()
+	listHeadPrefix := managedHeadPrefix
+	if authorScope == authorScopeAny {
+		listHeadPrefix = ""
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -140,7 +191,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	// resolved below after file-list memoization so same-head CI reruns are
 	// reflected in the verdict-cache key.
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: listHeadPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "sibling-context.json")
@@ -153,7 +204,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	}
 	next := make(map[string]siblingCacheEntry, len(prs))
 
-	var selectedHeadSHA, selectedBaseSHA string
+	var selectedHead, selectedHeadSHA, selectedBaseSHA string
 	selectedFound := false
 	var selectedFiles []string
 	var selectedLines int
@@ -167,7 +218,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// fresh query — this is what the review gate's Verdict should
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
-			selectedHeadSHA, selectedBaseSHA = pr.HeadSHA, pr.BaseSHA
+			selectedHead, selectedHeadSHA, selectedBaseSHA = pr.Head, pr.HeadSHA, pr.BaseSHA
 			// Its current labels, for the #1111 scope-drift flag's idempotency.
 			selectedLabels = pr.Labels
 			// Capture its own changed files too (#989), so overlap against
@@ -200,6 +251,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			} else {
 				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: prior.CheckState, Files: selectedFiles, Lines: selectedLines}
 			}
+			continue
+		}
+		if !advisoryMode && !strings.HasPrefix(pr.Head, managedHeadPrefix) {
 			continue
 		}
 		key := strconv.Itoa(pr.Number)
@@ -245,6 +299,15 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// and here (merged/closed/retargeted mid-cycle) — nothing to review.
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
+	if hasAnyLabel(selectedLabels, []string{noMergeReviewLabel}) {
+		return writeNoWorkResult(stdout, stderr, "selected PR opted out of merge-review")
+	}
+	expectedAdvisoryMode := authorScope == authorScopeAny && !hasAnyHeadPrefix(selectedHead, headPrefixes)
+	if advisoryMode != expectedAdvisoryMode {
+		pf(stderr, "error: advisoryMode %t does not match selected PR head %q under authorScope %q and headPrefixes %q\n",
+			advisoryMode, selectedHead, authorScope, strings.Join(headPrefixes, ","))
+		return 1
+	}
 
 	// Scope-drift flag (#1111): this stage already fetched the selected PR's
 	// changed files and holds github:pr:write, so it is the natural (zero extra
@@ -257,12 +320,14 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			scopeDriftThreshold = n
 		}
 	}
-	if flipped, ferr := flagScopeDrift(ctx, provider, repo, selectedNumber, selectedLabels, changedFiles, scopeDriftThreshold); ferr != nil {
-		pf(stderr, "warning: scope-drift flag: %v\n", ferr)
-	} else if flipped {
-		pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
-			selectedNumber, changedFiles, scopeDriftThreshold,
-			map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+	if !advisoryMode {
+		if flipped, ferr := flagScopeDrift(ctx, provider, repo, selectedNumber, selectedLabels, changedFiles, scopeDriftThreshold); ferr != nil {
+			pf(stderr, "warning: scope-drift flag: %v\n", ferr)
+		} else if flipped {
+			pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
+				selectedNumber, changedFiles, scopeDriftThreshold,
+				map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+		}
 	}
 
 	// Scope gate (#1313): escalates the advisory flag above into an actual
@@ -282,15 +347,19 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			scopeGateLinesThreshold = n
 		}
 	}
-	scopeGateParked, flipped, gerr := reconcileScopeGate(
-		ctx, provider, repo, selectedNumber, selectedLabels,
-		changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold)
-	if gerr != nil {
-		pf(stderr, "warning: scope gate: %v\n", gerr)
-	} else if flipped {
-		pf(stdout, "scope-gate: PR #%d changes %d files / %d lines (thresholds %d/%d) — %s goobers:scope-gate\n",
-			selectedNumber, changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold,
-			map[bool]string{true: "applied", false: "cleared"}[scopeGateParked])
+	scopeGateParked := false
+	if !advisoryMode {
+		var flipped bool
+		scopeGateParked, flipped, err = reconcileScopeGate(
+			ctx, provider, repo, selectedNumber, selectedLabels,
+			changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold)
+		if err != nil {
+			pf(stderr, "warning: scope gate: %v\n", err)
+		} else if flipped {
+			pf(stdout, "scope-gate: PR #%d changes %d files / %d lines (thresholds %d/%d) — %s goobers:scope-gate\n",
+				selectedNumber, changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold,
+				map[bool]string{true: "applied", false: "cleared"}[scopeGateParked])
+		}
 	}
 
 	// Deterministic file-overlap (#989): the ground-truth set of files each
@@ -305,6 +374,23 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		if len(siblings[i].Overlap) > 0 {
 			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
 			overlappingCsv = append(overlappingCsv, strconv.Itoa(siblings[i].Number))
+		}
+	}
+
+	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
+	if hasSubstantiveFindings && len(overlappingSiblings) > 0 {
+		comments, cerr := provider.ListComments(ctx, repo, selectedNumberStr)
+		if cerr != nil {
+			return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), cerr, "sibling-context.json")
+		}
+		author, aerr := provider.AuthenticatedLogin(ctx)
+		if aerr != nil {
+			return failProviderStage(stderr, "resolve merge-review verdict author", aerr, "sibling-context.json")
+		}
+		if verdict := gatherPRVerdict(comments, author); verdict != nil {
+			hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
+				verdict, selectedNumber, overlappingSiblings, resolveMinSeverity(stderr),
+			)
 		}
 	}
 
@@ -348,11 +434,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// float64 in the merged Outputs, so it was silently dropped and
 		// apply-verdict aborted with "selectedNumber is required" on every run —
 		// no PR ever received a merge-review label since #381.
-		"selectedNumber":  selectedNumberStr,
-		"selectedHeadSha": selectedHeadSHA,
-		"selectedBaseSha": selectedBaseSHA,
-		"reviewDigest":    reviewDigest,
-		"siblings":        siblings,
+		"selectedNumber":         selectedNumberStr,
+		"head":                   selectedHead,
+		"base":                   base,
+		"hasSubstantiveFindings": strconv.FormatBool(hasSubstantiveFindings),
+		"hasFailingCI":           providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
+		"selectedHeadSha":        selectedHeadSHA,
+		"selectedBaseSha":        selectedBaseSHA,
+		"reviewDigest":           reviewDigest,
+		"siblings":               siblings,
 		// overlappingSiblings: PR numbers whose files intersect the selected
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".
