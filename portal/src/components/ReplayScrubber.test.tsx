@@ -52,6 +52,7 @@ function Harness({
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("replay scrubber", () => {
@@ -172,6 +173,86 @@ describe("replay scrubber", () => {
     chapter.focus();
     expect(chapter).toHaveFocus();
     expect(chapter).toHaveAttribute("aria-current", "step");
+  });
+
+  it("clusters a dense idle-compressed timeline and exposes every chapter", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(600);
+    const onSeek = vi.fn();
+    const events = Array.from({ length: 32 }, (_, index) =>
+      ev(index + 1, new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString()),
+    );
+
+    render(
+      <Harness
+        events={events}
+        initial={events[0].seq}
+        onSeek={onSeek}
+        terminal
+      />,
+    );
+
+    expect(screen.getAllByRole("note")).toHaveLength(31);
+    const clusters = screen.getAllByRole("button", {
+      name: /Show \d+ clustered chapters/,
+    });
+    expect(clusters.length).toBeGreaterThan(1);
+    const clusterPositions = clusters.map((cluster) =>
+      Number.parseFloat(cluster.style.left),
+    );
+    for (let index = 1; index < clusterPositions.length; index += 1) {
+      expect(
+        clusterPositions[index] - clusterPositions[index - 1],
+      ).toBeGreaterThanOrEqual(30);
+    }
+    expect(screen.queryByRole("list", { name: "Chapters in cluster" })).toBeNull();
+
+    const chapterLabels: string[] = [];
+    let event16Cluster: HTMLElement | undefined;
+    for (const cluster of clusters) {
+      fireEvent.click(cluster);
+      expect(cluster).toHaveAttribute("aria-expanded", "true");
+      const chapterList = screen.getByRole("list", {
+        name: "Chapters in cluster",
+      });
+      const chapters = within(chapterList).getAllByRole("button", {
+        name: /^Go to Workflow transition chapter/,
+      });
+      chapterLabels.push(
+        ...chapters.map((chapter) => chapter.getAttribute("aria-label") ?? ""),
+      );
+      if (
+        within(chapterList).queryByRole("button", {
+          name: /chapter at event 16:/,
+        })
+      ) {
+        event16Cluster = cluster;
+      }
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close chapter cluster" }),
+      );
+    }
+    expect(chapterLabels).toHaveLength(32);
+    expect(new Set(chapterLabels).size).toBe(32);
+    if (!event16Cluster) {
+      throw new Error("Expected event 16 in a chapter cluster.");
+    }
+
+    fireEvent.click(event16Cluster);
+    const chapterList = screen.getByRole("list", {
+      name: "Chapters in cluster",
+    });
+    fireEvent.click(
+      within(chapterList).getByRole("button", {
+        name: /chapter at event 16:/,
+      }),
+    );
+    expect(onSeek).toHaveBeenLastCalledWith(16);
+    expect(screen.queryByRole("list", { name: "Chapters in cluster" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next chapter" }));
+    expect(onSeek).toHaveBeenLastCalledWith(17);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+    expect(onSeek).toHaveBeenLastCalledWith(18);
   });
 
   it("provides a collapsed, accessible key for every chapter marker", () => {
