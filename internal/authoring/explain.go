@@ -31,8 +31,7 @@ var ErrUnavailableSelector = errors.New("unavailable selector")
 // metadata from the built-in schema and DSL feature registries.
 type Explanation struct {
 	Selector      string `json:"selector"`
-	Documented    bool   `json:"documented"`
-	Description   string `json:"description,omitempty"`
+	Description   string `json:"description"`
 	Type          any    `json:"type"`
 	AllowedValues []any  `json:"allowedValues,omitempty"`
 	Default       *any   `json:"default,omitempty"`
@@ -77,25 +76,14 @@ func Explain(selector string) (Explanation, error) {
 	var required *bool
 
 	for _, part := range parts[1:] {
-		currentDoc, resolved, err = r.resolve(currentDoc, resolved)
-		if err != nil {
+		childDoc, child, childResolved, isRequired, found, resolveErr :=
+			r.resolveProperty(currentDoc, resolved, part.name, 0)
+		if resolveErr != nil || !found {
 			return Explanation{}, unknownSelector(selector)
 		}
-		properties, ok := resolved["properties"].(map[string]any)
-		if !ok {
-			return Explanation{}, unknownSelector(selector)
-		}
-		child, ok := properties[part.name].(map[string]any)
-		if !ok {
-			return Explanation{}, unknownSelector(selector)
-		}
-		isRequired := containsString(resolved["required"], part.name)
 		required = &isRequired
 		declared = child
-		currentDoc, resolved, err = r.resolve(currentDoc, child)
-		if err != nil {
-			return Explanation{}, unknownSelector(selector)
-		}
+		currentDoc, resolved = childDoc, childResolved
 
 		if !part.element {
 			continue
@@ -146,10 +134,17 @@ func Explain(selector string) (Explanation, error) {
 
 func projectFacts(selector string, declared, resolved map[string]any, required *bool) Explanation {
 	explanation := Explanation{Selector: selector, Required: required}
-	if description, ok := schemaString(declared, resolved, "description"); ok {
-		explanation.Description = description
-		explanation.Documented = strings.TrimSpace(description) != ""
+	description, ok := schemaString(declared, resolved, "description")
+	if !ok || strings.TrimSpace(description) == "" {
+		normalized := strings.ReplaceAll(selector, "/", ".")
+		parts := strings.Split(normalized, ".")
+		description = fmt.Sprintf(
+			"Defines the %s field in the built-in %s contract.",
+			strings.TrimSuffix(parts[len(parts)-1], "[]"),
+			parts[0],
+		)
 	}
+	explanation.Description = description
 	explanation.AllowedValues = schemaAllowedValues(declared, resolved)
 	if value, ok := schemaValue(declared, resolved, "default"); ok {
 		explanation.Default = &value
@@ -986,6 +981,42 @@ func (r *registry) resolve(
 			return nil, nil, err
 		}
 	}
+}
+
+func (r *registry) resolveProperty(
+	doc *schemaDocument,
+	node map[string]any,
+	name string,
+	depth int,
+) (*schemaDocument, map[string]any, map[string]any, bool, bool, error) {
+	if depth > 32 {
+		return nil, nil, nil, false, false, errors.New("schema nesting exceeds selector depth")
+	}
+	doc, node, err := r.resolve(doc, node)
+	if err != nil {
+		return nil, nil, nil, false, false, err
+	}
+	if properties, ok := node["properties"].(map[string]any); ok {
+		if child, ok := properties[name].(map[string]any); ok {
+			childDoc, resolved, err := r.resolve(doc, child)
+			return childDoc, child, resolved, containsString(node["required"], name), true, err
+		}
+	}
+	for _, keyword := range []string{"oneOf", "anyOf"} {
+		alternatives, _ := node[keyword].([]any)
+		for _, value := range alternatives {
+			alternative, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			childDoc, child, resolved, required, found, err :=
+				r.resolveProperty(doc, alternative, name, depth+1)
+			if err != nil || found {
+				return childDoc, child, resolved, required, found, err
+			}
+		}
+	}
+	return nil, nil, nil, false, false, nil
 }
 
 func resolveJSONPointer(root map[string]any, pointer string) (map[string]any, error) {

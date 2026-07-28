@@ -193,10 +193,7 @@ func writeSchemaKinds(w io.Writer, stamp authoringStamp, kinds []string) {
 func writeExplanation(w io.Writer, output explainOutput) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	pf(tw, "Selector:\t%s\n", output.Selector)
-	pf(tw, "Documented:\t%t\n", output.Documented)
-	if output.Description != "" {
-		pf(tw, "Description:\t%s\n", output.Description)
-	}
+	pf(tw, "Description:\t%s\n", output.Description)
 	if output.Type != nil {
 		pf(tw, "Type:\t%s\n", renderJSONValue(output.Type))
 	}

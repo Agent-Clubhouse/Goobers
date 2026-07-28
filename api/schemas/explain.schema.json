@@ -5,15 +5,14 @@
   "description": "Release-pinned field guidance emitted by goobers explain.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "documented", "type", "stability", "sinceVersion", "example"],
+  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "description", "type", "stability", "sinceVersion", "example"],
   "properties": {
     "schemaVersion": { "const": "goobers.dev/explain/v1", "description": "Version of the explain-command output contract." },
     "version": { "type": "string", "minLength": 1, "description": "Goobers build version that embedded the selected schema." },
     "commit": { "type": "string", "minLength": 1, "description": "Source commit of the Goobers build that embedded the selected schema." },
     "dslVersion": { "type": "string", "minLength": 1, "description": "Current workflow DSL version of the producing build." },
     "selector": { "type": "string", "minLength": 1, "description": "Requested dotted or slash-separated schema selector." },
-    "documented": { "type": "boolean", "description": "Whether the selected schema node has a non-empty description." },
-    "description": { "type": "string", "minLength": 1, "description": "Exact description annotation from the selected schema node." },
+    "description": { "type": "string", "minLength": 1, "description": "Purpose of the selected field, sourced from its schema description or synthesized from its contract location." },
     "type": {
       "description": "JSON Schema type declared or implied by the selected node, including composition unions.",
       "oneOf": [

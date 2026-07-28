@@ -81,19 +81,10 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	root := initDemo(t)
 	t.Chdir(root)
 
-	gooberName := explainExample[string](t, "goober.metadata.name")
-	instructions := explainExample[string](t, "goober.spec.instructions")
-	goober := map[string]any{
-		"apiVersion": explainExample[string](t, "goober.apiVersion"),
-		"kind":       explainExample[string](t, "goober.kind"),
-		"metadata":   map[string]any{"name": gooberName},
-		"spec": map[string]any{
-			"gaggle":       explainExample[string](t, "goober.spec.gaggle"),
-			"role":         explainExample[string](t, "goober.spec.role"),
-			"instructions": instructions,
-			"harness":      explainExample[string](t, "goober.spec.harness"),
-		},
-	}
+	goober := authorRequiredDocument(t, "goober")
+	gooberSpec := goober["spec"].(map[string]any)
+	gooberName := goober["metadata"].(map[string]any)["name"].(string)
+	instructions := gooberSpec["instructions"].(string)
 	gooberDir := filepath.Join(root, "config", "gaggles", "example", "goobers", gooberName)
 	if err := os.MkdirAll(gooberDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -103,25 +94,11 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workflowName := explainExample[string](t, "workflow.metadata.name")
-	workflow := map[string]any{
-		"apiVersion": explainExample[string](t, "workflow.apiVersion"),
-		"kind":       explainExample[string](t, "workflow.kind"),
-		"dslVersion": explainExample[string](t, "workflow.dslVersion"),
-		"metadata":   map[string]any{"name": workflowName},
-		"spec": map[string]any{
-			"gaggle":   explainExample[string](t, "workflow.spec.gaggle"),
-			"triggers": []any{explainExample[map[string]any](t, "workflow.spec.triggers[]")},
-			"start":    explainExample[string](t, "workflow.spec.start"),
-			"tasks": []any{map[string]any{
-				"name": explainExample[string](t, "workflow.spec.tasks[].name"),
-				"type": explainExample[string](t, "workflow.spec.tasks[].type"),
-				"goal": explainExample[string](t, "workflow.spec.tasks[].goal"),
-				"run": map[string]any{
-					"command": explainExample[[]any](t, "workflow.spec.tasks[].run.command"),
-				},
-			}},
-		},
+	workflow := authorRequiredDocument(t, "workflow")
+	workflowSpec := workflow["spec"].(map[string]any)
+	workflowName := workflow["metadata"].(map[string]any)["name"].(string)
+	workflowSpec["tasks"] = []any{
+		runExplainJSON(t, "workflow.spec.tasks[]").Example,
 	}
 	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 	code, stdout, stderr := runArgs(t, "validate", root)
@@ -170,13 +147,25 @@ func runExplainJSON(t *testing.T, selector string) explainOutput {
 	return output
 }
 
-func explainExample[T any](t *testing.T, selector string) T {
+func authorRequiredDocument(t *testing.T, kind string) map[string]any {
 	t.Helper()
-	value, ok := runExplainJSON(t, selector).Example.(T)
-	if !ok {
-		t.Fatalf("explain %q example has unexpected type", selector)
+	code, stdout, stderr := runArgs(t, "schema", kind)
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema %q: code=%d stderr=%q", kind, code, stderr)
 	}
-	return value
+	var output struct {
+		Schema struct {
+			Required []string `json:"required"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	document := make(map[string]any, len(output.Schema.Required))
+	for _, name := range output.Schema.Required {
+		document[name] = runExplainJSON(t, kind+"."+name).Example
+	}
+	return document
 }
 
 func writeJSONDocument(t *testing.T, path string, document map[string]any) {
