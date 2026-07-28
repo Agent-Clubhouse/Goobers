@@ -5,7 +5,7 @@
   "description": "Release-pinned field guidance emitted by goobers explain.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "documented", "stability", "sinceVersion", "example"],
+  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "documented", "type", "stability", "sinceVersion", "example"],
   "properties": {
     "schemaVersion": { "const": "goobers.dev/explain/v1", "description": "Version of the explain-command output contract." },
     "version": { "type": "string", "minLength": 1, "description": "Goobers build version that embedded the selected schema." },
@@ -15,7 +15,7 @@
     "documented": { "type": "boolean", "description": "Whether the selected schema node has a non-empty description." },
     "description": { "type": "string", "minLength": 1, "description": "Exact description annotation from the selected schema node." },
     "type": {
-      "description": "Exact JSON Schema type annotation from the selected node.",
+      "description": "JSON Schema type declared or implied by the selected node, including composition unions.",
       "oneOf": [
         { "type": "string", "minLength": 1 },
         {

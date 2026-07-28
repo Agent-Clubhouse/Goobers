@@ -1,14 +1,17 @@
 package authoring
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
@@ -165,6 +168,135 @@ func TestExplainDerivesTypeAndExampleFromConst(t *testing.T) {
 		!reflect.DeepEqual(got.AllowedValues, []any{"goobers.dev/v1alpha1"}) ||
 		got.Example != "goobers.dev/v1alpha1" {
 		t.Fatalf("const guidance = %+v", got)
+	}
+}
+
+func TestExplainDerivesUnionTypes(t *testing.T) {
+	got, err := Explain("remediation-brief-v2.gatherPrContext.verdict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Type, []any{"object", "null"}) {
+		t.Fatalf("union type = %#v, want [object null]", got.Type)
+	}
+}
+
+func TestExplainExamplesSatisfySelectedSchemas(t *testing.T) {
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	for _, file := range schemas.Files() {
+		raw, err := schemas.FS.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiler.AddResource(schemas.BaseURI+file, bytes.NewReader(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, test := range []struct {
+		selector string
+		schema   string
+	}{
+		{
+			selector: "workflow.spec.gates[].branches",
+			schema:   "workflow.schema.json#/$defs/gate/properties/branches",
+		},
+		{
+			selector: "artifact-pointer.digest",
+			schema:   "artifact-pointer.schema.json#/properties/digest",
+		},
+		{
+			selector: "remediation-brief-v2.gatherPrContext.verdict",
+			schema:   "remediation-brief-v2.schema.json#/$defs/gatherPrContext/properties/verdict",
+		},
+		{
+			selector: "workflow.spec.tasks[]",
+			schema:   "workflow.schema.json#/$defs/task",
+		},
+		{
+			selector: "workflow.spec.gates[]",
+			schema:   "workflow.schema.json#/$defs/gate",
+		},
+		{
+			selector: "goober.spec.mcpServers[]",
+			schema:   "goober.schema.json#/$defs/mcpServer",
+		},
+		{
+			selector: "invocation.contextPointers[]",
+			schema:   "invocation.schema.json#/$defs/contextPointer",
+		},
+	} {
+		t.Run(test.selector, func(t *testing.T) {
+			got, err := Explain(test.selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectedSchema, err := compiler.Compile(schemas.BaseURI + test.schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := selectedSchema.Validate(got.Example); err != nil {
+				t.Fatalf("example %#v does not satisfy selected schema: %v", got.Example, err)
+			}
+		})
+	}
+}
+
+func TestExplainEverySelectableNodeReturnsValidGuidance(t *testing.T) {
+	r := registry{documents: make(map[string]*schemaDocument)}
+	for _, entry := range schemas.Entries() {
+		doc, err := r.load(entry.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSelectableGuidance(t, &r, doc, doc.root, entry.Kind, 0)
+	}
+}
+
+func assertSelectableGuidance(
+	t *testing.T,
+	r *registry,
+	doc *schemaDocument,
+	node map[string]any,
+	selector string,
+	depth int,
+) {
+	t.Helper()
+	if depth > 32 {
+		t.Fatalf("%s exceeds selector test depth", selector)
+	}
+	currentDoc, resolved, err := r.resolve(doc, node)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", selector, err)
+	}
+	if _, err := Explain(selector); err != nil {
+		t.Errorf("%s: %v", selector, err)
+		return
+	}
+
+	properties, _ := resolved["properties"].(map[string]any)
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		child, ok := properties[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		assertSelectableGuidance(
+			t,
+			r,
+			currentDoc,
+			child,
+			selector+"."+name,
+			depth+1,
+		)
+	}
+	if items, ok := resolved["items"].(map[string]any); ok {
+		assertSelectableGuidance(t, r, currentDoc, items, selector+"[]", depth+1)
 	}
 }
 
