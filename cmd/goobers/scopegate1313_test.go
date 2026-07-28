@@ -97,14 +97,15 @@ func TestGatherSiblingContextParksOversizedPR(t *testing.T) {
 	}
 }
 
-// TestGatherSiblingContextReevaluatesScopeGateAck is #1813's regression: an
-// operator ack is a review input even when the selected PR's head/base do not
-// move, so the next merge-review cycle must clear the gate and reject the
-// pre-ack cached verdict.
-func TestGatherSiblingContextReevaluatesScopeGateAck(t *testing.T) {
+// TestMergeReviewReevaluatesScopeGateAck is #1813's regression: an operator
+// ack must make a scope-gated PR selectable despite its stale remediation
+// label, then clear the gate and invalidate the pre-ack verdict without a
+// head/base change.
+func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	server.addIssue(30, "Oversized PR")
+	labels := []string{needsRemediationLabel, scopeGateLabel, scopeGateAckLabel}
+	server.addIssue(30, "Oversized PR", labels...)
 	files := make([]fakePRFile, 60)
 	for i := range files {
 		files[i] = fakePRFile{path: "file" + string(rune('a'+i%26)) + ".go", status: "modified", additions: 1}
@@ -113,13 +114,17 @@ func TestGatherSiblingContextReevaluatesScopeGateAck(t *testing.T) {
 		headSHA = "sha30"
 		baseSHA = "base"
 	)
-	server.addOpenPR(30, "goobers/implementation/run-30", "main", headSHA, baseSHA, false, nil, files)
+	server.addOpenPR(30, "goobers/implementation/run-30", "main", headSHA, baseSHA, false, labels, files)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1813")
-	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "30")
 
 	preAckDigest := computeReviewDigest(headSHA, baseSHA, nil)
 	server.addComment(30, renderVerdictComment(apiv1.Verdict{
-		Decision:    apiv1.VerdictPass,
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Message:  "scope gate is awaiting operator acknowledgement",
+			Class:    apiv1.FindingSubstantive,
+		}},
 		Digest:      preAckDigest,
 		SourceRunID: "run-before-ack",
 		HeadSHA:     headSHA,
@@ -146,49 +151,43 @@ func TestGatherSiblingContextReevaluatesScopeGateAck(t *testing.T) {
 		return result
 	}
 
-	parkDir := t.TempDir()
-	t.Chdir(parkDir)
-	if code, _, stderr := runArgs(t, "gather-sibling-context", root); code != 0 {
-		t.Fatalf("initial gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	cycleDir := t.TempDir()
+	t.Chdir(cycleDir)
+	if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	parked := readResult(parkDir)
-	if parked.ScopeGateParked != "true" || parked.CachedVerdictJSON == "" {
-		t.Fatalf("initial result = %+v, want parked with the pre-ack verdict cached", parked)
+	selectedData, err := os.ReadFile(filepath.Join(cycleDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatalf("read selected-pr.json: %v", err)
 	}
-	if !issueHasLabel(server, 30, scopeGateLabel) {
-		t.Fatalf("initial cycle did not apply %s", scopeGateLabel)
+	var selected map[string]string
+	if err := json.Unmarshal(selectedData, &selected); err != nil {
+		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
+	if selected["number"] != "30" || selected["headSha"] != headSHA || selected["baseSha"] != baseSHA {
+		t.Fatalf("selected PR = %#v, want acknowledged scope-gated PR #30 at unchanged head/base", selected)
+	}
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", selected["number"])
 
-	provider := server.newGitHubProvider("token")
-	if _, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
-		Repository: providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
-		ID:         "30",
-		AddLabels:  []string{scopeGateAckLabel},
-	}); err != nil {
-		t.Fatalf("apply %s: %v", scopeGateAckLabel, err)
-	}
-	// The fake keeps pull and issue fixtures separately; mirror GitHub's shared
-	// PR/issue label state into the pull-list response used by the next cycle.
-	server.setPRLabels(30, []string{scopeDriftLabel, scopeGateLabel, scopeGateAckLabel})
-
-	releaseDir := t.TempDir()
-	t.Chdir(releaseDir)
 	if code, _, stderr := runArgs(t, "gather-sibling-context", root); code != 0 {
 		t.Fatalf("post-ack gather-sibling-context: code = %d, stderr = %q", code, stderr)
 	}
-	released := readResult(releaseDir)
-	if released.SelectedHeadSHA != parked.SelectedHeadSHA || released.SelectedBaseSHA != parked.SelectedBaseSHA {
-		t.Fatalf("PR moved between cycles: before (%q, %q), after (%q, %q)",
-			parked.SelectedHeadSHA, parked.SelectedBaseSHA, released.SelectedHeadSHA, released.SelectedBaseSHA)
+	released := readResult(cycleDir)
+	if released.SelectedHeadSHA != headSHA || released.SelectedBaseSHA != baseSHA {
+		t.Fatalf("gathered PR moved: got (%q, %q), want (%q, %q)",
+			released.SelectedHeadSHA, released.SelectedBaseSHA, headSHA, baseSHA)
 	}
 	if released.ScopeGateParked != "false" {
 		t.Fatalf("scopeGateParked = %q, want false after operator ack", released.ScopeGateParked)
 	}
-	if released.ReviewDigest == parked.ReviewDigest || released.CachedVerdictJSON != "" {
+	if released.ReviewDigest == preAckDigest || released.CachedVerdictJSON != "" {
 		t.Fatalf("post-ack result = %+v, want a new digest and no pre-ack cached verdict", released)
 	}
 	if issueHasLabel(server, 30, scopeGateLabel) {
 		t.Fatalf("%s still applied after operator ack", scopeGateLabel)
+	}
+	if !issueHasLabel(server, 30, needsRemediationLabel) {
+		t.Fatalf("%s was cleared before a fresh verdict replaced it", needsRemediationLabel)
 	}
 }
 

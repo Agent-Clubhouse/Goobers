@@ -20,8 +20,8 @@ import (
 // defaultExcludeLabels are the labels that mean "already decided, don't
 // re-review" (design doc §3): a PR merge-review already verdicted this cycle
 // carries one of these until pr-remediation/auto-merge acts on it and clears
-// it. Re-selecting it would waste a cycle re-reviewing something already in
-// flight — harmless under G3, but pointless.
+// it. The acknowledged scope-gate exception below admits one refresh cycle
+// because the operator action changes the gate outcome without moving the PR.
 //
 // goobers:merge-escalated is deliberately NOT a static entry here (#716): a
 // permanent label-based exclusion can never self-heal once a sibling merge
@@ -178,7 +178,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if pr.CheckState != providers.CheckStatePassing {
 			continue
 		}
-		if hasAnyLabel(pr.Labels, excludeLabels) {
+		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			continue
 		}
 		if isTutorBranch(pr.Head, providerBranchNamespace()) {
@@ -374,6 +374,21 @@ func hasAnyLabel(labels, wants []string) bool {
 			if l == w {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func hasPRSelectExclusion(labels, excludeLabels []string) bool {
+	acknowledgedScopeGate := hasAnyLabel(labels, []string{scopeGateLabel}) &&
+		hasAnyLabel(labels, []string{scopeGateAckLabel})
+	for _, label := range excludeLabels {
+		label = strings.TrimSpace(label)
+		if acknowledgedScopeGate && label == needsRemediationLabel {
+			continue
+		}
+		if hasAnyLabel(labels, []string{label}) {
+			return true
 		}
 	}
 	return false
