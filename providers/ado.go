@@ -1610,7 +1610,8 @@ func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo Repository
 	checks := make([]CheckDetail, 0, len(out.Value))
 	seenDefinitions := make(map[string]bool, len(out.Value))
 	for _, build := range out.Value {
-		if sourceSHA := build.TriggerInfo["pr.sourceSha"]; sourceSHA != "" && headSHA != "" && !strings.EqualFold(sourceSHA, headSHA) {
+		sourceSHA := build.TriggerInfo["pr.sourceSha"]
+		if sourceSHA == "" || headSHA == "" || !strings.EqualFold(sourceSHA, headSHA) {
 			continue
 		}
 		key := strconv.Itoa(build.Definition.ID)

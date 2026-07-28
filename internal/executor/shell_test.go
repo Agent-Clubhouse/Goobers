@@ -234,11 +234,18 @@ func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) 
 	}
 }
 
-func TestShellExecutor_ADOOpenPRScopesWorkloadIdentityEnvironment(t *testing.T) {
+func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
 	t.Setenv("AZURE_TENANT_ID", "tenant-id")
 	t.Setenv("AZURE_CLIENT_ID", "client-id")
 	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/run/secrets/azure/tokens/identity-token")
 	t.Setenv("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com/")
+	t.Setenv("IDENTITY_ENDPOINT", "http://127.0.0.1:41741/msi/token")
+	t.Setenv("IDENTITY_HEADER", "opaque-managed-identity-header")
+	t.Setenv("IDENTITY_SERVER_THUMBPRINT", "server-thumbprint")
+	t.Setenv("IMDS_ENDPOINT", "http://127.0.0.1:40342/metadata/identity/oauth2/token")
+	t.Setenv("MSI_ENDPOINT", "http://127.0.0.1:41742/msi/token")
+	t.Setenv("MSI_SECRET", "opaque-managed-identity-secret")
+	t.Setenv("DEFAULT_IDENTITY_CLIENT_ID", "default-client-id")
 	t.Setenv("AZURE_CLIENT_SECRET", "must-not-pass")
 
 	for _, test := range []struct {
@@ -249,14 +256,30 @@ func TestShellExecutor_ADOOpenPRScopesWorkloadIdentityEnvironment(t *testing.T) 
 		{
 			name:         "declared provider capability",
 			capabilities: []string{string(capability.ProviderPRWrite)},
-			want:         "tenant-id|client-id|/var/run/secrets/azure/tokens/identity-token|https://login.microsoftonline.com/|",
+			want: strings.Join([]string{
+				"tenant-id",
+				"client-id",
+				"/var/run/secrets/azure/tokens/identity-token",
+				"https://login.microsoftonline.com/",
+				"http://127.0.0.1:41741/msi/token",
+				journal.Redacted,
+				"server-thumbprint",
+				"http://127.0.0.1:40342/metadata/identity/oauth2/token",
+				"http://127.0.0.1:41742/msi/token",
+				journal.Redacted,
+				"default-client-id",
+				"",
+			}, "|"),
 		},
-		{name: "undeclared provider capability", want: "||||"},
+		{name: "undeclared provider capability", want: strings.Repeat("|", 11)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stub := filepath.Join(t.TempDir(), "goobers")
 			script := "#!/bin/sh\n" +
-				"printf '%s|%s|%s|%s|%s' \"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" \"$AZURE_CLIENT_SECRET\"\n" +
+				"printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' " +
+				"\"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" " +
+				"\"$IDENTITY_ENDPOINT\" \"$IDENTITY_HEADER\" \"$IDENTITY_SERVER_THUMBPRINT\" \"$IMDS_ENDPOINT\" " +
+				"\"$MSI_ENDPOINT\" \"$MSI_SECRET\" \"$DEFAULT_IDENTITY_CLIENT_ID\" \"$AZURE_CLIENT_SECRET\"\n" +
 				"printf '{\"opened\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
 			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 				t.Fatal(err)

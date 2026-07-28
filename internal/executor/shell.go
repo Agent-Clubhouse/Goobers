@@ -268,17 +268,30 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 	return paths
 }
 
-func adoWorkloadIdentityEnv() []string {
-	names := [...]string{
-		"AZURE_TENANT_ID",
-		"AZURE_CLIENT_ID",
-		"AZURE_FEDERATED_TOKEN_FILE",
-		"AZURE_AUTHORITY_HOST",
+func adoIdentityEnv(registrar credentials.SecretRegistrar) []string {
+	variables := [...]struct {
+		name   string
+		secret bool
+	}{
+		{name: "AZURE_TENANT_ID"},
+		{name: "AZURE_CLIENT_ID"},
+		{name: "AZURE_FEDERATED_TOKEN_FILE"},
+		{name: "AZURE_AUTHORITY_HOST"},
+		{name: "IDENTITY_ENDPOINT"},
+		{name: "IDENTITY_HEADER", secret: true},
+		{name: "IDENTITY_SERVER_THUMBPRINT"},
+		{name: "IMDS_ENDPOINT"},
+		{name: "MSI_ENDPOINT"},
+		{name: "MSI_SECRET", secret: true},
+		{name: "DEFAULT_IDENTITY_CLIENT_ID"},
 	}
-	env := make([]string, 0, len(names))
-	for _, name := range names {
-		if value, ok := os.LookupEnv(name); ok {
-			env = append(env, name+"="+value)
+	env := make([]string, 0, len(variables))
+	for _, variable := range variables {
+		if value, ok := os.LookupEnv(variable.name); ok {
+			if variable.secret {
+				registrar.Register([]byte(value))
+			}
+			env = append(env, variable.name+"="+value)
 		}
 	}
 	return env
@@ -354,7 +367,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if injectRunContext && len(command) > 1 && command[1] == "open-pr" &&
 		env.RepoRef.Provider == apiv1.ProviderADO &&
 		containsString(env.Capabilities, string(capability.ProviderPRWrite)) {
-		stageEnv = append(stageEnv, adoWorkloadIdentityEnv()...)
+		stageEnv = append(stageEnv, adoIdentityEnv(registry)...)
 	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)

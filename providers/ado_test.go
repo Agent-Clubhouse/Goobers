@@ -737,6 +737,36 @@ func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 	}
 }
 
+func TestADOProviderPullRequestBuildStateRequiresCurrentHeadCorrelation(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+			{
+				"id": 23, "buildNumber": "20260726.4", "status": "completed", "result": "succeeded",
+				"definition": map[string]interface{}{"id": 7, "name": "provider-ci"},
+			},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	state, checks, err := provider.pullRequestBuildState(
+		context.Background(),
+		RepositoryRef{Name: "repo", Project: "project"},
+		"12",
+		"repo-id",
+		"new-head-sha",
+	)
+	if err != nil {
+		t.Fatalf("pullRequestBuildState returned error: %v", err)
+	}
+	if state != CheckStatePending || len(checks) != 0 {
+		t.Fatalf("build state = %q, checks = %#v, want pending with no correlated builds", state, checks)
+	}
+}
+
 func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
 	closedAt := time.Date(2026, 7, 26, 18, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
