@@ -234,6 +234,16 @@ func report() { _, _ = otlptracegrpc.New(nil) }
 `,
 			want: "implicit network destination",
 		},
+		{
+			name: "hardcoded crash reporting DSN",
+			source: `package sample
+import "github.com/getsentry/sentry-go"
+func report() {
+	_ = sentry.Init(sentry.ClientOptions{Dsn: "https://key@maintainer.ingest.example/1"})
+}
+`,
+			want: "hardcoded reporting SDK destination",
+		},
 	}
 
 	for _, test := range tests {
@@ -293,6 +303,15 @@ func TestScanRejectsBuiltInCommandEgressDestinations(t *testing.T) {
   report:
     steps:
       - run: curl https://maintainer.example.invalid/usage
+`,
+		},
+		{
+			name: "maintainer-owned neutral path",
+			path: ".github/workflows/report.yml",
+			source: `jobs:
+  report:
+    steps:
+      - run: curl https://agent-clubhouse.github.io/goobers/events
 `,
 		},
 		{
@@ -511,6 +530,42 @@ void fetch("https://fixture.example.invalid");
 	}
 }
 
+func TestScanAllowsUserConfiguredReportingSDKDestination(t *testing.T) {
+	root := writeSource(t, `package sample
+import "github.com/getsentry/sentry-go"
+type Config struct { SentryDSN string }
+func report(cfg Config) {
+	_ = sentry.Init(sentry.ClientOptions{Dsn: cfg.SentryDSN})
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
+func TestScanAllowsEnvironmentConfiguredReportingSDKDestination(t *testing.T) {
+	root := writeSource(t, `package sample
+import (
+	"os"
+	"github.com/getsentry/sentry-go"
+)
+func report() {
+	_ = sentry.Init(sentry.ClientOptions{Dsn: os.Getenv("SENTRY_DSN")})
+}
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
 func TestScanAllowsUserSuppliedScriptDestination(t *testing.T) {
 	root := writeSourceAt(t, "portal/src/report.ts", `
 const requestUrl = "https://docs.example.invalid";
@@ -582,6 +637,32 @@ func TestScanRejectsConditionallyConfiguredExporterInApprovedFunction(t *testing
 	}
 	if len(findings) == 0 || !strings.Contains(findings[0].message, "implicit network destination") {
 		t.Fatalf("scan() findings = %#v, want implicit network destination", findings)
+	}
+}
+
+func TestScanRejectsMutatedApprovedConfigSource(t *testing.T) {
+	source := strings.Replace(
+		configuredExporterSource(false),
+		"func spanExporters(ctx any, cfg struct{ OTLPEndpoint string }) {\n",
+		"type Config struct{ OTLPEndpoint string }\n"+
+			"func spanExporters(ctx any, cfg Config) {\n"+
+			"\tcfg = Config{OTLPEndpoint: \"maintainer.example.invalid:4317\"}\n",
+		1,
+	)
+	root := writeSourceAt(t, "internal/telemetry/client.go", source)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaultEndpoint, implicitExporter bool
+	for _, finding := range findings {
+		defaultEndpoint = defaultEndpoint ||
+			strings.Contains(finding.message, "default telemetry/reporting endpoint")
+		implicitExporter = implicitExporter ||
+			strings.Contains(finding.message, "implicit network destination")
+	}
+	if !defaultEndpoint || !implicitExporter {
+		t.Fatalf("scan() findings = %#v, want default endpoint and implicit exporter", findings)
 	}
 }
 

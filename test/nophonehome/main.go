@@ -94,6 +94,19 @@ var approvedImplicitEgress = map[string]implicitEgressApproval{
 	},
 }
 
+var reportingSDKMarkers = []string{
+	"airbrake",
+	"appcenter",
+	"bugsnag",
+	"crashlytics",
+	"datadog",
+	"honeycomb",
+	"newrelic",
+	"raygun",
+	"rollbar",
+	"sentry",
+}
+
 type finding struct {
 	path    string
 	line    int
@@ -283,6 +296,31 @@ func scanGoFile(root, path string) ([]finding, error) {
 				}
 				return true
 			}
+			if callName, monitored := monitoredReportingSDKCall(selector, imports); monitored {
+				position := files.Position(call.Pos())
+				destination, configured, hardcoded := reportingSDKConfiguration(call.Args, bindings)
+				if configured {
+					for _, source := range reportingSDKConfigurationSources(call.Args, bindings) {
+						if !approvedSourceUnmodifiedBeforeCall(function, call, source) {
+							configured = false
+							break
+						}
+					}
+				}
+				switch {
+				case hardcoded:
+					findings = append(findings, finding{
+						path: rel, line: position.Line, column: position.Column,
+						message: fmt.Sprintf("hardcoded reporting SDK destination %q passed to %s", destination, callName),
+					})
+				case !configured:
+					findings = append(findings, finding{
+						path: rel, line: position.Line, column: position.Column,
+						message: "implicit reporting SDK destination via " + callName,
+					})
+				}
+				return true
+			}
 			api, callName, monitored := monitoredEgressCall(
 				parsed,
 				function,
@@ -344,6 +382,207 @@ func scanGoFile(root, path string) ([]finding, error) {
 	}
 	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, fileBindings)...)
 	return findings, nil
+}
+
+func monitoredReportingSDKCall(selector *ast.SelectorExpr, imports map[string]string) (string, bool) {
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	importPath := imports[pkg.Name]
+	if !reportingSDKImport(importPath) {
+		return "", false
+	}
+	switch strings.ToLower(selector.Sel.Name) {
+	case "configure", "init", "initialize", "new", "newclient", "setup", "start":
+		return importPath + "." + selector.Sel.Name, true
+	default:
+		return "", false
+	}
+}
+
+func reportingSDKImport(importPath string) bool {
+	lower := strings.ToLower(importPath)
+	for _, marker := range reportingSDKMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func reportingSDKConfiguration(
+	expressions []ast.Expr,
+	bindings map[string]ast.Expr,
+) (destination string, configured, hardcoded bool) {
+	for _, expression := range expressions {
+		destination, expressionConfigured, expressionHardcoded := reportingSDKExpression(
+			expression,
+			bindings,
+			false,
+			nil,
+		)
+		if expressionHardcoded {
+			return destination, true, true
+		}
+		configured = configured || expressionConfigured
+	}
+	return "", configured, false
+}
+
+func reportingSDKConfigurationSources(
+	expressions []ast.Expr,
+	bindings map[string]ast.Expr,
+) []string {
+	sources := make(map[string]bool)
+	var inspect func(ast.Expr, bool, map[string]bool)
+	inspect = func(expression ast.Expr, destinationField bool, seen map[string]bool) {
+		switch value := expression.(type) {
+		case *ast.Ident:
+			if seen[value.Name] {
+				return
+			}
+			if binding, ok := bindings[value.Name]; ok {
+				seen[value.Name] = true
+				inspect(binding, destinationField, seen)
+				delete(seen, value.Name)
+			} else if destinationField {
+				sources[value.Name] = true
+			}
+		case *ast.SelectorExpr:
+			if destinationField {
+				sources[expressionName(value)] = true
+			}
+		case *ast.CompositeLit:
+			for _, element := range value.Elts {
+				field, ok := element.(*ast.KeyValueExpr)
+				if ok {
+					inspect(field.Value, reportingSDKDestinationField(expressionName(field.Key)), seen)
+				}
+			}
+		case *ast.CallExpr:
+			callDestinationField := destinationField || reportingSDKDestinationField(expressionName(value.Fun))
+			for _, argument := range value.Args {
+				inspect(argument, callDestinationField, seen)
+			}
+		case *ast.ParenExpr:
+			inspect(value.X, destinationField, seen)
+		}
+	}
+	for _, expression := range expressions {
+		inspect(expression, false, make(map[string]bool))
+	}
+	result := make([]string, 0, len(sources))
+	for source := range sources {
+		result = append(result, source)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func reportingSDKExpression(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	destinationField bool,
+	seen map[string]bool,
+) (destination string, configured, hardcoded bool) {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return "", destinationField, false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return "", destinationField, false
+		}
+		seen[value.Name] = true
+		destination, configured, hardcoded = reportingSDKExpression(binding, bindings, destinationField, seen)
+		delete(seen, value.Name)
+		return destination, configured, hardcoded
+	case *ast.CompositeLit:
+		for _, element := range value.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			destination, fieldConfigured, fieldHardcoded := reportingSDKExpression(
+				field.Value,
+				bindings,
+				reportingSDKDestinationField(expressionName(field.Key)),
+				seen,
+			)
+			if fieldHardcoded {
+				return destination, true, true
+			}
+			configured = configured || fieldConfigured
+		}
+		return "", configured, false
+	case *ast.CallExpr:
+		callDestinationField := destinationField || reportingSDKDestinationField(expressionName(value.Fun))
+		if callDestinationField && userConfiguredLookupCall(value.Fun) {
+			return "", true, false
+		}
+		for _, argument := range value.Args {
+			destination, argumentConfigured, argumentHardcoded := reportingSDKExpression(
+				argument,
+				bindings,
+				callDestinationField,
+				seen,
+			)
+			if argumentHardcoded {
+				return destination, true, true
+			}
+			configured = configured || argumentConfigured
+		}
+		return "", configured, false
+	case *ast.ParenExpr:
+		return reportingSDKExpression(value.X, bindings, destinationField, seen)
+	}
+	if destinationField {
+		var destination string
+		ast.Inspect(expression, func(node ast.Node) bool {
+			if destination != "" {
+				return false
+			}
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(literal.Value)
+			if err == nil && strings.TrimSpace(text) != "" {
+				destination = text
+			}
+			return true
+		})
+		if destination != "" {
+			return destination, true, true
+		}
+		return "", true, false
+	}
+	if text, ok := staticString(expression, bindings, nil); ok {
+		if destination, found := hardcodedLeadingURLPrefix(text); found {
+			return destination, true, true
+		}
+	}
+	return "", false, false
+}
+
+func userConfiguredLookupCall(expression ast.Expr) bool {
+	name := strings.ToLower(expressionName(expression))
+	return strings.HasSuffix(name, ".getenv") || strings.HasSuffix(name, ".lookupenv")
+}
+
+func reportingSDKDestinationField(name string) bool {
+	name = strings.ToLower(name)
+	for _, marker := range []string{"collector", "dsn", "endpoint", "host", "server", "url"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func monitoredProcessCall(selector *ast.SelectorExpr, imports map[string]string) (int, string, bool) {
@@ -1031,7 +1270,8 @@ func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[s
 			continue
 		}
 		if _, monitored := egressAPIs[importPath]; !monitored &&
-			importPath != "os/exec" && importPath != "net/url" {
+			importPath != "os/exec" && importPath != "net/url" &&
+			!reportingSDKImport(importPath) {
 			continue
 		}
 		if spec.Name != nil && spec.Name.Name == "_" {
@@ -1048,6 +1288,8 @@ func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[s
 		name := filepath.Base(importPath)
 		if spec.Name != nil {
 			name = spec.Name.Name
+		} else if reportingSDKImport(importPath) {
+			name = strings.TrimSuffix(name, "-go")
 		}
 		imports[name] = importPath
 	}
@@ -1314,6 +1556,9 @@ func explicitlyConfiguredImplicitCall(
 	if !ok || options.Name != approval.options {
 		return false
 	}
+	if !approvedSourceUnmodifiedBeforeCall(function, call, approval.endpointSource) {
+		return false
+	}
 	importPath := strings.TrimSuffix(callName, ".New")
 	state, found := implicitConfigurationBeforeCall(
 		function.Body.List,
@@ -1332,6 +1577,30 @@ func explicitlyConfiguredImplicitCall(
 		},
 	)
 	return found && state.configured
+}
+
+func approvedSourceUnmodifiedBeforeCall(function *ast.FuncDecl, call *ast.CallExpr, source string) bool {
+	state, found := implicitConfigurationBeforeCall(
+		function.Body.List,
+		implicitConfiguration{configured: true, reaches: true},
+		call,
+		func(assignment *ast.AssignStmt, unmodified bool) bool {
+			return unmodified && !assignmentMutatesSource(assignment, source)
+		},
+	)
+	return found && state.configured
+}
+
+func assignmentMutatesSource(assignment *ast.AssignStmt, source string) bool {
+	for _, left := range assignment.Lhs {
+		name := expressionName(left)
+		if name == source ||
+			strings.HasPrefix(source, name+".") ||
+			strings.HasPrefix(name, source+".") {
+			return true
+		}
+	}
+	return false
 }
 
 type implicitConfiguration struct {
@@ -1758,10 +2027,6 @@ func telemetryEndpointDefaults(files *token.FileSet, parsed *ast.File, rel strin
 			}
 		case *ast.CompositeLit:
 			typeName := expressionName(value.Type)
-			if !strings.Contains(strings.ToLower(typeName), "telemetry") &&
-				!strings.Contains(strings.ToLower(typeName), "otlp") {
-				return true
-			}
 			for _, element := range value.Elts {
 				field, ok := element.(*ast.KeyValueExpr)
 				if ok {
@@ -2082,7 +2347,7 @@ func reportingURLInCommand(text string) (string, bool) {
 		}
 		start += offset
 		destination, ok := hardcodedURLPrefix(text[start:])
-		if ok && isReportingDestination(destination) {
+		if ok && (isReportingDestination(destination) || isMaintainerOwnedDestination(destination)) {
 			return destination, true
 		}
 		offset = start + 1
@@ -2102,6 +2367,25 @@ func isReportingDestination(destination string) bool {
 		}
 	}
 	return false
+}
+
+func isMaintainerOwnedDestination(destination string) bool {
+	parsed, err := url.Parse(destination)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	const owner = "agent-clubhouse"
+	if host == owner || strings.HasPrefix(host, owner+".") || strings.HasSuffix(host, "."+owner) {
+		return true
+	}
+	switch host {
+	case "github.com", "raw.githubusercontent.com", "api.github.com":
+		segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		return len(segments) != 0 && strings.EqualFold(segments[0], owner)
+	default:
+		return false
+	}
 }
 
 type scriptTokenKind int
