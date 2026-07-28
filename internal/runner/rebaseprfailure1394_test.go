@@ -57,7 +57,8 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			Code: "provider_error", Message: "rebase failed",
 		}, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
-			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
+			"remediationCauses": "",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{

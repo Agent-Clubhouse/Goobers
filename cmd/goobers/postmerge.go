@@ -75,6 +75,7 @@ type siblingTriage struct {
 
 type postMergeRemediationHandoff struct {
 	DisplacingPullNumber int      `json:"displacingPullNumber"`
+	TargetHeadSHA        string   `json:"targetHeadSha"`
 	Reason               string   `json:"reason"`
 	OverlappingFiles     []string `json:"overlappingFiles,omitempty"`
 }
@@ -522,6 +523,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 		}
 		handoff := postMergeRemediationHandoff{
 			DisplacingPullNumber: mergedNumber,
+			TargetHeadSHA:        pr.HeadSHA,
 			Reason:               triage.Reason,
 			OverlappingFiles:     triage.OverlappingFiles,
 		}

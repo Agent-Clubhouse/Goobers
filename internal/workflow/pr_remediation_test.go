@@ -397,6 +397,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 			t.Errorf("rebase-pr inputsFrom[%q] = %q, want %q", key, got, want)
 		}
 	}
+	if !containsString(rebase.Capabilities, "github:pr:write") {
+		t.Errorf("rebase-pr capabilities = %v, missing github:pr:write used to verify post-merge handoff authors", rebase.Capabilities)
+	}
 
 	implement, ok := m.Task("implement")
 	if !ok {
@@ -528,12 +531,23 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	if !ok {
 		t.Fatal("remediation-checkpoint not found")
 	}
-	for _, output := range []string{"conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
+	for _, output := range []string{"remediationCauses", "conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
 		if !containsString(rebase.ExpectedOutputs, output) {
 			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
 		}
 		if checkpoint.InputsFrom[output] != output {
 			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)
+		}
+	}
+	wantBudgets := map[string]string{
+		"conflictBudget":       "2",
+		"substantiveBudget":    "2",
+		"failingCIBudget":      "2",
+		"siblingOverlapBudget": "2",
+	}
+	for input, want := range wantBudgets {
+		if got := checkpoint.Inputs[input]; got != want {
+			t.Errorf("remediation-checkpoint inputs[%q] = %q, want DSL-declared budget %q", input, got, want)
 		}
 	}
 	declared := map[string]bool{}

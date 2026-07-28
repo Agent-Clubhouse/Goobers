@@ -214,7 +214,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		},
 		runID + ":rebase-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
-			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
+			"remediationCauses": "substantive",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{

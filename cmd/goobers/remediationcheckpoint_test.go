@@ -21,7 +21,10 @@ import (
 // remediation-checkpoint posts (mirroring apply-verdict's verdict-json,
 // applyverdict.go) survives a render/parse round trip.
 func TestRenderRemediationStateCommentRoundTrips(t *testing.T) {
-	s := remediationState{Cycles: 3, LastDiffDigest: "sha256:abc123"}
+	s := remediationState{
+		Cycles: 3, AttemptsByCause: remediationAttempts{Conflict: 2, FailingCI: 1},
+		LastDiffDigest: "sha256:abc123",
+	}
 	comment, err := remediationStateComment(s)
 	if err != nil {
 		t.Fatalf("remediationStateComment: %v", err)
@@ -395,6 +398,11 @@ func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability 
 		t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	}
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "substantive")
+	t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
 	return instanceRoot
 }
 
@@ -412,7 +420,7 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "cycle 1/") {
+	if !strings.Contains(stdout, "cycle 1") {
 		t.Fatalf("stdout = %q, want a mention of cycle 1", stdout)
 	}
 
@@ -427,8 +435,8 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 		t.Fatalf("comments = %v, want exactly one posted (the recorded checkpoint state)", st.comments)
 	}
 	state, ok := parseRemediationStateComment(st.comments[0])
-	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" {
-		t.Fatalf("posted comment %q -> state=%+v ok=%v, want cycles=1 with a non-empty digest", st.comments[0], state, ok)
+	if !ok || state.Cycles != 1 || state.AttemptsByCause.Substantive != 1 || state.LastDiffDigest == "" {
+		t.Fatalf("posted comment %q -> state=%+v ok=%v, want cycle 1 with one substantive attempt and a non-empty digest", st.comments[0], state, ok)
 	}
 	// #832: every recorded cycle carries the PR's head/base SHA so the next
 	// cycle's rebase-aware same-diff check can tell a stall from a rebase.
@@ -437,13 +445,15 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 	}
 }
 
-// TestRemediationCheckpointEscalatesOnBudgetExhaustion is D4's headline
-// acceptance: a PR whose prior recorded cycle count already meets --budget
-// escalates (goobers:merge-escalated added, needs-remediation removed)
-// rather than recording yet another cycle.
-func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
+// TestRemediationCheckpointEscalatesExhaustedConflictCause is #953's headline
+// acceptance: two admitted conflict attempts exhaust only the conflict budget,
+// and the escalation names that cause.
+func TestRemediationCheckpointEscalatesExhaustedConflictCause(t *testing.T) {
 	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
-	priorComment, err := remediationStateComment(remediationState{Cycles: 1, LastDiffDigest: "sha256:stale-digest-from-a-different-diff"})
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 2, AttemptsByCause: remediationAttempts{Conflict: 2},
+		LastDiffDigest: "sha256:stale-digest-from-a-different-diff",
+	})
 	if err != nil {
 		t.Fatalf("remediationStateComment: %v", err)
 	}
@@ -455,12 +465,13 @@ func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
-	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "1", instanceRoot)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "conflict")
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "escalated") {
-		t.Fatalf("stdout = %q, want a mention of escalation", stdout)
+	if !strings.Contains(stdout, `cause "conflict" exhausted its budget`) {
+		t.Fatalf("stdout = %q, want conflict-specific budget escalation", stdout)
 	}
 
 	st.mu.Lock()
@@ -476,6 +487,10 @@ func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labels = %v, want goobers:merge-escalated added", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.AttemptsByCause.Conflict != 2 || state.AttemptsByCause.FailingCI != 0 {
+		t.Fatalf("escalated state = %+v, ok = %v, want only two conflict attempts consumed", state, ok)
 	}
 }
 
@@ -521,24 +536,114 @@ func TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded(t *testing.T)
 	}
 }
 
-// TestRemediationBudgetDefaultReadsMaxCyclesInput is #941/PRR-6's maxCycles
-// coverage: an unset --budget flag falls back to the declared maxCycles
-// workflow input rather than always using DefaultRemediationBudget.
-func TestRemediationBudgetDefaultReadsMaxCyclesInput(t *testing.T) {
-	t.Setenv("GOOBERS_INPUT_MAXCYCLES", "3")
-	if got := remediationBudgetDefault(); got != 3 {
-		t.Fatalf("remediationBudgetDefault() = %d, want 3", got)
+func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{needsRemediationLabel},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := readCheckpointResult(t, resultFile)["continueRemediation"]; got != "false" {
+		t.Fatalf("continueRemediation = %q, want false without an observed cause", got)
+	}
+	if !strings.Contains(stdout, "without consuming an allowance") {
+		t.Fatalf("stdout = %q, want explicit no-cause halt", stdout)
+	}
+	if len(st.comments) != 0 {
+		t.Fatalf("comments = %v, want no attempt checkpoint without an observed cause", st.comments)
 	}
 }
 
-func TestRemediationBudgetDefaultFallsBackOnInvalidMaxCycles(t *testing.T) {
+func TestRemediationCauseBudgetsAreIndependent(t *testing.T) {
+	budgets := remediationBudgets{
+		Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2,
+	}
+
+	var attempts remediationAttempts
+	for _, cause := range remediationCauseOrder {
+		if exhausted, ok := exhaustedRemediationCause(attempts, []remediationCause{cause}, budgets); ok {
+			t.Fatalf("distinct cause %q unexpectedly exhausted by attempts %+v (reported %q)", cause, attempts, exhausted)
+		}
+		attempts.increment(cause)
+	}
+	for _, cause := range remediationCauseOrder {
+		if got := attempts.forCause(cause); got != 1 {
+			t.Fatalf("%s attempts = %d, want 1 after four distinct problems", cause, got)
+		}
+	}
+
+	attempts.increment(remediationCauseConflict)
+	if cause, ok := exhaustedRemediationCause(attempts, []remediationCause{remediationCauseConflict}, budgets); !ok || cause != remediationCauseConflict {
+		t.Fatalf("two conflict attempts: exhausted cause = %q, ok = %v, want conflict", cause, ok)
+	}
+	if cause, ok := exhaustedRemediationCause(attempts, []remediationCause{remediationCauseFailingCI}, budgets); ok {
+		t.Fatalf("later failing-CI cause exhausted by conflict attempts: cause = %q, attempts = %+v", cause, attempts)
+	}
+}
+
+func TestDeclaredRemediationBudgetsReadWorkflowInputs(t *testing.T) {
+	t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", "1")
+	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "3")
+	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "4")
+
+	got, err := declaredRemediationBudgets(0)
+	if err != nil {
+		t.Fatalf("declaredRemediationBudgets: %v", err)
+	}
+	want := remediationBudgets{Conflict: 1, Substantive: 2, FailingCI: 3, SiblingOverlap: 4}
+	if got != want {
+		t.Fatalf("budgets = %+v, want workflow inputs %+v", got, want)
+	}
+}
+
+func TestDeclaredRemediationBudgetsRejectMissingOrInvalidInputs(t *testing.T) {
 	for _, raw := range []string{"", "not-a-number", "0", "-1"} {
 		t.Run(raw, func(t *testing.T) {
-			t.Setenv("GOOBERS_INPUT_MAXCYCLES", raw)
-			if got := remediationBudgetDefault(); got != DefaultRemediationBudget {
-				t.Fatalf("remediationBudgetDefault() = %d, want default %d for input %q", got, DefaultRemediationBudget, raw)
+			t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", raw)
+			t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
+			t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
+			t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
+			if _, err := declaredRemediationBudgets(0); err == nil {
+				t.Fatalf("declaredRemediationBudgets accepted conflictBudget %q", raw)
 			}
 		})
+	}
+}
+
+func TestRemediationCheckpointBudgetsSiblingOverlapSeparately(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 2, AttemptsByCause: remediationAttempts{SiblingOverlap: 2},
+		LastDiffDigest: "sha256:stale-digest-from-a-different-diff",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "sibling-overlap")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `cause "sibling-overlap" exhausted its budget`) {
+		t.Fatalf("stdout = %q, want sibling-overlap-specific budget escalation", stdout)
 	}
 }
 
@@ -559,7 +664,7 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 
 	// Second cycle: no new commits landed since — the diff is identical —
 	// so this must escalate even though the (default, liberal) budget is
-	// nowhere near exhausted (cycle 2 of 10).
+	// nowhere near exhausting its cause budget.
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
 		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -709,6 +814,7 @@ func setStructuralCollisionInputs(t *testing.T, attemptedHeadSHA, rebaseBaseSHA 
 		t.Fatalf("marshal conflict locations: %v", err)
 	}
 	t.Setenv("GOOBERS_INPUT_CONFLICT", "true")
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "conflict")
 	t.Setenv("GOOBERS_INPUT_CONFLICTLOCATIONS", string(locations))
 	t.Setenv("GOOBERS_INPUT_ATTEMPTEDHEADSHA", attemptedHeadSHA)
 	t.Setenv("GOOBERS_INPUT_REBASEBASESHA", rebaseBaseSHA)

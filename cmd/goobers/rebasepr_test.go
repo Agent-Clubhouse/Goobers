@@ -14,15 +14,17 @@ import (
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // rebasePRServerState is a small stateful fake GitHub server for rebase-pr's
-// (#363) tests: just the one PR's label state (GetWorkItem + label add/
-// remove), since rebase-pr never lists PRs — its inputs arrive via
-// InputsFrom, mirroring the real pr-remediation.yaml wiring.
+// (#363) tests: one PR's label state and durable handoff comments. rebase-pr
+// never lists PRs — its core inputs arrive via InputsFrom, mirroring the real
+// pr-remediation.yaml wiring.
 type rebasePRServerState struct {
-	mu     sync.Mutex
-	labels []string
+	mu       sync.Mutex
+	labels   []string
+	comments []string
 }
 
 func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber int) *httptest.Server {
@@ -42,6 +44,21 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 		default:
 			http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 		}
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, prNumber), func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		out := make([]map[string]interface{}, len(s.comments))
+		for i, comment := range s.comments {
+			out[i] = map[string]interface{}{
+				"id": i + 1, "user": map[string]string{"login": "goobers-bot"},
+				"body": comment, "created_at": "2026-07-15T00:00:00Z",
+			}
+		}
+		writeFakeJSON(w, out)
+	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]string{"login": "goobers-bot"})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels/", prefix, prNumber), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -78,6 +95,7 @@ func rebasePREnv(t *testing.T, serverURL, wtPath string, inputs map[string]strin
 	t.Setenv("GOOBERS_RUN_ID", "run-363")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	for k, v := range inputs {
 		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
@@ -396,8 +414,10 @@ func TestRebasePRSubstantiveFindingDefersEvenWithCleanRebase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read rebase-result.json: %v", err)
 	}
-	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"false"`) {
-		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false", data)
+	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
+		!strings.Contains(string(data), `"conflict":"false"`) ||
+		!strings.Contains(string(data), `"remediationCauses":"substantive"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false cause=substantive", data)
 	}
 }
 
@@ -411,9 +431,11 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 		conflict           bool
 		substantive        bool
 		failingCI          bool
+		siblingOverlap     bool
 		wantNeedsAgent     bool
 		wantPolicyExcluded bool
 		wantReasonContains string
+		wantCauses         string
 	}{
 		{
 			name:           "nothing detected, liberal policy",
@@ -425,12 +447,14 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			remediate:      defaultRemediatePolicy,
 			conflict:       true,
 			wantNeedsAgent: true,
+			wantCauses:     "conflict",
 		},
 		{
 			name:           "restrictive policy: conflict only, conflict detected fires",
 			remediate:      "conflict",
 			conflict:       true,
 			wantNeedsAgent: true,
+			wantCauses:     "conflict",
 		},
 		{
 			name:               "restrictive policy: conflict only, substantive detected excluded",
@@ -466,6 +490,14 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			// conflict fires, so this is NOT policyExcluded even though
 			// substantive alone would have been excluded.
 			wantPolicyExcluded: false,
+			wantCauses:         "conflict",
+		},
+		{
+			name:           "sibling overlap detected, liberal policy fires",
+			remediate:      defaultRemediatePolicy,
+			siblingOverlap: true,
+			wantNeedsAgent: true,
+			wantCauses:     "sibling-overlap",
 		},
 		{
 			name:               "empty policy excludes everything detected",
@@ -478,7 +510,7 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := evaluateRemediatePolicy(test.remediate, test.conflict, test.substantive, test.failingCI)
+			got := evaluateRemediatePolicy(test.remediate, test.conflict, test.substantive, test.failingCI, test.siblingOverlap)
 			if got.needsAgent != test.wantNeedsAgent {
 				t.Fatalf("needsAgent = %v, want %v", got.needsAgent, test.wantNeedsAgent)
 			}
@@ -490,6 +522,9 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			}
 			if got.policyExcluded != got.policyResult.excluded || got.excludedReason != got.policyResult.reason {
 				t.Fatalf("policyResult %+v does not mirror policyExcluded/excludedReason", got.policyResult)
+			}
+			if causes := formatRemediationCauses(got.policyResult.causes); causes != test.wantCauses {
+				t.Fatalf("remediation causes = %q, want %q", causes, test.wantCauses)
 			}
 		})
 	}
@@ -579,14 +614,81 @@ func TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read rebase-result.json: %v", err)
 	}
-	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"false"`) {
-		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false", data)
+	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
+		!strings.Contains(string(data), `"conflict":"false"`) ||
+		!strings.Contains(string(data), `"remediationCauses":"failing-ci"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false cause=failing-ci", data)
 	}
 
 	verify := t.TempDir()
 	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
 	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
 		t.Fatalf("origin's branch missing clean rebase before checkpoint routing: %v", err)
+	}
+}
+
+func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
+	const prBranch = "goobers/impl/run-sibling-overlap"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	targetHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	handoff, err := renderPostMergeRemediationHandoff(postMergeRemediationHandoff{
+		DisplacingPullNumber: 66,
+		TargetHeadSHA:        targetHeadSHA,
+		Reason:               "file-overlap:shared.go",
+		OverlappingFiles:     []string{"shared.go"},
+	})
+	if err != nil {
+		t.Fatalf("renderPostMergeRemediationHandoff: %v", err)
+	}
+	st := &rebasePRServerState{
+		labels:   []string{needsRemediationLabel},
+		comments: []string{handoff},
+	}
+	server := st.start(t, "your-org", "your-repo", 67)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "67",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+		"hasFailingCI":           "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
+		!strings.Contains(string(data), `"remediationCauses":"sibling-overlap"`) {
+		t.Fatalf("rebase-result.json = %s, want sibling-only overlap routed to checkpoint", data)
+	}
+	remoteHeadSHA := strings.TrimSpace(runGitOutputT(
+		t, filepath.Dir(origin), "--git-dir="+origin, "rev-parse", "refs/heads/"+prBranch,
+	))
+	if remoteHeadSHA != targetHeadSHA {
+		t.Fatalf("remote head = %q, want unchanged %q until sibling-overlap remediation is complete", remoteHeadSHA, targetHeadSHA)
+	}
+}
+
+func TestSiblingOverlapHandoffMustBeTrustedAndHeadPinned(t *testing.T) {
+	body, err := renderPostMergeRemediationHandoff(postMergeRemediationHandoff{
+		DisplacingPullNumber: 66,
+		TargetHeadSHA:        "current-head",
+		Reason:               "file-overlap:shared.go",
+		OverlappingFiles:     []string{"shared.go"},
+	})
+	if err != nil {
+		t.Fatalf("renderPostMergeRemediationHandoff: %v", err)
+	}
+	if hasSiblingOverlapHandoff([]providers.Comment{{Author: "untrusted-user", Body: body}}, "goobers-bot", "current-head") {
+		t.Fatal("untrusted handoff was accepted as an active sibling-overlap cause")
+	}
+	if hasSiblingOverlapHandoff([]providers.Comment{{Author: "goobers-bot", Body: body}}, "goobers-bot", "new-head") {
+		t.Fatal("stale handoff was accepted after the target PR head changed")
 	}
 }
 
@@ -675,6 +777,9 @@ func TestRebasePRPreservesUnsafeEvidenceAfterAdjacentResolution(t *testing.T) {
 	}
 	if result["needsAgent"] != "true" || result["conflict"] != "true" {
 		t.Fatalf("rebase-result.json = %s, want unsafe conflict routed to the agent", data)
+	}
+	if result["remediationCauses"] != "conflict" {
+		t.Fatalf("remediationCauses = %q, want conflict", result["remediationCauses"])
 	}
 	var locations []rebaseConflictLocation
 	if err := json.Unmarshal([]byte(result["conflictLocations"]), &locations); err != nil {
@@ -1183,6 +1288,7 @@ func TestRebasePRPushFailurePreservesDownstreamContract(t *testing.T) {
 		"head":                   prBranch,
 		"base":                   "main",
 		"hasSubstantiveFindings": "false",
+		"hasFailingCI":           "true",
 	})
 
 	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
@@ -1198,6 +1304,7 @@ func TestRebasePRPushFailurePreservesDownstreamContract(t *testing.T) {
 		"conflictLocations":      "[]",
 		"attemptedHeadSha":       attemptedHeadSHA,
 		"rebaseBaseSha":          rebaseBaseSHA,
+		"remediationCauses":      "failing-ci",
 		executor.OutputErrorCode: errorCodeProvider,
 	}
 	for key, value := range want {
@@ -1233,6 +1340,7 @@ func TestRebasePRFailureWritesDownstreamContract(t *testing.T) {
 		"conflictLocations":      "[]",
 		"attemptedHeadSha":       "",
 		"rebaseBaseSha":          "",
+		"remediationCauses":      "",
 		executor.OutputErrorCode: errorCodeProvider,
 	}
 	for key, value := range want {

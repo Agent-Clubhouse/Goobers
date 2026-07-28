@@ -20,7 +20,7 @@ spec:
   # D3) rebases and routes on the combination of rebase outcome + verdict
   # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs on
   # the "needs agent" branch to detect a stuck PR (same diff pushed twice, the
-  # liberal repass budget exhausted, or a rebase conflict inside a function a
+  # active cause's declared attempt budget exhausted, or a rebase conflict inside a function a
   # merged sibling substantially restructured) and escalate.
   #
   # The agentic implement/review/local-ci chain is WIRED (issue #392, design
@@ -166,8 +166,10 @@ spec:
     #   failing CI -> push a clean rebase to retrigger CI, then route to
     #     remediation-checkpoint so a persistent failure cannot starve later
     #     candidates.
-    #   unsafe rebase conflict, OR a substantive finding is present -> needs the
-    #     agentic chain — rebase-gate's "fail" branch routes to
+    #   unsafe rebase conflict, substantive finding, or trusted post-merge
+    #     sibling-overlap handoff pinned to the selected head -> needs the
+    #     agentic chain — rebase-gate's
+    #     "fail" branch routes to
     #     remediation-checkpoint, which uses the PR's CURRENT diff (whatever
     #     rebase-pr left pushed, unchanged on this path) to detect a stuck PR
     #     BEFORE spending an agentic session on it, and then routes into
@@ -195,11 +197,12 @@ spec:
         # #941/PRR-6: which detected causes may trigger the agentic chain.
         # The shipped default is fully liberal — every cause this stage can
         # detect fires remediation, reproducing today's behavior exactly.
-        # behind-base and sibling-overlap are accepted vocabulary but cannot
-        # fire yet (see rebasepr.go's defaultRemediatePolicy doc comment).
+        # behind-base is accepted vocabulary but cannot fire yet (see
+        # rebasepr.go's defaultRemediatePolicy doc comment).
         remediate: "conflict,substantive,failing-ci,behind-base,sibling-overlap"
       capabilities:
         - repo:push
+        - github:pr:write
         - github:issues:write
       policyActions:
         - rebase-pr
@@ -208,6 +211,7 @@ spec:
         - selectedNumber
         - head
         - needsAgent
+        - remediationCauses
         - conflict
         - conflictLocations
         - attemptedHeadSha
@@ -227,18 +231,19 @@ spec:
     # other stage here), computes its current diff against base, and
     # escalates (goobers:merge-escalated, clearing needs-remediation) if
     # that diff is byte-identical to the immediately prior recorded cycle's
-    # (stuck, no progress), the liberal repass budget is exhausted, or a
-    # rebase conflict from this exact PR head lands inside a function a merged
-    # sibling substantially restructured. That structural case escalates on
-    # cycle one and includes both PRs' relevant hunks; otherwise this records
-    # the advanced cycle state as a new sticky comment.
+    # (stuck, no progress), the active cause's independent budget is
+    # exhausted, or a rebase conflict from this exact PR head lands inside a
+    # function a merged sibling substantially restructured. That structural
+    # case escalates on cycle one and includes both PRs' relevant hunks;
+    # otherwise this records the advanced cycle state as a new sticky comment.
     - name: remediation-checkpoint
       type: deterministic
-      goal: Detect a stuck PR (no-progress repeat or budget exhaustion) and escalate, or record the advanced cycle state.
+      goal: Detect a stuck PR (no-progress repeat or per-cause budget exhaustion) and escalate, or record the advanced cycle state.
       run:
         command: ["goobers", "remediation-checkpoint"]
       inputsFrom:
         selectedNumber: selectedNumber
+        remediationCauses: remediationCauses
         conflict: conflict
         conflictLocations: conflictLocations
         attemptedHeadSha: attemptedHeadSha
@@ -250,10 +255,12 @@ spec:
         policyExcludedReason: policyExcludedReason
       inputs:
         resultFile: "checkpoint-result.json"
-        # #941/PRR-6: overrides D4's liberal per-PR repass budget
-        # (DefaultRemediationBudget=10). Unset/invalid falls back to that
-        # default.
-        maxCycles: "10"
+        # #953: each cause owns an independent allowance. Two conflict
+        # attempts do not consume a later CI or substantive-finding attempt.
+        conflictBudget: "2"
+        substantiveBudget: "2"
+        failingCIBudget: "2"
+        siblingOverlapBudget: "2"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -263,7 +270,7 @@ spec:
         - escalate-pr
       expectedOutputs:
         # What checkpoint-gate branches on: "false" when this cycle escalated
-        # (budget exhausted / no-progress repeat) or the PR is no longer
+        # (a cause budget exhausted / no-progress repeat) or the PR is no longer
         # open, "true" when the agentic chain may proceed.
         - continueRemediation
         # Echoed forward for push-remediated, which sits past the agentic
@@ -496,8 +503,8 @@ spec:
     # Terminal @escalate for a reviewer "fail" verdict (design doc §4 D2:
     # `fail` is a fundamentally wrong approach, and must NOT be burned on
     # remediation budget the way `needs-changes` is). Escalating here parks
-    # the PR for a human immediately instead of letting it cycle up to the
-    # liberal D4 budget re-attempting an approach already judged wrong.
+    # the PR for a human immediately instead of letting it consume the active
+    # cause's D4 budget re-attempting an approach already judged wrong.
     - name: park-escalated
       type: deterministic
       goal: Park a reviewer-rejected PR with the terminal escalation reason.
@@ -575,7 +582,7 @@ spec:
         fail: remediation-checkpoint
 
     # Loop-control decision (#392): remediation-checkpoint runs BEFORE the
-    # agentic chain so an exhausted budget or a no-progress repeat escalates
+    # agentic chain so an exhausted cause budget or a no-progress repeat escalates
     # without first spending an agentic session on a PR that cannot advance.
     # Its "false" branch is terminal — the PR now carries
     # goobers:merge-escalated and a human takes it from here.

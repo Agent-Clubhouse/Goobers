@@ -22,34 +22,82 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// DefaultRemediationBudget is D4's liberal per-PR repass-cycle budget
-// (design doc §6): the number of pr-remediation cycles a PR may go through
-// before remediation-checkpoint gives up and escalates rather than
-// continuing to select it. Config-overridable via the --budget flag,
-// mirroring gate.DefaultMaxRepasses/Evaluator.MaxRepasses's override at
-// in-run altitude — lifted here to PR altitude (issue #364).
-const DefaultRemediationBudget = 10
-
 const remediationEscalatedLabel = "goobers:merge-escalated"
 
-// remediationBudgetDefault resolves the declared maxCycles policy input
-// (#941/PRR-6) as the --budget flag's default, so a workflow can override
-// D4's liberal cycle budget in YAML without a bespoke CLI invocation. An
-// unset, empty, non-numeric, or non-positive value falls back to
-// DefaultRemediationBudget.
-func remediationBudgetDefault() int {
-	raw := providerInput("maxCycles", "")
-	if raw == "" {
-		return DefaultRemediationBudget
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return DefaultRemediationBudget
-	}
-	return n
+const siblingOverlapLookback = 30 * 24 * time.Hour
+
+type remediationCause string
+
+const (
+	remediationCauseConflict       remediationCause = remediateCauseConflict
+	remediationCauseSubstantive    remediationCause = remediateCauseSubstantive
+	remediationCauseFailingCI      remediationCause = remediateCauseFailingCI
+	remediationCauseSiblingOverlap remediationCause = remediateCauseSiblingOverlap
+)
+
+var remediationCauseOrder = []remediationCause{
+	remediationCauseConflict,
+	remediationCauseSubstantive,
+	remediationCauseFailingCI,
+	remediationCauseSiblingOverlap,
 }
 
-const siblingOverlapLookback = 30 * 24 * time.Hour
+type remediationAttempts struct {
+	Conflict       int `json:"conflict,omitempty"`
+	Substantive    int `json:"substantive,omitempty"`
+	FailingCI      int `json:"failing-ci,omitempty"`
+	SiblingOverlap int `json:"sibling-overlap,omitempty"`
+}
+
+func (a remediationAttempts) forCause(cause remediationCause) int {
+	switch cause {
+	case remediationCauseConflict:
+		return a.Conflict
+	case remediationCauseSubstantive:
+		return a.Substantive
+	case remediationCauseFailingCI:
+		return a.FailingCI
+	case remediationCauseSiblingOverlap:
+		return a.SiblingOverlap
+	default:
+		return 0
+	}
+}
+
+func (a *remediationAttempts) increment(cause remediationCause) {
+	switch cause {
+	case remediationCauseConflict:
+		a.Conflict++
+	case remediationCauseSubstantive:
+		a.Substantive++
+	case remediationCauseFailingCI:
+		a.FailingCI++
+	case remediationCauseSiblingOverlap:
+		a.SiblingOverlap++
+	}
+}
+
+type remediationBudgets struct {
+	Conflict       int
+	Substantive    int
+	FailingCI      int
+	SiblingOverlap int
+}
+
+func (b remediationBudgets) forCause(cause remediationCause) int {
+	switch cause {
+	case remediationCauseConflict:
+		return b.Conflict
+	case remediationCauseSubstantive:
+		return b.Substantive
+	case remediationCauseFailingCI:
+		return b.FailingCI
+	case remediationCauseSiblingOverlap:
+		return b.SiblingOverlap
+	default:
+		return 0
+	}
+}
 
 type siblingOverlapFinding struct {
 	Number   int    `json:"number"`
@@ -59,9 +107,9 @@ type siblingOverlapFinding struct {
 }
 
 // remediationState is pr-remediation's OWN durable per-PR loop-control
-// state (D4's cycle counter + D5's last diff digest) — distinct from
-// merge-review's Verdict payload (applyverdict.go's verdict-json), since it
-// is written and read by a different workflow's runs. Embedded in a sticky
+// state (D4's per-cause attempt counters + D5's last diff digest) — distinct
+// from merge-review's Verdict payload (applyverdict.go's verdict-json), since
+// it is written and read by a different workflow's runs. Embedded in a sticky
 // PR comment the same way, and for the same reason: gather-pr-context
 // already established that a PR comment is the only durable cross-run
 // channel available at this altitude (neither workflow shares a journal/
@@ -76,10 +124,13 @@ type siblingOverlapFinding struct {
 // differ), the latter re-enabling selection automatically without needing a
 // human to clear the label.
 type remediationState struct {
-	// Cycles is the number of pr-remediation cycles recorded for this PR so
-	// far (this checkpoint's own count — incremented once per run that
-	// reaches this stage, regardless of what the earlier stages did).
+	// Cycles remains the total number of checkpoints recorded for operator
+	// visibility and compatibility with existing sticky comments. It is not
+	// used to enforce remediation budgets.
 	Cycles int `json:"cycles"`
+	// AttemptsByCause is the number of agentic remediation attempts admitted
+	// for each independent cause. A cause only consumes its own allowance.
+	AttemptsByCause remediationAttempts `json:"attemptsByCause,omitempty"`
 	// LastDiffDigest is the content-addressed digest of the most recently
 	// checkpointed cycle's `git diff base...HEAD` — compared against the
 	// current cycle's digest to detect a no-progress repeat (#316's in-run
@@ -98,9 +149,9 @@ type remediationState struct {
 	// Escalated marks this recorded state as an escalation event (goobers:
 	// merge-escalated was applied) rather than an ordinary advancing cycle.
 	Escalated bool `json:"escalated,omitempty"`
-	// EscalatedReason is the human-readable cause (budget exhaustion or a
-	// byte-identical repeat), carried so a later sticky-comment edit can
-	// still render it without re-deriving it.
+	// EscalatedReason is the human-readable cause (per-cause budget
+	// exhaustion or a byte-identical repeat), carried so a later sticky-
+	// comment edit can still render it without re-deriving it.
 	EscalatedReason string `json:"escalatedReason,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
 	// moment of escalation — the self-heal comparison snapshot (#716).
@@ -160,7 +211,10 @@ func renderRemediationComment(state remediationState) string {
 			prose += "\n\n**Same-function structural collision:**\n" + state.StructuralCollisionContext
 		}
 	} else {
-		prose = fmt.Sprintf("pr-remediation checkpoint: cycle %d, diff digest `%s`.", state.Cycles, state.LastDiffDigest)
+		prose = fmt.Sprintf(
+			"pr-remediation checkpoint: cycle %d, attempts by cause %s, diff digest `%s`.",
+			state.Cycles, renderRemediationAttempts(state.AttemptsByCause), state.LastDiffDigest,
+		)
 	}
 	payload, err := remediationStateComment(state)
 	if err != nil {
@@ -217,7 +271,8 @@ func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubPr
 // like-for-like. This applies uniformly to every escalation reason: a base
 // advance genuinely can resolve an overlap-driven content rejection too, and
 // any re-attempt that is still wrong simply re-escalates, bounded by the
-// per-PR repass budget (#364) — so an unblock is always safe, never a loop.
+// per-cause repass budgets (#364/#953) — so an unblock is always safe, never
+// a loop.
 //
 // Fetches comments (and one ref lookup) only for PRs that carry the label — a
 // small, by-design subset — so this stays cheap for the common unlabeled case.
@@ -267,28 +322,31 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 }
 
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
-// (issue #364): lifts the in-run repass budget (gate.DefaultMaxRepasses,
-// internal/gate/evaluate.go's Evaluator) and same-diff escalation (#316,
-// LastDiffDigest) to PR altitude (design doc §6 D4/D5). Meant to run as
+// (issue #364): lifts in-run repass control and same-diff escalation (#316,
+// LastDiffDigest) to PR altitude (design doc §6 D4/D5). Per-cause budgets are
+// supplied by the workflow DSL (issue #953). Meant to run as
 // pr-remediation's last stage each cycle, immediately after whichever
 // stage(s) push the remediated branch (#363) — it re-checks-out the PR's
 // own branch itself (this stage gets its own fresh worktree; an earlier
 // stage's checkout does not survive to here, same reason gather-pr-context
 // and rebase-pr each do their own), reads the PR's most recently recorded
-// cycle count + diff digest back from a sticky PR comment, compares this
-// cycle's actual diff against it, and either escalates
+// cause-attempt counts + diff digest back from a sticky PR comment, compares
+// this cycle's actual diff against it, and either escalates
 // (goobers:merge-escalated, clearing needs-remediation so the machine stops
-// selecting it) on budget exhaustion or a byte-identical repeat, or records
-// the advanced state for next cycle.
+// selecting it) when one cause exhausts its own budget or on a byte-identical
+// repeat, or records the advanced state for next cycle.
 const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budget N] [path]\n\n" +
 	"Re-checkout the PR's own branch (this stage gets its own fresh\n" +
-	"worktree), read pr-remediation's durable per-PR cycle counter + last\n" +
+	"worktree), read pr-remediation's durable per-cause attempt counters + last\n" +
 	"diff digest back from a sticky PR comment, compare this cycle's\n" +
 	"actual diff (git diff base...HEAD) against it, and either\n" +
-	"escalate (goobers:merge-escalated, clearing needs-remediation) on\n" +
-	"budget exhaustion or a byte-identical repeat, or record the advanced\n" +
+	"escalate (goobers:merge-escalated, clearing needs-remediation) when\n" +
+	"the active cause exhausts its DSL-declared budget or on a byte-identical\n" +
+	"repeat, or record the advanced\n" +
 	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
-	"gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint\n" +
+	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
+	"four per-cause budget inputs. --budget overrides every declared cause\n" +
+	"for standalone diagnostics. Exit codes: 0 = checkpoint\n" +
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
 	"error, 2 = usage/IO error.\n"
 
@@ -296,7 +354,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "remediation-checkpoint")
-	budget := fs.Int("budget", remediationBudgetDefault(), "liberal per-PR repass-cycle budget before escalating (D4)")
+	budgetOverride := fs.Int("budget", 0, "override every DSL-declared per-cause budget (standalone diagnostics)")
 	// --escalate is the reviewer-verdict=fail path (design doc §4 D2: "a
 	// fundamentally wrong approach is not burned on remediation budget"), not
 	// a loop-control outcome: escalate unconditionally with the caller's
@@ -437,6 +495,32 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	forced := escalateReasonValue != ""
+	if *budgetOverride < 0 {
+		pf(stderr, "error: --budget must not be negative\n")
+		return 1
+	}
+	var causes []remediationCause
+	var budgets remediationBudgets
+	if !forced {
+		rawCauses := providerInput("remediationCauses", "")
+		if strings.TrimSpace(rawCauses) == "" {
+			if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA); err != nil {
+				return 1
+			}
+			pln(stdout, "no observed remediation cause to budget; checkpoint halted without consuming an allowance")
+			return 0
+		}
+		causes, err = parseRemediationCauses(rawCauses)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		budgets, err = declaredRemediationBudgets(*budgetOverride)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 	attemptMatchesLiveHead := false
 	if conflicted && !forced && attemptedHeadSHA != "" {
 		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
@@ -512,15 +596,20 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 
 	stalled := remediationStalled(prior, digest, current.BaseSHA)
 	cycles := prior.Cycles + 1
-	if *budget <= 0 {
-		*budget = DefaultRemediationBudget
-	}
-	exceeded := cycles > *budget
+	exhaustedCause, exceeded := exhaustedRemediationCause(prior.AttemptsByCause, causes, budgets)
 	structuralCollision := len(structuralCollisions) > 0
 
 	var state remediationState
 	if exceeded || stalled || structuralCollision || forced {
-		reason := fmt.Sprintf("repass budget exhausted (%d/%d cycles)", cycles, *budget)
+		reason := ""
+		if exceeded {
+			reason = fmt.Sprintf(
+				"remediation cause %q exhausted its budget after %d/%d attempts",
+				exhaustedCause,
+				prior.AttemptsByCause.forCause(exhaustedCause),
+				budgets.forCause(exhaustedCause),
+			)
+		}
 		if stalled {
 			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
 		}
@@ -560,7 +649,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", base, selectedNumber), err, "")
 		}
 		state = remediationState{
-			Cycles: cycles, LastDiffDigest: digest,
+			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: escalatedBaseTip,
@@ -585,8 +674,12 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	attempts := prior.AttemptsByCause
+	for _, cause := range causes {
+		attempts.increment(cause)
+	}
 	state = remediationState{
-		Cycles: cycles, LastDiffDigest: digest,
+		Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: digest,
 		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 	}
 	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
@@ -596,8 +689,81 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pf(stdout, "recorded checkpoint for PR #%d: cycle %d/%d, digest %s\n", selectedNumber, cycles, *budget, digest)
+	pf(
+		stdout,
+		"recorded checkpoint for PR #%d: cycle %d, attempts by cause %s, digest %s\n",
+		selectedNumber, cycles, renderRemediationAttempts(attempts), digest,
+	)
 	return 0
+}
+
+func parseRemediationCauses(raw string) ([]remediationCause, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("remediationCauses is required")
+	}
+
+	seen := make(map[remediationCause]bool, len(remediationCauseOrder))
+	for _, value := range strings.Split(raw, ",") {
+		cause := remediationCause(strings.TrimSpace(value))
+		switch cause {
+		case remediationCauseConflict, remediationCauseSubstantive, remediationCauseFailingCI, remediationCauseSiblingOverlap:
+		default:
+			return nil, fmt.Errorf("unknown remediation cause %q", value)
+		}
+		seen[cause] = true
+	}
+	causes := make([]remediationCause, 0, len(seen))
+	for _, cause := range remediationCauseOrder {
+		if seen[cause] {
+			causes = append(causes, cause)
+		}
+	}
+	return causes, nil
+}
+
+func declaredRemediationBudgets(override int) (remediationBudgets, error) {
+	if override > 0 {
+		return remediationBudgets{
+			Conflict: override, Substantive: override,
+			FailingCI: override, SiblingOverlap: override,
+		}, nil
+	}
+	var budgets remediationBudgets
+	values := []struct {
+		input  string
+		target *int
+	}{
+		{"conflictBudget", &budgets.Conflict},
+		{"substantiveBudget", &budgets.Substantive},
+		{"failingCIBudget", &budgets.FailingCI},
+		{"siblingOverlapBudget", &budgets.SiblingOverlap},
+	}
+	for _, value := range values {
+		raw := providerInput(value.input, "")
+		budget, err := strconv.Atoi(raw)
+		if err != nil || budget <= 0 {
+			return remediationBudgets{}, fmt.Errorf("%s must be a positive integer, got %q", value.input, raw)
+		}
+		*value.target = budget
+	}
+	return budgets, nil
+}
+
+func exhaustedRemediationCause(attempts remediationAttempts, causes []remediationCause, budgets remediationBudgets) (remediationCause, bool) {
+	for _, cause := range causes {
+		if attempts.forCause(cause) >= budgets.forCause(cause) {
+			return cause, true
+		}
+	}
+	return "", false
+}
+
+func renderRemediationAttempts(attempts remediationAttempts) string {
+	parts := make([]string, 0, len(remediationCauseOrder))
+	for _, cause := range remediationCauseOrder {
+		parts = append(parts, fmt.Sprintf("%s=%d", cause, attempts.forCause(cause)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func knownSiblingOverlapFindings(
@@ -721,7 +887,7 @@ func renderSiblingOverlapContext(overlaps []siblingOverlapFinding) string {
 //
 // continueRemediation is what checkpoint-gate branches on: "true" means this
 // cycle may spend the agentic chain on the PR, "false" means it must not —
-// because the checkpoint escalated it (budget exhausted, a no-progress
+// because the checkpoint escalated it (a cause budget exhausted, a no-progress
 // repeat, or a caller-forced reviewer "fail"), or because the PR is no
 // longer open. It is a "true"/"false" STRING for the same reason
 // gather-pr-context stringifies its own booleans: only string-valued

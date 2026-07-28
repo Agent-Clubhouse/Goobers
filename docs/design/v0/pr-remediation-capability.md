@@ -156,7 +156,12 @@ inputs:
   # not by themselves justify a remediation cycle. Severity is carried on every
   # Finding today and routed on by nothing.
   minSeverity: "warning"
-  maxCycles: "3"
+  # Independent attempt allowances. Exhausting one cause does not consume
+  # another cause's budget.
+  conflictBudget: "2"
+  substantiveBudget: "2"
+  failingCIBudget: "2"
+  siblingOverlapBudget: "2"
 ```
 
 The default shipped config is the liberal one. An author who wants only mechanical
@@ -234,7 +239,7 @@ mutually independent and can go in parallel once row 1 lands.
 | 3 | `gather-review-threads`: inline comments + native review bodies | 1 |
 | 4 | `gather-issue-context`: resolve `closingIssueNumbers`, load acceptance criteria | 1 |
 | 5 | Sibling context in `pr-remediation` + persist `triageSibling`'s reason | 1 |
-| 6 | Declared `remediate` / `minSeverity` / `maxCycles` policy inputs | 1 |
+| 6 | Declared `remediate` / `minSeverity` / per-cause budget policy inputs | 1 |
 | 7 | `respond-to-findings` stage | 1 |
 | 8 | Escalation reasons record what was attempted | 6 |
 | 9 | Finding taxonomy: `conflict` guidance, split `substantive` | — |
