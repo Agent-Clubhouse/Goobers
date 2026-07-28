@@ -17,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/externaltelemetry/adx"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/githubapp"
@@ -36,6 +38,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
@@ -607,6 +610,52 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
 	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
+}
+
+// buildExternalTelemetryExecutor validates every registered plugin
+// configuration before a run and constructs the registered query kind.
+func buildExternalTelemetryExecutor(
+	config externaltelemetry.Configuration,
+	recorder executor.ArtifactRecorder,
+	registrar externaltelemetry.SecretRegistrar,
+) (executor.KindExecutor, error) {
+	if recorder == nil {
+		return nil, errors.New("build external telemetry executor: artifact recorder is nil")
+	}
+	registry, err := buildExternalTelemetryRegistry(config, registrar)
+	if err != nil {
+		return nil, err
+	}
+	query, err := executor.NewTelemetryQueryExecutor(&externaltelemetry.Host{
+		Registry: registry,
+	}, recorder)
+	if err != nil {
+		return nil, err
+	}
+	return query, nil
+}
+
+func buildExternalTelemetryRegistry(
+	config externaltelemetry.Configuration,
+	registrar externaltelemetry.SecretRegistrar,
+) (*externaltelemetry.Registry, error) {
+	registry := externaltelemetry.NewRegistry()
+	factories := []externaltelemetry.Factory{
+		externaltelemetry.FakeFactory{},
+		adx.Factory{},
+	}
+	factories = append(factories, connectorapi.RegisteredFactories()...)
+	for _, factory := range factories {
+		if err := registry.Register(factory); err != nil {
+			return nil, err
+		}
+	}
+	for _, connector := range config.Connectors {
+		if err := registry.Configure(connector, nil, registrar); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -1610,6 +1659,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
+		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
+	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
@@ -1711,6 +1763,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, err
 			}
 			if err := kinds.Register(executor.KindCIPoll, ciPoll); err != nil {
+				return nil, err
+			}
+			telemetryQuery, err := buildExternalTelemetryExecutor(cfg.ExternalTelemetry, rec, reg)
+			if err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindExternalTelemetry, telemetryQuery); err != nil {
 				return nil, err
 			}
 			return executor.NewTaskExecutor(kinds)
