@@ -803,7 +803,7 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 }
 
 // markMergeReviewVerdictStale rewrites the standing merge-review status comment
-// to say its verdict no longer describes the PR's current head, naming why.
+// to say its verdict no longer stands, naming why.
 //
 // It edits the existing comment rather than posting a new one, so a PR whose
 // head moves repeatedly does not accumulate a comment per voided cycle. If no
