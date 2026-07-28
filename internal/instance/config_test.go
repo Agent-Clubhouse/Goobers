@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/externaltelemetry"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -320,6 +322,140 @@ func TestPortalConfigValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadConfigExternalTelemetryConnectorReferencesCredentials(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+externalTelemetry:
+  connectors:
+    - name: production-metrics
+      kind: adx-kql-rest
+      version: v1
+      auth:
+        mode: bearer-token
+        token:
+          env: ADX_TOKEN
+      policy:
+        timeout: 20s
+        maxAttempts: 2
+        retryBackoff: 1s
+        maxRows: 100
+        maxBytes: 65536
+      network:
+        allowedHosts:
+          - metrics.kusto.windows.net
+      config:
+        cluster: https://metrics.kusto.windows.net
+        database: production
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.ExternalTelemetry.Connectors) != 1 {
+		t.Fatalf("connectors = %+v", cfg.ExternalTelemetry.Connectors)
+	}
+	connector := cfg.ExternalTelemetry.Connectors[0]
+	if connector.Name != "production-metrics" || connector.Auth.Token == nil ||
+		connector.Auth.Token.Env != "ADX_TOKEN" || strings.Contains(string(connector.Config), "ADX_TOKEN") {
+		t.Fatalf("connector = %+v", connector)
+	}
+}
+
+func TestConfigExternalTelemetryRejectsStageExposedTokenEnv(t *testing.T) {
+	tests := []struct {
+		name           string
+		tokenEnv       string
+		envPassthrough []string
+	}{
+		{name: "explicit passthrough", tokenEnv: "ADX_TOKEN", envPassthrough: []string{"ADX_TOKEN"}},
+		{name: "built-in allowlist", tokenEnv: "HOME"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{
+				Runner: RunnerConfig{EnvPassthrough: test.envPassthrough},
+				ExternalTelemetry: externaltelemetry.Configuration{
+					Connectors: []externaltelemetry.ConnectorConfig{{
+						Name:    "metrics",
+						Kind:    "adx-kql-rest",
+						Version: "v1",
+						Auth: externaltelemetry.AuthConfig{
+							Mode:  externaltelemetry.AuthBearerToken,
+							Token: &externaltelemetry.CredentialRef{Env: test.tokenEnv},
+						},
+						Config: json.RawMessage(`{}`),
+					}},
+				},
+			}
+			if err := cfg.Validate(); err == nil ||
+				!strings.Contains(err.Error(), "externalTelemetry.connectors[0]") ||
+				!strings.Contains(err.Error(), "must not be exposed to stages") {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigExternalTelemetryRejectsInlineCredentialValue(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+externalTelemetry:
+  connectors:
+    - name: metrics
+      kind: adx-kql-rest
+      version: v1
+      auth:
+        mode: bearer-token
+        token:
+          value: not-allowed
+      config:
+        cluster: https://metrics.kusto.windows.net
+        database: production
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), `unknown field "value"`) {
+		t.Fatalf("LoadConfig error = %v", err)
+	}
+}
+
+func TestLoadConfigValidatesExternalTelemetryWithoutTelemetryRetention(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+externalTelemetry:
+  connectors:
+    - name: Invalid_Name
+      kind: fake
+      version: v1
+      config:
+        source: fixture
+`)
+	if _, err := LoadConfig(path); err == nil ||
+		!strings.Contains(err.Error(), "externalTelemetry") ||
+		!strings.Contains(err.Error(), "must match") {
+		t.Fatalf("LoadConfig error = %v", err)
 	}
 }
 
