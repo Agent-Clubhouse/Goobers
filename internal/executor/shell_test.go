@@ -203,7 +203,7 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
-func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
+func TestShellExecutor_ADOPRWriteCommandsScopeAzureIdentityEnvironment(t *testing.T) {
 	t.Setenv("AZURE_TENANT_ID", "tenant-id")
 	t.Setenv("AZURE_CLIENT_ID", "client-id")
 	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/run/secrets/azure/tokens/identity-token")
@@ -219,19 +219,28 @@ func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
 
 	for _, test := range []struct {
 		name         string
+		command      string
 		capabilities []string
 		want         string
 	}{
 		{
-			name:         "declared provider capability",
+			name:         "open pr with declared provider capability",
+			command:      "open-pr",
 			capabilities: []string{string(capability.ProviderPRWrite)},
 			want:         "tenant-id|client-id|/var/run/secrets/azure/tokens/identity-token|https://login.microsoftonline.com/|http://127.0.0.1:41741/msi/token|" + journal.Redacted + "|server-thumbprint|http://127.0.0.1:40342/metadata/identity/oauth2/token|http://127.0.0.1:41742/msi/token|" + journal.Redacted + "|default-client-id|",
 		},
-		{name: "undeclared provider capability", want: strings.Repeat("|", 11)},
+		{name: "open pr without declared provider capability", command: "open-pr", want: strings.Repeat("|", 11)},
+		{
+			name:         "apply verdict with declared provider capability",
+			command:      "apply-verdict",
+			capabilities: []string{string(capability.ProviderPRWrite)},
+			want:         "tenant-id|client-id|/var/run/secrets/azure/tokens/identity-token|https://login.microsoftonline.com/|http://127.0.0.1:41741/msi/token|" + journal.Redacted + "|server-thumbprint|http://127.0.0.1:40342/metadata/identity/oauth2/token|http://127.0.0.1:41742/msi/token|" + journal.Redacted + "|default-client-id|",
+		},
+		{name: "apply verdict without declared provider capability", command: "apply-verdict", want: strings.Repeat("|", 11)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stub := filepath.Join(t.TempDir(), "goobers")
-			script := "#!/bin/sh\nprintf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" \"$IDENTITY_ENDPOINT\" \"$IDENTITY_HEADER\" \"$IDENTITY_SERVER_THUMBPRINT\" \"$IMDS_ENDPOINT\" \"$MSI_ENDPOINT\" \"$MSI_SECRET\" \"$DEFAULT_IDENTITY_CLIENT_ID\" \"$AZURE_CLIENT_SECRET\"\nprintf '{\"opened\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
+			script := "#!/bin/sh\nprintf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" \"$IDENTITY_ENDPOINT\" \"$IDENTITY_HEADER\" \"$IDENTITY_SERVER_THUMBPRINT\" \"$IMDS_ENDPOINT\" \"$MSI_ENDPOINT\" \"$MSI_SECRET\" \"$DEFAULT_IDENTITY_CLIENT_ID\" \"$AZURE_CLIENT_SECRET\"\nprintf '{\"applied\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
 			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -242,7 +251,7 @@ func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
 			env.Capabilities = test.capabilities
 			env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "organization", Project: "project", Name: "repository"}
 
-			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}})
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", test.command}})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}

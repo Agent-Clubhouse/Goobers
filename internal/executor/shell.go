@@ -364,7 +364,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			RepoBranchEnvVar+"="+env.RepoRef.Branch,
 		)
 	}
-	if injectRunContext && len(command) > 1 && command[1] == "open-pr" &&
+	if injectRunContext && len(command) > 1 &&
+		(command[1] == "open-pr" || command[1] == "apply-verdict") &&
 		env.RepoRef.Provider == apiv1.ProviderADO &&
 		containsString(env.Capabilities, string(capability.ProviderPRWrite)) {
 		stageEnv = append(stageEnv, adoIdentityEnv(registry)...)
