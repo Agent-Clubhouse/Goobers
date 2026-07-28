@@ -656,24 +656,18 @@ func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	}
 }
 
-func TestCompileCIPollRequiresProviderPRWrite(t *testing.T) {
+func TestCompileBuiltinTasksRequireCapabilities(t *testing.T) {
 	cases := []struct {
 		name    string
+		kind    string
 		caps    []string
 		wantErr string
 	}{
-		{
-			name:    "missing required capability",
-			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
-		},
-		{
-			name: "required capability declared",
-			caps: []string{string(capability.ProviderPRWrite)},
-		},
-		{
-			name: "legacy GitHub capability remains valid",
-			caps: []string{string(capability.GitHubPRWrite)},
-		},
+		{name: "ci-poll missing", kind: "ci-poll", wantErr: `must declare capability "provider:pr:write"`},
+		{name: "ci-poll provider capability", kind: "ci-poll", caps: []string{string(capability.ProviderPRWrite)}},
+		{name: "ci-poll legacy capability", kind: "ci-poll", caps: []string{string(capability.GitHubPRWrite)}},
+		{name: "external telemetry missing", kind: "external-telemetry", wantErr: `must declare capability "telemetry:read"`},
+		{name: "external telemetry capability", kind: "external-telemetry", caps: []string{string(capability.TelemetryRead)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -683,13 +677,13 @@ func TestCompileCIPollRequiresProviderPRWrite(t *testing.T) {
 				Tasks: []apiv1.Task{{
 					Name:         "poll",
 					Type:         apiv1.TaskDeterministic,
-					Goal:         "poll CI",
+					Goal:         "run built-in task",
 					Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
-					Inputs:       map[string]string{"kind": "ci-poll"},
+					Inputs:       map[string]string{"kind": tc.kind},
 					Capabilities: tc.caps,
 				}},
 			}
-			_, err := compileAcknowledged(Definition{Name: "ci-poll", Version: 1, Spec: spec})
+			_, err := compileAcknowledged(Definition{Name: tc.kind, Version: 1, Spec: spec})
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Compile: unexpected error %v", err)

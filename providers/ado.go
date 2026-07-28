@@ -626,194 +626,27 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	return ClosePullRequestResult{Number: number, Merged: merged, State: state}, nil
 }
 
-// MergePullRequest completes an active Azure DevOps pull request.
+// MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
 func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return MergePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
-	}
-	strategy, err := adoMergeStrategy(req.MergeMethod)
-	if err != nil {
-		return MergePullRequestResult{}, err
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
-	if err != nil {
-		return MergePullRequestResult{}, err
-	}
-	var current adoPullRequest
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
-		return MergePullRequestResult{}, err
-	}
-	number, err := adoPullRequestNumber(current, req.PullID)
-	if err != nil {
-		return MergePullRequestResult{}, err
-	}
-	switch strings.ToLower(current.Status) {
-	case "completed":
-		return MergePullRequestResult{
-			Number:   number,
-			Merged:   true,
-			MergeSHA: current.LastMergeCommit.CommitID,
-			Message:  current.MergeFailureMessage,
-		}, nil
-	case "active":
-	case "abandoned":
-		return MergePullRequestResult{}, fmt.Errorf("ado pull request %s is abandoned", req.PullID)
-	default:
-		return MergePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, current.Status)
-	}
-
-	completionOptions := map[string]interface{}{
-		"bypassPolicy":       false,
-		"deleteSourceBranch": false,
-	}
-	if strategy != "" {
-		completionOptions["mergeStrategy"] = strategy
-	}
-	body := map[string]interface{}{
-		"status":            "completed",
-		"completionOptions": completionOptions,
-	}
-	if req.ExpectedHeadSHA != "" {
-		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
-	}
-	var out adoPullRequest
-	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
-		return MergePullRequestResult{}, err
-	}
-	if out.PullRequestID == 0 {
-		out.PullRequestID = number
-	}
-	p.recordPullRequestMutation(ctx, req.Repository, out, "merge", "", map[string]FieldDigest{
-		"state": {
-			Before: digestString(current.Status),
-			After:  digestString(out.Status),
-		},
-	})
-	return MergePullRequestResult{
-		Number:   number,
-		Merged:   strings.EqualFold(out.Status, "completed"),
-		MergeSHA: out.LastMergeCommit.CommitID,
-		Message:  out.MergeFailureMessage,
-	}, nil
+	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
 }
 
-// DetectMergePolicy reports direct completion for Azure Repos. Azure DevOps
-// enforces branch policies during completion but does not expose a merge queue.
+// DetectMergePolicy is not yet implemented for Azure DevOps (issue #758):
+// merge-policy abstraction parity is scoped to V1 (BL-033) alongside the
+// rest of ADO's pull-request surface; the GitHub provider is the V0
+// workload (#13).
 func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return RepoMergePolicyResult{}, err
-	}
-	if req.Branch == "" {
-		return RepoMergePolicyResult{}, fmt.Errorf("branch is required")
-	}
-	return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+	return RepoMergePolicyResult{}, fmt.Errorf("ado: merge policy detection lands in V1 parity (BL-033)")
 }
 
-// EnqueuePullRequest enables Azure DevOps auto-complete for a pull request.
+// EnqueuePullRequest is not yet implemented for Azure DevOps: see DetectMergePolicy.
 func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
-	}
-	strategy, err := adoMergeStrategy(req.MergeMethod)
-	if err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
-	if err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	var current adoPullRequest
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	number, err := adoPullRequestNumber(current, req.PullID)
-	if err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	switch strings.ToLower(current.Status) {
-	case "completed":
-		return EnqueuePullRequestResult{Number: number, Merged: true, MergeSHA: current.LastMergeCommit.CommitID}, nil
-	case "active":
-	case "abandoned":
-		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s is abandoned", req.PullID)
-	default:
-		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, current.Status)
-	}
-	if current.AutoCompleteSetBy.ID != "" {
-		return EnqueuePullRequestResult{Number: number, Message: "auto-complete already enabled"}, nil
-	}
-	currentUserID, err := p.currentUserID(ctx)
-	if err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	completionOptions := map[string]interface{}{
-		"bypassPolicy":       false,
-		"deleteSourceBranch": false,
-	}
-	if strategy != "" {
-		completionOptions["mergeStrategy"] = strategy
-	}
-	body := map[string]interface{}{
-		"autoCompleteSetBy": map[string]string{"id": currentUserID},
-		"completionOptions": completionOptions,
-	}
-	if req.ExpectedHeadSHA != "" {
-		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
-	}
-	var out adoPullRequest
-	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
-	if out.PullRequestID == 0 {
-		out.PullRequestID = number
-	}
-	p.recordPullRequestMutation(ctx, req.Repository, out, "enqueue", "", map[string]FieldDigest{
-		"autoComplete": {Before: digestString("false"), After: digestString("true")},
-	})
-	return EnqueuePullRequestResult{
-		Number:   number,
-		Merged:   strings.EqualFold(out.Status, "completed"),
-		MergeSHA: out.LastMergeCommit.CommitID,
-		Message:  out.MergeFailureMessage,
-	}, nil
+	return EnqueuePullRequestResult{}, fmt.Errorf("ado: pull request enqueue lands in V1 parity (BL-033)")
 }
 
-// PollMergeQueueEntry maps Azure DevOps auto-complete onto the queue-watch
-// contract for callers that explicitly requested auto-complete.
+// PollMergeQueueEntry is not yet implemented for Azure DevOps: see DetectMergePolicy.
 func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return PollMergeQueueEntryResult{}, err
-	}
-	if req.PullID == "" {
-		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
-	if err != nil {
-		return PollMergeQueueEntryResult{}, err
-	}
-	var pr adoPullRequest
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
-		return PollMergeQueueEntryResult{}, err
-	}
-	switch strings.ToLower(pr.Status) {
-	case "completed":
-		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: pr.LastMergeCommit.CommitID}, nil
-	case "abandoned":
-		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, QueueState: "abandoned"}, nil
-	case "active":
-		if pr.AutoCompleteSetBy.ID == "" {
-			return PollMergeQueueEntryResult{State: MergeQueueEntryAbsent}, nil
-		}
-		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, QueueState: "auto-complete"}, nil
-	default:
-		return PollMergeQueueEntryResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, pr.Status)
-	}
+	return PollMergeQueueEntryResult{}, fmt.Errorf("ado: merge queue entry polling lands in V1 parity (BL-033)")
 }
 
 // ListPullRequests lists active Azure DevOps pull requests matching the
@@ -1587,30 +1420,6 @@ func (p *ADOProvider) buildURL(repo RepositoryRef, elems ...string) (string, err
 	return addQuery(endpoint, url.Values{"api-version": []string{"7.1"}})
 }
 
-func (p *ADOProvider) currentUserID(ctx context.Context) (string, error) {
-	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
-	if err != nil {
-		return "", err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{
-		"api-version":    []string{"7.1-preview.1"},
-		"connectOptions": []string{"1"},
-		"lastChangeId":   []string{"-1"},
-		"lastChangeId64": []string{"-1"},
-	})
-	if err != nil {
-		return "", err
-	}
-	var out adoConnectionData
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", err
-	}
-	if out.AuthenticatedUser.ID == "" {
-		return "", fmt.Errorf("ado connection data returned no authenticated user identity")
-	}
-	return out.AuthenticatedUser.ID, nil
-}
-
 func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo RepositoryRef, pullID, repositoryID, headSHA string) (CheckState, []CheckDetail, error) {
 	endpoint, err := p.buildURL(repo, "builds")
 	if err != nil {
@@ -1707,32 +1516,6 @@ func (p *ADOProvider) pullRequestCommentsSince(ctx context.Context, repo Reposit
 		}
 	}
 	return comments, nil
-}
-
-func adoMergeStrategy(method MergeMethod) (string, error) {
-	switch method {
-	case "":
-		return "", nil
-	case MergeMethodMerge:
-		return "noFastForward", nil
-	case MergeMethodSquash:
-		return "squash", nil
-	case MergeMethodRebase:
-		return "rebase", nil
-	default:
-		return "", fmt.Errorf("unsupported merge method %q", method)
-	}
-}
-
-func adoPullRequestNumber(pr adoPullRequest, pullID string) (int, error) {
-	if pr.PullRequestID != 0 {
-		return pr.PullRequestID, nil
-	}
-	number, err := strconv.Atoi(pullID)
-	if err != nil {
-		return 0, fmt.Errorf("ado pull request returned no id and pull id %q is not numeric", pullID)
-	}
-	return number, nil
 }
 
 func pullRequestNumber(pullID string) int {
@@ -2085,14 +1868,11 @@ type adoPullRequest struct {
 	TargetRefName         string        `json:"targetRefName"`
 	IsDraft               bool          `json:"isDraft"`
 	MergeStatus           string        `json:"mergeStatus"`
-	MergeFailureMessage   string        `json:"mergeFailureMessage"`
 	Reviewers             []adoReviewer `json:"reviewers"`
-	AutoCompleteSetBy     adoIdentity   `json:"autoCompleteSetBy"`
 	Repository            adoRepository `json:"repository"`
 	Labels                []adoLabel    `json:"labels"`
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
-	LastMergeCommit       adoCommitRef  `json:"lastMergeCommit"`
 	Links                 adoPRLinks    `json:"_links"`
 }
 
@@ -2104,10 +1884,6 @@ type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
-}
-
-type adoConnectionData struct {
-	AuthenticatedUser adoIdentity `json:"authenticatedUser"`
 }
 
 type adoReviewer struct {

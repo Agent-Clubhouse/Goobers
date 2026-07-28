@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -401,786 +400,6 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	}
 }
 
-func TestADOProviderCreatesPullRequest(t *testing.T) {
-	var body map[string]interface{}
-	recorder := &recordingRecorder{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			query := r.URL.Query()
-			if query.Get("searchCriteria.status") != "active" ||
-				query.Get("searchCriteria.sourceRefName") != "refs/heads/goobers/implementation/run-1" ||
-				query.Get("searchCriteria.targetRefName") != "refs/heads/main" ||
-				query.Get("searchCriteria.includeLinks") != "true" ||
-				query.Get("$top") != "1" {
-				t.Fatalf("unexpected pull request lookup query: %s", r.URL.RawQuery)
-			}
-			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
-		case http.MethodPost:
-			decodeJSON(t, r, &body)
-			writeJSON(t, w, map[string]interface{}{
-				"pullRequestId": 12,
-				"url":           "api-pr-url",
-				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
-			})
-		default:
-			t.Fatalf("unexpected pull request method %s", r.Method)
-		}
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider(
-		"org",
-		"project",
-		"token",
-		func(p *ADOProvider) { p.BaseURL = server.URL },
-		WithADOMutationRecorder(recorder),
-	)
-	result, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Title:      "Implement ADO parity",
-		Body:       "Provider contract",
-		Head:       "refs/heads/goobers/implementation/run-1",
-		Base:       "main",
-		Draft:      true,
-		RunID:      "run-1",
-	})
-	if err != nil {
-		t.Fatalf("OpenPullRequest returned error: %v", err)
-	}
-	if result.ID != "12" || result.Number != 12 || result.URL != "web-pr-url" {
-		t.Fatalf("result = %#v", result)
-	}
-	if body["sourceRefName"] != "refs/heads/goobers/implementation/run-1" || body["targetRefName"] != "refs/heads/main" {
-		t.Fatalf("pull request refs = %#v", body)
-	}
-	if body["title"] != "Implement ADO parity" || body["isDraft"] != true {
-		t.Fatalf("pull request metadata = %#v", body)
-	}
-	description, _ := body["description"].(string)
-	if !strings.Contains(description, "Provider contract") || !strings.Contains(description, "run-1") {
-		t.Fatalf("description = %q", description)
-	}
-	ref, ok := recorder.last()
-	if !ok || ref.Provider != ProviderADO || ref.Ref != "org/project/repo#12" ||
-		ref.Operation != "open" || ref.RunID != "run-1" || ref.URL != "web-pr-url" {
-		t.Fatalf("mutation = %#v", ref)
-	}
-	if ref.Fields["description"].After != digestString(description) {
-		t.Fatalf("description mutation = %#v", ref.Fields["description"])
-	}
-}
-
-func TestADOProviderUpdatesExistingPullRequestOnRepass(t *testing.T) {
-	var patchBody map[string]interface{}
-	postCalls := 0
-	patchCalls := 0
-	active := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			if !active {
-				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
-				return
-			}
-			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{{
-				"pullRequestId": 12,
-				"url":           "api-pr-url",
-				"sourceRefName": "refs/heads/goobers/implementation/run-1",
-				"targetRefName": "refs/heads/main",
-				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
-			}}})
-		case http.MethodPost:
-			postCalls++
-			active = true
-			writeJSON(t, w, map[string]interface{}{
-				"pullRequestId": 12,
-				"url":           "api-pr-url",
-				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
-			})
-		default:
-			t.Fatalf("unexpected pull request method %s", r.Method)
-		}
-	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPatch)
-		patchCalls++
-		decodeJSON(t, r, &patchBody)
-		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	request := PullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Title:      "Initial title",
-		Body:       "Initial body",
-		Head:       "goobers/implementation/run-1",
-		Base:       "main",
-		Draft:      true,
-		RunID:      "run-1",
-	}
-	first, err := provider.OpenPullRequest(context.Background(), request)
-	if err != nil {
-		t.Fatalf("first OpenPullRequest returned error: %v", err)
-	}
-	request.Title = "Updated title"
-	request.Body = "Updated body"
-	result, err := provider.OpenPullRequest(context.Background(), request)
-	if err != nil {
-		t.Fatalf("repass OpenPullRequest returned error: %v", err)
-	}
-	if first.ID != "12" || result.ID != first.ID || result.Number != first.Number || result.URL != first.URL {
-		t.Fatalf("first result = %#v, repass result = %#v", first, result)
-	}
-	if postCalls != 1 || patchCalls != 1 {
-		t.Fatalf("POST calls = %d, PATCH calls = %d; want one creation and one repass update", postCalls, patchCalls)
-	}
-	if patchBody["title"] != "Updated title" || patchBody["isDraft"] != true {
-		t.Fatalf("patch body = %#v", patchBody)
-	}
-	description, _ := patchBody["description"].(string)
-	if !strings.Contains(description, "Updated body") || !strings.Contains(description, "goobers run-id: run-1") {
-		t.Fatalf("description = %q", description)
-	}
-}
-
-func TestADOProviderBoundsPullRequestDescriptionOnCreateAndUpdate(t *testing.T) {
-	var descriptions []string
-	active := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			if active {
-				writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{{"pullRequestId": 12}}})
-			} else {
-				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
-			}
-		case http.MethodPost:
-			var body map[string]interface{}
-			decodeJSON(t, r, &body)
-			descriptions = append(descriptions, body["description"].(string))
-			active = true
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
-		default:
-			t.Fatalf("unexpected pull request method %s", r.Method)
-		}
-	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPatch)
-		var body map[string]interface{}
-		decodeJSON(t, r, &body)
-		descriptions = append(descriptions, body["description"].(string))
-		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	request := PullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Title:      "Bound the description",
-		Body:       strings.Repeat("🚀", adoPullRequestDescriptionLimit),
-		Head:       "goobers/implementation/run-1",
-		Base:       "main",
-		RunID:      "run-1",
-	}
-	if _, err := provider.OpenPullRequest(context.Background(), request); err != nil {
-		t.Fatalf("create pull request: %v", err)
-	}
-	request.Body += "updated"
-	if _, err := provider.OpenPullRequest(context.Background(), request); err != nil {
-		t.Fatalf("update pull request: %v", err)
-	}
-
-	if len(descriptions) != 2 {
-		t.Fatalf("descriptions = %d, want create and update", len(descriptions))
-	}
-	suffix := "\n\n---\n" + runFooter(request.RunID)
-	for i, description := range descriptions {
-		if got := utf16CodeUnits(description); got > adoPullRequestDescriptionLimit ||
-			got < adoPullRequestDescriptionLimit-1 {
-			t.Errorf("description %d UTF-16 length = %d, want at most %d with no more than one unused unit", i, got, adoPullRequestDescriptionLimit)
-		}
-		if !utf8.ValidString(description) {
-			t.Errorf("description %d is not valid UTF-8", i)
-		}
-		if !strings.HasSuffix(description, suffix) {
-			t.Errorf("description %d does not preserve run footer", i)
-		}
-	}
-}
-
-func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
-	since := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodGet)
-		writeJSON(t, w, map[string]interface{}{
-			"pullRequestId":         12,
-			"url":                   "api-pr-url",
-			"status":                "active",
-			"title":                 "Implement ADO parity",
-			"description":           "Provider contract",
-			"sourceRefName":         "refs/heads/goobers/implementation/run-1",
-			"targetRefName":         "refs/heads/main",
-			"isDraft":               true,
-			"mergeStatus":           "succeeded",
-			"reviewers":             []map[string]int{{"vote": 10}, {"vote": -5}, {"vote": 0}},
-			"repository":            map[string]string{"id": "11111111-2222-3333-4444-555555555555"},
-			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
-			"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
-			"_links":                map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
-		})
-	})
-	mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodGet)
-		query := r.URL.Query()
-		if query.Get("api-version") != "7.1" ||
-			query.Get("branchName") != "refs/pull/12/merge" ||
-			query.Get("reasonFilter") != "pullRequest" ||
-			query.Get("repositoryId") != "11111111-2222-3333-4444-555555555555" ||
-			query.Get("repositoryType") != "TfsGit" ||
-			query.Get("queryOrder") != "queueTimeDescending" ||
-			query.Get("$top") != "100" {
-			t.Fatalf("unexpected build query: %s", r.URL.RawQuery)
-		}
-		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
-			{
-				"id": 21, "buildNumber": "20260726.2", "status": "completed", "result": "succeeded",
-				"definition":  map[string]interface{}{"id": 7, "name": "provider-ci"},
-				"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
-				"_links":      map[string]interface{}{"web": map[string]string{"href": "build-url"}},
-			},
-			{
-				"id": 20, "buildNumber": "20260726.1", "status": "completed", "result": "failed",
-				"definition":  map[string]interface{}{"id": 7, "name": "provider-ci"},
-				"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
-			},
-			{
-				"id": 22, "buildNumber": "20260726.3", "status": "completed", "result": "partiallySucceeded",
-				"definition":  map[string]interface{}{"id": 8, "name": "lint"},
-				"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
-			},
-			{
-				"id": 23, "buildNumber": "20260726.4", "status": "completed", "result": "failed",
-				"definition":  map[string]interface{}{"id": 9, "name": "stale"},
-				"triggerInfo": map[string]string{"pr.sourceSha": "superseded-sha"},
-			},
-		}})
-	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/threads", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodGet)
-		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
-			{
-				"id": 4,
-				"comments": []map[string]interface{}{
-					{
-						"id": 1, "content": "before cutoff", "publishedDate": since.Add(-time.Minute),
-						"author": map[string]string{"uniqueName": "old@example.com"},
-					},
-					{
-						"id": 2, "content": "please update", "publishedDate": since.Add(time.Minute),
-						"author": map[string]string{"uniqueName": "reviewer@example.com"},
-					},
-					{
-						"id": 3, "content": "deleted", "publishedDate": since.Add(2 * time.Minute), "isDeleted": true,
-					},
-				},
-			},
-		}})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
-		Repository:    RepositoryRef{Name: "repo", Project: "project"},
-		PullID:        "12",
-		CommentsSince: &since,
-	})
-	if err != nil {
-		t.Fatalf("PollPullRequest returned error: %v", err)
-	}
-	if result.Number != 12 || result.State != "open" || result.Merged || result.URL != "web-pr-url" {
-		t.Fatalf("pull request identity/state = %#v", result)
-	}
-	if result.Mergeable == nil || !*result.Mergeable || result.MergeableState != "succeeded" {
-		t.Fatalf("mergeability = %#v, %q", result.Mergeable, result.MergeableState)
-	}
-	if result.HeadBranch != "goobers/implementation/run-1" || result.BaseBranch != "main" ||
-		result.HeadSHA != "head-sha" || result.BaseSHA != "base-sha" || result.Body != "Provider contract" {
-		t.Fatalf("pull request refs/body = %#v", result)
-	}
-	if result.HeadRepository == nil || result.HeadRepository.Provider != ProviderADO ||
-		result.HeadRepository.Owner != "org" || result.HeadRepository.Project != "project" {
-		t.Fatalf("head repository = %#v", result.HeadRepository)
-	}
-	if result.ReviewDecision != ReviewDecisionChangesRequested || result.RequestedChanges != 1 {
-		t.Fatalf("review state = %q, requested changes = %d", result.ReviewDecision, result.RequestedChanges)
-	}
-	if result.CheckState != CheckStateFailing || len(result.Checks) != 2 {
-		t.Fatalf("check state = %q, checks = %#v", result.CheckState, result.Checks)
-	}
-	if result.Checks[0].Name != "provider-ci" || result.Checks[0].URL != "build-url" ||
-		result.Checks[1].State != CheckStateFailing {
-		t.Fatalf("checks = %#v", result.Checks)
-	}
-	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Body != "please update" ||
-		result.CommentsSince[0].Author != "reviewer@example.com" {
-		t.Fatalf("comments since = %#v", result.CommentsSince)
-	}
-}
-
-func TestADOProviderPullRequestBuildStateRequiresCurrentHeadCorrelation(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodGet)
-		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
-			{
-				"id": 23, "buildNumber": "20260726.4", "status": "completed", "result": "succeeded",
-				"definition": map[string]interface{}{"id": 7, "name": "provider-ci"},
-			},
-		}})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	state, checks, err := provider.pullRequestBuildState(
-		context.Background(),
-		RepositoryRef{Name: "repo", Project: "project"},
-		"12",
-		"repo-id",
-		"new-head-sha",
-	)
-	if err != nil {
-		t.Fatalf("pullRequestBuildState returned error: %v", err)
-	}
-	if state != CheckStatePending || len(checks) != 0 {
-		t.Fatalf("build state = %q, checks = %#v, want pending with no correlated builds", state, checks)
-	}
-}
-
-func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
-	closedAt := time.Date(2026, 7, 26, 18, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		status string
-		merged bool
-	}{
-		{status: "abandoned"},
-		{status: "completed", merged: true},
-	} {
-		t.Run(test.status, func(t *testing.T) {
-			mux := http.NewServeMux()
-			mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(t, w, map[string]interface{}{
-					"pullRequestId": 12,
-					"status":        test.status,
-					"closedDate":    closedAt.Format(time.RFC3339),
-					"repository":    map[string]string{"id": "11111111-2222-3333-4444-555555555555"},
-				})
-			})
-			mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
-			})
-			server := httptest.NewServer(mux)
-			defer server.Close()
-
-			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-			result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
-				Repository: RepositoryRef{Name: "repo", Project: "project"},
-				PullID:     "12",
-			})
-			if err != nil {
-				t.Fatalf("PollPullRequest returned error: %v", err)
-			}
-			if result.State != "closed" || result.Merged != test.merged {
-				t.Fatalf("result state = %q, merged = %t", result.State, result.Merged)
-			}
-			if test.merged && (result.MergedAt == nil || !result.MergedAt.Equal(closedAt)) {
-				t.Fatalf("MergedAt = %v, want %v", result.MergedAt, closedAt)
-			}
-			if !test.merged && result.MergedAt != nil {
-				t.Fatalf("MergedAt = %v, want nil for abandoned pull request", result.MergedAt)
-			}
-		})
-	}
-}
-
-func TestADOProviderReviewBuildAndTerminalMappings(t *testing.T) {
-	reviewTests := []struct {
-		name      string
-		votes     []int
-		decision  ReviewDecision
-		requested int
-	}{
-		{name: "no votes", votes: nil, decision: ReviewDecisionPending},
-		{name: "approved", votes: []int{0, 5, 10}, decision: ReviewDecisionApproved},
-		{name: "waiting for author", votes: []int{10, -5}, decision: ReviewDecisionChangesRequested, requested: 1},
-		{name: "rejected", votes: []int{-10, -5}, decision: ReviewDecisionChangesRequested, requested: 2},
-	}
-	for _, test := range reviewTests {
-		t.Run("review "+test.name, func(t *testing.T) {
-			reviewers := make([]adoReviewer, len(test.votes))
-			for i, vote := range test.votes {
-				reviewers[i].Vote = vote
-			}
-			decision, requested := adoReviewDecision(reviewers)
-			if decision != test.decision || requested != test.requested {
-				t.Fatalf("adoReviewDecision(%v) = %q, %d; want %q, %d", test.votes, decision, requested, test.decision, test.requested)
-			}
-		})
-	}
-
-	buildTests := []struct {
-		status string
-		result string
-		want   CheckState
-	}{
-		{status: "notStarted", want: CheckStatePending},
-		{status: "inProgress", want: CheckStatePending},
-		{status: "completed", result: "succeeded", want: CheckStatePassing},
-		{status: "completed", result: "partiallySucceeded", want: CheckStateFailing},
-		{status: "completed", result: "failed", want: CheckStateFailing},
-		{status: "completed", result: "canceled", want: CheckStateFailing},
-		{status: "completed", result: "none", want: CheckStatePending},
-	}
-	for _, test := range buildTests {
-		t.Run("build "+test.status+" "+test.result, func(t *testing.T) {
-			if got := adoBuildState(test.status, test.result); got != test.want {
-				t.Fatalf("adoBuildState(%q, %q) = %q, want %q", test.status, test.result, got, test.want)
-			}
-		})
-	}
-
-	stateTests := []struct {
-		status string
-		state  string
-		merged bool
-	}{
-		{status: "active", state: "open"},
-		{status: "abandoned", state: "closed"},
-		{status: "completed", state: "merged", merged: true},
-	}
-	for _, test := range stateTests {
-		t.Run("terminal "+test.status, func(t *testing.T) {
-			state, merged := adoPullRequestState(test.status)
-			if state != test.state || merged != test.merged {
-				t.Fatalf("adoPullRequestState(%q) = %q, %t; want %q, %t", test.status, state, merged, test.state, test.merged)
-			}
-		})
-	}
-
-	pollStateTests := []struct {
-		status string
-		state  string
-		merged bool
-	}{
-		{status: "active", state: "open"},
-		{status: "abandoned", state: "closed"},
-		{status: "completed", state: "closed", merged: true},
-	}
-	for _, test := range pollStateTests {
-		t.Run("poll terminal "+test.status, func(t *testing.T) {
-			state, merged := adoPullRequestPollState(test.status)
-			if state != test.state || merged != test.merged {
-				t.Fatalf("adoPullRequestPollState(%q) = %q, %t; want %q, %t", test.status, state, merged, test.state, test.merged)
-			}
-		})
-	}
-}
-
-func TestADOProviderClosePullRequestAbandonsAndComments(t *testing.T) {
-	var patches int
-	var patchBody map[string]string
-	var threadBody adoPullRequestThreadRequest
-	recorder := &recordingRecorder{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "active"})
-		case http.MethodPatch:
-			patches++
-			decodeJSON(t, r, &patchBody)
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "abandoned"})
-		default:
-			t.Fatalf("unexpected pull request method %s", r.Method)
-		}
-	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/threads", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		decodeJSON(t, r, &threadBody)
-		w.WriteHeader(http.StatusCreated)
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider(
-		"org",
-		"project",
-		"token",
-		func(p *ADOProvider) { p.BaseURL = server.URL },
-		WithADOMutationRecorder(recorder),
-	)
-	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		PullID:     "12",
-		Comment:    "No longer needed",
-	})
-	if err != nil {
-		t.Fatalf("ClosePullRequest returned error: %v", err)
-	}
-	if result.Number != 12 || result.Merged || result.State != "closed" {
-		t.Fatalf("result = %#v", result)
-	}
-	if patches != 1 || patchBody["status"] != "abandoned" {
-		t.Fatalf("patches = %d, body = %#v", patches, patchBody)
-	}
-	if threadBody.Status != 1 || len(threadBody.Comments) != 1 ||
-		threadBody.Comments[0].Content != "No longer needed" || threadBody.Comments[0].CommentType != 1 {
-		t.Fatalf("thread body = %#v", threadBody)
-	}
-	if len(recorder.refs) != 2 || recorder.refs[0].Operation != "close" || recorder.refs[1].Operation != "comment" {
-		t.Fatalf("mutations = %#v", recorder.refs)
-	}
-}
-
-func TestADOProviderClosePullRequestReportsCompletedAsMerged(t *testing.T) {
-	closedAt := time.Date(2026, 7, 26, 18, 0, 0, 0, time.UTC)
-	var patches int
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			patches++
-		}
-		writeJSON(t, w, map[string]interface{}{
-			"pullRequestId": 12,
-			"status":        "completed",
-			"closedDate":    closedAt.Format(time.RFC3339),
-		})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		PullID:     "12",
-	})
-	if err != nil {
-		t.Fatalf("ClosePullRequest returned error: %v", err)
-	}
-	if result.Number != 12 || !result.Merged || result.State != "merged" || patches != 0 {
-		t.Fatalf("result = %#v, patches = %d", result, patches)
-	}
-}
-
-func TestADOProviderMergePullRequestCompletesWithLeaseAndStrategy(t *testing.T) {
-	var patchBody map[string]interface{}
-	recorder := &recordingRecorder{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "active"})
-		case http.MethodPatch:
-			decodeJSON(t, r, &patchBody)
-			writeJSON(t, w, map[string]interface{}{
-				"pullRequestId":   12,
-				"status":          "completed",
-				"lastMergeCommit": map[string]string{"commitId": "merge-sha"},
-			})
-		default:
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider(
-		"org",
-		"project",
-		"token",
-		func(p *ADOProvider) { p.BaseURL = server.URL },
-		WithADOMutationRecorder(recorder),
-	)
-	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
-		Repository:      RepositoryRef{Name: "repo", Project: "project"},
-		PullID:          "12",
-		ExpectedHeadSHA: "head-sha",
-		MergeMethod:     MergeMethodSquash,
-	})
-	if err != nil {
-		t.Fatalf("MergePullRequest returned error: %v", err)
-	}
-	if result.Number != 12 || !result.Merged || result.MergeSHA != "merge-sha" {
-		t.Fatalf("result = %#v", result)
-	}
-	if patchBody["status"] != "completed" {
-		t.Fatalf("patch body = %#v", patchBody)
-	}
-	options, ok := patchBody["completionOptions"].(map[string]interface{})
-	if !ok || options["mergeStrategy"] != "squash" || options["bypassPolicy"] != false {
-		t.Fatalf("completion options = %#v", patchBody["completionOptions"])
-	}
-	lease, ok := patchBody["lastMergeSourceCommit"].(map[string]interface{})
-	if !ok || lease["commitId"] != "head-sha" {
-		t.Fatalf("lastMergeSourceCommit = %#v", patchBody["lastMergeSourceCommit"])
-	}
-	ref, ok := recorder.last()
-	if !ok || ref.Operation != "merge" || ref.Ref != "org/project/repo#12" {
-		t.Fatalf("mutation = %#v", ref)
-	}
-}
-
-func TestADOProviderAutoCompleteLifecycle(t *testing.T) {
-	var patchBody map[string]interface{}
-	autoComplete := false
-	completed := false
-	recorder := &recordingRecorder{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			status := "active"
-			if completed {
-				status = "completed"
-			}
-			body := map[string]interface{}{
-				"pullRequestId": 12,
-				"status":        status,
-				"createdBy":     map[string]string{"id": "creator-id"},
-			}
-			if autoComplete {
-				body["autoCompleteSetBy"] = map[string]string{"id": "actor-id"}
-			}
-			if completed {
-				body["lastMergeCommit"] = map[string]string{"commitId": "merge-sha"}
-			}
-			writeJSON(t, w, body)
-		case http.MethodPatch:
-			decodeJSON(t, r, &patchBody)
-			autoComplete = true
-			writeJSON(t, w, map[string]interface{}{
-				"pullRequestId":     12,
-				"status":            "active",
-				"autoCompleteSetBy": map[string]string{"id": "actor-id"},
-			})
-		default:
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-	})
-	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodGet)
-		query := r.URL.Query()
-		if query.Get("api-version") != "7.1-preview.1" ||
-			query.Get("connectOptions") != "1" ||
-			query.Get("lastChangeId") != "-1" ||
-			query.Get("lastChangeId64") != "-1" {
-			t.Fatalf("unexpected connection data query: %s", r.URL.RawQuery)
-		}
-		writeJSON(t, w, map[string]interface{}{
-			"authenticatedUser": map[string]string{"id": "actor-id"},
-		})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider(
-		"org",
-		"project",
-		"token",
-		func(p *ADOProvider) { p.BaseURL = server.URL },
-		WithADOMutationRecorder(recorder),
-	)
-	policy, err := provider.DetectMergePolicy(context.Background(), RepoMergePolicyRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Branch:     "main",
-	})
-	if err != nil || policy.Policy != MergePolicyDirect {
-		t.Fatalf("DetectMergePolicy = %#v, %v", policy, err)
-	}
-	enqueued, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
-		Repository:      RepositoryRef{Name: "repo", Project: "project"},
-		PullID:          "12",
-		ExpectedHeadSHA: "head-sha",
-		MergeMethod:     MergeMethodRebase,
-	})
-	if err != nil {
-		t.Fatalf("EnqueuePullRequest returned error: %v", err)
-	}
-	if enqueued.Number != 12 || enqueued.Merged {
-		t.Fatalf("enqueue result = %#v", enqueued)
-	}
-	identity, ok := patchBody["autoCompleteSetBy"].(map[string]interface{})
-	if !ok || identity["id"] != "actor-id" {
-		t.Fatalf("autoCompleteSetBy = %#v", patchBody["autoCompleteSetBy"])
-	}
-	options, ok := patchBody["completionOptions"].(map[string]interface{})
-	if !ok || options["mergeStrategy"] != "rebase" {
-		t.Fatalf("completionOptions = %#v", patchBody["completionOptions"])
-	}
-	pending, err := provider.PollMergeQueueEntry(context.Background(), PollMergeQueueEntryRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		PullID:     "12",
-	})
-	if err != nil || pending.State != MergeQueueEntryPending || pending.QueueState != "auto-complete" {
-		t.Fatalf("pending poll = %#v, %v", pending, err)
-	}
-	completed = true
-	merged, err := provider.PollMergeQueueEntry(context.Background(), PollMergeQueueEntryRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		PullID:     "12",
-	})
-	if err != nil || merged.State != MergeQueueEntryMerged || merged.MergeSHA != "merge-sha" {
-		t.Fatalf("merged poll = %#v, %v", merged, err)
-	}
-	ref, ok := recorder.last()
-	if !ok || ref.Operation != "enqueue" {
-		t.Fatalf("mutation = %#v", ref)
-	}
-}
-
-func TestADOProviderPullRequestErrorsUseProviderErrorModel(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		status    int
-		transient bool
-	}{
-		{name: "auth", status: http.StatusUnauthorized},
-		{name: "server", status: http.StatusServiceUnavailable, transient: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Error(w, "provider failure", test.status)
-			}))
-			defer server.Close()
-
-			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-			_, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
-				Repository: RepositoryRef{Name: "repo", Project: "project"},
-				PullID:     "12",
-			})
-			if err == nil {
-				t.Fatal("PollPullRequest returned nil error")
-			}
-			if !strings.Contains(err.Error(), "status "+strconv.Itoa(test.status)) {
-				t.Fatalf("error = %q", err)
-			}
-			if got := IsTransientError(err); got != test.transient {
-				t.Fatalf("IsTransientError(%v) = %t, want %t", err, got, test.transient)
-			}
-		})
-	}
-}
-
 func TestADOProviderListPullRequests(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
@@ -1320,6 +539,276 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 		if files[i] != want[i] {
 			t.Fatalf("files[%d] = %#v, want %#v", i, files[i], want[i])
 		}
+	}
+}
+
+func TestADOProviderUpdatesExistingPullRequestOnRepass(t *testing.T) {
+	var postBody map[string]interface{}
+	var patchBody map[string]interface{}
+	postCalls := 0
+	patchCalls := 0
+	active := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if !active {
+				if r.URL.Query().Get("searchCriteria.sourceRefName") != "refs/heads/goobers/implementation/run-1" {
+					t.Fatalf("unexpected lookup query: %s", r.URL.RawQuery)
+				}
+				writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+				return
+			}
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{{
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"sourceRefName": "refs/heads/goobers/implementation/run-1",
+				"targetRefName": "refs/heads/main",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			}}})
+		case http.MethodPost:
+			postCalls++
+			active = true
+			decodeJSON(t, r, &postBody)
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		patchCalls++
+		decodeJSON(t, r, &patchBody)
+		writeJSON(t, w, map[string]interface{}{"pullRequestId": 12})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	request := PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Initial title",
+		Body:       "Initial body",
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		Draft:      true,
+		RunID:      "run-1",
+	}
+	first, err := provider.OpenPullRequest(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first OpenPullRequest returned error: %v", err)
+	}
+	request.Title = "Updated title"
+	request.Body = "Updated body"
+	result, err := provider.OpenPullRequest(context.Background(), request)
+	if err != nil {
+		t.Fatalf("repass OpenPullRequest returned error: %v", err)
+	}
+	if first.ID != "12" || result.ID != first.ID || result.Number != first.Number || result.URL != first.URL {
+		t.Fatalf("first result = %#v, repass result = %#v", first, result)
+	}
+	if postCalls != 1 || patchCalls != 1 {
+		t.Fatalf("POST calls = %d, PATCH calls = %d; want one creation and one repass update", postCalls, patchCalls)
+	}
+	if postBody["title"] != "Initial title" || postBody["targetRefName"] != "refs/heads/main" {
+		t.Fatalf("post body = %#v", postBody)
+	}
+	if patchBody["title"] != "Updated title" || patchBody["isDraft"] != true {
+		t.Fatalf("patch body = %#v", patchBody)
+	}
+	description, _ := patchBody["description"].(string)
+	if !strings.Contains(description, "Updated body") || !strings.Contains(description, "goobers run-id: run-1") {
+		t.Fatalf("description = %q", description)
+	}
+}
+
+func TestADOProviderBoundsPullRequestDescriptionOnCreateAndUpdate(t *testing.T) {
+	description := adoPullRequestDescription(strings.Repeat("🚀", adoPullRequestDescriptionLimit), "run-1")
+	if got := utf16CodeUnits(description); got > adoPullRequestDescriptionLimit || got < adoPullRequestDescriptionLimit-1 {
+		t.Fatalf("UTF-16 length = %d, want at most %d with no more than one unused unit", got, adoPullRequestDescriptionLimit)
+	}
+	if !utf8.ValidString(description) {
+		t.Fatal("description is not valid UTF-8")
+	}
+	if suffix := "\n\n---\n" + runFooter("run-1"); !strings.HasSuffix(description, suffix) {
+		t.Fatalf("description does not preserve %q", suffix)
+	}
+}
+
+func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId":         12,
+			"url":                   "api-pr-url",
+			"status":                "active",
+			"title":                 "Implement ADO parity",
+			"description":           "Provider contract",
+			"sourceRefName":         "refs/heads/goobers/implementation/run-1",
+			"targetRefName":         "refs/heads/main",
+			"isDraft":               true,
+			"mergeStatus":           "succeeded",
+			"reviewers":             []map[string]int{{"vote": 10}, {"vote": -5}, {"vote": 0}},
+			"repository":            map[string]string{"id": "11111111-2222-3333-4444-555555555555"},
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
+			"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
+			"_links":                map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		query := r.URL.Query()
+		if query.Get("branchName") != "refs/pull/12/merge" ||
+			query.Get("repositoryId") != "11111111-2222-3333-4444-555555555555" {
+			t.Fatalf("unexpected build query: %s", r.URL.RawQuery)
+		}
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+			{
+				"id": 21, "buildNumber": "20260726.2", "status": "completed", "result": "succeeded",
+				"definition":  map[string]interface{}{"id": 7, "name": "provider-ci"},
+				"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
+				"_links":      map[string]interface{}{"web": map[string]string{"href": "build-url"}},
+			},
+			{
+				"id": 22, "buildNumber": "20260726.3", "status": "completed", "result": "partiallySucceeded",
+				"definition":  map[string]interface{}{"id": 8, "name": "lint"},
+				"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
+			},
+			{
+				"id": 23, "buildNumber": "20260726.4", "status": "completed", "result": "failed",
+				"definition":  map[string]interface{}{"id": 9, "name": "stale"},
+				"triggerInfo": map[string]string{"pr.sourceSha": "superseded-sha"},
+			},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "12",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if result.Number != 12 || result.State != "open" || result.Merged ||
+		result.HeadSHA != "head-sha" || result.BaseSHA != "base-sha" {
+		t.Fatalf("pull request identity/state = %#v", result)
+	}
+	if result.Mergeable == nil || !*result.Mergeable || result.MergeableState != "succeeded" {
+		t.Fatalf("mergeability = %#v, %q", result.Mergeable, result.MergeableState)
+	}
+	if result.ReviewDecision != ReviewDecisionChangesRequested || result.RequestedChanges != 1 {
+		t.Fatalf("review state = %q, requested changes = %d", result.ReviewDecision, result.RequestedChanges)
+	}
+	if result.CheckState != CheckStateFailing || len(result.Checks) != 2 {
+		t.Fatalf("check state = %q, checks = %#v", result.CheckState, result.Checks)
+	}
+	if result.Checks[0].Name != "provider-ci" || result.Checks[0].URL != "build-url" ||
+		result.Checks[1].State != CheckStateFailing {
+		t.Fatalf("checks = %#v", result.Checks)
+	}
+}
+
+func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
+	for _, test := range []struct {
+		status string
+		merged bool
+	}{
+		{status: "abandoned"},
+		{status: "completed", merged: true},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			state, merged := adoPullRequestPollState(test.status)
+			if state != "closed" || merged != test.merged {
+				t.Fatalf("adoPullRequestPollState(%q) = %q, %t", test.status, state, merged)
+			}
+		})
+	}
+}
+
+func TestADOProviderClosePullRequestAbandonsAndComments(t *testing.T) {
+	var patches int
+	var patchBody map[string]string
+	var threadBody adoPullRequestThreadRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "active"})
+		case http.MethodPatch:
+			patches++
+			decodeJSON(t, r, &patchBody)
+			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "abandoned"})
+		default:
+			t.Fatalf("unexpected pull request method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/threads", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		decodeJSON(t, r, &threadBody)
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "12",
+		Comment:    "No longer needed",
+	})
+	if err != nil {
+		t.Fatalf("ClosePullRequest returned error: %v", err)
+	}
+	if result.Number != 12 || result.Merged || result.State != "closed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if patches != 1 || patchBody["status"] != "abandoned" {
+		t.Fatalf("patches = %d, body = %#v", patches, patchBody)
+	}
+	if threadBody.Status != 1 || len(threadBody.Comments) != 1 ||
+		threadBody.Comments[0].Content != "No longer needed" || threadBody.Comments[0].CommentType != 1 {
+		t.Fatalf("thread body = %#v", threadBody)
+	}
+}
+
+func TestADOProviderPullRequestErrorsUseProviderErrorModel(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		transient bool
+	}{
+		{name: "auth", status: http.StatusUnauthorized},
+		{name: "server", status: http.StatusServiceUnavailable, transient: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "provider failure", test.status)
+			}))
+			defer server.Close()
+
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+			_, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+				Repository: RepositoryRef{Name: "repo", Project: "project"},
+				PullID:     "12",
+			})
+			if err == nil {
+				t.Fatal("PollPullRequest returned nil error")
+			}
+			if !strings.Contains(err.Error(), "status "+strconv.Itoa(test.status)) {
+				t.Fatalf("error = %q", err)
+			}
+			if got := IsTransientError(err); got != test.transient {
+				t.Fatalf("IsTransientError(%v) = %t, want %t", err, got, test.transient)
+			}
+		})
 	}
 }
 

@@ -364,6 +364,9 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			!declared[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.ProviderPRWrite))
 		}
+		if t.Inputs["kind"] == "external-telemetry" && !declared[string(capability.TelemetryRead)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))
+		}
 		for _, c := range t.Capabilities {
 			if capability.Known(c) && !capability.StageDeclarable(c) {
 				problems = append(problems, fmt.Sprintf("task %q declares runner-only capability %q", t.Name, c))
