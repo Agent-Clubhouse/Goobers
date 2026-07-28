@@ -639,6 +639,31 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 	if err := temporalClient.GetWorkflow(ctx, claimID, "").Get(ctx, &result); err != nil {
 		t.Fatalf("scheduled workflow result: %v", err)
 	}
+	runsDir := filepath.Join(t.TempDir(), "runs")
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	projectedDir, err := ProjectCompletedScheduledRun(ctx, temporalClient, claimID, runsDir, schedulerDir)
+	if err != nil {
+		t.Fatalf("project scheduled workflow: %v", err)
+	}
+	projected, err := journal.OpenRead(projectedDir)
+	if err != nil {
+		t.Fatalf("open projected scheduled workflow: %v", err)
+	}
+	identity, err := projected.Identity()
+	if err != nil {
+		t.Fatalf("read projected scheduled identity: %v", err)
+	}
+	if identity.RunID != RunID(claimID) || identity.Trigger.Kind != journal.TriggerSchedule {
+		t.Fatalf("projected scheduled identity = %+v", identity)
+	}
+	schedulerEvents, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatalf("read projected scheduler events: %v", err)
+	}
+	if len(schedulerEvents) != 1 || schedulerEvents[0].Type != journal.EventTriggerFired ||
+		schedulerEvents[0].RunID != RunID(claimID) {
+		t.Fatalf("projected scheduler events = %+v", schedulerEvents)
+	}
 	duplicate, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                                       claimID,
 		TaskQueue:                                taskQueue,

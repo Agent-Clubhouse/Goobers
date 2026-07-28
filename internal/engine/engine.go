@@ -144,7 +144,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
 	claimID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-		WorkflowID:            claimID + "-run",
+		WorkflowID:            scheduledRunWorkflowID(claimID),
 		TaskQueue:             workflow.GetInfo(ctx).TaskQueueName,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -158,6 +158,10 @@ func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
 		return RunResult{}, nil
 	}
 	return result, err
+}
+
+func scheduledRunWorkflowID(claimID string) string {
+	return claimID + "-run"
 }
 
 // RunScheduled binds a timestamped schedule claim to the run and records the

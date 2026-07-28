@@ -236,8 +236,10 @@ func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, r
 
 // ProjectCompletedScheduledRun projects both sides of a schedule fire: the
 // standard trigger.fired event in scheduler/events.jsonl and the run journal.
-func ProjectCompletedScheduledRun(ctx context.Context, q projectionQuerier, workflowID, runsDir, schedulerDir string) (string, error) {
-	proj, err := queryProjection(ctx, q, workflowID)
+// claimID is the Schedule action workflow ID; its deterministic child owns the
+// journal query.
+func ProjectCompletedScheduledRun(ctx context.Context, q projectionQuerier, claimID, runsDir, schedulerDir string) (string, error) {
+	proj, err := queryProjection(ctx, q, scheduledRunWorkflowID(claimID))
 	if err != nil {
 		return "", err
 	}
