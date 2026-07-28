@@ -1495,6 +1495,7 @@ func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo Repository
 }
 
 func (p *ADOProvider) listPullRequestBuilds(ctx context.Context, endpoint string) ([]adoBuild, error) {
+	base := endpoint
 	var builds []adoBuild
 	for {
 		resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
@@ -1510,7 +1511,7 @@ func (p *ADOProvider) listPullRequestBuilds(ctx context.Context, endpoint string
 		if continuation == "" {
 			return builds, nil
 		}
-		endpoint, err = addQuery(endpoint, url.Values{"continuationToken": []string{continuation}})
+		endpoint, err = addQuery(base, url.Values{"continuationToken": []string{continuation}})
 		if err != nil {
 			return nil, err
 		}

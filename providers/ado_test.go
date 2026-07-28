@@ -706,18 +706,24 @@ func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 
 func TestADOProviderPollPullRequestPaginatesBuilds(t *testing.T) {
 	buildCalls := 0
+	wantTokens := []string{"", "second-page", "third-page"}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
 		buildCalls++
-		continuation := r.URL.Query().Get("continuationToken")
+		if buildCalls > len(wantTokens) {
+			t.Fatalf("unexpected build request %d", buildCalls)
+		}
+		continuations := r.URL.Query()["continuationToken"]
+		wantToken := wantTokens[buildCalls-1]
+		if (wantToken == "" && len(continuations) != 0) ||
+			(wantToken != "" && (len(continuations) != 1 || continuations[0] != wantToken)) {
+			t.Fatalf("build request %d continuationToken = %q, want exactly %q", buildCalls, continuations, wantToken)
+		}
 		result := "succeeded"
-		if buildCalls == 1 {
-			w.Header().Set("x-ms-continuationtoken", "next-page")
+		if buildCalls < len(wantTokens) {
+			w.Header().Set("x-ms-continuationtoken", wantTokens[buildCalls])
 		} else {
 			result = "failed"
-		}
-		if (buildCalls == 1 && continuation != "") || (buildCalls == 2 && continuation != "next-page") || buildCalls > 2 {
-			t.Fatalf("build request %d continuationToken = %q", buildCalls, continuation)
 		}
 		build := map[string]interface{}{"id": buildCalls, "status": "completed", "result": result, "definition": map[string]interface{}{"id": buildCalls}, "triggerInfo": map[string]string{"pr.sourceSha": "head-sha"}}
 		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{build}})
@@ -729,7 +735,7 @@ func TestADOProviderPollPullRequestPaginatesBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pullRequestBuildState returned error: %v", err)
 	}
-	if buildCalls != 2 || state != CheckStateFailing || len(checks) != 2 {
+	if buildCalls != 3 || state != CheckStateFailing || len(checks) != 3 {
 		t.Fatalf("build calls = %d, check state = %q, checks = %#v", buildCalls, state, checks)
 	}
 }
