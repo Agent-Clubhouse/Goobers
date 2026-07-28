@@ -6,15 +6,19 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
-func TestExplainProjectsOnlySchemaFacts(t *testing.T) {
+func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 	tests := []struct {
 		selector        string
 		wantType        any
 		wantValues      []any
 		wantRequired    *bool
 		wantDescription string
+		wantExample     any
 	}{
 		{
 			selector:        "workflow.spec.gates[].evaluator",
@@ -22,6 +26,7 @@ func TestExplainProjectsOnlySchemaFacts(t *testing.T) {
 			wantValues:      []any{"automated", "agentic", "human"},
 			wantRequired:    boolPointer(true),
 			wantDescription: "Evaluator kind configured by exactly one of automated, agentic, or human.",
+			wantExample:     "automated",
 		},
 		{
 			selector:        "goober/spec/mcpServers[]/credentialRefs[]/scheme",
@@ -29,12 +34,14 @@ func TestExplainProjectsOnlySchemaFacts(t *testing.T) {
 			wantValues:      []any{"bearer", "basic"},
 			wantRequired:    boolPointer(false),
 			wantDescription: "Optional authorization scheme prefix for a remote header credential.",
+			wantExample:     "bearer",
 		},
 		{
 			selector:        "workflow.spec.triggers[].labelPredicate",
 			wantType:        "string",
 			wantRequired:    boolPointer(false),
 			wantDescription: "CEL label-set predicate using only string membership in `labels` and boolean &&, ||, and !. ANDed with selector.",
+			wantExample:     "x",
 		},
 	}
 
@@ -56,8 +63,13 @@ func TestExplainProjectsOnlySchemaFacts(t *testing.T) {
 			if got.Description != test.wantDescription || !got.Documented {
 				t.Errorf("documentation = %q/%t", got.Description, got.Documented)
 			}
-			if got.Default != nil || got.SinceVersion != "" {
-				t.Errorf("schema-absent facts were synthesized: %+v", got)
+			if got.Default != nil {
+				t.Errorf("schema-absent default was synthesized: %+v", got)
+			}
+			if got.Stability != schemas.StabilityGA ||
+				got.SinceVersion != schemas.InitialSinceVersion ||
+				!reflect.DeepEqual(got.Example, test.wantExample) {
+				t.Errorf("authoring guidance = %+v", got)
 			}
 		})
 	}
@@ -73,6 +85,11 @@ func TestExplainMarksUndocumentedFields(t *testing.T) {
 	}
 	if got.Type != "string" {
 		t.Fatalf("type = %#v, want string", got.Type)
+	}
+	if got.Stability != schemas.StabilityGA ||
+		got.SinceVersion != schemas.InitialSinceVersion ||
+		got.Example != "x" {
+		t.Fatalf("registry guidance = %+v", got)
 	}
 }
 
@@ -109,6 +126,45 @@ func TestExplainProjectsAnnotationsWithoutGeneratingValues(t *testing.T) {
 		got.Default == nil || !reflect.DeepEqual(*got.Default, defaultValue) ||
 		got.SinceVersion != "v1.2.0" {
 		t.Fatalf("projection = %+v", got)
+	}
+}
+
+func TestExplainUsesFeatureLifecycleForVersionGatedFields(t *testing.T) {
+	got, err := Explain("gaggle.spec.sandbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feature, ok := workflow.LookupFeature("gaggle.spec.sandbox")
+	if !ok {
+		t.Fatal("gaggle.spec.sandbox feature is not registered")
+	}
+	if got.Stability != string(feature.Level) || got.SinceVersion != feature.SinceVersion {
+		t.Fatalf("lifecycle = %s/%s, want %s/%s", got.Stability, got.SinceVersion, feature.Level, feature.SinceVersion)
+	}
+	if got.Example == nil {
+		t.Fatal("preview field has no example")
+	}
+}
+
+func TestExplainLifecycleIgnoresNextDSLPrefixFeatures(t *testing.T) {
+	got, err := Explain("workflow.spec.gates[].evaluator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Stability != string(workflow.SupportGA) {
+		t.Fatalf("current-DSL evaluator stability = %q, want %q", got.Stability, workflow.SupportGA)
+	}
+}
+
+func TestExplainDerivesTypeAndExampleFromConst(t *testing.T) {
+	got, err := Explain("goober.apiVersion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != "string" ||
+		!reflect.DeepEqual(got.AllowedValues, []any{"goobers.dev/v1alpha1"}) ||
+		got.Example != "goobers.dev/v1alpha1" {
+		t.Fatalf("const guidance = %+v", got)
 	}
 }
 

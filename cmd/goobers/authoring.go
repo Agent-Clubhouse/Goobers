@@ -28,11 +28,12 @@ const schemaHelp = "Usage: goobers schema [--human] <kind>\n" +
 	"kind or output error, 2 = usage error.\n"
 
 const explainHelp = "Usage: goobers explain [--human] <selector>\n\n" +
-	"Project field facts from an embedded JSON Schema using a dotted or slash-\n" +
+	"Project field guidance from the embedded schema and feature registries using\n" +
+	"a dotted or slash-\n" +
 	"separated selector such as goober.spec.capabilities or\n" +
-	"workflow/spec/gates[]/evaluator. Array elements use []. Missing descriptions\n" +
-	"are marked documented=false; field facts are never inferred. JSON is\n" +
-	"the default; --human prints a terminal rendering. Exit codes: 0 = OK,\n" +
+	"workflow/spec/gates[]/evaluator. Array elements use []. Output includes the\n" +
+	"field purpose, type, allowed values, lifecycle, and a schema-grounded example.\n" +
+	"JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,\n" +
 	"1 = unknown selector or output error, 2 = usage error.\n"
 
 type authoringStamp struct {
@@ -211,6 +212,8 @@ func writeExplanation(w io.Writer, output explainOutput) {
 	if output.SinceVersion != "" {
 		pf(tw, "Since version:\t%s\n", output.SinceVersion)
 	}
+	pf(tw, "Stability:\t%s\n", output.Stability)
+	pf(tw, "Example:\t%s\n", renderJSONValue(output.Example))
 	pf(tw, "Build:\t%s (%s)\n", output.Version, output.Commit)
 	pf(tw, "DSL version:\t%s\n", output.DSLVersion)
 	_ = tw.Flush()

@@ -16,10 +16,10 @@
       "additionalProperties": false,
       "required": ["gaggle", "role", "instructions"],
       "properties": {
-        "gaggle": { "type": "string", "minLength": 1, "description": "Name of the gaggle this goober belongs to." },
-        "role": { "type": "string", "minLength": 1, "description": "Role specialization, such as coder, reviewer, or perf-hunter." },
+        "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Name of the gaggle this goober belongs to." },
+        "role": { "type": "string", "minLength": 1, "examples": ["author"], "description": "Role specialization, such as coder, reviewer, or perf-hunter." },
         "displayName": { "type": "string", "description": "Human-facing goober name shown in the portal." },
-        "instructions": { "type": "string", "minLength": 1, "description": "Markdown instruction file path relative to the goober definition directory." },
+        "instructions": { "type": "string", "minLength": 1, "examples": ["instructions.md"], "description": "Markdown instruction file path relative to the goober definition directory." },
         "harness": { "type": "string", "enum": ["copilot", "claude-code"], "description": "Agent harness used for this goober. Omitted defaults to copilot." },
         "model": { "type": "string", "description": "Harness-specific model name, validated by the selected adapter before a run starts." },
         "harnessOptions": { "type": "object", "description": "Opaque harness-specific settings validated by the selected adapter.", "additionalProperties": true },
@@ -175,6 +175,7 @@
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "examples": ["offline-goober"],
           "description": "DNS-label-compatible goober name, unique within its gaggle."
         },
         "labels": { "type": "object", "description": "String labels used to organize this goober.", "additionalProperties": { "type": "string" } },

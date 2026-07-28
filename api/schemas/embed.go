@@ -18,6 +18,13 @@ var FS embed.FS
 // BaseURI is the $id base every schema uses; relative $refs resolve against it.
 const BaseURI = "https://goobers.dev/schemas/"
 
+const (
+	// StabilityGA marks an embedded contract as generally available.
+	StabilityGA = "ga"
+	// InitialSinceVersion identifies contracts that predate the first tagged release.
+	InitialSinceVersion = "dev"
+)
+
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
@@ -78,8 +85,10 @@ var Journal = map[string]string{
 
 // Entry identifies one embedded schema by its CLI-facing kind and file name.
 type Entry struct {
-	Kind string
-	File string
+	Kind         string
+	File         string
+	Stability    string
+	SinceVersion string
 }
 
 // Entries lists every embedded schema in stable kind order.
@@ -91,8 +100,10 @@ func Entries() []Entry {
 	entries := make([]Entry, 0, len(files))
 	for _, file := range files {
 		entries = append(entries, Entry{
-			Kind: strings.TrimSuffix(file, ".schema.json"),
-			File: file,
+			Kind:         strings.TrimSuffix(file, ".schema.json"),
+			File:         file,
+			Stability:    StabilityGA,
+			SinceVersion: InitialSinceVersion,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {

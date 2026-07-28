@@ -8,11 +8,12 @@ goobers explain \- project field facts from an embedded JSON Schema
 .nf
 Usage: goobers explain [--human] <selector>
 
-Project field facts from an embedded JSON Schema using a dotted or slash-
+Project field guidance from the embedded schema and feature registries using
+a dotted or slash-
 separated selector such as goober.spec.capabilities or
-workflow/spec/gates[]/evaluator. Array elements use []. Missing descriptions
-are marked documented=false; field facts are never inferred. JSON is
-the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+workflow/spec/gates[]/evaluator. Array elements use []. Output includes the
+field purpose, type, allowed values, lifecycle, and a schema-grounded example.
+JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,
 1 = unknown selector or output error, 2 = usage error.
 .fi
 .SH EXAMPLES

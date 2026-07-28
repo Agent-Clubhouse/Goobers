@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/explain.schema.json",
   "title": "ExplainOutput",
-  "description": "Schema-sourced field facts emitted by goobers explain.",
+  "description": "Release-pinned field guidance emitted by goobers explain.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "documented"],
+  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "documented", "stability", "sinceVersion", "example"],
   "properties": {
     "schemaVersion": { "const": "goobers.dev/explain/v1", "description": "Version of the explain-command output contract." },
     "version": { "type": "string", "minLength": 1, "description": "Goobers build version that embedded the selected schema." },
@@ -32,6 +32,12 @@
     },
     "default": { "description": "Exact default annotation from the selected schema node." },
     "required": { "type": "boolean", "description": "Whether the selected property appears in its parent schema's required list." },
-    "sinceVersion": { "type": "string", "minLength": 1, "description": "Exact sinceVersion annotation from the selected schema node, when present." }
+    "stability": {
+      "type": "string",
+      "enum": ["preview", "ga", "deprecated", "removed"],
+      "description": "Lifecycle stability from the built-in DSL feature registry or embedded schema registry."
+    },
+    "sinceVersion": { "type": "string", "minLength": 1, "description": "Release in which the field's current lifecycle began." },
+    "example": { "description": "Minimal example projected from the selected schema node." }
   }
 }
