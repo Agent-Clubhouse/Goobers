@@ -757,6 +757,106 @@ func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
 	}
 }
 
+func TestADOProviderClosePullRequest(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		status      string
+		comment     string
+		wantPatches int
+		wantState   string
+		wantMerged  bool
+	}{
+		{
+			name:        "active is abandoned with comment",
+			status:      "active",
+			comment:     "Closing as no longer needed.",
+			wantPatches: 1,
+			wantState:   "closed",
+		},
+		{
+			name:      "already abandoned",
+			status:    "abandoned",
+			wantState: "closed",
+		},
+		{
+			name:       "already completed",
+			status:     "completed",
+			wantState:  "merged",
+			wantMerged: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			patches := 0
+			comments := 0
+			mux := http.NewServeMux()
+			pullPath := "/org/project/_apis/git/repositories/repo/pullrequests/12"
+			mux.HandleFunc(pullPath, func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					writeJSON(t, w, map[string]interface{}{
+						"pullRequestId": 12,
+						"status":        test.status,
+					})
+				case http.MethodPatch:
+					patches++
+					var body map[string]string
+					decodeJSON(t, r, &body)
+					if body["status"] != "abandoned" {
+						t.Fatalf("PATCH body = %#v, want abandoned status", body)
+					}
+					writeJSON(t, w, map[string]interface{}{
+						"pullRequestId": 12,
+						"status":        "abandoned",
+					})
+				default:
+					t.Fatalf("unexpected pull request method %s", r.Method)
+				}
+			})
+			mux.HandleFunc(pullPath+"/threads", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodPost)
+				comments++
+				var body adoPullRequestThreadRequest
+				decodeJSON(t, r, &body)
+				if len(body.Comments) != 1 ||
+					body.Comments[0].Content != test.comment ||
+					body.Comments[0].ParentCommentID != 0 ||
+					body.Comments[0].CommentType != 1 ||
+					body.Status != 1 {
+					t.Fatalf("comment body = %#v", body)
+				}
+				w.WriteHeader(http.StatusCreated)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) {
+				p.BaseURL = server.URL
+			})
+			result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+				Repository: RepositoryRef{Name: "repo", Project: "project"},
+				PullID:     "12",
+				Comment:    test.comment,
+			})
+			if err != nil {
+				t.Fatalf("ClosePullRequest returned error: %v", err)
+			}
+			if patches != test.wantPatches {
+				t.Fatalf("PATCH calls = %d, want %d", patches, test.wantPatches)
+			}
+			wantComments := 0
+			if test.comment != "" {
+				wantComments = 1
+			}
+			if comments != wantComments {
+				t.Fatalf("comment calls = %d, want %d", comments, wantComments)
+			}
+			if result.Number != 12 || result.State != test.wantState || result.Merged != test.wantMerged {
+				t.Fatalf("ClosePullRequest result = %#v, want number=12 state=%q merged=%t", result, test.wantState, test.wantMerged)
+			}
+		})
+	}
+}
+
 func TestADOProviderPullRequestErrorsUseProviderErrorModel(t *testing.T) {
 	for _, test := range []struct {
 		name      string

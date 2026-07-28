@@ -527,6 +527,9 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	if _, ok := got[string(capability.ConfigRepoRead)]; ok {
 		t.Fatalf("configrepo:read must not default to the repo token, got %+v", got)
 	}
+	if _, ok := got[string(capability.ContentsRead)]; ok {
+		t.Fatalf("contents:read must remain repo-qualified and provision-time-only, got %+v", got)
+	}
 }
 
 func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
@@ -679,6 +682,9 @@ func TestBuildCredentialsGrantsReadOnlyAdditionalRepos(t *testing.T) {
 	readCap := credentials.RepoScopedCapability(string(capability.ContentsRead), "example", "goobers")
 	if got[readCap] != "ref-read" {
 		t.Errorf("%s = %q, want ref-read", readCap, got[readCap])
+	}
+	if _, ok := got[string(capability.ContentsRead)]; ok {
+		t.Errorf("unqualified contents:read grant must not be emitted: %+v", got)
 	}
 	// No capability targeting the reference repo is anything but read.
 	for cap := range got {

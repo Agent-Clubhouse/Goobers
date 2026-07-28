@@ -440,3 +440,24 @@ func TestPullRequestProviderTokenAcceptsLegacyGitHubGrant(t *testing.T) {
 		t.Fatalf("pullRequestProviderToken = %q, %v; want legacy GitHub token", token, err)
 	}
 }
+
+func TestApplyVerdictGitHubProviderUsesGitHubCredential(t *testing.T) {
+	t.Setenv("GOOBERS_CRED_PROVIDER_PR_WRITE", "provider-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "github-token")
+
+	provider, err := newApplyVerdictProviderForRepo(t.TempDir(), providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	})
+	if err != nil {
+		t.Fatalf("newApplyVerdictProviderForRepo: %v", err)
+	}
+	githubProvider, ok := provider.(*providers.GitHubProvider)
+	if !ok {
+		t.Fatalf("provider = %T, want *providers.GitHubProvider", provider)
+	}
+	if githubProvider.Token != "github-token" {
+		t.Fatalf("GitHub apply-verdict token = %q, want github-specific credential", githubProvider.Token)
+	}
+}

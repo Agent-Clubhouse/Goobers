@@ -1105,7 +1105,7 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	if repo.Provider != providers.ProviderGitHub {
 		return newOpenPRProviderForRepo(root, repo)
 	}
-	token, err := pullRequestProviderToken(repo)
+	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		return nil, err
 	}
