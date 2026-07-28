@@ -106,7 +106,7 @@ Usage:
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
-  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
+  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
   goobers respond-to-findings            post a validated per-finding remediation response to the claimed PR (a workflow stage)
 
@@ -237,7 +237,7 @@ Usage:
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
-  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
+  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
   goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
   goobers respond-to-findings            post a validated per-finding remediation response to the claimed PR (a workflow stage)
 
@@ -1059,8 +1059,8 @@ outputs) and hasSubstantiveFindings/hasFailingCI.
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
 sibling-overlap") is a comma-separated policy naming which detected
 causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base and sibling-overlap are accepted vocabulary but
-cannot fire yet (no detection reaches this stage's decision today).
+liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 
@@ -1103,13 +1103,16 @@ do), 1 = business error, 2 = usage/IO error.
 Usage: goobers remediation-checkpoint [--budget N] [path]
 
 Re-checkout the PR's own branch (this stage gets its own fresh
-worktree), read pr-remediation's durable per-PR cycle counter + last
+worktree), read pr-remediation's durable per-cause attempt counters + last
 diff digest back from a sticky PR comment, compare this cycle's
 actual diff (git diff base...HEAD) against it, and either
-escalate (goobers:merge-escalated, clearing needs-remediation) on
-budget exhaustion or a byte-identical repeat, or record the advanced
+escalate (goobers:merge-escalated, clearing needs-remediation) when
+the active cause exhausts its DSL-declared budget or on a byte-identical
+repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
-gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint
+gather-pr-context's selectedNumber output), remediationCauses, and the
+four per-cause budget inputs. --budget overrides every declared cause
+for standalone diagnostics. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business
 error, 2 = usage/IO error.
 

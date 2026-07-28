@@ -53,11 +53,23 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
 			artifactMediaType: "application/json",
 		},
+		runID + ":gather-sibling-context": {
+			status: apiv1.ResultSuccess,
+			outputs: map[string]interface{}{
+				"selectedNumber":         "77",
+				"head":                   rebindBranch,
+				"base":                   "main",
+				"hasSubstantiveFindings": "true",
+				"hasFailingCI":           "false",
+				"hasSiblingOverlap":      "false",
+			},
+		},
 		runID + ":rebase-pr": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{
 			Code: "provider_error", Message: "rebase failed",
 		}, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
-			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
+			"remediationCauses": "",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
@@ -94,7 +106,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
-	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "rebase-pr", "remediation-checkpoint"}
+	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "gather-sibling-context", "rebase-pr", "remediation-checkpoint"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Fatalf("stage order = %v, want %v", visited, want)
 	}

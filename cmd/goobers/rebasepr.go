@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,6 +17,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
@@ -51,8 +53,8 @@ const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
 	"remediate (input, default \"conflict,substantive,failing-ci,behind-base,\n" +
 	"sibling-overlap\") is a comma-separated policy naming which detected\n" +
 	"causes are allowed to trigger remediation; the shipped default is fully\n" +
-	"liberal. behind-base and sibling-overlap are accepted vocabulary but\n" +
-	"cannot fire yet (no detection reaches this stage's decision today).\n\n" +
+	"liberal. behind-base is accepted vocabulary but cannot fire yet (no\n" +
+	"detection reaches this stage's decision today).\n\n" +
 	"Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.\n"
 
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
@@ -81,60 +83,87 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	base := providerInput("base", "main")
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
-	if selectedNumber == "" || head == "" {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
-	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
 	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
+	hasSiblingOverlap := providerInput("hasSiblingOverlap", "false") == "true"
 	remediate := providerInput("remediate", defaultRemediatePolicy)
+	conflict := false
+	var conflictLocations []rebaseConflictLocation
+	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
+	fail := func(err error) int {
+		return failRebasePR(
+			stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
+			conflict, conflictLocations, policy, err,
+		)
+	}
+	if selectedNumber == "" || head == "" {
+		return fail(errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
+	}
+	selectedPRNumber, err := strconv.Atoi(selectedNumber)
+	if err != nil {
+		return fail(fmt.Errorf("invalid selectedNumber %q: %w", selectedNumber, err))
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
+		return fail(err)
 	}
+	provider := newGitHubProvider(issuesToken)
+	prToken, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return fail(err)
+	}
+	handoffProvider := newGitHubProvider(prToken)
 
 	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
+		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
-	conflict, conflictLocations, rebaseBaseSHA, err := attemptRebase(".", base, pushToken)
+	siblingHandoffs, hasSiblingHandoff, err := trustedSiblingOverlapHandoffs(
+		ctx, handoffProvider, repo, selectedNumber, attemptedHeadSHA,
+	)
+	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
+	if hasSiblingHandoff && hasSubstantiveFindings && siblingHandoffs.verdict != nil {
+		hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
+			siblingHandoffs.verdict,
+			selectedPRNumber,
+			siblingHandoffs.displacingPullNumbers,
+			resolveMinSeverity(stderr),
+		)
+	}
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
+		return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, err))
 	}
 
-	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI)
+	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
+	if err != nil {
+		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
+	}
 
 	if !policy.needsAgent {
 		// Nothing detected at all — the liberal-default behavior this
 		// reproduces exactly regardless of the declared policy.
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
-		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
-		}
-		provider := newGitHubProvider(issuesToken)
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
+			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
 		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+			return fail(err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
@@ -149,7 +178,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		// policyExcludedReason below) escalates immediately rather than
 		// spending a repass budget on a cause the policy declined to touch.
 		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+			return fail(err)
 		}
 		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
 		return 0
@@ -159,15 +188,14 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	// force-push-to-retrigger-CI-only behavior as before when the rebase
 	// itself is clean (conflict=false, substantive=false; only failing-ci
 	// fired), since that push does not touch or hide the firing cause.
-	if !conflict && !hasSubstantiveFindings {
+	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policyResult{}, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		return fail(err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
@@ -185,20 +213,16 @@ const (
 	remediateCauseSiblingOverlap = "sibling-overlap"
 )
 
-// defaultRemediatePolicy lists every cause name, including two
-// (behind-base, sibling-overlap) that are accepted policy vocabulary but
-// cannot fire yet: behind-base's detection (gather-pr-context's
+// defaultRemediatePolicy lists every cause name. behind-base is accepted
+// policy vocabulary but cannot fire yet: its detection (gather-pr-context's
 // isBehindBase) is a native bool in the versioned RemediationBrief schema,
 // and only string-valued result-file keys survive Task.InputsFrom into a
 // downstream stage's input (see hasSubstantiveFindings/hasFailingCI's own
 // comment in gatherprcontext.go) — wiring it here needs a brief schema
-// version bump, tracked as a follow-up. sibling-overlap's detection
-// (gather-sibling-context) runs AFTER rebase-pr in pr-remediation.yaml's
-// graph today — wiring it into this decision needs reordering that stage
-// earlier, also tracked as a follow-up. Both names are still accepted (never
-// rejected) so a workflow author can declare the eventual full policy now
-// without a validation error, per the design's "policy visible in shipped
-// YAML" requirement.
+// version bump, tracked as a follow-up. The name is still accepted so a
+// workflow author can declare the eventual full policy now without a
+// validation error, per the design's "policy visible in shipped YAML"
+// requirement.
 const defaultRemediatePolicy = remediateCauseConflict + "," + remediateCauseSubstantive + "," +
 	remediateCauseFailingCI + "," + remediateCauseBehindBase + "," + remediateCauseSiblingOverlap
 
@@ -207,6 +231,7 @@ const defaultRemediatePolicy = remediateCauseConflict + "," + remediateCauseSubs
 type policyResult struct {
 	excluded bool
 	reason   string
+	causes   []remediationCause
 }
 
 // remediatePolicyOutcome is evaluateRemediatePolicy's return value.
@@ -218,61 +243,77 @@ type remediatePolicyOutcome struct {
 }
 
 // evaluateRemediatePolicy applies the declared `remediate` policy (#941/
-// PRR-6) to this cycle's detected causes. Only conflict, substantive, and
-// failing-ci can actually fire today (see defaultRemediatePolicy's doc
-// comment on behind-base/sibling-overlap).
-func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI bool) remediatePolicyOutcome {
+// PRR-6) to this cycle's detected causes.
+func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI, siblingOverlap bool) remediatePolicyOutcome {
 	allowed := make(map[string]bool)
 	for _, cause := range splitLabelList(remediate) {
 		allowed[cause] = true
 	}
 
 	detected := []struct {
-		name    string
+		name    remediationCause
 		present bool
 	}{
-		{remediateCauseConflict, conflict},
-		{remediateCauseSubstantive, substantive},
-		{remediateCauseFailingCI, failingCI},
+		{remediationCauseConflict, conflict},
+		{remediationCauseSubstantive, substantive},
+		{remediationCauseFailingCI, failingCI},
+		{remediationCauseSiblingOverlap, siblingOverlap},
 	}
 
-	var firing, excluded []string
+	var firing []remediationCause
+	var excluded []string
 	for _, cause := range detected {
 		if !cause.present {
 			continue
 		}
-		if allowed[cause.name] {
+		if allowed[string(cause.name)] {
 			firing = append(firing, cause.name)
 		} else {
-			excluded = append(excluded, cause.name)
+			excluded = append(excluded, string(cause.name))
 		}
 	}
 
 	outcome := remediatePolicyOutcome{needsAgent: len(firing) > 0 || len(excluded) > 0}
+	outcome.policyResult.causes = firing
 	if len(firing) == 0 && len(excluded) > 0 {
 		outcome.policyExcluded = true
 		outcome.excludedReason = fmt.Sprintf(
 			"remediation policy %q excludes the only detected cause(s) (%s) — leaving it for a human rather than force-pushing or silently rewriting",
 			remediate, strings.Join(excluded, ", "),
 		)
-		outcome.policyResult = policyResult{excluded: true, reason: outcome.excludedReason}
+		outcome.policyResult.excluded = true
+		outcome.policyResult.reason = outcome.excludedReason
 	}
 	return outcome
 }
 
-func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string, err error) int {
+func failRebasePR(
+	stderr io.Writer,
+	resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string,
+	conflict bool,
+	conflictLocations []rebaseConflictLocation,
+	policy remediatePolicyOutcome,
+	err error,
+) int {
 	pf(stderr, "error: %v\n", err)
 	code, retryable, extra := classifyProviderError(err)
+	locationsJSON := "[]"
+	if len(conflictLocations) > 0 {
+		if data, marshalErr := json.Marshal(conflictLocations); marshalErr == nil {
+			locationsJSON = string(data)
+		}
+	}
 	payload := map[string]interface{}{
 		"selectedNumber":              selectedNumber,
 		"head":                        head,
 		"needsAgent":                  "true",
-		"conflict":                    "false",
-		"conflictLocations":           "[]",
+		"conflict":                    strconv.FormatBool(conflict),
+		"conflictLocations":           locationsJSON,
 		"attemptedHeadSha":            attemptedHeadSHA,
 		"rebaseBaseSha":               rebaseBaseSHA,
-		"policyExcluded":              "false",
-		"policyExcludedReason":        "",
+		"remediationCauses":           formatRemediationCauses(policy.policyResult.causes),
+		"policyExcluded":              strconv.FormatBool(policy.policyExcluded),
+		"policyExcludedReason":        policy.excludedReason,
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,
@@ -314,6 +355,7 @@ func writeRebaseResult(
 		"conflictLocations":    string(locationsJSON),
 		"attemptedHeadSha":     attemptedHeadSHA,
 		"rebaseBaseSha":        rebaseBaseSHA,
+		"remediationCauses":    formatRemediationCauses(policy.causes),
 		"policyExcluded":       strconv.FormatBool(policy.excluded),
 		"policyExcludedReason": policy.reason,
 	})
@@ -324,6 +366,102 @@ func writeRebaseResult(
 		return fmt.Errorf("write %s: %w", resultFile, err)
 	}
 	return nil
+}
+
+func formatRemediationCauses(causes []remediationCause) string {
+	values := make([]string, len(causes))
+	for i, cause := range causes {
+		values[i] = string(cause)
+	}
+	return strings.Join(values, ",")
+}
+
+type trustedSiblingHandoffs struct {
+	displacingPullNumbers []int
+	verdict               *apiv1.Verdict
+}
+
+func trustedSiblingOverlapHandoffs(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	selectedNumber string,
+	targetHeadSHA string,
+) (trustedSiblingHandoffs, bool, error) {
+	comments, err := provider.ListComments(ctx, repo, selectedNumber)
+	if err != nil {
+		return trustedSiblingHandoffs{}, false, err
+	}
+	if !hasPotentialSiblingOverlapHandoff(comments, targetHeadSHA) {
+		return trustedSiblingHandoffs{}, false, nil
+	}
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return trustedSiblingHandoffs{}, false, err
+	}
+	type matchingHandoff struct {
+		comment providers.Comment
+		handoff postMergeRemediationHandoff
+	}
+	var matches []matchingHandoff
+	seenPullNumbers := make(map[int]bool)
+	found := trustedSiblingHandoffs{verdict: gatherPRVerdict(comments, author)}
+	for i := len(comments) - 1; i >= 0; i-- {
+		if !isTrustedMergeReviewAuthor(comments[i].Author, author) {
+			continue
+		}
+		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)
+		if !ok || !isSiblingOverlapHandoff(handoff) {
+			continue
+		}
+		if handoff.TargetHeadSHA != "" && handoff.TargetHeadSHA != targetHeadSHA {
+			continue
+		}
+		matches = append(matches, matchingHandoff{
+			comment: comments[i],
+			handoff: handoff,
+		})
+		if !seenPullNumbers[handoff.DisplacingPullNumber] {
+			seenPullNumbers[handoff.DisplacingPullNumber] = true
+			found.displacingPullNumbers = append(found.displacingPullNumbers, handoff.DisplacingPullNumber)
+		}
+	}
+	if len(matches) == 0 {
+		return trustedSiblingHandoffs{}, false, nil
+	}
+	for _, match := range matches {
+		if match.handoff.Version != 0 {
+			continue
+		}
+		match.handoff.Version = postMergeRemediationHandoffVersion
+		match.handoff.TargetHeadSHA = targetHeadSHA
+		body, err := renderPostMergeRemediationHandoff(match.handoff)
+		if err != nil {
+			return found, true, err
+		}
+		if err := provider.UpdateComment(ctx, repo, match.comment.ID, body); err != nil {
+			return found, true, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
+		}
+	}
+	return found, true, nil
+}
+
+func hasPotentialSiblingOverlapHandoff(comments []providers.Comment, targetHeadSHA string) bool {
+	for i := len(comments) - 1; i >= 0; i-- {
+		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)
+		if !ok || !isSiblingOverlapHandoff(handoff) {
+			continue
+		}
+		if handoff.TargetHeadSHA == targetHeadSHA ||
+			(handoff.Version == 0 && handoff.TargetHeadSHA == "") {
+			return true
+		}
+	}
+	return false
+}
+
+func isSiblingOverlapHandoff(handoff postMergeRemediationHandoff) bool {
+	return len(handoff.OverlappingFiles) > 0 || strings.HasPrefix(handoff.Reason, "file-overlap:")
 }
 
 // attemptRebase resolves only the narrow case where both sides added one
@@ -358,22 +496,25 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 		return false, nil, rebaseBaseSHA, nil
 	}
 
+	observedConflict := false
 	for {
 		status, resolveErr := resolveAdjacentLineConflicts(dir)
+		observedConflict = observedConflict || status != rebaseConflictAbsent
 		if resolveErr != nil {
-			return false, nil, "", abortRebaseAfterError(dir, resolveErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, resolveErr)
 		}
 		if status != rebaseConflictResolved {
 			if status == rebaseConflictAbsent {
 				rebaseErr := fmt.Errorf("git rebase FETCH_HEAD: %w: %s", rerr, strings.TrimSpace(string(out)))
-				return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
+				return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, rebaseErr)
 			}
-			locations, inspectErr := currentRebaseConflictLocations(dir)
+			var inspectErr error
+			locations, inspectErr = currentRebaseConflictLocations(dir)
 			if inspectErr != nil {
-				return false, nil, "", abortRebaseAfterError(dir, fmt.Errorf("inspect rebase conflict: %w", inspectErr))
+				return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, fmt.Errorf("inspect rebase conflict: %w", inspectErr))
 			}
 			if err := abortRebase(dir); err != nil {
-				return false, nil, "", fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
+				return observedConflict, locations, rebaseBaseSHA, fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
 			}
 			return true, locations, rebaseBaseSHA, nil
 		}
@@ -387,12 +528,13 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 		}
 
 		nextStatus, statusErr := unmergedConflictStatus(dir)
+		observedConflict = observedConflict || nextStatus != rebaseConflictAbsent
 		if statusErr != nil {
-			return false, nil, "", abortRebaseAfterError(dir, statusErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, statusErr)
 		}
 		if nextStatus == rebaseConflictAbsent {
 			rebaseErr := fmt.Errorf("git rebase --continue: %w: %s", continueErr, strings.TrimSpace(string(continueOut)))
-			return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, rebaseErr)
 		}
 		out, rerr = continueOut, continueErr
 	}
@@ -445,7 +587,7 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 		}
 		standardText, err := hasStandardTextMergeAttributes(dir, file.path)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("check merge attributes for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("check merge attributes for %q: %w", file.path, err)
 		}
 		if !standardText {
 			return rebaseConflictUnsafe, nil
@@ -453,15 +595,15 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 
 		ancestorData, err := readGitBlob(dir, ancestor.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read ancestor for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read ancestor for %q: %w", file.path, err)
 		}
 		upstreamData, err := readGitBlob(dir, upstream.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read base branch version for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read base branch version for %q: %w", file.path, err)
 		}
 		incomingData, err := readGitBlob(dir, incoming.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read PR version for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read PR version for %q: %w", file.path, err)
 		}
 		merged, ok := mergeAdjacentLineInsertions(file.path, ancestorData, upstreamData, incomingData)
 		if !ok {
@@ -473,32 +615,32 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 	for _, resolution := range resolutions {
 		path, err := worktreeConflictPath(dir, resolution.path)
 		if err != nil {
-			return rebaseConflictAbsent, err
+			return rebaseConflictUnsafe, err
 		}
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("open conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("open conflict path %q: %w", resolution.path, err)
 		}
 		if _, err := file.Write(resolution.data); err != nil {
 			_ = file.Close()
-			return rebaseConflictAbsent, fmt.Errorf("write conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("write conflict path %q: %w", resolution.path, err)
 		}
 		if err := file.Close(); err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
 		}
 
 		add := exec.Command("git", "--literal-pathspecs", "add", "--", resolution.path)
 		add.Dir = dir
 		if addOut, err := add.CombinedOutput(); err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
+			return rebaseConflictUnsafe, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
 		}
 	}
 	remaining, err := unmergedConflictFiles(dir)
 	if err != nil {
-		return rebaseConflictAbsent, err
+		return rebaseConflictUnsafe, err
 	}
 	if len(remaining) != 0 {
-		return rebaseConflictAbsent, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
+		return rebaseConflictUnsafe, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
 	}
 	return rebaseConflictResolved, nil
 }

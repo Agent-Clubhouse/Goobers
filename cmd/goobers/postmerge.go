@@ -73,8 +73,12 @@ type siblingTriage struct {
 	OverlappingFiles []string
 }
 
+const postMergeRemediationHandoffVersion = 2
+
 type postMergeRemediationHandoff struct {
+	Version              int      `json:"version,omitempty"`
 	DisplacingPullNumber int      `json:"displacingPullNumber"`
+	TargetHeadSHA        string   `json:"targetHeadSha"`
 	Reason               string   `json:"reason"`
 	OverlappingFiles     []string `json:"overlappingFiles,omitempty"`
 }
@@ -82,6 +86,9 @@ type postMergeRemediationHandoff struct {
 var postMergeRemediationPattern = regexp.MustCompile(`(?s)<!-- post-merge-remediation: (.*?) -->`)
 
 func renderPostMergeRemediationHandoff(handoff postMergeRemediationHandoff) (string, error) {
+	if handoff.Version == 0 {
+		handoff.Version = postMergeRemediationHandoffVersion
+	}
 	data, err := json.Marshal(handoff)
 	if err != nil {
 		return "", fmt.Errorf("marshal post-merge remediation handoff: %w", err)
@@ -107,6 +114,9 @@ func parsePostMergeRemediationHandoff(body string) (postMergeRemediationHandoff,
 	}
 	var handoff postMergeRemediationHandoff
 	if err := json.Unmarshal([]byte(match[1]), &handoff); err != nil {
+		return postMergeRemediationHandoff{}, false
+	}
+	if handoff.Version != 0 && handoff.Version != postMergeRemediationHandoffVersion {
 		return postMergeRemediationHandoff{}, false
 	}
 	return handoff, true
@@ -522,6 +532,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 		}
 		handoff := postMergeRemediationHandoff{
 			DisplacingPullNumber: mergedNumber,
+			TargetHeadSHA:        pr.HeadSHA,
 			Reason:               triage.Reason,
 			OverlappingFiles:     triage.OverlappingFiles,
 		}
