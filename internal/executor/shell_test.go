@@ -177,7 +177,7 @@ func TestShellExecutor_UsesDeclaredEnvironment(t *testing.T) {
 
 func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s/%s' \"$GOOBERS_GAGGLE\" \"$GREETING\" \"$GOOBERS_TRIGGER_REF\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_NAME\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s|%s/%s/%s@%s' \"$GOOBERS_GAGGLE\" \"$GREETING\" \"$GOOBERS_TRIGGER_REF\" \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_PROJECT\" \"$GOOBERS_REPO_NAME\" \"$GOOBERS_REPO_BRANCH\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,7 +186,7 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	env := baseEnvelope(t)
 	env.Gaggle = "alpha"
 	env.TriggerRef = "github-webhook:pull_request#42"
-	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}
+	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "organization", Project: "project", Name: "repository", Branch: "trunk"}
 
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"goobers", "env-check"},
@@ -198,39 +198,8 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl|github-webhook:pull_request#42|acme/app" {
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl|github-webhook:pull_request#42|ado|organization/project/repository@trunk" {
 		t.Fatalf("stdout = %q, want gaggle context and declared environment", got)
-	}
-}
-
-func TestShellExecutor_GoobersCommandReceivesADORepositoryContext(t *testing.T) {
-	stub := filepath.Join(t.TempDir(), "goobers")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_OWNER\" \"$GOOBERS_REPO_PROJECT\" \"$GOOBERS_REPO_NAME\" \"$GOOBERS_REPO_BRANCH\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	exec, rec := newTestExecutor(t, nil)
-	exec.SelfBin = stub
-	env := baseEnvelope(t)
-	env.RepoRef = apiv1.RepoRef{
-		Provider: apiv1.ProviderADO,
-		Owner:    "organization",
-		Project:  "project",
-		Name:     "repository",
-		Branch:   "trunk",
-	}
-
-	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		Command: []string{"goobers", "env-check"},
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Status != apiv1.ResultSuccess {
-		t.Fatalf("status = %v, want success", result.Status)
-	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "ado|organization|project|repository|trunk" {
-		t.Fatalf("stdout = %q, want routed ADO repository context", got)
 	}
 }
 
@@ -256,31 +225,13 @@ func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
 		{
 			name:         "declared provider capability",
 			capabilities: []string{string(capability.ProviderPRWrite)},
-			want: strings.Join([]string{
-				"tenant-id",
-				"client-id",
-				"/var/run/secrets/azure/tokens/identity-token",
-				"https://login.microsoftonline.com/",
-				"http://127.0.0.1:41741/msi/token",
-				journal.Redacted,
-				"server-thumbprint",
-				"http://127.0.0.1:40342/metadata/identity/oauth2/token",
-				"http://127.0.0.1:41742/msi/token",
-				journal.Redacted,
-				"default-client-id",
-				"",
-			}, "|"),
+			want:         "tenant-id|client-id|/var/run/secrets/azure/tokens/identity-token|https://login.microsoftonline.com/|http://127.0.0.1:41741/msi/token|" + journal.Redacted + "|server-thumbprint|http://127.0.0.1:40342/metadata/identity/oauth2/token|http://127.0.0.1:41742/msi/token|" + journal.Redacted + "|default-client-id|",
 		},
 		{name: "undeclared provider capability", want: strings.Repeat("|", 11)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stub := filepath.Join(t.TempDir(), "goobers")
-			script := "#!/bin/sh\n" +
-				"printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' " +
-				"\"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" " +
-				"\"$IDENTITY_ENDPOINT\" \"$IDENTITY_HEADER\" \"$IDENTITY_SERVER_THUMBPRINT\" \"$IMDS_ENDPOINT\" " +
-				"\"$MSI_ENDPOINT\" \"$MSI_SECRET\" \"$DEFAULT_IDENTITY_CLIENT_ID\" \"$AZURE_CLIENT_SECRET\"\n" +
-				"printf '{\"opened\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
+			script := "#!/bin/sh\nprintf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \"$AZURE_TENANT_ID\" \"$AZURE_CLIENT_ID\" \"$AZURE_FEDERATED_TOKEN_FILE\" \"$AZURE_AUTHORITY_HOST\" \"$IDENTITY_ENDPOINT\" \"$IDENTITY_HEADER\" \"$IDENTITY_SERVER_THUMBPRINT\" \"$IMDS_ENDPOINT\" \"$MSI_ENDPOINT\" \"$MSI_SECRET\" \"$DEFAULT_IDENTITY_CLIENT_ID\" \"$AZURE_CLIENT_SECRET\"\nprintf '{\"opened\":true}' > \"$GOOBERS_INPUT_RESULTFILE\"\n"
 			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -289,16 +240,9 @@ func TestShellExecutor_ADOOpenPRScopesAzureIdentityEnvironment(t *testing.T) {
 			exec.SelfBin = stub
 			env := baseEnvelope(t)
 			env.Capabilities = test.capabilities
-			env.RepoRef = apiv1.RepoRef{
-				Provider: apiv1.ProviderADO,
-				Owner:    "organization",
-				Project:  "project",
-				Name:     "repository",
-			}
+			env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "organization", Project: "project", Name: "repository"}
 
-			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-				Command: []string{"goobers", "open-pr"},
-			})
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}

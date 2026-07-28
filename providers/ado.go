@@ -1431,83 +1431,89 @@ func (p *ADOProvider) buildURL(repo RepositoryRef, elems ...string) (string, err
 }
 
 func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo RepositoryRef, pullID, repositoryID, headSHA string) (CheckState, []CheckDetail, error) {
-	base, err := p.buildURL(repo, "builds")
+	endpoint, err := p.buildURL(repo, "builds")
 	if err != nil {
 		return "", nil, err
 	}
-	values := url.Values{
+	endpoint, err = addQuery(endpoint, url.Values{
 		"$top":           []string{"100"},
 		"branchName":     []string{"refs/pull/" + pullID + "/merge"},
 		"queryOrder":     []string{"queueTimeDescending"},
 		"reasonFilter":   []string{"pullRequest"},
 		"repositoryId":   []string{repositoryID},
 		"repositoryType": []string{"TfsGit"},
+	})
+	if err != nil {
+		return "", nil, err
 	}
-	var checks []CheckDetail
-	seenDefinitions := make(map[string]bool)
-	continuation := ""
+	builds, err := p.listPullRequestBuilds(ctx, endpoint)
+	if err != nil {
+		return "", nil, err
+	}
+
+	checks := make([]CheckDetail, 0, len(builds))
+	seenDefinitions := make(map[string]bool, len(builds))
+	for _, build := range builds {
+		sourceSHA := build.TriggerInfo["pr.sourceSha"]
+		if sourceSHA == "" || headSHA == "" || !strings.EqualFold(sourceSHA, headSHA) {
+			continue
+		}
+		key := strconv.Itoa(build.Definition.ID)
+		if build.Definition.ID == 0 {
+			key = build.Definition.Name
+		}
+		if key != "" && seenDefinitions[key] {
+			continue
+		}
+		if key != "" {
+			seenDefinitions[key] = true
+		}
+		name := build.Definition.Name
+		if name == "" {
+			name = build.BuildNumber
+		}
+		if name == "" {
+			name = fmt.Sprintf("build %d", build.ID)
+		}
+		buildURL := build.URL
+		if build.Links.Web.Href != "" {
+			buildURL = build.Links.Web.Href
+		}
+		conclusion := build.Result
+		if conclusion == "" {
+			conclusion = build.Status
+		}
+		checks = append(checks, CheckDetail{
+			Name:       name,
+			State:      adoBuildState(build.Status, build.Result),
+			Conclusion: conclusion,
+			URL:        buildURL,
+			Summary:    build.BuildNumber,
+		})
+	}
+	return combinedCheckState(checks), checks, nil
+}
+
+func (p *ADOProvider) listPullRequestBuilds(ctx context.Context, endpoint string) ([]adoBuild, error) {
+	var builds []adoBuild
 	for {
-		if continuation != "" {
-			values.Set("continuationToken", continuation)
-		}
-		endpoint, err := addQuery(base, values)
-		if err != nil {
-			return "", nil, err
-		}
 		resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		var page adoBuildsResponse
 		if err := readJSONResponse(resp, http.MethodGet, endpoint, &page); err != nil {
-			return "", nil, err
+			return nil, err
 		}
-		for _, build := range page.Value {
-			sourceSHA := build.TriggerInfo["pr.sourceSha"]
-			if sourceSHA == "" || headSHA == "" || !strings.EqualFold(sourceSHA, headSHA) {
-				continue
-			}
-			key := strconv.Itoa(build.Definition.ID)
-			if build.Definition.ID == 0 {
-				key = build.Definition.Name
-			}
-			if key != "" && seenDefinitions[key] {
-				continue
-			}
-			if key != "" {
-				seenDefinitions[key] = true
-			}
-			name := build.Definition.Name
-			if name == "" {
-				name = build.BuildNumber
-			}
-			if name == "" {
-				name = fmt.Sprintf("build %d", build.ID)
-			}
-			buildURL := build.URL
-			if build.Links.Web.Href != "" {
-				buildURL = build.Links.Web.Href
-			}
-			conclusion := build.Result
-			if conclusion == "" {
-				conclusion = build.Status
-			}
-			checks = append(checks, CheckDetail{
-				Name:       name,
-				State:      adoBuildState(build.Status, build.Result),
-				Conclusion: conclusion,
-				URL:        buildURL,
-				Summary:    build.BuildNumber,
-			})
+		builds = append(builds, page.Value...)
+		continuation := strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
+		if continuation == "" {
+			return builds, nil
 		}
-		next := strings.TrimSpace(page.ContinuationToken)
-		if next == "" {
-			next = strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
+		endpoint, err = addQuery(endpoint, url.Values{"continuationToken": []string{continuation}})
+		if err != nil {
+			return nil, err
 		}
-		if next == "" {
-			return combinedCheckState(checks), checks, nil
-		}
-		continuation = next
 	}
 }
 
@@ -1936,8 +1942,7 @@ type adoPRLinks struct {
 }
 
 type adoBuildsResponse struct {
-	Value             []adoBuild `json:"value"`
-	ContinuationToken string     `json:"continuationToken"`
+	Value []adoBuild `json:"value"`
 }
 
 type adoBuild struct {
