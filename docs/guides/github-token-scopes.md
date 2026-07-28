@@ -27,7 +27,9 @@ your gaggle's workflows actually use, and register each as its own named ref
 in `instance.yaml`:
 
 `configrepo:read` is the runner-only exception: only the workflow-config
-source may materialize it, directly from `workflowSource.token`.
+source may materialize it, directly from `workflowSource.token`. Use the
+[Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
+to verify the two-token boundary against disposable repositories.
 
 | Capability | Recommended fine-grained PAT permissions | Notes |
 |---|---|---|
