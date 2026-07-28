@@ -28,7 +28,24 @@ import (
 // or new commits change the PR's actual situation. It is instead checked via
 // escalationStillBlocks below, which compares the PR's current head/base
 // against the snapshot recorded at escalation time.
-const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
+const (
+	defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
+	noMergeReviewLabel   = "goobers:no-merge-review"
+	authorScopeGoobers   = "goobers"
+	authorScopeAny       = "any"
+)
+
+func defaultMergeReviewHeadPrefix() string {
+	return providerBranchNamespace() + "implementation/"
+}
+
+func mergeReviewHeadPrefixes() []string {
+	raw := providerInput("headPrefixes", "")
+	if strings.TrimSpace(raw) == "" {
+		return []string{providerInput("headPrefix", defaultMergeReviewHeadPrefix())}
+	}
+	return splitLabelList(raw)
+}
 
 // runPRSelect implements `goobers pr-select` (issues #359 and #481):
 // merge-review's selection stage. Picks at most one eligible PR per run — the same
@@ -37,11 +54,13 @@ const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
 // a single run. The selected PR is leased in the shared PR claim namespace so
 // concurrent merge-review and pr-remediation runs cannot select it together.
 const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
-	"Select at most one open, non-draft, green-CI goober-authored PR for\n" +
-	"merge-review to evaluate this cycle (a workflow stage). Before selection,\n" +
+	"Select at most one open, non-draft, green-CI PR for merge-review to\n" +
+	"evaluate this cycle (a workflow stage). authorScope defaults to goobers;\n" +
+	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
+	"labeled goobers:no-merge-review are always excluded. Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
-	"selected PR's number/head/base/headSha/baseSha/url to the declared\n" +
+	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
 	"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -75,12 +94,14 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	provider := newCachedGitHubProvider(root, token)
 
 	base := providerInput("base", "main")
-	rawHeadPrefixes := providerInput("headPrefixes", "")
-	headPrefixes := splitLabelList(rawHeadPrefixes)
-	if strings.TrimSpace(rawHeadPrefixes) == "" {
-		headPrefixes = []string{providerInput("headPrefix", providerBranchNamespace()+"implementation/")}
+	headPrefixes := mergeReviewHeadPrefixes()
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
+		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
+	excludeLabels = append(excludeLabels, noMergeReviewLabel)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -91,7 +112,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -114,7 +135,8 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	var couplingDependents []providers.PullRequestSummary
 	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && hasAnyHeadPrefix(pr.Head, headPrefixes) {
+		if pr.State == "open" && pr.Base == base && hasAnyHeadPrefix(pr.Head, headPrefixes) &&
+			!hasAnyLabel(pr.Labels, []string{noMergeReviewLabel}) {
 			couplingDependents = append(couplingDependents, pr)
 		}
 	}
@@ -146,7 +168,8 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base || !hasAnyHeadPrefix(pr.Head, headPrefixes) {
+		if pr.State != "open" || pr.Base != base ||
+			(authorScope != authorScopeAny && !hasAnyHeadPrefix(pr.Head, headPrefixes)) {
 			continue
 		}
 		if pr.Draft {
@@ -235,6 +258,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
+	advisoryMode := authorScope == authorScopeAny && !hasAnyHeadPrefix(selected.Head, headPrefixes)
 	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
 		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
 		return 1
@@ -249,6 +273,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		"headSha":                selected.HeadSHA,
 		"baseSha":                selected.BaseSHA,
 		"url":                    selected.URL,
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
 		"eligibleSince":          priority.EligibleSince.Format(time.RFC3339Nano),
 		"eligibleWaitSeconds":    strconv.FormatInt(int64(priority.Wait/time.Second), 10),
 		"agingBoost":             strconv.FormatInt(priority.AgingBoost, 10),
@@ -281,6 +306,7 @@ func pullRequestsForSelection(
 	repo providers.RepositoryRef,
 	base string,
 	headPrefixes []string,
+	authorScope string,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
@@ -305,7 +331,7 @@ func pullRequestsForSelection(
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
-		if !hasAnyHeadPrefix(pr.Head, headPrefixes) {
+		if authorScope != authorScopeAny && !hasAnyHeadPrefix(pr.Head, headPrefixes) {
 			continue
 		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)

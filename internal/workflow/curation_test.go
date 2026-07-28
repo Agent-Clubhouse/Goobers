@@ -48,11 +48,11 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Fatalf("backlog-curation warnings = %v, want warning-clean reference config", warnings)
 	}
 
-	// Structural shape: reconcile-backlog -> sample-ready-pool -> query-backlog ->
-	// surface-duplicates (deterministic) -> curate (agentic) -> release-claim
-	// (deterministic, terminal). No gates — curation is issues-only with no
-	// review/CI loop (ARCHITECTURE.md §12 reserves reviewer gates for the
-	// implementation workflow, not curation).
+	// Structural shape: reconcile-backlog -> implementation-feedback ->
+	// sample-ready-pool -> query-backlog -> surface-duplicates (deterministic) ->
+	// curate (agentic) -> release-claim (deterministic, terminal). No gates —
+	// curation is issues-only with no review/CI loop (ARCHITECTURE.md §12
+	// reserves reviewer gates for the implementation workflow, not curation).
 	// release-claim (issue #234) is the explicit claim-ledger release
 	// curation needs since it never reaches issue-close-out's release
 	// (implementation-only).
@@ -63,13 +63,31 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !ok {
 		t.Fatal("reconcile-backlog task not found")
 	}
-	if reconcile.Next != "sample-ready-pool" || reconcile.Type != apiv1.TaskDeterministic ||
+	if reconcile.Next != "implementation-feedback" || reconcile.Type != apiv1.TaskDeterministic ||
 		reconcile.Run == nil || len(reconcile.Run.Command) != 3 ||
 		reconcile.Run.Command[1] != "backlog-query" || reconcile.Run.Command[2] != "--reconcile" {
 		t.Errorf("reconcile-backlog = %+v, want deterministic reconciliation task", reconcile)
 	}
 	if reconcile.Inputs["resultFile"] != "backlog-reconciliation.json" {
 		t.Errorf("reconcile-backlog resultFile = %q", reconcile.Inputs["resultFile"])
+	}
+	feedback, ok := m.Task("implementation-feedback")
+	if !ok {
+		t.Fatal("implementation-feedback task not found")
+	}
+	if feedback.Next != "sample-ready-pool" || feedback.Type != apiv1.TaskDeterministic ||
+		feedback.Run == nil || len(feedback.Run.Command) != 3 ||
+		feedback.Run.Command[1] != "backlog-health" || feedback.Run.Command[2] != "--feedback" {
+		t.Errorf("implementation-feedback = %+v, want deterministic feedback task", feedback)
+	}
+	if feedback.Inputs["implementationFailureThreshold"] != "3" ||
+		feedback.Inputs["resultFile"] != "implementation-feedback.json" {
+		t.Errorf("implementation-feedback inputs = %v", feedback.Inputs)
+	}
+	if !containsString(feedback.Capabilities, "github:issues:write") ||
+		!containsString(feedback.Capabilities, "telemetry:read") ||
+		!containsString(feedback.PolicyActions, "update-issue") {
+		t.Errorf("implementation-feedback admission = capabilities %v actions %v", feedback.Capabilities, feedback.PolicyActions)
 	}
 	health, ok := m.Task("sample-ready-pool")
 	if !ok {
@@ -156,7 +174,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:f59184f829ea06bd1e13a17913d781fdfb47d35cad3398433beca10cf437ec28"
+	const wantDigest = "sha256:e1299519579b3d78ac127d433b65bdcc9ae461242446b23c93b8a5fdfb305e60"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

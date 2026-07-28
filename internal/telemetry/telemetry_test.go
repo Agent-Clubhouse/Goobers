@@ -501,6 +501,19 @@ func TestOTLPExporterIgnoresStandardEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestOTLPExporterRequiresExplicitEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://maintainer.example.invalid")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://maintainer.example.invalid")
+
+	_, err := New(context.Background(), Config{
+		ServiceName: "telemetry-test",
+		Exporter:    ExporterOTLP,
+	})
+	if err == nil || !strings.Contains(err.Error(), "endpoint must be explicitly configured") {
+		t.Fatalf("New() error = %v, want explicit endpoint requirement", err)
+	}
+}
+
 func TestOTLPExporterSecureModeOverridesInsecureEnvironment(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "true")

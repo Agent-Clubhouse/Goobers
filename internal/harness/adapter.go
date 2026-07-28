@@ -128,6 +128,10 @@ type Outcome struct {
 	// MaxTranscriptBytes — a truncated transcript carries a trailing marker
 	// (#245), never a silently cut-off blob.
 	Transcript []byte
+	// RenderedPrompt is the exact initial prompt sent by an adapter when it
+	// differs from the default rendering. The Executor uses it when composing
+	// the canonical transcript floor.
+	RenderedPrompt []byte
 	// TranscriptSchema identifies Transcript's record shape when the adapter
 	// already produced structured events. Empty means the Executor must emit
 	// the adapter-composed canonical prompt/output floor.

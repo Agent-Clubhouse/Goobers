@@ -40,7 +40,7 @@ install the release-matched agent toolkit
 review or explicitly apply an agent toolkit update
 .TP
 \fBgoobers apply-verdict\fR
-publish a merge-review verdict as a native review (a workflow stage)
+publish a managed or advisory merge-review verdict (a workflow stage)
 .TP
 \fBgoobers backlog-dedupe\fR
 surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -175,7 +175,7 @@ lint config via the single authoritative validation engine (alias for validate)
 conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 .TP
 \fBgoobers merge-queue-poll\fR
-watch an enqueued PR until merged or evicted (a workflow stage)
+watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 .TP
 \fBgoobers onboarding\fR
 run non-interactive onboarding actions
@@ -193,7 +193,7 @@ open or update the run's PR (a workflow stage)
 post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
 \fBgoobers pr-select\fR
-select one eligible open PR for merge-review (a workflow stage)
+select one managed or advisory open PR for merge-review (a workflow stage)
 .TP
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
