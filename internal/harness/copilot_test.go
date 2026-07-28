@@ -495,13 +495,16 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 
 func TestCopilotAdapterToolAllowlist(t *testing.T) {
 	tests := []struct {
-		name          string
-		tools         []string
-		wantAvailable []string
-		wantIncluded  []string
-		wantOmitted   []string
-		wantIssues    bool
-		externalMCP   bool
+		name             string
+		model            string
+		harnessOptions   map[string]apiextensionsv1.JSON
+		tools            []string
+		wantAvailable    []string
+		wantIncluded     []string
+		wantOmitted      []string
+		wantCommandParts []string
+		wantIssues       bool
+		externalMCP      bool
 	}{
 		{
 			name:  "explicit empty preserves default",
@@ -512,6 +515,18 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			tools:         []string{"view", "glob"},
 			wantAvailable: []string{"view", "glob"},
 			wantOmitted:   []string{"create"},
+		},
+		{
+			name:           "model configuration survives tool constraints",
+			model:          "claude-sonnet-5",
+			harnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
+			tools:          []string{"view"},
+			wantAvailable:  []string{"view"},
+			wantCommandParts: []string{
+				"--model claude-sonnet-5",
+				"--context long_context",
+				"--reasoning-effort xhigh",
+			},
 		},
 		{
 			name:         "shipped shell group expands",
@@ -580,6 +595,8 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 
 			out, err := adapter.Run(context.Background(), RunRequest{
 				Envelope:       envelope,
+				Model:          tc.model,
+				HarnessOptions: tc.harnessOptions,
 				Workspace:      workspace,
 				CompletionPath: DefaultResultPath,
 				Tools:          tc.tools,
@@ -608,6 +625,12 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			}
 			if tc.wantAvailable != nil && !slices.Equal(available, tc.wantAvailable) {
 				t.Fatalf("available tools = %v, want %v", available, tc.wantAvailable)
+			}
+			command := strings.Join(runner.lastReq.Command, " ")
+			for _, want := range tc.wantCommandParts {
+				if !strings.Contains(command, want) {
+					t.Errorf("command = %q, want %q", command, want)
+				}
 			}
 			for _, want := range tc.wantIncluded {
 				if !slices.Contains(available, want) {
