@@ -245,6 +245,17 @@ func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubPr
 	return err
 }
 
+// A human may delete the sticky comment after ListComments returns. Recreate
+// only that confirmed missing-comment race; every other provider error remains
+// stage-fatal.
+func postOrRecreateRemediationComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
+	err := postOrUpdateStickyComment(ctx, provider, repo, prNumber, existingCommentID, body)
+	if existingCommentID == "" || !providers.IsNotFoundError(err) {
+		return err
+	}
+	return postOrUpdateStickyComment(ctx, provider, repo, prNumber, "", body)
+}
+
 // escalationStillBlocks reports whether pr's CURRENT goobers:merge-escalated
 // label still blocks it from selection by merge-review's pr-select or
 // pr-remediation's gather-pr-context (#716's core fix). A PR not currently
@@ -424,6 +435,13 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	moot := func() int {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
+		if err := writeCheckpointResult(stderr, false, selectedNumber, "", ""); err != nil {
+			return 1
+		}
+		return 0
+	}
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
@@ -438,14 +456,20 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if current == nil {
-		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
 		// Halt, don't continue: there is no longer a PR to remediate, so
 		// spending an agentic session on it would be pure waste (#392).
-		if err := writeCheckpointResult(stderr, false, selectedNumber, "", ""); err != nil {
-			return 1
-		}
-		return 0
+		return moot()
 	}
+	// The list may come from the scheduler tick's shared snapshot. Refresh the
+	// selected PR before acting on state that can already be stale.
+	refreshed, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if refreshed.State != "open" || refreshed.Merged {
+		return moot()
+	}
+	current = &refreshed
 
 	// Re-checkout the PR's own branch: this stage gets its OWN fresh
 	// worktree (internal/runner's buildEnvelope keys worktree continuity on
@@ -523,6 +547,9 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
 		}
+		if liveCurrent.State != "open" || liveCurrent.Merged {
+			return moot()
+		}
 		current = &liveCurrent
 		attemptMatchesLiveHead = attemptedHeadSHA == current.HeadSHA
 	}
@@ -582,6 +609,15 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
+	}
+	// Close the race between the initial refresh and the first provider
+	// mutation; a terminal PR is a complete no-op, not a provider failure.
+	refreshed, err = provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if refreshed.State != "open" || refreshed.Merged {
+		return moot()
 	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded
@@ -684,7 +720,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("escalate PR #%d", selectedNumber), err, "")
 		}
-		if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
+		if err := postOrRecreateRemediationComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
 		}
 		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA); err != nil {
@@ -713,7 +749,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", selectedNumber), err, "")
 		}
 	}
-	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
+	if err := postOrRecreateRemediationComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
 	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA); err != nil {
