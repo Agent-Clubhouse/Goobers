@@ -63,6 +63,17 @@ func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarne
 		switch warning.Warning.Kind {
 		case harness.ConfigWarningModelFallback:
 			code = validate.WarningModelFallback
+		case harness.ConfigWarningModelUnverified:
+			// Deliberately not a validation finding. This warning reports that
+			// the harness could not be reached to enumerate models, which is a
+			// property of the machine running validation, not of the config
+			// being validated. Surfacing it here would make `goobers validate`
+			// report a different result on a CI runner than on a developer
+			// machine, and --strict (used by test/configvalidate for every
+			// checked-in tree) would turn that difference into a failure.
+			// Callers that care about verification state read the warning off
+			// ConfigResolution instead.
+			continue
 		default:
 			return nil, fmt.Errorf("unknown harness configuration warning kind %q", warning.Warning.Kind)
 		}

@@ -175,7 +175,34 @@ func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, option
 	if model != "" {
 		availableModels, err := c.discoverModels(ctx)
 		if err != nil {
-			return ConfigResolution{}, fmt.Errorf("discover available models: %w", err)
+			// Discovery failing is "cannot determine availability", not "the
+			// model is invalid". Config admission runs wherever the daemon or
+			// `goobers lint` runs — including CI runners and developer machines
+			// with no Copilot CLI installed or no authenticated session — so
+			// treating an unreachable harness as a validation error makes a
+			// config's validity depend on what happens to be installed on the
+			// validating machine. Accept the requested model, record that it
+			// went unchecked, and let the run itself fail later if the model is
+			// genuinely wrong.
+			//
+			// Capability-dependent option checks are skipped rather than run
+			// against zero-value capabilities, which would spuriously reject
+			// long_context and every reasoningEffort value. Shape validation
+			// (unknown options, non-string values, options that require an
+			// explicit model) is capability-independent and still applies.
+			if _, normalizeErr := normalizeResolvedCopilotConfig(model, effectiveOptions); normalizeErr != nil {
+				return ConfigResolution{}, normalizeErr
+			}
+			return ConfigResolution{
+				Model:          model,
+				HarnessOptions: effectiveOptions,
+				Warnings: []ConfigWarning{{
+					Kind: ConfigWarningModelUnverified,
+					Message: fmt.Sprintf(
+						"could not reach the Copilot harness to verify model %q: %v; accepting it unverified",
+						model, err),
+				}},
+			}, nil
 		}
 		var ok bool
 		capabilities, ok = availableModels[model]

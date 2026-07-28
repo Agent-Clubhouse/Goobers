@@ -967,15 +967,47 @@ func TestCopilotAdapterRunsAdmittedExplicitModelWithoutRediscovery(t *testing.T)
 	}
 }
 
-func TestCopilotAdapterFailsClosedWhenModelDiscoveryFails(t *testing.T) {
-	adapter := &CopilotAdapter{
-		Command:     []string{"copilot"},
-		ModelLister: &fakeCopilotModelLister{err: errors.New("runtime unavailable")},
-	}
-	_, err := adapter.ResolveConfig("gpt-5.4", nil)
-	if err == nil || !strings.Contains(err.Error(), "discover available models: runtime unavailable") {
-		t.Fatalf("ResolveConfig error = %v, want model discovery failure", err)
-	}
+// TestCopilotAdapterFailsClosedOnlyWhenTheHarnessAnswers pins the distinction
+// this adapter draws between two outcomes that were originally conflated:
+//
+//   - the harness answered and did not offer the model -> fail closed, because
+//     the catalogue is authoritative and the model is genuinely wrong;
+//   - the harness could not be reached at all -> accept unverified, because
+//     "cannot determine availability" is not evidence of an invalid model.
+//
+// The original behaviour failed closed in both cases. That made config validity
+// depend on whether a Copilot CLI happened to be installed and authenticated on
+// the validating machine, so `goobers validate` and the checks CI gate rejected
+// configs on every runner without the CLI while accepting them on a developer
+// laptop.
+func TestCopilotAdapterFailsClosedOnlyWhenTheHarnessAnswers(t *testing.T) {
+	t.Run("harness answered without the model", func(t *testing.T) {
+		adapter := &CopilotAdapter{
+			Command:     []string{"copilot"},
+			ModelLister: &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "gpt-5.4"}}},
+		}
+		_, err := adapter.ResolveConfig("no-such-model", nil)
+		if err == nil || !strings.Contains(err.Error(), `unknown model "no-such-model"`) {
+			t.Fatalf("ResolveConfig error = %v, want unknown-model rejection", err)
+		}
+	})
+
+	t.Run("harness unreachable", func(t *testing.T) {
+		adapter := &CopilotAdapter{
+			Command:     []string{"copilot"},
+			ModelLister: &fakeCopilotModelLister{err: errors.New("runtime unavailable")},
+		}
+		resolution, err := adapter.ResolveConfig("gpt-5.4", nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig error = %v, want the model accepted unverified", err)
+		}
+		if len(resolution.Warnings) != 1 ||
+			resolution.Warnings[0].Kind != ConfigWarningModelUnverified ||
+			!strings.Contains(resolution.Warnings[0].Message, "runtime unavailable") {
+			t.Fatalf("Warnings = %+v, want one %s warning naming the discovery failure",
+				resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	})
 }
 
 func TestCopilotAdapterUndeclaredCapabilityNeverResolved(t *testing.T) {
@@ -1360,5 +1392,91 @@ func TestCopilotAdapterPreflightNoAuthProbeByDefault(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one probe (--version), got %d — no auth probe should run by default", calls)
+	}
+}
+
+// TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable covers config
+// admission on a machine where the Copilot CLI cannot be reached at all — no
+// binary on PATH, or no authenticated session. That is the state of every CI
+// runner, and it is not reproducible on a developer machine that has the CLI
+// installed, so it is asserted explicitly rather than left to integration
+// coverage.
+//
+// An unreachable harness means "cannot determine availability", which must not
+// be reported as an invalid model: otherwise a config's validity depends on
+// what happens to be installed on the validating machine.
+func TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable(t *testing.T) {
+	discoveryErr := errors.New(`start Copilot model discovery: failed to start CLI server: ` +
+		`exec: "copilot": executable file not found in $PATH`)
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: discoveryErr},
+	}
+
+	resolution, err := adapter.ResolveConfig("gpt-5.4", nil)
+	if err != nil {
+		t.Fatalf("ResolveConfig with unreachable harness = %v, want nil", err)
+	}
+	if resolution.Model != "gpt-5.4" {
+		t.Fatalf("Model = %q, want the requested model preserved", resolution.Model)
+	}
+	if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+		t.Fatalf("Warnings = %+v, want one %s warning", resolution.Warnings, ConfigWarningModelUnverified)
+	}
+
+	// ValidateConfig is the config-admission entry point and must agree.
+	if err := adapter.ValidateConfig("gpt-5.4", nil); err != nil {
+		t.Fatalf("ValidateConfig with unreachable harness = %v, want nil", err)
+	}
+}
+
+// TestCopilotResolveConfigUnverifiedStillRejectsMalformedOptions guards the
+// other half: skipping the model check must not skip option validation. Only
+// the capability-dependent checks are unknowable when discovery fails; option
+// shape is not.
+func TestCopilotResolveConfigUnverifiedStillRejectsMalformedOptions(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: errors.New("copilot unavailable")},
+	}
+
+	if _, err := adapter.ResolveConfig("gpt-5.4", map[string]apiextensionsv1.JSON{
+		"nonsense": {Raw: []byte(`"value"`)},
+	}); err == nil {
+		t.Fatal("unknown harness option accepted while discovery was unavailable; " +
+			"shape validation must still run")
+	}
+
+	if _, err := adapter.ResolveConfig("gpt-5.4", map[string]apiextensionsv1.JSON{
+		"context": {Raw: []byte(`"not_a_context"`)},
+	}); err == nil {
+		t.Fatal("invalid context value accepted while discovery was unavailable")
+	}
+}
+
+// TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions pins the
+// reason the unverified path uses normalizeResolvedCopilotConfig rather than
+// normalizeCopilotConfig. Capabilities are unknown here, so running the
+// capability checks against a zero-value struct would reject long_context and
+// every reasoningEffort value — turning "cannot verify" into "invalid" through
+// a different door.
+func TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: errors.New("copilot unavailable")},
+	}
+
+	for _, option := range []struct {
+		name  string
+		value map[string]apiextensionsv1.JSON
+	}{
+		{"long context", map[string]apiextensionsv1.JSON{"context": {Raw: []byte(`"long_context"`)}}},
+		{"reasoning effort", map[string]apiextensionsv1.JSON{"reasoningEffort": {Raw: []byte(`"high"`)}}},
+	} {
+		t.Run(option.name, func(t *testing.T) {
+			if _, err := adapter.ResolveConfig("gpt-5.4", option.value); err != nil {
+				t.Fatalf("ResolveConfig = %v, want nil (capability unknown, not unsupported)", err)
+			}
+		})
 	}
 }

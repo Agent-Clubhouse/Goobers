@@ -155,6 +155,12 @@ const (
 	// ConfigWarningModelFallback reports that an unavailable requested model was
 	// replaced by the harness default.
 	ConfigWarningModelFallback ConfigWarningKind = "model-fallback"
+	// ConfigWarningModelUnverified reports that the harness could not be reached
+	// to enumerate models, so the requested model name was accepted without
+	// being checked against the live catalogue. This is distinct from
+	// ConfigWarningModelFallback: there the harness answered and did not offer
+	// the model, here it never answered at all.
+	ConfigWarningModelUnverified ConfigWarningKind = "model-unverified"
 )
 
 // ConfigWarning is a non-blocking finding produced while resolving harness
