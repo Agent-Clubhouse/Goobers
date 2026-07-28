@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -167,6 +168,48 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestValidateModelFallbackWarnsAndUsesAdvisoryExit(t *testing.T) {
+	root := initDemo(t)
+	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
+	replaceInFile(t, gooberPath, "  model: auto", "  model: retired-model")
+	replaceInFile(t, gooberPath, "  harnessOptions: {}", "  harnessOptions:\n    fallback-to-default: true")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := `WARNING MODEL002 Goober/coder: requested model "retired-model" is unavailable; using the harness default`
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("validate output missing %q:\n%s", want, stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--json", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate --json code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	assertFindingSource(
+		t,
+		decodeDiagnosticsEnvelope(t, stdout),
+		string(validate.WarningModelFallback),
+		filepath.ToSlash(filepath.Join("config", "gaggles", "example", "goobers", "coder", "goober.yaml")),
+		"/spec/harnessOptions/fallback-to-default",
+	)
+
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 1 {
+		t.Fatalf("strict validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	replaceInFile(t, gooberPath, "    fallback-to-default: true", "    fallback-to-default: false")
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("invalid model validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `unknown model "retired-model"; valid models:`) {
+		t.Fatalf("invalid model output omitted valid-model list:\n%s", stdout)
 	}
 }
 

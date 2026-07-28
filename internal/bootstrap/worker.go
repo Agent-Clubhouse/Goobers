@@ -26,14 +26,15 @@ type EngineDeps struct {
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
-// provided runtime seams) on a Temporal worker. The real goober-runtime binary
-// and the e2e harness both call this so the worker is identical.
-func RegisterEngine(w worker.Worker, deps EngineDeps) {
+// provided runtime seams and connected Temporal service) on a Temporal worker.
+// Every deployable worker entrypoint calls this so the worker is identical.
+func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDeps) {
 	engine.RegisterWith(w, &engine.Activities{
-		Goober:     deps.Goober,
-		Det:        deps.Det,
-		Auto:       deps.Auto,
-		Workspaces: deps.Workspaces,
+		Goober:          deps.Goober,
+		Det:             deps.Det,
+		Auto:            deps.Auto,
+		ScheduleService: temporalClient.WorkflowService(),
+		Workspaces:      deps.Workspaces,
 	})
 }
 
