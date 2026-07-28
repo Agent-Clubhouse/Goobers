@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -77,13 +78,14 @@ type PrepareResult struct {
 }
 
 type commandRunner interface {
-	Run(context.Context, string, string, ...string) ([]byte, error)
+	Run(context.Context, string, []string, string, ...string) ([]byte, error)
 }
 type execRunner struct{}
 
-func (execRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+func (execRunner) Run(ctx context.Context, dir string, env []string, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	command.Env = env
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
@@ -334,18 +336,22 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 		}
 	}()
 	source := filepath.Join(dir, "source")
+	askpass, err := credentials.WriteAskpassScript(dir)
+	if err != nil {
+		return "", fmt.Errorf("prepare git authentication: %w", err)
+	}
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", url.PathEscape(opts.Owner), url.PathEscape(opts.Repository))
-	if _, err := opts.Runner.Run(ctx, dir, "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", cloneURL, source); err != nil {
+	if _, err := opts.Runner.Run(ctx, dir, credentials.GitAuthEnvironment(askpass, opts.Token), "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", cloneURL, source); err != nil {
 		return "", fmt.Errorf("clone configured repository: %w", err)
 	}
-	if _, err := opts.Runner.Run(ctx, source, "git", "checkout", "--quiet", "--detach", commit); err != nil {
+	if _, err := opts.Runner.Run(ctx, source, nil, "git", "checkout", "--quiet", "--detach", commit); err != nil {
 		return "", fmt.Errorf("check out configured commit %s: %w", commit, err)
 	}
 	binary := filepath.Join(dir, binaryName(opts.GOOS))
 	const versionPackage = "github.com/goobers/goobers/internal/version"
 	ldflags := fmt.Sprintf("-s -w -X %s.Version=dev -X %s.Commit=%s -X %s.Date=%s",
 		versionPackage, versionPackage, commit, versionPackage, time.Now().UTC().Format(time.RFC3339))
-	if _, err := opts.Runner.Run(ctx, source, "go", "build", "-trimpath", "-ldflags", ldflags, "-o", binary, "./cmd/goobers"); err != nil {
+	if _, err := opts.Runner.Run(ctx, source, nil, "go", "build", "-trimpath", "-ldflags", ldflags, "-o", binary, "./cmd/goobers"); err != nil {
 		return "", fmt.Errorf("build main target %s: %w", commit, err)
 	}
 	if err := os.RemoveAll(source); err != nil {
@@ -370,7 +376,7 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 	if err != nil {
 		return info, fmt.Errorf("staged --version smoke check: %w", err)
 	}
-	if _, err := opts.Runner.Run(ctx, opts.WorkDir, binary, "validate", opts.Root); err != nil {
+	if _, err := opts.Runner.Run(ctx, opts.WorkDir, nil, binary, "validate", opts.Root); err != nil {
 		return info, fmt.Errorf("staged validate smoke check: %w", err)
 	}
 	canonical := opts.Root
@@ -378,14 +384,14 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		canonical = candidate
 	}
-	if _, err := opts.Runner.Run(ctx, opts.WorkDir, binary, "config", "diff", "--against", canonical, opts.Root); err != nil {
+	if _, err := opts.Runner.Run(ctx, opts.WorkDir, nil, binary, "config", "diff", "--against", canonical, opts.Root); err != nil {
 		return info, fmt.Errorf("staged config diff smoke check: %w", err)
 	}
 	return info, nil
 }
 
 func readVersion(ctx context.Context, runner commandRunner, dir, binary string) (versionInfo, error) {
-	raw, err := runner.Run(ctx, dir, binary, "version", "--json")
+	raw, err := runner.Run(ctx, dir, nil, binary, "version", "--json")
 	if err != nil {
 		return versionInfo{}, err
 	}
@@ -475,7 +481,6 @@ func extractTarBinary(archivePath, destination string) error {
 	}
 	return err
 }
-
 func extractZipBinary(archivePath, destination string) (retErr error) {
 	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -489,7 +494,6 @@ func extractZipBinary(archivePath, destination string) (retErr error) {
 	err = writeExecutable(destination, io.LimitReader(source, maxArchiveBytes))
 	return errors.Join(err, source.Close())
 }
-
 func readTarGz(archivePath string, visit func(*tar.Header, *tar.Reader) (bool, error)) (retErr error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -516,7 +520,6 @@ func readTarGz(archivePath string, visit func(*tar.Header, *tar.Reader) (bool, e
 		}
 	}
 }
-
 func writeExecutable(destination string, source io.Reader) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
@@ -527,29 +530,24 @@ func writeExecutable(destination string, source io.Reader) error {
 	}
 	return journal.WriteFileAtomic(destination, raw, 0o755)
 }
-
 func commitsEqual(left, right string) bool {
 	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
 	return left != "" && right != "" && left != "none" && right != "none" &&
 		(strings.HasPrefix(left, right) || strings.HasPrefix(right, left))
 }
-
 func digestName(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:8])
 }
-
 func repositoryEndpoint(opts PrepareOptions) string {
 	return strings.TrimRight(opts.APIBaseURL, "/") + "/repos/" + url.PathEscape(opts.Owner) + "/" + url.PathEscape(opts.Repository)
 }
-
 func binaryName(goos string) string {
 	if goos == "windows" {
 		return "goobers.exe"
 	}
 	return "goobers"
 }
-
 func updatesDir(root string) string      { return filepath.Join(root, "updates") }
 func stagingDir(root string) string      { return filepath.Join(updatesDir(root), "staged") }
 func requestPath(root string) string     { return filepath.Join(updatesDir(root), "request.json") }

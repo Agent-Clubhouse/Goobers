@@ -46,6 +46,12 @@ func (e fakeEscalator) Escalate(_ context.Context, request Request, _ string) er
 	return nil
 }
 
+type escalatorFunc func(context.Context, Request, string) error
+
+func (f escalatorFunc) Escalate(ctx context.Context, request Request, reason string) error {
+	return f(ctx, request, reason)
+}
+
 func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	root, now, _ := setupSupervisorRequest(t)
 	lockPath := filepath.Join(root, "scheduler", "up.lock")
@@ -86,22 +92,24 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 
 func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
 	root, _, _ := setupSupervisorRequest(t)
-	escalations := make(chan Request, 1)
+	escalations := make(chan Request, 2)
+	results := make(chan error, 1)
+	results <- errors.New("escalation provider unavailable")
 	launcher := &fakeLauncher{started: make(chan *fakeProcess, 3)}
-	cancel, done := startSupervisor(root, launcher, fakeEscalator{escalations})
+	cancel, done := startSupervisor(root, launcher, escalatorFunc(func(_ context.Context, request Request, _ string) error {
+		escalations <- request
+		return <-results
+	}))
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
 	candidate.complete(errors.New("broken candidate"))
 	restored := <-launcher.started
-	select {
-	case <-escalations:
-	case <-time.After(time.Second):
-		t.Fatal("rollback was not escalated")
-	}
+	waitFor(t, func() bool { return len(escalations) == 2 })
 	if got, _ := os.ReadFile(currentBinary(root, "linux")); string(got) != "old" {
 		t.Fatalf("rolled-back binary = %q", got)
 	}
+	results <- nil
 	stopSupervisor(t, root, cancel, restored, done)
 }
 
@@ -150,7 +158,6 @@ func startSupervisor(root string, launcher launcher, escalator escalator) (conte
 	}()
 	return cancel, done
 }
-
 func drainAndComplete(t *testing.T, root string, process *fakeProcess) {
 	t.Helper()
 	waitFor(t, func() bool {
@@ -162,7 +169,6 @@ func drainAndComplete(t *testing.T, root string, process *fakeProcess) {
 	}
 	process.complete(nil)
 }
-
 func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, process *fakeProcess, done <-chan error) {
 	t.Helper()
 	cancel()
@@ -180,7 +186,6 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 		t.Fatal("supervisor did not stop")
 	}
 }
-
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

@@ -96,22 +96,23 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 		return fmt.Errorf("start supervised daemon: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, terminateProcess(process, opts.DrainTimeout)) }()
-	if pending && request.Status == "rollback" {
-		if err := escalateRollback(ctx, opts, log, request); err != nil {
-			return err
-		}
-		pending = false
-	}
 	ticker := time.NewTicker(opts.PollInterval)
 	defer ticker.Stop()
 	for {
 		if pending {
-			process, err = performUpdate(ctx, opts, log, process, &request)
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					return stopForService(process, opts)
+			if request.Status != "rollback" {
+				process, err = performUpdate(ctx, opts, log, process, &request)
+				if err != nil {
+					if errors.Is(err, context.Canceled) {
+						return stopForService(process, opts)
+					}
+					return err
 				}
-				return err
+			}
+			if request.Status == "rollback" {
+				if err := escalateRollback(ctx, opts, log, request); err != nil {
+					_, _ = fmt.Fprintf(opts.Stderr, "self-update rollback escalation failed; will retry: %v\n", err)
+				}
 			}
 			pending = false
 		}
@@ -163,7 +164,7 @@ func performUpdate(
 		if request.Status != "monitoring" {
 			return candidate, err
 		}
-		return rollbackAndRestart(ctx, opts, log, request, candidate, err.Error())
+		return rollbackAndRestart(opts, log, request, candidate, err.Error())
 	}
 	alive, reason, err := monitorCandidate(ctx, opts, log, candidate, baseline, request)
 	if err != nil {
@@ -175,7 +176,7 @@ func performUpdate(
 	if !alive {
 		candidate = nil
 	}
-	return rollbackAndRestart(ctx, opts, log, request, candidate, reason)
+	return rollbackAndRestart(opts, log, request, candidate, reason)
 }
 
 func monitorCandidate(
@@ -285,7 +286,6 @@ func recoverRequest(opts SupervisorOptions, log *journal.InstanceLog, request *R
 }
 
 func rollbackAndRestart(
-	ctx context.Context,
 	opts SupervisorOptions,
 	log *journal.InstanceLog,
 	request *Request,
@@ -311,7 +311,7 @@ func rollbackAndRestart(
 	if err != nil {
 		return nil, fmt.Errorf("restart retained previous binary: %w", err)
 	}
-	return restored, escalateRollback(ctx, opts, log, *request)
+	return restored, nil
 }
 
 func markRollback(root string, log *journal.InstanceLog, request *Request, reason string) error {
@@ -451,7 +451,6 @@ func removeCompletedStaging(root, stagedPath string) error {
 	}
 	return os.RemoveAll(filepath.Join(stagingDir(root), strings.SplitN(relative, string(filepath.Separator), 2)[0]))
 }
-
 func rejectInvalidRequest(opts SupervisorOptions, requestErr error) error {
 	_, reportErr := fmt.Fprintf(opts.Stderr, "ignoring invalid self-update request: %v\n", requestErr)
 	if reportErr != nil {
@@ -463,7 +462,6 @@ func rejectInvalidRequest(opts SupervisorOptions, requestErr error) error {
 	}
 	return reportErr
 }
-
 func requestDaemonStop(root string) error {
 	if err := os.MkdirAll(updatesDir(root), 0o755); err != nil {
 		return err
@@ -482,7 +480,6 @@ func ConsumeStopRequest(root string) (bool, error) {
 	}
 	return err == nil, err
 }
-
 func stopForService(process process, opts SupervisorOptions) error {
 	if err := requestDaemonStop(opts.Root); err != nil {
 		return err
@@ -491,7 +488,6 @@ func stopForService(process process, opts SupervisorOptions) error {
 	_ = os.Remove(stopRequestPath(opts.Root))
 	return err
 }
-
 func waitOrKill(process process, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -506,7 +502,6 @@ func waitOrKill(process process, timeout time.Duration) error {
 		return nil
 	}
 }
-
 func terminateProcess(process process, timeout time.Duration) error {
 	if process == nil {
 		return nil
@@ -528,7 +523,6 @@ func terminateProcess(process process, timeout time.Duration) error {
 		return errors.New("timed out waiting for supervised daemon to terminate")
 	}
 }
-
 func activateCandidate(opts SupervisorOptions, request *Request) error {
 	current, previous := currentBinary(opts.Root, opts.GOOS), previousBinary(opts.Root, opts.GOOS)
 	if err := copyExecutable(current, previous); err != nil {
@@ -540,14 +534,12 @@ func activateCandidate(opts SupervisorOptions, request *Request) error {
 	}
 	return copyExecutable(request.StagedPath, current)
 }
-
 func restorePrevious(opts SupervisorOptions) error {
 	if err := copyExecutable(previousBinary(opts.Root, opts.GOOS), currentBinary(opts.Root, opts.GOOS)); err != nil {
 		return fmt.Errorf("restore retained previous binary: %w", err)
 	}
 	return nil
 }
-
 func copyExecutable(source, destination string) (retErr error) {
 	file, err := os.Open(source)
 	if err != nil {
@@ -560,11 +552,9 @@ func copyExecutable(source, destination string) (retErr error) {
 	}
 	return writeExecutable(destination, file)
 }
-
 func readHeartbeat(root string) (time.Time, error) {
 	return daemonstate.Read(filepath.Join(root, "scheduler", "up.lock"))
 }
-
 func ensureUpdateEvent(root string, log *journal.InstanceLog, eventType journal.EventType, request Request, reason string) error {
 	events, err := journal.ReadInstanceLog(filepath.Join(root, "scheduler"))
 	if err != nil {
@@ -580,7 +570,6 @@ func ensureUpdateEvent(root string, log *journal.InstanceLog, eventType journal.
 	}
 	return appendUpdateEvent(log, eventType, request, reason)
 }
-
 func appendUpdateEvent(log *journal.InstanceLog, eventType journal.EventType, request Request, reason string) error {
 	return log.Append(journal.Event{
 		Type: eventType, Reason: reason, RunID: request.RunID,

@@ -13,14 +13,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-type commandFunc func(context.Context, string, string, ...string) ([]byte, error)
+type commandFunc func(context.Context, string, []string, string, ...string) ([]byte, error)
 
-func (f commandFunc) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	return f(ctx, dir, name, args...)
+func (f commandFunc) Run(ctx context.Context, dir string, env []string, name string, args ...string) ([]byte, error) {
+	return f(ctx, dir, env, name, args...)
 }
 
 func TestPrepareReleaseAndMain(t *testing.T) {
@@ -53,12 +54,21 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 			current := currentBinary(root, "linux")
 			writeTestExecutable(t, current, "old")
 			smokes := 0
-			runner := commandFunc(func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
+			runner := commandFunc(func(_ context.Context, _ string, env []string, name string, args ...string) ([]byte, error) {
 				if name == current {
 					return []byte(`{"version":"v1","commit":"old"}`), nil
 				}
-				if name == "git" && args[0] == "clone" && args[len(args)-2] != "https://github.com/acme/goobers.git" {
-					return nil, fmt.Errorf("clone source = %q, want configured repository", args[len(args)-2])
+				if name == "git" && args[0] == "clone" {
+					if args[len(args)-2] != "https://github.com/acme/goobers.git" {
+						return nil, fmt.Errorf("clone source = %q, want configured repository", args[len(args)-2])
+					}
+					environment := strings.Join(env, "\n")
+					if !strings.Contains(environment, "GIT_ASKPASS=") ||
+						!strings.Contains(environment, "GOOBERS_GIT_TOKEN=token") ||
+						!strings.Contains(environment, "GIT_TERMINAL_PROMPT=0") ||
+						strings.Contains(strings.Join(args, "\n"), "token") {
+						return nil, errors.New("private clone did not use configured-token askpass authentication")
+					}
 				}
 				if name == "git" {
 					return nil, nil
@@ -100,7 +110,6 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 		})
 	}
 }
-
 func testTarGz(t *testing.T, content string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -117,7 +126,6 @@ func testTarGz(t *testing.T, content string) []byte {
 	}
 	return buffer.Bytes()
 }
-
 func writeTestExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
