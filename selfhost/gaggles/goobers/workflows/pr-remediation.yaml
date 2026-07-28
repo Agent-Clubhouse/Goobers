@@ -152,12 +152,13 @@ spec:
         - workspaceBranch
       next: gather-sibling-context
 
-    # Reuse merge-review's sibling gatherer before cause classification so an
-    # open file overlap is charged only to sibling-overlap, never also to the
-    # holistic verdict's substantive bit. The command reuses the instance-wide
-    # per-head sibling memo; only its unrelated verdict-cache lookup is disabled.
-    # Its routing scalars pass through to rebase-pr, while sibling-context.json
-    # remains available to the implementer as evidence.
+    # Reuse merge-review's sibling gatherer before cause classification so
+    # overlap-attributable verdict findings are charged only to sibling-overlap,
+    # while unrelated substantive findings retain their own cause. The command
+    # reuses the instance-wide per-head sibling memo; only its unrelated
+    # verdict-cache lookup is disabled. Its routing scalars pass through to
+    # rebase-pr, while sibling-context.json remains available to the implementer
+    # as evidence.
     - name: gather-sibling-context
       type: deterministic
       goal: Load the other open PRs' touched files and classify overlap before remediation budgeting.
@@ -171,6 +172,7 @@ spec:
         hasFailingCI: hasFailingCI
       inputs:
         resultFile: "sibling-context.json"
+        minSeverity: "info"
       capabilities:
         - github:pr:write
       policyActions:

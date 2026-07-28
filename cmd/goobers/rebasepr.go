@@ -126,11 +126,11 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	hasSiblingHandoff, err := trustedSiblingOverlapHandoff(
 		ctx, handoffProvider, repo, selectedNumber, attemptedHeadSHA,
 	)
+	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 	if err != nil {
 		return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, err))
 	}
-	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
-	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 
 	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
 	if err != nil {
@@ -233,13 +233,6 @@ type remediatePolicyOutcome struct {
 // evaluateRemediatePolicy applies the declared `remediate` policy (#941/
 // PRR-6) to this cycle's detected causes.
 func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI, siblingOverlap bool) remediatePolicyOutcome {
-	// Holistic merge review reports overlap findings as substantive. Once the
-	// deterministic sibling gatherer or a durable post-merge handoff identifies
-	// that overlap, classify it only as sibling-overlap so one condition cannot
-	// consume two independent budgets.
-	if siblingOverlap {
-		substantive = false
-	}
 	allowed := make(map[string]bool)
 	for _, cause := range splitLabelList(remediate) {
 		allowed[cause] = true
@@ -405,10 +398,10 @@ func trustedSiblingOverlapHandoff(
 			handoff.TargetHeadSHA = targetHeadSHA
 			body, err := renderPostMergeRemediationHandoff(handoff)
 			if err != nil {
-				return false, err
+				return true, err
 			}
 			if err := provider.UpdateComment(ctx, repo, comments[i].ID, body); err != nil {
-				return false, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
+				return true, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
 			}
 		}
 		return true, nil

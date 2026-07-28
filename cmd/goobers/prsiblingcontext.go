@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -34,6 +35,39 @@ func intersectSorted(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func verdictHasIndependentSubstantiveFindingForPR(
+	verdict *apiv1.Verdict,
+	prNumber int,
+	overlappingSiblings []int,
+	minSeverity apiv1.Severity,
+) bool {
+	if verdict == nil {
+		return false
+	}
+	target := strconv.Itoa(prNumber)
+	overlapping := make(map[string]bool, len(overlappingSiblings))
+	for _, number := range overlappingSiblings {
+		overlapping[strconv.Itoa(number)] = true
+	}
+	for _, finding := range verdict.Findings {
+		if !substantiveFindingAppliesToPR(finding, target, minSeverity) {
+			continue
+		}
+		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+		overlapAttributable := len(locationRefs) > 0
+		for _, match := range locationRefs {
+			if len(match) < 2 || !overlapping[match[1]] {
+				overlapAttributable = false
+				break
+			}
+		}
+		if !overlapAttributable {
+			return true
+		}
+	}
+	return false
 }
 
 // siblingPR is one OTHER open PR's evidence for the holistic review — what
@@ -308,6 +342,23 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
+	if hasSubstantiveFindings && len(overlappingSiblings) > 0 {
+		comments, cerr := provider.ListComments(ctx, repo, selectedNumberStr)
+		if cerr != nil {
+			return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), cerr, "sibling-context.json")
+		}
+		author, aerr := provider.AuthenticatedLogin(ctx)
+		if aerr != nil {
+			return failProviderStage(stderr, "resolve merge-review verdict author", aerr, "sibling-context.json")
+		}
+		if verdict := gatherPRVerdict(comments, author); verdict != nil {
+			hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
+				verdict, selectedNumber, overlappingSiblings, resolveMinSeverity(stderr),
+			)
+		}
+	}
+
 	// Verdict-level cache: the key is the selected PR's own reviewable state
 	// (head/base SHAs), NOT the whole sibling set (#1237 — see
 	// computeReviewDigest). Check the selected PR's trusted status comment for a
@@ -351,7 +402,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"selectedNumber":         selectedNumberStr,
 		"head":                   selectedHead,
 		"base":                   base,
-		"hasSubstantiveFindings": providerInput("hasSubstantiveFindings", "false"),
+		"hasSubstantiveFindings": strconv.FormatBool(hasSubstantiveFindings),
 		"hasFailingCI":           providerInput("hasFailingCI", "false"),
 		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
 		"selectedHeadSha":        selectedHeadSHA,

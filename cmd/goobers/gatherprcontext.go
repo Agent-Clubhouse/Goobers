@@ -533,29 +533,28 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, min
 	}
 	target := strconv.Itoa(prNumber)
 	for _, finding := range verdict.Findings {
-		if finding.Class != apiv1.FindingSubstantive {
-			continue
-		}
-		// An unset Severity (verdicts recorded before this field existed, or
-		// any evaluator that never populates it) always counts — the
-		// liberal default must reproduce today's behavior exactly, and
-		// today's code never looked at Severity at all. Only an explicitly
-		// set Severity below the floor is filtered.
-		if finding.Severity != "" && finding.Severity.Rank() < minSeverity.Rank() {
-			continue
-		}
-		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
-		if len(locationRefs) == 0 {
-			return true
-		}
-		if referencesTarget(locationRefs, target) {
-			return true
-		}
-		if referencesTarget(hashReferencePattern.FindAllStringSubmatch(finding.Message, -1), target) {
+		if substantiveFindingAppliesToPR(finding, target, minSeverity) {
 			return true
 		}
 	}
 	return false
+}
+
+func substantiveFindingAppliesToPR(finding apiv1.Finding, target string, minSeverity apiv1.Severity) bool {
+	if finding.Class != apiv1.FindingSubstantive {
+		return false
+	}
+	// An unset Severity (verdicts recorded before this field existed, or
+	// any evaluator that never populates it) always counts — the liberal
+	// default must reproduce today's behavior exactly.
+	if finding.Severity != "" && finding.Severity.Rank() < minSeverity.Rank() {
+		return false
+	}
+	locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+	if len(locationRefs) == 0 || referencesTarget(locationRefs, target) {
+		return true
+	}
+	return referencesTarget(hashReferencePattern.FindAllStringSubmatch(finding.Message, -1), target)
 }
 
 // referencesTarget reports whether any captured PR-number reference equals

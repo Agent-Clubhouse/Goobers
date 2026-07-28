@@ -133,6 +133,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
+	if got := siblings.Inputs["minSeverity"]; got != "info" {
+		t.Errorf("gather-sibling-context minSeverity = %q, want info", got)
+	}
 	if got := siblings.Next; got != "rebase-pr" {
 		t.Errorf("gather-sibling-context next = %q, want rebase-pr", got)
 	}

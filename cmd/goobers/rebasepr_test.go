@@ -23,9 +23,10 @@ import (
 // never lists PRs — its core inputs arrive via InputsFrom, mirroring the real
 // pr-remediation.yaml wiring.
 type rebasePRServerState struct {
-	mu       sync.Mutex
-	labels   []string
-	comments []string
+	mu                  sync.Mutex
+	labels              []string
+	comments            []string
+	rejectCommentUpdate bool
 }
 
 func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber int) *httptest.Server {
@@ -61,6 +62,10 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 	mux.HandleFunc(prefix+"/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
 			http.Error(w, "want PATCH", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.rejectCommentUpdate {
+			http.Error(w, "comment update rejected by test", http.StatusInternalServerError)
 			return
 		}
 		id, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/issues/comments/"))
@@ -532,12 +537,12 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			wantCauses:     "sibling-overlap",
 		},
 		{
-			name:           "sibling overlap supersedes stale holistic substantive signal",
+			name:           "sibling overlap preserves an independent substantive signal",
 			remediate:      defaultRemediatePolicy,
 			substantive:    true,
 			siblingOverlap: true,
 			wantNeedsAgent: true,
-			wantCauses:     "sibling-overlap",
+			wantCauses:     "substantive,sibling-overlap",
 		},
 		{
 			name:               "empty policy excludes everything detected",
@@ -714,7 +719,7 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	}
 }
 
-func TestRebasePROpenSiblingOverlapSupersedesHolisticSubstantiveCause(t *testing.T) {
+func TestRebasePROpenSiblingOverlapPreservesIndependentSubstantiveCause(t *testing.T) {
 	const prBranch = "goobers/impl/run-open-sibling-overlap"
 	origin := initNonConflictingPRBranch(t, prBranch)
 	wt := prWorktree(t, origin, prBranch)
@@ -733,8 +738,8 @@ func TestRebasePROpenSiblingOverlapSupersedesHolisticSubstantiveCause(t *testing
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
-	if got := result["remediationCauses"]; got != "sibling-overlap" {
-		t.Fatalf("remediationCauses = %q, want sibling-overlap only", got)
+	if got := result["remediationCauses"]; got != "substantive,sibling-overlap" {
+		t.Fatalf("remediationCauses = %q, want independent substantive and sibling-overlap causes", got)
 	}
 }
 
@@ -773,6 +778,35 @@ func TestRebasePRMigratesTrustedLegacySiblingHandoff(t *testing.T) {
 		migrated.TargetHeadSHA != targetHeadSHA {
 		t.Fatalf("migrated handoff = %+v, ok=%v; want version %d pinned to %s",
 			migrated, ok, postMergeRemediationHandoffVersion, targetHeadSHA)
+	}
+}
+
+func TestRebasePRLegacySiblingHandoffMigrationFailurePreservesCause(t *testing.T) {
+	const prBranch = "goobers/impl/run-legacy-sibling-migration-failure"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	legacy := `**Post-merge remediation handoff**
+
+<!-- post-merge-remediation: {"displacingPullNumber":66,"reason":"file-overlap:shared.go","overlappingFiles":["shared.go"]} -->`
+	st := &rebasePRServerState{
+		labels:              []string{needsRemediationLabel},
+		comments:            []string{legacy},
+		rejectCommentUpdate: true,
+	}
+	server := st.start(t, "your-org", "your-repo", 71)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber": "71",
+		"head":           prBranch,
+		"base":           "main",
+	})
+
+	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want migration failure", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if got := result["remediationCauses"]; got != "sibling-overlap" {
+		t.Fatalf("remediationCauses = %q, want detected sibling-overlap preserved on migration failure", got)
 	}
 }
 
