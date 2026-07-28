@@ -806,6 +806,10 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
+	labels := make([]string, 0, len(pr.Labels))
+	for _, label := range pr.Labels {
+		labels = append(labels, label.Name)
+	}
 
 	return PullRequestPollResult{
 		Number:           pr.Number,
@@ -816,6 +820,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Mergeable:        pr.Mergeable,
 		MergeableState:   pr.MergeableState,
 		Draft:            pr.Draft,
+		Labels:           labels,
 		HeadBranch:       pr.Head.Ref,
 		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
 		HeadSHA:          pr.Head.SHA,

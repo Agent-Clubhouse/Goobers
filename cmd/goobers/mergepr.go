@@ -189,6 +189,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		if poll.Draft {
 			reasons = append(reasons, "pull request is a draft")
 		}
+		if hasAnyLabel(poll.Labels, []string{noMergeReviewLabel}) {
+			reasons = append(reasons, fmt.Sprintf("pull request is labeled %s", noMergeReviewLabel))
+		}
 		if poll.HeadSHA != expectedHeadSHA {
 			reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
 		}

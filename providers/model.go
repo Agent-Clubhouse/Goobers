@@ -407,10 +407,10 @@ type PullRequestPollRequest struct {
 
 // PullRequestPollResult is the deterministic stage-output envelope a repass gate
 // branches on: mergeability, review decision, combined check state + failure
-// detail refs, and comments since the last poll (BL-031). Draft/HeadSHA/BaseSHA
-// (issue #360) are the live signal a conjunctive auto-merge action re-checks
-// against a previously-computed verdict's SHA-pin before acting on it — never
-// trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
+// detail refs, and comments since the last poll (BL-031). Draft, labels,
+// HeadSHA, and BaseSHA are live signals a conjunctive auto-merge action
+// re-checks before acting on a previously computed verdict — never trust a
+// caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
 	Number    int        `json:"number"`
 	Title     string     `json:"title,omitempty"`
@@ -419,6 +419,7 @@ type PullRequestPollResult struct {
 	MergedAt  *time.Time `json:"mergedAt,omitempty"`
 	Mergeable *bool      `json:"mergeable,omitempty"`
 	Draft     bool       `json:"draft"`
+	Labels    []string   `json:"labels,omitempty"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete

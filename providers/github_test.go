@@ -2273,8 +2273,9 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 		writeJSON(t, w, map[string]interface{}{
 			"number": 9, "state": "closed", "merged": true, "merged_at": mergedAt.Format(time.RFC3339),
 			"draft": true, "html_url": "https://github.com/acme/app/pull/9",
-			"title": "Improve merge history",
-			"body":  "Implements the thing.\n\nFixes #42",
+			"title":  "Improve merge history",
+			"body":   "Implements the thing.\n\nFixes #42",
+			"labels": []map[string]string{{"name": "goobers:no-merge-review"}},
 			"head": map[string]interface{}{
 				"ref": "feature", "sha": "headsha123",
 				"repo": map[string]interface{}{
@@ -2330,6 +2331,9 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	}
 	if result.Body != "Implements the thing.\n\nFixes #42" {
 		t.Fatalf("Body = %q", result.Body)
+	}
+	if len(result.Labels) != 1 || result.Labels[0] != "goobers:no-merge-review" {
+		t.Fatalf("Labels = %v, want goobers:no-merge-review", result.Labels)
 	}
 }
 
