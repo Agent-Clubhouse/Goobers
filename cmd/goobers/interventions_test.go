@@ -720,6 +720,32 @@ func TestRunInterventionRejectsDelayedDuplicateFromPriorTerminalSegment(t *testi
 	}
 }
 
+func TestRunInterventionRejectsGateEvidenceFromBeforeRerunSegment(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, _ := newInterventionServiceTestRun(t, machine, "run-rerun-failed", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+		{
+			Type: journal.EventStageRerunRequested, Stage: "implement", Actor: "first-operator",
+			InstructionAddendum: "try a different implementation",
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, Status: string(apiv1.ResultFailure)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
+	})
+
+	_, err := service.Override(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-rerun-failed", Stage: "review", Actor: "second-operator",
+		Decision: "pass", Rationale: "reuse the earlier review",
+	})
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) ||
+		interventionErr.Status != http.StatusConflict ||
+		interventionErr.Code != "gate_not_evaluated" {
+		t.Fatalf("Override error = %#v, want gate_not_evaluated", err)
+	}
+}
+
 func TestRunInterventionRejectsClaimOwnedByAnotherRun(t *testing.T) {
 	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
 	service, runDir := newInterventionServiceTestRun(t, machine, "run-conflicted", []journal.Event{

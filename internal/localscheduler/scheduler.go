@@ -120,6 +120,13 @@ type SpanStarter interface {
 	StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error)
 }
 
+type runAdmission struct {
+	identity   WorkflowIdentity
+	generation uint64
+	owners     int
+	retained   bool
+}
+
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
@@ -147,9 +154,11 @@ type Scheduler struct {
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
 	reconciledRuns map[string]WorkflowIdentity
-	// admittedRuns identifies live dispatches whose condition slots remain
-	// reserved until their Starter returns or a watchdog terminalizes them.
-	admittedRuns map[string]WorkflowIdentity
+	// admittedRuns identifies live dispatches and continuations whose shared
+	// condition slot remains reserved until every owner releases it or a
+	// watchdog terminalizes the run.
+	admittedRuns            map[string]runAdmission
+	nextAdmissionGeneration uint64
 	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
 	// BacklogCounter was last polled (#344) — separate from triggers'
 	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
@@ -283,7 +292,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		demandPollTimeout:     demandPollTimeout,
 		triggers:              make(map[WorkflowIdentity]TriggerState),
 		reconciledRuns:        make(map[string]WorkflowIdentity),
-		admittedRuns:          make(map[string]WorkflowIdentity),
+		admittedRuns:          make(map[string]runAdmission),
 		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
@@ -443,15 +452,15 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	}
 }
 
-// ReleaseRun returns a run's live admission or restart-reconciled slot exactly
-// once. Watchdogs use this after terminalizing a run; dispatch and resume
-// cleanup may safely call it again.
+// ReleaseRun force-releases a run's live admission or restart-reconciled slot
+// exactly once. Watchdogs use this after terminalizing a run; generation-scoped
+// dispatch and continuation cleanup may safely run afterward.
 func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	s.admissionMu.Lock()
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
-	identity, admitted := s.admittedRuns[runID]
-	if admitted && identity.Workflow == workflow {
+	admission, admitted := s.admittedRuns[runID]
+	if admitted && admission.identity.Workflow == workflow {
 		delete(s.admittedRuns, runID)
 	}
 	reconciledIdentity, reconciled := s.reconciledRuns[runID]
@@ -462,8 +471,8 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 
 	released := false
 	switch {
-	case admitted && identity.Workflow == workflow:
-		s.conditions.ReleaseWorkflow(identity)
+	case admitted && admission.identity.Workflow == workflow:
+		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 	case reconciled && reconciledIdentity.Workflow == workflow:
 		s.conditions.ReleaseWorkflow(reconciledIdentity)
@@ -472,6 +481,79 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	if released {
 		s.wakeForPendingScheduleDemand()
 	}
+}
+
+func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uint64) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow || admission.generation != generation {
+		s.mu.Unlock()
+		return
+	}
+	admission.owners--
+	if admission.owners > 0 || admission.retained {
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return
+	}
+	delete(s.admittedRuns, runID)
+	s.mu.Unlock()
+
+	s.conditions.ReleaseWorkflow(admission.identity)
+	s.wakeForPendingScheduleDemand()
+}
+
+func (s *Scheduler) admissionOwnerRelease(runID, workflow string, generation uint64) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.releaseAdmissionOwner(runID, workflow, generation)
+		})
+	}
+}
+
+// RetainContinuation keeps a run's condition slot reserved between
+// interventions without accumulating one owner per pause.
+func (s *Scheduler) RetainContinuation(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow {
+		return
+	}
+	admission.retained = true
+	s.admittedRuns[runID] = admission
+}
+
+// ReleaseRetainedContinuation drops the between-interventions hold while
+// preserving any dispatch or active-continuation owners.
+func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow || !admission.retained {
+		s.mu.Unlock()
+		return
+	}
+	admission.retained = false
+	if admission.owners > 0 {
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return
+	}
+	delete(s.admittedRuns, runID)
+	s.mu.Unlock()
+
+	s.conditions.ReleaseWorkflow(admission.identity)
+	s.wakeForPendingScheduleDemand()
 }
 
 // ReserveContinuation reserves the configured workflow's concurrency slot for
@@ -484,36 +566,37 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 	identity := WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}
 	s.mu.Lock()
 	entry, configured := s.workflows[identity]
-	admittedIdentity, admitted := s.admittedRuns[runID]
+	admission, admitted := s.admittedRuns[runID]
 	_, reconciled := s.reconciledRuns[runID]
-	s.mu.Unlock()
 	switch {
 	case !configured:
+		s.mu.Unlock()
 		return func() {}, false, "workflow unavailable"
-	case admitted && admittedIdentity == identity:
-		var once sync.Once
-		return func() {
-			once.Do(func() {
-				s.ReleaseRun(runID, workflow)
-			})
-		}, true, ""
+	case admitted && admission.identity == identity:
+		admission.owners++
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return s.admissionOwnerRelease(runID, workflow, admission.generation), true, ""
 	case admitted || reconciled:
+		s.mu.Unlock()
 		return func() {}, false, "run already admitted"
 	}
+	s.mu.Unlock()
 
 	if ok, reason := s.conditions.ReserveContinuation(identity, entry.Readiness); !ok {
 		return func() {}, false, reason
 	}
 	s.mu.Lock()
-	s.admittedRuns[runID] = identity
+	s.nextAdmissionGeneration++
+	generation := s.nextAdmissionGeneration
+	s.admittedRuns[runID] = runAdmission{
+		identity:   identity,
+		generation: generation,
+		owners:     1,
+	}
 	s.mu.Unlock()
 
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			s.ReleaseRun(runID, workflow)
-		})
-	}, true, ""
+	return s.admissionOwnerRelease(runID, workflow, generation), true, ""
 }
 
 func (s *Scheduler) wakeForPendingScheduleDemand() {
@@ -1401,13 +1484,21 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	})
 	span.Succeed("started: " + runID)
 
+	s.admissionMu.Lock()
 	s.mu.Lock()
-	s.admittedRuns[runID] = identity
+	s.nextAdmissionGeneration++
+	admissionGeneration := s.nextAdmissionGeneration
+	s.admittedRuns[runID] = runAdmission{
+		identity:   identity,
+		generation: admissionGeneration,
+		owners:     1,
+	}
 	s.mu.Unlock()
+	s.admissionMu.Unlock()
 	s.dispatches.Add(1)
 	go func() {
 		defer s.dispatches.Done()
-		defer s.ReleaseRun(runID, entry.Workflow)
+		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
 		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,

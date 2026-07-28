@@ -383,12 +383,14 @@ func latestTerminalSequence(events []journal.Event) uint64 {
 
 type interventionExecutionLease struct {
 	service          *runInterventionService
+	scheduler        *localscheduler.Scheduler
 	resolved         resolvedInterventionRun
 	releaseAdmission func()
 	releaseActive    func()
 	untrack          func()
 	reacquiredClaims bool
 	retainAdmission  bool
+	releaseRetained  bool
 }
 
 func (s *runInterventionService) execute(
@@ -423,6 +425,8 @@ func (s *runInterventionService) execute(
 	}
 	if !terminalInterventionPhase(phase) {
 		lease.retainAdmission = true
+	} else if !errors.Is(runErr, runner.ErrTerminalGenerationChanged) {
+		lease.releaseRetained = true
 	}
 	if runErr != nil && terminalInterventionPhase(phase) {
 		runErr = errors.Join(runErr, lease.releaseReacquiredClaims())
@@ -435,7 +439,9 @@ func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
 	}
-	lease := &interventionExecutionLease{service: s, resolved: resolved, releaseActive: releaseActive}
+	lease := &interventionExecutionLease{
+		service: s, resolved: resolved, releaseActive: releaseActive,
+	}
 
 	untrack, compatible := s.runnerRegistry.TrackCompatible(resolved.runID, resolved.runner)
 	if !compatible {
@@ -451,6 +457,7 @@ func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	lease.scheduler = scheduler
 	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
 	if !admitted {
 		lease.Close()
@@ -501,9 +508,15 @@ func (l *interventionExecutionLease) Close() {
 	if l == nil {
 		return
 	}
-	if l.releaseAdmission != nil && !l.retainAdmission {
+	if l.retainAdmission && l.scheduler != nil {
+		l.scheduler.RetainContinuation(l.resolved.runID, l.resolved.workflow)
+	}
+	if l.releaseAdmission != nil {
 		l.releaseAdmission()
 		l.releaseAdmission = nil
+	}
+	if l.releaseRetained && l.scheduler != nil {
+		l.scheduler.ReleaseRetainedContinuation(l.resolved.runID, l.resolved.workflow)
 	}
 	if l.untrack != nil {
 		l.untrack()
@@ -677,7 +690,7 @@ func unresolvedGatePause(events []journal.Event, gate string) (uint64, bool) {
 func gateEvaluatedInCurrentSegment(events []journal.Event, gate string) bool {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type == journal.EventRunResumed {
+		if event.Type == journal.EventRunResumed || event.Type == journal.EventStageRerunRequested {
 			return false
 		}
 		if event.Type == journal.EventGateEvaluated && event.Gate == gate {
