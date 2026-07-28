@@ -258,13 +258,13 @@ conformance-test extension, docs) are **low** and independently shippable. See �
 | MGV-10 | #1285 | Read-only reference-repo grants (`AdditionalReadGrants`, capability-level) | Med | **shipped** — the capability-routing half of G6; superseded as sole enforcement by MGV-13/14/15 |
 | MGV-11 | #1286 | Read-only checkout of `AdditionalRepos` into a gaggle workspace | Low-Med | **shipped** |
 | MGV-12 | #1287 | Live two-owner A+B multi-gaggle validation run | — | design's first-validation milestone; needs-human (operator must provision real repos+PATs) |
-| MGV-13 | *(new)* | G6 — credential schema: first-class `credentials:` list, repo(s)-bound not repo-owned | **High** (core creds, same posture as MGV-5) | supervised — not auto-approved |
-| MGV-14 | *(new)* | G6 — `additionalRepos` requires explicit `credential:`; `goobers validate` fails closed without one | **High + breaking** (changes accepted-config shape) | supervised — not auto-approved, PO review for the breaking change |
-| MGV-15 | *(new)* | G6 — `AdditionalReadGrants` consumes the explicit credential when present; write-grant backstop retained regardless | **High** (core creds path) | supervised — not auto-approved |
-| MGV-16 | *(new)* | G6 — generalize `internal/githubapp` down-scoped token minting as a provisionable read-only credential source (shares plumbing with UNOP-7/#1780) | Low (additive, net-new capability) | **approvable** once MGV-13 lands |
-| MGV-17 | *(new)* | G6 — `goobers validate`/`lint` migration diagnostic: warn (not yet fail) on `additionalRepos` entries lacking an explicit credential, ahead of MGV-14 | Low (additive, non-disruptive) | **approvable** |
-| MGV-18 | *(new)* | G6 — isolation-conformance test extension (builds on MGV-9): real distinct read-credential bytes, no derivable write grant even adversarially, leaked read-credential can't authenticate a push | Low (test-only) | **approvable** |
-| MGV-19 | *(new)* | G6 — instance-config authoring docs for the new credential model, worked `clubhouse-site` example | Low (docs-only) | **approvable** |
+| MGV-13 | #1794 | G6 — credential schema: first-class `credentials:` list, repo(s)-bound not repo-owned | **High** (core creds, same posture as MGV-5) | supervised — not auto-approved |
+| MGV-14 | #1795 | G6 — `additionalRepos` requires explicit `credential:`; `goobers validate` fails closed without one | **High + breaking** (changes accepted-config shape) | supervised — not auto-approved, PO review for the breaking change |
+| MGV-15 | #1796 | G6 — `AdditionalReadGrants` consumes the explicit credential when present; write-grant backstop retained regardless | **High** (core creds path) | supervised — not auto-approved |
+| MGV-16 | #1797 | G6 — generalize `internal/githubapp` down-scoped token minting as a provisionable read-only credential source (shares plumbing with UNOP-7/#1780) | Low (additive, net-new capability) | **approvable** once MGV-13 lands |
+| MGV-17 | #1798 | G6 — `goobers validate`/`lint` migration diagnostic: warn (not yet fail) on `additionalRepos` entries lacking an explicit credential, ahead of MGV-14 | Low (additive, non-disruptive) | **approvable** |
+| MGV-18 | #1799 | G6 — isolation-conformance test extension (builds on MGV-9): real distinct read-credential bytes, no derivable write grant even adversarially, leaked read-credential can't authenticate a push | Low (test-only) | **approvable** |
+| MGV-19 | #1800 | G6 — instance-config authoring docs for the new credential model, worked `clubhouse-site` example | Low (docs-only) | **approvable** |
 
 > **Isolation debt (not work items in this sprint, tracked as outstanding security posture, §4.5 G5):** OS-native sandbox rungs #165/#166/#167 (#35), and per-gaggle workload identity + store secret ACLs #685 (V2). MGV-9 proves *scoping*; these enforce it.
 >
