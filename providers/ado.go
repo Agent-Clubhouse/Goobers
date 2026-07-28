@@ -529,19 +529,16 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		prURL = pr.Links.Web.Href
 	}
 	headRepository := req.Repository
-	if pr.ForkSource != nil && (pr.ForkSource.Repository.ID != "" || pr.ForkSource.Repository.Name != "") {
-		source := pr.ForkSource.Repository
-		sourceURL := source.RemoteURL
-		if sourceURL == "" {
-			sourceURL = source.URL
-		}
+	if fork := pr.ForkSource; fork != nil {
+		source := fork.Repository
 		headRepository = RepositoryRef{
-			Provider: ProviderADO,
-			Owner:    p.Organization,
-			Project:  source.Project.Name,
-			Name:     source.Name,
-			ID:       source.ID,
-			URL:      sourceURL,
+			Project: source.Project.Name,
+			Name:    source.Name,
+			ID:      source.ID,
+			URL:     source.RemoteURL,
+		}
+		if headRepository.URL == "" {
+			headRepository.URL = source.URL
 		}
 	}
 	headRepository.Provider = ProviderADO
@@ -1940,15 +1937,13 @@ type adoReviewer struct {
 }
 
 type adoRepository struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	URL       string     `json:"url"`
-	RemoteURL string     `json:"remoteUrl"`
-	Project   adoProject `json:"project"`
-}
-
-type adoProject struct {
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	RemoteURL string `json:"remoteUrl"`
+	Project   struct {
+		Name string `json:"name"`
+	} `json:"project"`
 }
 
 type adoForkRef struct {
