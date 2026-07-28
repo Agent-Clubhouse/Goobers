@@ -529,6 +529,21 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		prURL = pr.Links.Web.Href
 	}
 	headRepository := req.Repository
+	if pr.ForkSource != nil && (pr.ForkSource.Repository.ID != "" || pr.ForkSource.Repository.Name != "") {
+		source := pr.ForkSource.Repository
+		sourceURL := source.RemoteURL
+		if sourceURL == "" {
+			sourceURL = source.URL
+		}
+		headRepository = RepositoryRef{
+			Provider: ProviderADO,
+			Owner:    p.Organization,
+			Project:  source.Project.Name,
+			Name:     source.Name,
+			ID:       source.ID,
+			URL:      sourceURL,
+		}
+	}
 	headRepository.Provider = ProviderADO
 	if headRepository.Owner == "" {
 		headRepository.Owner = p.Organization
@@ -1903,6 +1918,7 @@ type adoPullRequest struct {
 	MergeStatus           string        `json:"mergeStatus"`
 	Reviewers             []adoReviewer `json:"reviewers"`
 	Repository            adoRepository `json:"repository"`
+	ForkSource            *adoForkRef   `json:"forkSource"`
 	Labels                []adoLabel    `json:"labels"`
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
@@ -1924,7 +1940,19 @@ type adoReviewer struct {
 }
 
 type adoRepository struct {
-	ID string `json:"id"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	URL       string     `json:"url"`
+	RemoteURL string     `json:"remoteUrl"`
+	Project   adoProject `json:"project"`
+}
+
+type adoProject struct {
+	Name string `json:"name"`
+}
+
+type adoForkRef struct {
+	Repository adoRepository `json:"repository"`
 }
 
 type adoLabel struct {

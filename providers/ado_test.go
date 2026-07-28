@@ -692,6 +692,13 @@ func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 	if result.Mergeable == nil || !*result.Mergeable || result.MergeableState != "succeeded" {
 		t.Fatalf("mergeability = %#v, %q", result.Mergeable, result.MergeableState)
 	}
+	if result.HeadRepository == nil ||
+		result.HeadRepository.Provider != ProviderADO ||
+		result.HeadRepository.Owner != "org" ||
+		result.HeadRepository.Project != "project" ||
+		result.HeadRepository.Name != "repo" {
+		t.Fatalf("HeadRepository = %#v, want same-repository ADO ref org/project/repo", result.HeadRepository)
+	}
 	if result.ReviewDecision != ReviewDecisionChangesRequested || result.RequestedChanges != 1 {
 		t.Fatalf("review state = %q, requested changes = %d", result.ReviewDecision, result.RequestedChanges)
 	}
@@ -701,6 +708,59 @@ func TestADOProviderPollPullRequestMapsReviewsAndBuilds(t *testing.T) {
 	if result.Checks[0].Name != "provider-ci" || result.Checks[0].URL != "build-url" ||
 		result.Checks[1].State != CheckStateFailing {
 		t.Fatalf("checks = %#v", result.Checks)
+	}
+}
+
+func TestADOProviderPollPullRequestUsesForkSourceRepository(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/target-repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId":         12,
+			"status":                "active",
+			"sourceRefName":         "refs/heads/fork-feature",
+			"repository":            map[string]string{"id": "target-repo-id"},
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
+			"forkSource": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"id":        "fork-repo-id",
+					"name":      "source-repo",
+					"url":       "https://dev.azure.com/org/_apis/git/repositories/fork-repo-id",
+					"remoteUrl": "https://dev.azure.com/org/source-project/_git/source-repo",
+					"project":   map[string]string{"name": "source-project"},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("repositoryId"); got != "target-repo-id" {
+			t.Fatalf("build repositoryId = %q, want target-repo-id", got)
+		}
+		writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Name: "target-repo", Project: "project"},
+		PullID:     "12",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if result.HeadBranch != "fork-feature" {
+		t.Fatalf("HeadBranch = %q, want fork-feature", result.HeadBranch)
+	}
+	if result.HeadRepository == nil ||
+		result.HeadRepository.Provider != ProviderADO ||
+		result.HeadRepository.Owner != "org" ||
+		result.HeadRepository.Project != "source-project" ||
+		result.HeadRepository.Name != "source-repo" ||
+		result.HeadRepository.ID != "fork-repo-id" ||
+		result.HeadRepository.URL != "https://dev.azure.com/org/source-project/_git/source-repo" {
+		t.Fatalf("HeadRepository = %#v, want fork source repository", result.HeadRepository)
 	}
 }
 
