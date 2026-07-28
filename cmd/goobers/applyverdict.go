@@ -1090,15 +1090,16 @@ func currentPullRequest(ctx context.Context, provider providers.Provider, repo p
 	case *providers.GitHubProvider:
 		return provider.GetPullRequest(ctx, repo, pullID)
 	case *providers.ADOProvider:
+		for _, pr := range listed {
+			if pr.ID == pullID {
+				return pr, nil
+			}
+		}
 		current, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullID})
 		if err != nil {
 			return providers.PullRequestSummary{}, err
 		}
-		return providers.PullRequestSummary{
-			ID: strconv.Itoa(current.Number), Number: current.Number, URL: current.URL, State: current.State, Merged: current.Merged,
-			Head: current.HeadBranch, Base: current.BaseBranch, HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
-			Draft: current.Draft, CheckState: current.CheckState, Body: current.Body,
-		}, nil
+		return providers.PullRequestSummary{State: current.State, Merged: current.Merged, HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA, Body: current.Body}, nil
 	}
 	number, err := strconv.Atoi(pullID)
 	if err != nil {
