@@ -26,11 +26,13 @@ const chapterPresentation = {
 // navigation over the same deterministic sequence.
 export function ReplayScrubber({
   events,
+  runId,
   selectedSeq,
   onSeek,
   terminal,
 }: {
   events: RunEvent[];
+  runId: string;
   selectedSeq: number;
   onSeek: (seq: number) => void;
   terminal: boolean;
@@ -120,7 +122,7 @@ export function ReplayScrubber({
   };
 
   const heading = eventHeading(currentPoint.event);
-  const summary = eventSummary(currentPoint.event);
+  const summary = eventSummary(currentPoint.event, undefined, runId);
   const currentChapterPosition = selectedChapter
     ? timeline.chapters.indexOf(selectedChapter) + 1
     : undefined;
@@ -212,7 +214,7 @@ export function ReplayScrubber({
         />
         {timeline.chapters.map((chapter) => {
           const chapterHeading = eventHeading(chapter.event);
-          const chapterSummary = eventSummary(chapter.event);
+          const chapterSummary = eventSummary(chapter.event, undefined, runId);
           const label = `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${chapterHeading}. ${chapterSummary}`;
           return (
             <button

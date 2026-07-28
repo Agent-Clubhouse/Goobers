@@ -181,6 +181,54 @@ func TestReconcileScopeGate(t *testing.T) {
 		}
 	})
 
+	// #1801: the park comment names goobers:scope-gate-ack as the operator's
+	// only escape hatch that does not require rewriting the PR — but nothing
+	// created that label, and it existed nowhere in the repository. The gate
+	// therefore had one reachable exit, not two, and PR #1748 sat parked ~16
+	// hours because the only exit was shrinking a cohesive 5,313-line subsystem.
+	// The pre-existing tests could not catch this: they pass the ack label in a
+	// literal slice, which models an applied label, never a *defined* one.
+	t.Run("parking defines the ack label it tells the operator to apply", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(21, "oversized pr")
+		provider := server.newGitHubProvider("token")
+		if server.hasRepoLabel(scopeGateAckLabel) {
+			t.Fatal("precondition: repository must not define the ack label yet")
+		}
+
+		parked, changed, err := reconcileScopeGate(context.Background(), provider, repo, 21,
+			nil, 200, 5000, 50, 2000)
+		if err != nil {
+			t.Fatalf("reconcileScopeGate: %v", err)
+		}
+		if !parked || !changed {
+			t.Fatalf("parked = %v, changed = %v, want true/true", parked, changed)
+		}
+		if !server.hasRepoLabel(scopeGateAckLabel) {
+			t.Fatalf("%s was named in the park comment but never defined in the repository — "+
+				"the escape hatch it advertises is unreachable", scopeGateAckLabel)
+		}
+	})
+
+	t.Run("parking is idempotent when the ack label already exists", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(22, "oversized pr")
+		server.addRepoLabel(scopeGateAckLabel, scopeGateAckLabelDescription)
+		provider := server.newGitHubProvider("token")
+
+		parked, changed, err := reconcileScopeGate(context.Background(), provider, repo, 22,
+			nil, 200, 5000, 50, 2000)
+		if err != nil {
+			t.Fatalf("reconcileScopeGate: %v", err)
+		}
+		if !parked || !changed {
+			t.Fatalf("parked = %v, changed = %v, want true/true", parked, changed)
+		}
+		if !server.hasRepoLabel(scopeGateAckLabel) {
+			t.Fatal("ack label should still be defined")
+		}
+	})
+
 	t.Run("operator ack releases it even while still over threshold", func(t *testing.T) {
 		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
 		server.addIssue(14, "acked pr")

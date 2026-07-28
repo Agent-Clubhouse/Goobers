@@ -22,8 +22,8 @@ outputs) and hasSubstantiveFindings/hasFailingCI.
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
 sibling-overlap") is a comma-separated policy naming which detected
 causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base and sibling-overlap are accepted vocabulary but
-cannot fire yet (no detection reaches this stage's decision today).
+liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 .fi

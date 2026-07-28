@@ -403,6 +403,17 @@ type PullRequestPollRequest struct {
 	Repository    RepositoryRef `json:"repository"`
 	PullID        string        `json:"pullId"`
 	CommentsSince *time.Time    `json:"commentsSince,omitempty"`
+	// HumanPolicyConfigurationIDs names the branch/required-check policies the
+	// agent loop cannot fix by re-implementing — human/merge-time policies such
+	// as merge strategy, required reviewers, comment resolution, or
+	// proof-of-presence. A provider excludes these from the gating set it
+	// reduces to CheckState, so a rejection there does NOT drive the fail branch
+	// (which would loop forever on a policy only a human can satisfy). The
+	// values are provider-interpreted opaque identities: the Azure DevOps
+	// provider matches them against branch-policy *configuration* ids. Empty
+	// means every required blocking policy gates (fail-closed default); loops
+	// with human-only policies declare them here as configuration.
+	HumanPolicyConfigurationIDs []string `json:"humanPolicyConfigurationIds,omitempty"`
 }
 
 // PullRequestPollResult is the deterministic stage-output envelope a repass gate
@@ -467,6 +478,27 @@ type ClosePullRequestResult struct {
 	Number int    `json:"number"`
 	Merged bool   `json:"merged"`
 	State  string `json:"state"`
+}
+
+// PullRequestStatusRequest publishes a provider-native pull-request status
+// (Azure DevOps PR status) that a repository's status-check branch policy can
+// gate on. It is the seam by which goobers publishes its own evidence — an
+// agentic reviewer verdict or a local-CI result — into the provider's policy
+// engine so the validation loop can prove PR correctness against that repo's
+// required policies (#772).
+type PullRequestStatusRequest struct {
+	Repository  RepositoryRef `json:"repository"`
+	PullID      string        `json:"pullId"`
+	Genre       string        `json:"genre,omitempty"`
+	Name        string        `json:"name"`
+	State       CheckState    `json:"state"`
+	Description string        `json:"description,omitempty"`
+	TargetURL   string        `json:"targetUrl,omitempty"`
+}
+
+// PullRequestStatusResult reports the published status's provider-assigned id.
+type PullRequestStatusResult struct {
+	ID int `json:"id"`
 }
 
 // UpdateBranchRequest asks a provider to incorporate the current base branch

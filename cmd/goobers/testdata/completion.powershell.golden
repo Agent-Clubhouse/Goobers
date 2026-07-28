@@ -43,6 +43,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'push-branch'
         'check-fail-first'
         'open-pr'
+        'report-pr-status'
         'gate-removal-guard'
         'issue-close-out'
         'set-milestone'

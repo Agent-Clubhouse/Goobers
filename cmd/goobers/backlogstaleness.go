@@ -31,7 +31,9 @@ type backlogStalenessSignal struct {
 
 type curationClaimedItem struct {
 	providers.WorkItem
-	Staleness backlogStalenessSignal `json:"staleness"`
+	Staleness    backlogStalenessSignal `json:"staleness"`
+	CurationMode string                 `json:"curationMode,omitempty"`
+	ReadOnly     bool                   `json:"readOnly,omitempty"`
 }
 
 func readBacklogStalenessPolicy() (backlogStalenessPolicy, error) {

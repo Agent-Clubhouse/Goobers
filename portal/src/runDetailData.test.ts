@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { RunEvent, WorkflowGraph } from "./api/types";
 import {
   deriveNodeStates,
+  evidenceVisit,
+  evidenceDecision,
+  eventHeading,
   eventNodeAtSequence,
+  eventNodeId,
   eventSummary,
+  journalEntries,
   orderRunEvents,
 } from "./runDetailData";
 
@@ -85,6 +90,354 @@ describe("run detail projection", () => {
       "Schema v2-preview is not supported; future.recorded is retained with generic fields.",
     );
     expect(eventSummary(unsupported)).not.toContain("privateImplementationDetail");
+  });
+
+  it("decodes only verified run prefixes from transcript stages", () => {
+    const nodeId = "review:security";
+
+    expect(eventNodeId(event(1, "stage.started", { stage: nodeId }))).toBe(nodeId);
+    expect(eventNodeId(event(2, "gate.evaluated", { gate: nodeId }))).toBe(nodeId);
+    expect(eventNodeId(event(3, "artifact.recorded", {
+      artifact: {
+        digest: "sha256:colon",
+        size: 1,
+        mediaType: "application/json",
+        stage: nodeId,
+      },
+    }))).toBe(nodeId);
+    expect(eventNodeId(event(4, "span.recorded", {
+      stage: nodeId,
+      name: "reviewer.transcript",
+    }), "run-1")).toBe(nodeId);
+    expect(eventNodeId(event(5, "span.recorded", {
+      stage: `run-1:${nodeId}`,
+      name: "reviewer.transcript",
+    }), "run-1")).toBe(nodeId);
+    expect(eventNodeId(event(6, "span.recorded", {
+      stage: `run-1:${nodeId}`,
+      name: "reviewer.transcript",
+    }), "run-2")).toBe(`run-1:${nodeId}`);
+  });
+
+  it("groups adjacent supporting records by stage visit without changing event sequence", () => {
+    const events = [
+      event(1, "gate.started", {
+        category: "bookkeeping",
+        gate: "review",
+        attempt: 1,
+      }),
+      event(2, "span.recorded", {
+        category: "evidence",
+        stage: "run-1:review",
+        name: "reviewer.transcript",
+      }),
+      event(3, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          name: "verdict/review-1.json",
+          digest: "sha256:verdict-1",
+          size: 80,
+          mediaType: "application/json",
+          stage: "review",
+          attempt: 1,
+        },
+      }),
+      event(4, "gate.evaluated", {
+        category: "decision",
+        gate: "review",
+        verdict: "needs-changes",
+        target: "implement",
+      }),
+      event(5, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+        attemptClass: "initial",
+      }),
+      event(6, "stage.heartbeat", {
+        category: "liveness",
+        stage: "implement",
+        attempt: 1,
+      }),
+      event(7, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+        status: "success",
+      }),
+      event(8, "gate.started", {
+        category: "bookkeeping",
+        gate: "review",
+        attempt: 1,
+      }),
+      event(9, "span.recorded", {
+        category: "evidence",
+        stage: "run-1:review",
+        name: "reviewer.transcript",
+      }),
+      event(10, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          name: "verdict/review-2.json",
+          digest: "sha256:verdict-2",
+          size: 80,
+          mediaType: "application/json",
+          stage: "review",
+          attempt: 1,
+        },
+      }),
+      event(11, "gate.evaluated", {
+        category: "decision",
+        gate: "review",
+        verdict: "pass",
+        target: "@complete",
+      }),
+      event(12, "ref.touched", {
+        category: "result",
+        externalRef: {
+          provider: "github",
+          kind: "pr",
+          id: "1432",
+          url: "https://github.example/pull/1432",
+        },
+        runner: { operation: "open" },
+      }),
+      event(13, "future.recorded", {
+        category: "unknown",
+        schema: "v2-preview",
+        knownSchema: false,
+      }),
+    ];
+
+    const entries = journalEntries(events, "run-1");
+    const groups = entries.filter((entry) => entry.kind === "group");
+    expect(
+      groups.map((group) => ({
+        seqs: group.events.map(({ seq }) => seq),
+        nodeId: group.nodeId,
+        visit: group.visit,
+      })),
+    ).toEqual([
+      { seqs: [1, 2, 3], nodeId: "review", visit: 1 },
+      { seqs: [6], nodeId: "implement", visit: 1 },
+      { seqs: [8, 9, 10], nodeId: "review", visit: 2 },
+    ]);
+    expect(
+      entries.flatMap((entry) =>
+        entry.kind === "group" ? entry.events.map(({ seq }) => seq) : entry.event.seq,
+      ),
+    ).toEqual(events.map(({ seq }) => seq));
+    expect(entries.at(-2)).toMatchObject({ kind: "event", event: { seq: 12 } });
+    expect(entries.at(-1)).toMatchObject({ kind: "event", event: { seq: 13 } });
+    expect(evidenceVisit(events, events[1], "run-1")).toBe(1);
+    expect(evidenceVisit(events, events[8], "run-1")).toBe(2);
+  });
+
+  it("associates human-rerun evidence with canonical stage visits", () => {
+    const events = [
+      event(1, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+      }),
+      event(2, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          digest: "sha256:initial",
+          size: 1,
+          mediaType: "application/json",
+          stage: "implement",
+          attempt: 1,
+        },
+      }),
+      event(3, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+        status: "success",
+      }),
+      event(4, "stage.rerun.requested", {
+        category: "decision",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+      }),
+      event(5, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+      }),
+      event(6, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          digest: "sha256:human-1",
+          size: 1,
+          mediaType: "application/json",
+          stage: "implement",
+          attempt: 2,
+          attemptClass: "human",
+        },
+      }),
+      event(7, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+        status: "failure",
+      }),
+      event(8, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+      }),
+      event(9, "stage.heartbeat", {
+        category: "liveness",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+      }),
+      event(10, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+        status: "success",
+      }),
+      event(11, "stage.rerun.requested", {
+        category: "decision",
+        stage: "implement",
+        attempt: 4,
+        attemptClass: "human",
+      }),
+      event(12, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 4,
+        attemptClass: "human",
+      }),
+      event(13, "span.recorded", {
+        category: "evidence",
+        stage: "run-1:implement",
+        name: "reviewer.transcript",
+      }),
+    ];
+
+    expect(evidenceVisit(events, events[1], "run-1")).toBe(1);
+    expect(evidenceVisit(events, events[5], "run-1")).toBe(2);
+    expect(evidenceVisit(events, events[8], "run-1")).toBe(2);
+    expect(evidenceVisit(events, events[12], "run-1")).toBe(3);
+  });
+
+  it("summarizes reviewer evidence, heartbeats, and external operations", () => {
+    const transcript = event(2, "span.recorded", {
+      stage: "run-1:review",
+      name: "reviewer.transcript",
+    });
+    const verdict = event(3, "artifact.recorded", {
+      artifact: {
+        name: "verdict/review-1.json",
+        digest: "sha256:verdict",
+        size: 80,
+        mediaType: "application/json",
+        stage: "review",
+        attempt: 1,
+      },
+    });
+    const heartbeat = event(4, "stage.heartbeat", {
+      stage: "implement",
+      attempt: 1,
+    });
+    const ref = event(5, "ref.touched", {
+      externalRef: { provider: "github", kind: "pr", id: "42" },
+      runner: { operation: "open" },
+    });
+    const decision = event(6, "gate.evaluated", {
+      gate: "review",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+
+    expect(eventHeading(transcript)).toBe("Transcript recorded");
+    expect(eventSummary(transcript, undefined, "run-1")).toBe(
+      "Transcript for Review was recorded. Select this event to inspect the evidence.",
+    );
+    expect(eventHeading(verdict)).toBe("Structured verdict recorded");
+    expect(eventSummary(verdict)).toContain(
+      "verdict/review-1.json was recorded for Review.",
+    );
+    expect(
+      eventSummary(verdict, evidenceDecision([verdict, decision], verdict)),
+    ).toBe(
+      "verdict/review-1.json captured the Review decision: needs-changes selecting implement. Select this event to inspect the artifact.",
+    );
+    expect(eventNodeAtSequence([verdict], verdict.seq)).toBe("review");
+    expect(eventSummary(heartbeat)).toBe(
+      "Implement attempt 1 reported liveness; workflow state did not change.",
+    );
+    expect(eventSummary(ref)).toBe("GitHub opened pull request #42.");
+  });
+
+  it("correlates unscoped verdict evidence within its parallel branch", () => {
+    const reviewSecurity = event(1, "gate.started", {
+      branch: 1,
+      gate: "review:security",
+      attempt: 1,
+    });
+    const reviewQuality = event(2, "gate.started", {
+      branch: 2,
+      gate: "review:quality",
+      attempt: 1,
+    });
+    const securityVerdict = event(3, "artifact.recorded", {
+      branch: 1,
+      artifact: {
+        name: "verdict/security.json",
+        digest: "sha256:security",
+        size: 80,
+        mediaType: "application/json",
+      },
+    });
+    const qualityVerdict = event(4, "artifact.recorded", {
+      branch: 2,
+      artifact: {
+        name: "verdict/quality.json",
+        digest: "sha256:quality",
+        size: 80,
+        mediaType: "application/json",
+      },
+    });
+    const qualityDecision = event(5, "gate.evaluated", {
+      branch: 2,
+      gate: "review:quality",
+      verdict: "pass",
+      target: "@complete",
+    });
+    const securityDecision = event(6, "gate.evaluated", {
+      branch: 1,
+      gate: "review:security",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    const events = [
+      reviewSecurity,
+      reviewQuality,
+      securityVerdict,
+      qualityVerdict,
+      qualityDecision,
+      securityDecision,
+    ];
+
+    expect(eventNodeAtSequence(events, securityVerdict.seq)).toBe("review:security");
+    expect(evidenceDecision(events, securityVerdict)).toBe(securityDecision);
+    expect(evidenceDecision(events, qualityVerdict)).toBe(qualityDecision);
+    expect(
+      eventSummary(
+        securityVerdict,
+        evidenceDecision(events, securityVerdict),
+      ),
+    ).toContain("Review:security decision: needs-changes");
   });
 
   it("applies an API-shaped terminal event to the previously active node and skips no-work nodes", () => {

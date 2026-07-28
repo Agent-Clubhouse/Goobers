@@ -60,6 +60,7 @@ var synopsisByID = map[string]string{
 	"push-branch":            "  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)\n",
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
 	"open-pr":                "  goobers open-pr                        open or update the run's PR (a workflow stage)\n",
+	"report-pr-status":       "  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)\n",
 	"gate-removal-guard":     "  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)\n",
 	"issue-close-out":        "  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)\n",
 	"set-milestone":          "  goobers set-milestone --item ID --milestone N [path]\n                                assign an existing milestone to an issue (a workflow stage)\n",
@@ -82,7 +83,7 @@ var synopsisByID = map[string]string{
 	"gather-issue-context":   "  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)\n",
 	"gather-ci-failures":     "  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)\n",
 	"rebase-pr":              "  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)\n",
-	"remediation-checkpoint": "  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)\n",
+	"remediation-checkpoint": "  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)\n",
 	"push-remediated":        "  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)\n",
 	"respond-to-findings":    "  goobers respond-to-findings            post a validated per-finding remediation response to the claimed PR (a workflow stage)\n",
 }

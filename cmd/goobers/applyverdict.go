@@ -77,6 +77,54 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 // NOT all-blocked (an empty needs-changes verdict with no findings at all is
 // not a cross-PR-ordering situation; it falls through to needs-remediation
 // like today).
+// findingIsRealDefect reports whether a finding is a genuine reason to withhold
+// landing authority, as opposed to an ordering note or a nit.
+//
+// Two things make a finding harmless for sequencing: it is a cross-pr-blocked
+// ordering finding, or it is severity `info`. Everything else — including an
+// unset or unrecognised severity — counts as a real defect, so this fails
+// closed: a malformed verdict can never launder itself into landing authority.
+//
+// Severity used to be ignored entirely here, which deadlocked whole clusters
+// (#1726). The trigger is mundane: two PRs that both run `make generate`
+// produce a byte-identical patch, so they cluster, so the winner picks up
+// `info` findings that say in their own text "there is no semantic conflict" —
+// and those findings then withheld the crown. Live on 2026-07-26 that stalled
+// PRs #1717/#1719/#1723/#1724 for over two hours on a verdict whose own summary
+// called the winner "merge-ready". It recurs for every committed generated
+// artifact whenever more than one PR is open.
+//
+// This mirrors the severity floor pr-remediation already applies via
+// resolveMinSeverity/verdictHasSubstantiveFindingForPR (#941/PRR-6), including
+// its treatment of an unset severity as significant.
+func findingIsRealDefect(finding apiv1.Finding) bool {
+	if finding.Class == apiv1.FindingCrossPRBlocked {
+		return false
+	}
+	return finding.Severity != apiv1.SeverityInfo
+}
+
+// electableUnderOrdering reports whether findings leave the selected PR safely
+// crownable: it must be sequencing-blocked (at least one ordering finding, which
+// is what makes it a cluster member at all) and carry no real defect.
+//
+// Deliberately separate from allCrossPRBlocked rather than a change to it:
+// allCrossPRBlocked also drives verdictLabel's blocked-on-sibling vs
+// needs-remediation choice for every needs-changes PR, clustered or not, and
+// widening that would change labelling far outside the election.
+func electableUnderOrdering(findings []apiv1.Finding) bool {
+	ordering := false
+	for _, finding := range findings {
+		if findingIsRealDefect(finding) {
+			return false
+		}
+		if finding.Class == apiv1.FindingCrossPRBlocked {
+			ordering = true
+		}
+	}
+	return ordering
+}
+
 func allCrossPRBlocked(findings []apiv1.Finding) bool {
 	if len(findings) == 0 {
 		return false
@@ -131,9 +179,13 @@ func parseOverlappingSiblings(csv string) []int {
 // verdict's findings so sequencing routing uses ground truth, not only the LLM
 // reviewer's classification. Conservative and additive:
 //
-//   - If a real defect is present (any non-cross-pr-blocked finding), the
-//     findings are returned UNCHANGED — a real bug takes priority over
-//     sequencing and must route to remediation, never be merged as a lander.
+//   - If a real defect is present (see findingIsRealDefect — a non-ordering
+//     finding above `info` severity), the findings are returned UNCHANGED — a
+//     real bug takes priority over sequencing and must route to remediation,
+//     never be merged as a lander. Severity matters here for the same reason it
+//     matters when crowning (#1726): an `info` nit about identical generated
+//     churn used to suppress the backstop, so no ordering finding was ever
+//     synthesised and the cluster could not elect anyone.
 //   - Otherwise, if overlappingSiblings is non-empty, a cross-pr-blocked
 //     finding carrying that full set is appended, so allCrossPRBlocked /
 //     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
@@ -147,7 +199,7 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 		return findings
 	}
 	for _, f := range findings {
-		if f.Class != apiv1.FindingCrossPRBlocked {
+		if findingIsRealDefect(f) {
 			return findings
 		}
 	}
@@ -412,6 +464,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// but omitting the echo cannot bypass the current-state check.
 	if reason := verdictPinVoidReason(*verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
 		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		// Voiding used to publish nothing at all, which left whatever verdict was
+		// already on the PR standing as if it were current. pr-remediation reads
+		// that comment, so it kept fixing findings from a superseded head, pushing
+		// — which moved the head again — and voiding the next review in turn. PR
+		// #1719 burned 3 hours over 4 cycles that way, each including a full local
+		// `make ci`, against a review that could no longer see any of its own
+		// fixes (#1733).
+		//
+		// Marking the standing verdict stale breaks that loop at its information
+		// source: remediation can tell "no current review" from "these findings
+		// still stand". Best-effort — a comment write must never turn a moot
+		// verdict into a stage failure, since the re-review next cycle is what
+		// actually resolves this.
+		if cerr := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); cerr != nil {
+			pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
 
@@ -657,6 +725,38 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 		return fmt.Errorf("resolve merge-review status author: %w", err)
 	}
 	return reconcileMergeReviewStatusCommentAs(ctx, provider, repo, prNumber, author, body)
+}
+
+// markMergeReviewVerdictStale rewrites the standing merge-review status comment
+// to say its verdict no longer describes the PR's current head, naming why.
+//
+// It edits the existing comment rather than posting a new one, so a PR whose
+// head moves repeatedly does not accumulate a comment per voided cycle. If no
+// status comment exists yet there is nothing to invalidate and this is a no-op:
+// posting "the verdict is stale" on a PR that never had a verdict would be
+// noise, not information.
+func markMergeReviewVerdictStale(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, reason string) error {
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve authenticated login: %w", err)
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(prNumber))
+	if err != nil {
+		return fmt.Errorf("list merge-review status comments: %w", err)
+	}
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return nil
+	}
+	body := fmt.Sprintf(
+		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer describes this pull request: %s.\n\n"+
+			"No current review stands. merge-review will re-review this PR on its next cycle; "+
+			"findings from the superseded review may already be resolved and should not be acted on.",
+		mergeReviewStatusMarker, reason)
+	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
+		return fmt.Errorf("update merge-review status comment: %w", err)
+	}
+	return nil
 }
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {

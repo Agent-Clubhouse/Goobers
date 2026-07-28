@@ -141,7 +141,10 @@ func TestRemediationCheckpointSignalsContinueOnHealthyCycle(t *testing.T) {
 // prevent.
 func TestRemediationCheckpointSignalsHaltOnEscalation(t *testing.T) {
 	baseSHA, headSHA := initRemediationCheckpointRepo(t, remediationPRBranch)
-	prior, err := remediationStateComment(remediationState{Cycles: 1, LastDiffDigest: "sha256:unrelated"})
+	prior, err := remediationStateComment(remediationState{
+		Cycles: 1, AttemptsByCause: remediationAttempts{Substantive: 1},
+		LastDiffDigest: "sha256:unrelated",
+	})
 	if err != nil {
 		t.Fatalf("remediationStateComment: %v", err)
 	}

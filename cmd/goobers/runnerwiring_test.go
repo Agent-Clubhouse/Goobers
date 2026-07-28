@@ -1572,7 +1572,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{})
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1653,7 +1653,7 @@ func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.Updat
 // always nil), and nil for a repo-less instance (nothing to comment on).
 func TestBuildEscalationNotifier(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		if n := buildEscalationNotifier(&instance.Config{}, nil, nil); n != nil {
+		if n := buildEscalationNotifier(instance.Layout{}, &instance.Config{}, nil, nil); n != nil {
 			t.Fatalf("expected a nil notifier for no repos, got %+v", n)
 		}
 	})
@@ -1665,7 +1665,7 @@ func TestBuildEscalationNotifier(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewResolver: %v", err)
 		}
-		n := buildEscalationNotifier(cfg, resolver, &escTestRegistrar{})
+		n := buildEscalationNotifier(instance.Layout{}, cfg, resolver, &escTestRegistrar{})
 		if n == nil {
 			t.Fatal("expected a non-nil notifier for a repo-backed instance")
 		}
@@ -1721,6 +1721,50 @@ func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
 	}
 	if !registered {
 		t.Fatalf("resolved token not registered for scrubbing; registered=%v", reg.registered)
+	}
+}
+
+// TestEscalationCommenterRoutesADOAwayFromGitHubToken verifies the ADO branch
+// added for the Example.Repo loop: an ADO driving repo must NOT hit the
+// GitHub token-resolve path (there is no static token for azure-cli auth, which
+// previously produced ErrTokenRefNotFound and silently no-op'd the park/notify).
+// With no instance config on disk, the ADO branch fails building its provider —
+// the point is only that the GitHub poster is never consulted.
+func TestEscalationCommenterRoutesADOAwayFromGitHubToken(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter {
+		t.Fatal("GitHub escalation poster must not be built for an ADO repo")
+		return nil
+	}
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	c := &escalationCommenter{resolver: resolver, reg: &escTestRegistrar{}, layout: instance.NewLayout(t.TempDir())}
+	_, err = c.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "Example Service", Name: "Example.Repo"},
+		ID:         "3169478",
+		AddLabels:  []string{providers.LabelNeedsHuman},
+	})
+	if err == nil || !strings.Contains(err.Error(), "build ADO escalation provider") {
+		t.Fatalf("UpdateWorkItem error = %v, want a build-ADO-provider error (ADO branch)", err)
+	}
+}
+
+// TestADOParkRemovalLabelsTranslatesClaimMarker locks the claim-marker fix: an
+// ADO park must remove the status-label form goobers/status:claimed (what
+// ClaimWorkItem writes), not the GitHub plain LabelClaimed, while leaving other
+// removals (LabelReady) untouched.
+func TestADOParkRemovalLabelsTranslatesClaimMarker(t *testing.T) {
+	got := adoParkRemovalLabels([]string{providers.LabelReady, providers.LabelClaimed})
+	want := []string{providers.LabelReady, providers.StatusLabelFor(providers.WorkItemStatusClaimed)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("adoParkRemovalLabels = %v, want %v", got, want)
+	}
+	if want[1] != "goobers/status:claimed" {
+		t.Fatalf("ADO claim marker = %q, want goobers/status:claimed", want[1])
 	}
 }
 
@@ -2410,7 +2454,7 @@ func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
 	if !slices.Equal(ids, []string{"pr/955"}) {
 		t.Fatalf("claimed item IDs = %v, want [pr/955]", ids)
 	}
-	notifier := buildEscalationNotifier(cfg, resolver, reg)
+	notifier := buildEscalationNotifier(instance.Layout{}, cfg, resolver, reg)
 	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.Stage, outcome.Reason); err != nil {
 		t.Fatalf("NotifyStageEscalated: %v", err)

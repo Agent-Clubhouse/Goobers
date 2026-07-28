@@ -7,7 +7,7 @@ name: CI
 # fanned across independent runners here so the sequential gate runs in
 # parallel. Each parallel job runs one slice via `go run ./test/ci group <name>`:
 #
-#   checks   fmt · tidy · vet · command builds · config validation · portal
+#   checks   fmt · tidy · no-phone-home · vet · command builds · config validation · portal
 #   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
 #   shipped  shipped-workflow contract suite
@@ -72,12 +72,13 @@ jobs:
       - name: Dead-code analysis
         run: make deadcode
 
-  # Fast fan-in: formatting, module hygiene, vet, the command builds, config
-  # validation, and the portal build/test/contract chain. The only slice that
-  # needs Node. Runs on Linux only — its work is either OS-agnostic (fmt, tidy,
-  # portal) or covered for other platforms by cross-compilation (darwin-build,
-  # windows-smoke). Keeping static analysis off the scarce macOS runners lets
-  # the macOS *runtime* jobs run without queueing behind each other.
+  # Fast fan-in: formatting, module hygiene, the no-phone-home guard, vet,
+  # command builds, config validation, and the portal build/test/contract
+  # chain. The only slice that needs Node. Runs on Linux only — its work is
+  # either OS-agnostic (fmt, tidy, security guard, portal) or covered for other
+  # platforms by cross-compilation (darwin-build, windows-smoke). Keeping static
+  # analysis off the scarce macOS runners lets the macOS *runtime* jobs run
+  # without queueing behind each other.
   checks:
     name: checks
     runs-on: ubuntu-latest
@@ -101,7 +102,7 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: fmt · tidy · vet · build · portal
+      - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
 
   # golangci-lint (staticcheck/govet/revive/...) per target GOOS, both on cheap

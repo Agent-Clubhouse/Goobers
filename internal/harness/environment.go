@@ -11,6 +11,8 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 type credentialEnvConfig struct {
@@ -47,6 +49,9 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			executor.RepoOwnerEnvVar+"="+repo.Owner,
 			executor.RepoNameEnvVar+"="+repo.Name,
 		)
+		if repo.Project != "" {
+			env = append(env, executor.RepoProjectEnvVar+"="+repo.Project)
+		}
 	}
 	if refs := req.Envelope.AdditionalWorkspaces; len(refs) > 0 {
 		type refWorkspace struct{ name, path string }
@@ -77,8 +82,20 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		}
 		token, err := req.Credentials.Token(ctx, capability)
 		if err != nil {
-			if cfg.optionalCredentialCapabilities[capability] &&
-				errors.Is(err, credentials.ErrNoCredentialForCapability) {
+			// A missing grant is tolerated in two cases: an explicitly optional
+			// capability (the CLI can fall back to an existing user session,
+			// e.g. agent:model), or an Azure DevOps repo. ADO repo credentials
+			// are provisioned dynamically per stage through adoauth (azure-cli/
+			// workload/managed-identity shell out to `az`), NOT through the
+			// static capability→token grant map, so azure-cli auth deliberately
+			// configures no repo:push grant. The agent commits locally under the
+			// modify-repository policy action; the deterministic push-branch
+			// stage publishes the branch with an az-derived credential. A
+			// PAT-configured ADO repo still has a grant and injects normally —
+			// only the absence of one is tolerated, so GitHub stays fail-closed.
+			if errors.Is(err, credentials.ErrNoCredentialForCapability) &&
+				(cfg.optionalCredentialCapabilities[capability] ||
+					req.Envelope.RepoRef.Provider == apiv1.ProviderADO) {
 				continue
 			}
 			return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, capability, err)

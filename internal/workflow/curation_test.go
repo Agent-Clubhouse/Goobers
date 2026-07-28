@@ -109,6 +109,11 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if query.Inputs["reconcileMetadata"] != "false" {
 		t.Errorf("query-backlog reconcileMetadata = %q, want false after dedicated reconciliation", query.Inputs["reconcileMetadata"])
 	}
+	if query.Inputs["resweepMaxItems"] != "5" ||
+		query.Inputs["resweepInterval"] != "24h" ||
+		query.Inputs["resweepReadyLabel"] != "goobers:ready" {
+		t.Errorf("query-backlog re-sweep inputs = %v, want bounded daily ready-item re-sweep", query.Inputs)
+	}
 	curate, ok := m.Task("curate")
 	if !ok {
 		t.Fatal("curate task not found")
@@ -151,7 +156,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:24433fc6b60469dbcf6f469f492abd90a4910d0f6bdb4d5bb9603689a2eaaaa3"
+	const wantDigest = "sha256:f59184f829ea06bd1e13a17913d781fdfb47d35cad3398433beca10cf437ec28"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
@@ -185,6 +190,31 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 			"directly linked tracking parent",
 			"Before each mutation, re-read its live metadata",
 			"Never mutate an unclaimed child",
+		} {
+			if !strings.Contains(instructions, required) {
+				t.Errorf("%s does not define %q", path, required)
+			}
+		}
+	}
+}
+
+func TestCuratorInstructionsDefineContinuousResweep(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		instructions := strings.Join(strings.Fields(string(raw)), " ")
+		for _, required := range []string{
+			`curationMode: "resweep"`,
+			"A closed blocker is a satisfied gate",
+			"leave the issue completely untouched",
+			`curationMode: "read-only"`,
+			"never comment on, label, edit,",
+			"remove `goobers:ready` when the item is no longer shovel-ready",
 		} {
 			if !strings.Contains(instructions, required) {
 				t.Errorf("%s does not define %q", path, required)

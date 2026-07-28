@@ -107,8 +107,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "gather-sibling-context" {
-		t.Errorf("checkpoint-gate pass -> %q, want gather-sibling-context", got)
+	if got := checkpointGate.Branches["pass"]; got != "gather-review-threads" {
+		t.Errorf("checkpoint-gate pass -> %q, want gather-review-threads", got)
 	}
 	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
 		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
@@ -118,17 +118,37 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("gather-sibling-context stage not found")
 	}
-	if got := siblings.InputsFrom["selectedNumber"]; got != "selectedNumber" {
-		t.Errorf("gather-sibling-context selectedNumber input = %q, want checkpoint's selectedNumber output", got)
+	wantSiblingRouting := map[string]string{
+		"selectedNumber":         "selectedNumber",
+		"head":                   "head",
+		"base":                   "base",
+		"hasSubstantiveFindings": "hasSubstantiveFindings",
+		"hasFailingCI":           "hasFailingCI",
+	}
+	for key, want := range wantSiblingRouting {
+		if got := siblings.InputsFrom[key]; got != want {
+			t.Errorf("gather-sibling-context inputsFrom[%q] = %q, want %q", key, got, want)
+		}
 	}
 	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
 		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
 	}
-	if got := siblings.Next; got != "gather-review-threads" {
-		t.Errorf("gather-sibling-context next = %q, want gather-review-threads", got)
+	if got := siblings.Inputs["minSeverity"]; got != "info" {
+		t.Errorf("gather-sibling-context minSeverity = %q, want info", got)
+	}
+	if got := siblings.Next; got != "rebase-pr" {
+		t.Errorf("gather-sibling-context next = %q, want rebase-pr", got)
 	}
 	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
 		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	}
+	for _, output := range []string{
+		"selectedNumber", "head", "base", "hasSubstantiveFindings",
+		"hasFailingCI", "hasSiblingOverlap",
+	} {
+		if !containsString(siblings.ExpectedOutputs, output) {
+			t.Errorf("gather-sibling-context expectedOutputs = %v, missing %q", siblings.ExpectedOutputs, output)
+		}
 	}
 
 	threads, ok := m.Task("gather-review-threads")
@@ -363,8 +383,8 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	if gatherCI.Inputs["resultFile"] != "remediation-brief.json" {
 		t.Errorf("gather-ci-failures resultFile = %q, want remediation-brief.json", gatherCI.Inputs["resultFile"])
 	}
-	if gatherCI.Next != "rebase-pr" {
-		t.Errorf("gather-ci-failures next = %q, want rebase-pr", gatherCI.Next)
+	if gatherCI.Next != "gather-sibling-context" {
+		t.Errorf("gather-ci-failures next = %q, want gather-sibling-context", gatherCI.Next)
 	}
 	if len(gatherCI.Capabilities) != 1 || gatherCI.Capabilities[0] != "github:pr:write" {
 		t.Errorf("gather-ci-failures capabilities = %v, want [github:pr:write]", gatherCI.Capabilities)
@@ -388,6 +408,7 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 		"base":                   "base",
 		"hasSubstantiveFindings": "hasSubstantiveFindings",
 		"hasFailingCI":           "hasFailingCI",
+		"hasSiblingOverlap":      "hasSiblingOverlap",
 	}
 	if len(rebase.InputsFrom) != len(wantRouting) {
 		t.Fatalf("rebase-pr inputsFrom = %v, want routing-only subset %v", rebase.InputsFrom, wantRouting)
@@ -396,6 +417,9 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 		if got := rebase.InputsFrom[key]; got != want {
 			t.Errorf("rebase-pr inputsFrom[%q] = %q, want %q", key, got, want)
 		}
+	}
+	if !containsString(rebase.Capabilities, "github:pr:write") {
+		t.Errorf("rebase-pr capabilities = %v, missing github:pr:write used to verify post-merge handoff authors", rebase.Capabilities)
 	}
 
 	implement, ok := m.Task("implement")
@@ -528,12 +552,23 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	if !ok {
 		t.Fatal("remediation-checkpoint not found")
 	}
-	for _, output := range []string{"conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
+	for _, output := range []string{"remediationCauses", "conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
 		if !containsString(rebase.ExpectedOutputs, output) {
 			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
 		}
 		if checkpoint.InputsFrom[output] != output {
 			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)
+		}
+	}
+	wantBudgets := map[string]string{
+		"conflictBudget":       "2",
+		"substantiveBudget":    "2",
+		"failingCIBudget":      "2",
+		"siblingOverlapBudget": "2",
+	}
+	for input, want := range wantBudgets {
+		if got := checkpoint.Inputs[input]; got != want {
+			t.Errorf("remediation-checkpoint inputs[%q] = %q, want DSL-declared budget %q", input, got, want)
 		}
 	}
 	declared := map[string]bool{}
