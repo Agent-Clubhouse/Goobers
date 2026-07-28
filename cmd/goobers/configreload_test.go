@@ -109,11 +109,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	// without it this test fails on loaded runners with
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
-
-	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
-	if code != 0 {
-		t.Fatalf("run reloaded workflow: code=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
+	waitForRunnableWorkflow(t, root, "reloaded-implement")
 
 	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -123,7 +119,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
 
-	code, stdout, stderr = runArgs(t, "run", "reloaded-implement", root)
+	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
 	if code != 0 {
 		t.Fatalf("last-known-good workflow unavailable after rejected edit: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -288,6 +284,40 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 	}
 	t.Fatalf("timed out waiting for health identity %s/%s", name, environment)
 	return readservice.Health{}
+}
+
+// waitForRunnableWorkflow runs a workflow by name, retrying only while the
+// scheduler reports it unknown.
+//
+// definitionsLoadedAt advancing means the daemon reloaded configuration; it
+// does not mean the scheduler has registered a workflow that did not exist
+// before. This test renames default-implement to reloaded-implement, so it
+// depends on registration of a NEW name rather than on refreshed content — a
+// strictly later step. The sibling test that only changes goober content is
+// fully covered by the definitionsLoadedAt wait, which is why that one has
+// never flaked and this one still did after the wait was added (#1784, and the
+// recurrence on PR #1818).
+//
+// Retrying the operation itself waits for exactly the condition asserted. Only
+// the "unknown workflow" stderr is retried: any other non-zero exit fails
+// immediately, so a genuine regression still surfaces rather than being spun on
+// until the deadline.
+func waitForRunnableWorkflow(t *testing.T, root, workflow string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		code, stdout, stderr := runArgs(t, "run", workflow, root)
+		if code == 0 {
+			return
+		}
+		if !strings.Contains(stderr, "unknown workflow") {
+			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("timed out waiting for %s to become runnable: stderr=%q", workflow, stderr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func waitForDefinitionsReload(t *testing.T, address string, loadedAt time.Time) {
