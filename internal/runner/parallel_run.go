@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -59,7 +60,6 @@ type parallelBranchResult struct {
 	produced       bool
 	failed         bool
 	noOutput       bool
-	steps          int
 	terminalTarget string
 	terminalTask   *parallelTaskTerminal
 	terminalGate   *parallelGateTerminal
@@ -88,7 +88,6 @@ type concurrentParallelResult struct {
 	parallel     *parallelExec
 	terminalTask *parallelTaskTerminal
 	terminalGate *parallelGateTerminal
-	steps        int
 	paused       bool
 }
 
@@ -149,6 +148,7 @@ func (r *Runner) runConcurrentParallel(
 	baseCompleted stageOutputs,
 	workspaceBranch string,
 	reg SecretRegistrar,
+	stepBudget *atomic.Int64,
 ) (concurrentParallelResult, error) {
 	// Concurrent workers always use explicit branch journals. Keeping the run
 	// default at root prevents manager and terminal events from inheriting the
@@ -192,23 +192,29 @@ func (r *Runner) runConcurrentParallel(
 	results := make(chan parallelBranchResult, len(p.Branches))
 	outcomes := make([]*parallelBranchResult, len(p.Branches))
 	queue := make([]int, 0, len(p.Branches))
+	terminalTriggered := false
 	for i := range p.Branches {
 		branch := par.branchSnapshot(i)
 		history := parallelBranchEvents(events, p.Name, branch.id)
 		if branch.settled {
 			lastStage, lastResult, _ := lastFinishedSubject(history)
+			terminalTarget, terminalTask, terminalGate := parallelBranchTerminal(history, in.Machine)
 			outcomes[i] = &parallelBranchResult{
-				index:      i,
-				status:     branch.status,
-				lastStage:  lastStage,
-				lastResult: lastResult,
-				pointers:   branch.pointers,
-				completed:  branchStageOutputs(baseCompleted, history, in.Machine),
-				artifacts:  branch.artifacts,
-				produced:   branch.produced,
-				failed:     branch.failed,
-				noOutput:   branch.noOutput,
+				index:          i,
+				status:         branch.status,
+				lastStage:      lastStage,
+				lastResult:     lastResult,
+				pointers:       branch.pointers,
+				completed:      branchStageOutputs(baseCompleted, history, in.Machine),
+				artifacts:      branch.artifacts,
+				produced:       branch.produced,
+				failed:         branch.failed,
+				noOutput:       branch.noOutput,
+				terminalTarget: terminalTarget,
+				terminalTask:   terminalTask,
+				terminalGate:   terminalGate,
 			}
+			terminalTriggered = terminalTriggered || terminalTarget != ""
 			continue
 		}
 		queue = append(queue, i)
@@ -219,7 +225,6 @@ func (r *Runner) runConcurrentParallel(
 
 	next, running := 0, 0
 	var firstErr error
-	terminalTriggered := false
 	failFast := false
 	draining := false
 
@@ -244,7 +249,7 @@ func (r *Runner) runConcurrentParallel(
 			results <- r.runParallelBranch(
 				branchCtx, jr, par, in, branch, basePointers, baseLastStage,
 				baseLastResult, baseCompleted, workspaceBranch, reg,
-				parallelBranchEvents(events, p.Name, branch.id),
+				parallelBranchEvents(events, p.Name, branch.id), stepBudget,
 			)
 		}()
 		return nil
@@ -283,6 +288,11 @@ func (r *Runner) runConcurrentParallel(
 		return nil
 	}
 
+	if terminalTriggered {
+		if err := cancelQueued(); err != nil {
+			return concurrentParallelResult{}, err
+		}
+	}
 	for next < len(queue) && running < limit {
 		if err := launch(queue[next]); err != nil {
 			firstErr = err
@@ -346,16 +356,8 @@ func (r *Runner) runConcurrentParallel(
 	if firstErr != nil {
 		return concurrentParallelResult{}, firstErr
 	}
-	steps := 0
-	paused := false
-	for _, outcome := range outcomes {
-		if outcome != nil {
-			steps += outcome.steps
-			paused = paused || outcome.paused
-		}
-	}
-	if paused {
-		return concurrentParallelResult{parallel: par, steps: steps, paused: true}, nil
+	if draining {
+		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
 	mergedCompleted := cloneStageOutputs(baseCompleted)
@@ -410,7 +412,6 @@ func (r *Runner) runConcurrentParallel(
 		parallel:     par,
 		terminalTask: terminalTask,
 		terminalGate: terminalGate,
-		steps:        steps,
 	}, nil
 }
 
@@ -427,6 +428,7 @@ func (r *Runner) runParallelBranch(
 	workspaceBranch string,
 	reg SecretRegistrar,
 	history []journal.Event,
+	stepBudget *atomic.Int64,
 ) parallelBranchResult {
 	result := parallelBranchResult{
 		index:      branch.id - 1,
@@ -532,10 +534,9 @@ func (r *Runner) runParallelBranch(
 			result.paused = parallelDrainCancellation(ctx)
 			return result
 		}
-		result.steps++
-		if result.steps > r.maxSteps {
+		if stepBudget.Add(1) > int64(r.maxSteps) {
 			result.status = journal.BranchFailed
-			result.err = fmt.Errorf("runner: parallel %q branch %q exceeded max steps (%d): possible loop", par.spec.Name, branch.name, r.maxSteps)
+			result.err = fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps)
 			return result
 		}
 		branchJournal.SetMachineState(state)
@@ -737,6 +738,13 @@ func (r *Runner) runParallelBranch(
 				result.err = fmt.Errorf("runner: parallel %q branch %q gate %q completed the run instead of routing to %q", par.spec.Name, branch.name, g.Name, workflow.TargetJoin)
 				return result
 			default:
+				if gr.Escalated {
+					reason, _ := terminalGateNotificationReason(gr)
+					if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
+						result.status, result.err = journal.BranchFailed, err
+						return result
+					}
+				}
 				state = gr.Target
 				continue
 			}
@@ -778,6 +786,53 @@ func completedGateRetry(result gate.Result, retryable bool) (string, bool) {
 	default:
 		return result.Target, true
 	}
+}
+
+func parallelBranchTerminal(history []journal.Event, machine *workflow.Machine) (string, *parallelTaskTerminal, *parallelGateTerminal) {
+	for i := len(history) - 1; i >= 0; i-- {
+		source := history[i]
+		if source.Type == journal.EventGateEvaluated {
+			if source.Target != workflow.TargetAbort && source.Target != workflow.TargetEscalate {
+				continue
+			}
+			result := gateResultFromEvent(source)
+			lastStage, lastResult, _ := lastFinishedSubject(history[:i])
+			return source.Target, nil, &parallelGateTerminal{
+				result: result, lastStage: lastStage, lastResult: lastResult,
+			}
+		}
+		if source.Type != journal.EventStageFinished || isInterruptedAttemptMarker(source) {
+			continue
+		}
+		task, ok := machine.Task(source.Stage)
+		if !ok {
+			continue
+		}
+		_, result, ok := lastFinishedSubject([]journal.Event{source})
+		if !ok {
+			continue
+		}
+		target := ""
+		switch result.Status {
+		case apiv1.ResultBlocked:
+			target = workflow.TargetEscalate
+		case apiv1.ResultFailure:
+			if task.ContinueOnError {
+				target = task.Next
+			} else if _, nextIsGate := machine.Gate(task.Next); nextIsGate && isNonRetryableEscalation(result.Error) {
+				target = taskEscalationTarget(machine, task)
+				if target == workflow.TerminalComplete {
+					target = workflow.TargetEscalate
+				}
+			}
+		case apiv1.ResultSuccess:
+			target = task.Next
+		}
+		if target == workflow.TargetAbort || target == workflow.TargetEscalate {
+			return target, &parallelTaskTerminal{task: task, result: result}, nil
+		}
+	}
+	return "", nil, nil
 }
 
 func parallelRootEvents(events []journal.Event, parallel string) ([]journal.Event, bool) {

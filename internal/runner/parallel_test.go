@@ -311,9 +311,11 @@ type parallelBlockingDeterministic struct {
 	release <-chan struct{}
 	active  atomic.Int32
 	max     atomic.Int32
+	calls   atomic.Int32
 }
 
 func (d *parallelBlockingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.calls.Add(1)
 	if strings.HasSuffix(env.TaskID, ":collate") {
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 	}
@@ -502,10 +504,16 @@ func TestRunnerRejectsWritableConcurrentParallelBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
+func TestRunnerConcurrentBranchGateKeepsAttributionAndNotifiesEscalation(t *testing.T) {
 	base := branchGateFanInMachine(t)
 	def := base.Def
 	def.Spec.Parallels[0].MaxConcurrentBranches = 2
+	def.Spec.Gates[0].MaxRepasses = 1
+	def.Spec.Gates[0].Branches[gate.OutcomeFail] = "review-security"
+	disposition := def.Spec.Tasks[1]
+	disposition.Name = "park-security"
+	def.Spec.Tasks = append(def.Spec.Tasks, disposition)
+	def.Spec.Gates[0].Branches[workflow.BranchEscalate] = disposition.Name
 	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile concurrent branch-gate fixture: %v", err)
@@ -517,6 +525,7 @@ func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
 			errorInfo: &apiv1.ErrorInfo{Code: "review_failed", Message: "review requires gate approval"},
 		},
 		runID + ":review-performance": {status: apiv1.ResultSuccess},
+		runID + ":park-security":      {status: apiv1.ResultSuccess},
 		runID + ":collate":            {status: apiv1.ResultSuccess},
 	}
 	r, runsDir := newParallelTestRunner(t,
@@ -524,11 +533,17 @@ func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
 			return &stubDeterministic{rec: rec, byTask: byTask}, nil
 		},
 	)
-	r.cfg.Automated = fixedOutcomeAutomated(gate.OutcomePass)
+	commenter := &recordingCommenter{}
+	r.cfg.Automated = fixedOutcomeAutomated(gate.OutcomeFail)
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	result, err := r.Start(context.Background(), StartInput{
 		RunID: runID, Gaggle: "demo", Machine: machine,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+		},
+		Item: &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -548,6 +563,9 @@ func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
 		if event.Gate == "accept-security" && event.Branch != 1 {
 			t.Errorf("%s for gate %q has branch %d, want 1", event.Type, event.Gate, event.Branch)
 		}
+	}
+	if len(commenter.requests) != 1 || !strings.Contains(commenter.requests[0].Comment, "repass budget exhausted") {
+		t.Fatalf("escalation notifications = %+v, want one canonical gate notification", commenter.requests)
 	}
 }
 
@@ -723,7 +741,7 @@ func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	}
 }
 
-func TestRunnerResumeConcurrentBlockedTerminalDoesNotReplayParallel(t *testing.T) {
+func TestRunnerResumeConcurrentBlockedTerminalBeforeParallelFinished(t *testing.T) {
 	const runID = "parallel-blocked-resume"
 	machine := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
 	var constructions atomic.Int32
@@ -770,22 +788,6 @@ func TestRunnerResumeConcurrentBlockedTerminalDoesNotReplayParallel(t *testing.T
 			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "a",
 			BranchStatus: journal.BranchFailed,
 		},
-		{
-			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 2, BranchName: "b",
-			BranchStatus: journal.BranchCancelled,
-		},
-		{
-			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 3, BranchName: "c",
-			BranchStatus: journal.BranchCancelled,
-		},
-		{
-			Type: journal.EventParallelFinished, Parallel: "fan", Target: workflow.TargetEscalate,
-			Completeness: []journal.BranchOutcome{
-				{Branch: 1, Name: "a", Status: journal.BranchFailed},
-				{Branch: 2, Name: "b", Status: journal.BranchCancelled},
-				{Branch: 3, Name: "c", Status: journal.BranchCancelled},
-			},
-		},
 	} {
 		if err := jr.Append(event); err != nil {
 			t.Fatalf("append %s: %v", event.Type, err)
@@ -807,6 +809,22 @@ func TestRunnerResumeConcurrentBlockedTerminalDoesNotReplayParallel(t *testing.T
 	}
 	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
 		t.Fatalf("BlockedOutcome = %+v", blocked)
+	}
+}
+
+func TestRunnerConcurrentBranchesShareRunStepBudget(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	det := &parallelBlockingDeterministic{started: make(chan string, 3), release: release}
+	r, _ := newParallelTestRunner(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil })
+	r.maxSteps = 3
+	_, err := r.Start(context.Background(), StartInput{
+		RunID: "parallel-shared-step-budget", Gaggle: "demo",
+		Machine: parallelRunnerMachine(t, 3, apiv1.WorkspaceScratch),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if calls := det.calls.Load(); err == nil || !strings.Contains(err.Error(), "exceeded max steps (3)") || calls != 2 {
+		t.Fatalf("Start error = %v, task calls = %d; want shared max-steps failure after 2 branch tasks", err, calls)
 	}
 }
 

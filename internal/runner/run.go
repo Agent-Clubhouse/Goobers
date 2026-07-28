@@ -970,6 +970,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	fanIn := seed.fanIn
 	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
 	steps := 0
+	var stepBudget atomic.Int64
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, fmt.Errorf("runner: %w", err))
@@ -985,8 +986,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 		outcome, err := r.runConcurrentParallel(
 			ctx, jr, in, p, existing, pointers, lastStage, lastResult,
-			completed, workspaceBranch, reg,
+			completed, workspaceBranch, reg, &stepBudget,
 		)
+		steps = int(stepBudget.Load())
 		if err != nil {
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, p.Name, steps); stalled {
 				return stalledResult, true, stalledErr
@@ -994,7 +996,6 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, err)
 			return res, true, failErr
 		}
-		steps += outcome.steps
 		if outcome.paused {
 			if err := jr.Checkpoint(); err != nil {
 				return Result{}, true, fmt.Errorf("runner: checkpoint parallel drain at %q: %w", p.Name, err)
@@ -1065,10 +1066,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	}
 
 	for {
-		steps++
-		if steps > r.maxSteps {
+		if stepBudget.Add(1) > int64(r.maxSteps) {
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
+		steps = int(stepBudget.Load())
 		// A branch reached @join: settle it and move to the next declared
 		// branch, or close the parallel and continue at its join state.
 		if state == workflow.TargetJoin {

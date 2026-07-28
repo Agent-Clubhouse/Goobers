@@ -1171,74 +1171,15 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		return transition
 	}
 
-	type terminalCandidate struct {
-		branch int
-		task   *parallelTaskTerminal
-		gate   *parallelGateTerminal
-	}
-	var candidate *terminalCandidate
-	for i := finished - 1; i >= 0; i-- {
-		source := events[i]
-		if source.Type == journal.EventParallelStarted && source.Parallel == event.Parallel {
+	for branch := 1; branch <= len(spec.Branches); branch++ {
+		history := parallelBranchEvents(events[:finished], event.Parallel, branch)
+		target, task, gate := parallelBranchTerminal(history, machine)
+		if target == event.Target {
+			transition.task = task
+			transition.gate = gate
+			transition.aggregate = false
 			break
 		}
-		if source.Branch == 0 {
-			continue
-		}
-		if source.Type == journal.EventGateEvaluated && source.Target == event.Target {
-			result := gateResultFromEvent(source)
-			history := parallelBranchEvents(events[:i], event.Parallel, source.Branch)
-			lastStage, lastResult, _ := lastFinishedSubject(history)
-			if candidate == nil || source.Branch < candidate.branch {
-				candidate = &terminalCandidate{
-					branch: source.Branch,
-					gate: &parallelGateTerminal{
-						result: result, lastStage: lastStage, lastResult: lastResult,
-					},
-				}
-			}
-			continue
-		}
-		if source.Type != journal.EventStageFinished || isInterruptedAttemptMarker(source) {
-			continue
-		}
-		task, ok := machine.Task(source.Stage)
-		if !ok {
-			continue
-		}
-		_, result, ok := lastFinishedSubject([]journal.Event{source})
-		if !ok {
-			continue
-		}
-		taskTarget := ""
-		switch result.Status {
-		case apiv1.ResultBlocked:
-			taskTarget = workflow.TargetEscalate
-		case apiv1.ResultFailure:
-			if task.ContinueOnError {
-				taskTarget = task.Next
-			} else if _, nextIsGate := machine.Gate(task.Next); nextIsGate && isNonRetryableEscalation(result.Error) {
-				taskTarget = taskEscalationTarget(machine, task)
-				if taskTarget == workflow.TerminalComplete {
-					taskTarget = workflow.TargetEscalate
-				}
-			}
-		case apiv1.ResultSuccess:
-			taskTarget = task.Next
-		}
-		if taskTarget == event.Target {
-			if candidate == nil || source.Branch < candidate.branch {
-				candidate = &terminalCandidate{
-					branch: source.Branch,
-					task:   &parallelTaskTerminal{task: task, result: result},
-				}
-			}
-		}
-	}
-	if candidate != nil {
-		transition.task = candidate.task
-		transition.gate = candidate.gate
-		transition.aggregate = false
 	}
 	return transition
 }
