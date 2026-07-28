@@ -164,6 +164,7 @@ func TestExplainLifecycleIgnoresNextDSLPrefixFeatures(t *testing.T) {
 func TestExplainRejectsSelectorsUnavailableInBuiltInDSL(t *testing.T) {
 	for _, selector := range []string{
 		"workflow.spec.tasks[].run.script",
+		"Workflow.spec.tasks[].run.script",
 		"workflow.spec.tasks[].workspace",
 		"workflow.spec.gates[].agentic.workspace",
 		"workflow.spec.parallels",
@@ -182,13 +183,20 @@ func TestExplainRejectsSelectorsUnavailableInBuiltInDSL(t *testing.T) {
 }
 
 func TestExplainFiltersAllowedValuesUnavailableInBuiltInDSL(t *testing.T) {
-	got, err := Explain("workflow.spec.tasks[].run.workspace")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []any{"repo", "scratch"}
-	if !reflect.DeepEqual(got.AllowedValues, want) {
-		t.Fatalf("allowed values = %#v, want %#v", got.AllowedValues, want)
+	for _, selector := range []string{
+		"workflow.spec.tasks[].run.workspace",
+		"Workflow.spec.tasks[].run.workspace",
+	} {
+		t.Run(selector, func(t *testing.T) {
+			got, err := Explain(selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []any{"repo", "scratch"}
+			if !reflect.DeepEqual(got.AllowedValues, want) {
+				t.Fatalf("allowed values = %#v, want %#v", got.AllowedValues, want)
+			}
+		})
 	}
 }
 

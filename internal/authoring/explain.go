@@ -68,6 +68,7 @@ func Explain(selector string) (Explanation, error) {
 		return Explanation{}, unknownSelector(selector)
 	}
 	contractEntry := doc.entry
+	parts[0].name = contractEntry.Kind
 
 	declared := doc.root
 	resolved := doc.root
