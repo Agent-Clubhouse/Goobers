@@ -108,10 +108,12 @@ type siblingPR struct {
 // head SHA is unchanged since the last gather reuses its cached files.
 // Check state is always refreshed because CI can be rerun on the same SHA.
 const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n" +
-	"Load the other open goober-authored PRs' touched files + state as\n" +
+	"Load the other open PRs' touched files + state as\n" +
 	"evidence for the holistic review (a workflow stage, follows\n" +
-	"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n" +
-	"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n" +
+	"pr-select). authorScope=any permits an outside-headPrefixes selection and\n" +
+	"requires pr-select's advisoryMode output. Managed selections retain their\n" +
+	"namespace-wide goober sibling set; advisory selections see every open PR.\n" +
+	"Requires selectedNumber from Task.InputsFrom. Sibling files are memoized\n" +
 	"per head SHA under the instance scheduler dir, while check state is\n" +
 	"always refreshed; --no-cache bypasses the file memo entirely (neither\n" +
 	"read nor written) to force a fully fresh gather. Separately, this stage\n" +
@@ -165,7 +167,22 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
+	headPrefixes := mergeReviewHeadPrefixes()
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
+		return 1
+	}
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
+	managedHeadPrefix := providerBranchNamespace()
+	listHeadPrefix := managedHeadPrefix
+	if authorScope == authorScopeAny {
+		listHeadPrefix = ""
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -174,7 +191,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	// resolved below after file-list memoization so same-head CI reruns are
 	// reflected in the verdict-cache key.
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: listHeadPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "sibling-context.json")
@@ -236,6 +253,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
+		if !advisoryMode && !strings.HasPrefix(pr.Head, managedHeadPrefix) {
+			continue
+		}
 		key := strconv.Itoa(pr.Number)
 		prior, hit := cached[key]
 		hit = hit && prior.HeadSHA == pr.HeadSHA
@@ -279,6 +299,15 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// and here (merged/closed/retargeted mid-cycle) — nothing to review.
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
+	if hasAnyLabel(selectedLabels, []string{noMergeReviewLabel}) {
+		return writeNoWorkResult(stdout, stderr, "selected PR opted out of merge-review")
+	}
+	expectedAdvisoryMode := authorScope == authorScopeAny && !hasAnyHeadPrefix(selectedHead, headPrefixes)
+	if advisoryMode != expectedAdvisoryMode {
+		pf(stderr, "error: advisoryMode %t does not match selected PR head %q under authorScope %q and headPrefixes %q\n",
+			advisoryMode, selectedHead, authorScope, strings.Join(headPrefixes, ","))
+		return 1
+	}
 
 	// Scope-drift flag (#1111): this stage already fetched the selected PR's
 	// changed files and holds github:pr:write, so it is the natural (zero extra
@@ -291,12 +320,14 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			scopeDriftThreshold = n
 		}
 	}
-	if flipped, ferr := flagScopeDrift(ctx, provider, repo, selectedNumber, selectedLabels, changedFiles, scopeDriftThreshold); ferr != nil {
-		pf(stderr, "warning: scope-drift flag: %v\n", ferr)
-	} else if flipped {
-		pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
-			selectedNumber, changedFiles, scopeDriftThreshold,
-			map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+	if !advisoryMode {
+		if flipped, ferr := flagScopeDrift(ctx, provider, repo, selectedNumber, selectedLabels, changedFiles, scopeDriftThreshold); ferr != nil {
+			pf(stderr, "warning: scope-drift flag: %v\n", ferr)
+		} else if flipped {
+			pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
+				selectedNumber, changedFiles, scopeDriftThreshold,
+				map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+		}
 	}
 
 	// Scope gate (#1313): escalates the advisory flag above into an actual
@@ -316,15 +347,19 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			scopeGateLinesThreshold = n
 		}
 	}
-	scopeGateParked, flipped, gerr := reconcileScopeGate(
-		ctx, provider, repo, selectedNumber, selectedLabels,
-		changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold)
-	if gerr != nil {
-		pf(stderr, "warning: scope gate: %v\n", gerr)
-	} else if flipped {
-		pf(stdout, "scope-gate: PR #%d changes %d files / %d lines (thresholds %d/%d) — %s goobers:scope-gate\n",
-			selectedNumber, changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold,
-			map[bool]string{true: "applied", false: "cleared"}[scopeGateParked])
+	scopeGateParked := false
+	if !advisoryMode {
+		var flipped bool
+		scopeGateParked, flipped, err = reconcileScopeGate(
+			ctx, provider, repo, selectedNumber, selectedLabels,
+			changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold)
+		if err != nil {
+			pf(stderr, "warning: scope gate: %v\n", err)
+		} else if flipped {
+			pf(stdout, "scope-gate: PR #%d changes %d files / %d lines (thresholds %d/%d) — %s goobers:scope-gate\n",
+				selectedNumber, changedFiles, selectedLines, scopeGateFilesThreshold, scopeGateLinesThreshold,
+				map[bool]string{true: "applied", false: "cleared"}[scopeGateParked])
+		}
 	}
 
 	// Deterministic file-overlap (#989): the ground-truth set of files each
@@ -405,6 +440,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"hasSubstantiveFindings": strconv.FormatBool(hasSubstantiveFindings),
 		"hasFailingCI":           providerInput("hasFailingCI", "false"),
 		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
 		"selectedHeadSha":        selectedHeadSHA,
 		"selectedBaseSha":        selectedBaseSHA,
 		"reviewDigest":           reviewDigest,
