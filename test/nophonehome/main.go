@@ -298,25 +298,17 @@ func scanGoFile(root, path string) ([]finding, error) {
 			}
 			if callName, monitored := monitoredReportingSDKCall(selector, imports); monitored {
 				position := files.Position(call.Pos())
-				destination, configured, hardcoded := reportingSDKConfiguration(call.Args, bindings)
-				if configured {
-					for _, source := range reportingSDKConfigurationSources(call.Args, bindings) {
-						if !approvedSourceUnmodifiedBeforeCall(function, call, source) {
-							configured = false
-							break
-						}
-					}
-				}
+				destination, _, hardcoded := reportingSDKConfiguration(call.Args, bindings)
 				switch {
 				case hardcoded:
 					findings = append(findings, finding{
 						path: rel, line: position.Line, column: position.Column,
 						message: fmt.Sprintf("hardcoded reporting SDK destination %q passed to %s", destination, callName),
 					})
-				case !configured:
+				default:
 					findings = append(findings, finding{
 						path: rel, line: position.Line, column: position.Column,
-						message: "implicit reporting SDK destination via " + callName,
+						message: "non-OTLP reporting SDK initialization via " + callName,
 					})
 				}
 				return true
@@ -428,56 +420,6 @@ func reportingSDKConfiguration(
 		configured = configured || expressionConfigured
 	}
 	return "", configured, false
-}
-
-func reportingSDKConfigurationSources(
-	expressions []ast.Expr,
-	bindings map[string]ast.Expr,
-) []string {
-	sources := make(map[string]bool)
-	var inspect func(ast.Expr, bool, map[string]bool)
-	inspect = func(expression ast.Expr, destinationField bool, seen map[string]bool) {
-		switch value := expression.(type) {
-		case *ast.Ident:
-			if seen[value.Name] {
-				return
-			}
-			if binding, ok := bindings[value.Name]; ok {
-				seen[value.Name] = true
-				inspect(binding, destinationField, seen)
-				delete(seen, value.Name)
-			} else if destinationField {
-				sources[value.Name] = true
-			}
-		case *ast.SelectorExpr:
-			if destinationField {
-				sources[expressionName(value)] = true
-			}
-		case *ast.CompositeLit:
-			for _, element := range value.Elts {
-				field, ok := element.(*ast.KeyValueExpr)
-				if ok {
-					inspect(field.Value, reportingSDKDestinationField(expressionName(field.Key)), seen)
-				}
-			}
-		case *ast.CallExpr:
-			callDestinationField := destinationField || reportingSDKDestinationField(expressionName(value.Fun))
-			for _, argument := range value.Args {
-				inspect(argument, callDestinationField, seen)
-			}
-		case *ast.ParenExpr:
-			inspect(value.X, destinationField, seen)
-		}
-	}
-	for _, expression := range expressions {
-		inspect(expression, false, make(map[string]bool))
-	}
-	result := make([]string, 0, len(sources))
-	for source := range sources {
-		result = append(result, source)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func reportingSDKExpression(
@@ -648,7 +590,71 @@ func egressDestination(
 	if destination, ok := staticString(expression, bindings, nil); ok && strings.TrimSpace(destination) != "" {
 		return destination, true
 	}
-	return staticURLDestination(expression, bindings, nil)
+	if destination, ok := staticURLDestination(expression, bindings, nil); ok {
+		return destination, true
+	}
+	return nestedProhibitedURL(expression, bindings, nil)
+}
+
+func nestedProhibitedURL(
+	expression ast.Expr,
+	bindings map[string]ast.Expr,
+	seen map[string]bool,
+) (string, bool) {
+	if destination, ok := staticURLDestination(expression, bindings, nil); ok &&
+		(isReportingDestination(destination) || isMaintainerOwnedDestination(destination)) {
+		return destination, true
+	}
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[value.Name] {
+			return "", false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return "", false
+		}
+		seen[value.Name] = true
+		defer delete(seen, value.Name)
+		return nestedProhibitedURL(binding, bindings, seen)
+	case *ast.SelectorExpr:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		name := expressionName(value)
+		if seen[name] {
+			return "", false
+		}
+		seen[name] = true
+		defer delete(seen, name)
+		if binding, ok := bindings[name]; ok {
+			return nestedProhibitedURL(binding, bindings, seen)
+		}
+		binding, ok := boundCompositeField(value.X, value.Sel.Name, bindings, make(map[string]bool))
+		if !ok {
+			return "", false
+		}
+		return nestedProhibitedURL(binding, bindings, seen)
+	case *ast.CallExpr:
+		for _, argument := range value.Args {
+			if destination, ok := nestedProhibitedURL(argument, bindings, seen); ok {
+				return destination, true
+			}
+		}
+	case *ast.BinaryExpr:
+		if destination, ok := nestedProhibitedURL(value.X, bindings, seen); ok {
+			return destination, true
+		}
+		return nestedProhibitedURL(value.Y, bindings, seen)
+	case *ast.ParenExpr:
+		return nestedProhibitedURL(value.X, bindings, seen)
+	case *ast.UnaryExpr:
+		return nestedProhibitedURL(value.X, bindings, seen)
+	}
+	return "", false
 }
 
 func requestURLDestination(
@@ -1498,7 +1504,9 @@ func conditionalEgressDestination(
 			} else {
 				destination, found = egressDestination(api, assignment.Rhs[index], assignmentBindings, imports)
 			}
-			if found && (rejectAny || isReportingDestination(destination)) {
+			if found && (rejectAny ||
+				isReportingDestination(destination) ||
+				isMaintainerOwnedDestination(destination)) {
 				return false
 			}
 			destination = ""
@@ -1857,6 +1865,24 @@ func staticString(expression ast.Expr, bindings map[string]ast.Expr, seen map[st
 		text, ok := staticString(binding, bindings, seen)
 		delete(seen, value.Name)
 		return text, ok
+	case *ast.SelectorExpr:
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		name := expressionName(value)
+		if seen[name] {
+			return "", false
+		}
+		seen[name] = true
+		defer delete(seen, name)
+		if binding, ok := bindings[name]; ok {
+			return staticString(binding, bindings, seen)
+		}
+		binding, ok := boundCompositeField(value.X, value.Sel.Name, bindings, make(map[string]bool))
+		if !ok {
+			return "", false
+		}
+		return staticString(binding, bindings, seen)
 	case *ast.CallExpr:
 		if expressionName(value.Fun) != "fmt.Sprintf" || len(value.Args) == 0 {
 			return "", false
@@ -1877,6 +1903,56 @@ func staticString(expression ast.Expr, bindings map[string]ast.Expr, seen map[st
 	default:
 		return "", false
 	}
+}
+
+func boundCompositeField(
+	expression ast.Expr,
+	fieldName string,
+	bindings map[string]ast.Expr,
+	seen map[string]bool,
+) (ast.Expr, bool) {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if seen[value.Name] {
+			return nil, false
+		}
+		binding, ok := bindings[value.Name]
+		if !ok {
+			return nil, false
+		}
+		seen[value.Name] = true
+		defer delete(seen, value.Name)
+		return boundCompositeField(binding, fieldName, bindings, seen)
+	case *ast.SelectorExpr:
+		name := expressionName(value)
+		if seen[name] {
+			return nil, false
+		}
+		seen[name] = true
+		defer delete(seen, name)
+		if binding, ok := bindings[name]; ok {
+			return boundCompositeField(binding, fieldName, bindings, seen)
+		}
+		binding, ok := boundCompositeField(value.X, value.Sel.Name, bindings, seen)
+		if !ok {
+			return nil, false
+		}
+		return boundCompositeField(binding, fieldName, bindings, seen)
+	case *ast.CompositeLit:
+		for _, element := range value.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			if ok && expressionName(field.Key) == fieldName {
+				return field.Value, true
+			}
+		}
+	case *ast.ParenExpr:
+		return boundCompositeField(value.X, fieldName, bindings, seen)
+	case *ast.UnaryExpr:
+		return boundCompositeField(value.X, fieldName, bindings, seen)
+	case *ast.StarExpr:
+		return boundCompositeField(value.X, fieldName, bindings, seen)
+	}
+	return nil, false
 }
 
 func staticURLDestination(expression ast.Expr, bindings map[string]ast.Expr, seen map[string]bool) (string, bool) {

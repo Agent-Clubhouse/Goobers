@@ -43,6 +43,46 @@ func report() {
 			want: "hardcoded network destination",
 		},
 		{
+			name: "conditional maintainer-owned neutral path fallback",
+			source: `package sample
+import "net/http"
+type Config struct { ReportEndpoint string }
+func report(cfg Config) {
+	endpoint := cfg.ReportEndpoint
+	if endpoint == "" {
+		endpoint = "https://agent-clubhouse.github.io/goobers/events"
+	}
+	_, _ = http.Post(endpoint, "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "helper-wrapped maintainer-owned neutral path fallback",
+			source: `package sample
+import "net/http"
+type Config struct { ReportEndpoint string }
+func firstNonEmpty(values ...string) string { return "" }
+func report(cfg Config) {
+	endpoint := firstNonEmpty(cfg.ReportEndpoint, "https://agent-clubhouse.github.io/goobers/events")
+	_, _ = http.Post(endpoint, "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
+			name: "maintainer-owned neutral path in config field",
+			source: `package sample
+import "net/http"
+type Config struct { ReportURL string }
+func report() {
+	cfg := Config{ReportURL: "https://agent-clubhouse.github.io/goobers/events"}
+	_, _ = http.Post(cfg.ReportURL, "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "HTTP client destination",
 			source: `package sample
 import "net/http"
@@ -530,7 +570,7 @@ void fetch("https://fixture.example.invalid");
 	}
 }
 
-func TestScanAllowsUserConfiguredReportingSDKDestination(t *testing.T) {
+func TestScanRejectsUserConfiguredReportingSDKDestination(t *testing.T) {
 	root := writeSource(t, `package sample
 import "github.com/getsentry/sentry-go"
 type Config struct { SentryDSN string }
@@ -542,12 +582,13 @@ func report(cfg Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("scan() findings = %v, want none", findings)
+	if len(findings) == 0 ||
+		!strings.Contains(findings[0].message, "non-OTLP reporting SDK initialization") {
+		t.Fatalf("scan() findings = %#v, want non-OTLP reporting SDK initialization", findings)
 	}
 }
 
-func TestScanAllowsEnvironmentConfiguredReportingSDKDestination(t *testing.T) {
+func TestScanRejectsEnvironmentConfiguredReportingSDKDestination(t *testing.T) {
 	root := writeSource(t, `package sample
 import (
 	"os"
@@ -561,8 +602,9 @@ func report() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("scan() findings = %v, want none", findings)
+	if len(findings) == 0 ||
+		!strings.Contains(findings[0].message, "non-OTLP reporting SDK initialization") {
+		t.Fatalf("scan() findings = %#v, want non-OTLP reporting SDK initialization", findings)
 	}
 }
 
