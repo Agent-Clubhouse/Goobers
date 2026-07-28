@@ -39,11 +39,12 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.TelemetryRead, capability.GitHubPRWrite},
 		},
 		{
-			name:    "presence capability absent",
+			name:    "unconditional capability without flag",
 			command: "reconcile-branches",
+			want:    []capability.Capability{capability.GitHubBranchDelete},
 		},
 		{
-			name:    "presence capability present",
+			name:    "unconditional capability with flag",
 			command: "reconcile-branches",
 			args:    []string{"--delete"},
 			want:    []capability.Capability{capability.GitHubBranchDelete},

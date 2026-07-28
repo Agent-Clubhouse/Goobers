@@ -42,10 +42,6 @@ func requiredWhenFlagEquals(cap capability.Capability, flag, value, consequence 
 	}
 }
 
-func requiredWhenFlagPresent(cap capability.Capability, flag, consequence string) CapabilityUse {
-	return CapabilityUse{Capability: cap, Consequence: consequence, flag: flag}
-}
-
 var commands = map[string]Command{
 	"apply-verdict": {
 		ResultFile: "verdict-result.json",
@@ -214,7 +210,7 @@ var commands = map[string]Command{
 	},
 	"reconcile-branches": {
 		Capabilities: []CapabilityUse{
-			requiredWhenFlagPresent(capability.GitHubBranchDelete, "--delete", "the capability-scoped credential is not injected, so stale branch deletion fails at runtime"),
+			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so stale branch reconciliation fails at runtime"),
 		},
 	},
 	"record-merge-refusal": {

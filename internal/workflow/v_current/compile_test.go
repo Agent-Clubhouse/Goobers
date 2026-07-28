@@ -705,6 +705,45 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `subcommand "telemetry-query" but does not declare capability "github:pr:write"`) {
 		t.Fatalf("Tutor telemetry-query error = %v, want conditional PR capability diagnostic", err)
 	}
+
+	reconcileTask := apiv1.Task{
+		Name: "reconcile",
+		Type: apiv1.TaskDeterministic,
+		Goal: "reconcile stale branches",
+		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
+	}
+	reconcileCases := []struct {
+		name          string
+		definition    string
+		inputs        map[string]string
+		policyActions []string
+	}{
+		{name: "default dry-run", definition: "reconcile-dry-run"},
+		{
+			name:          "input-enabled deletion",
+			definition:    "reconcile-input-delete",
+			inputs:        map[string]string{"deleteBranches": "true"},
+			policyActions: []string{"delete-branch"},
+		},
+	}
+	for _, tc := range reconcileCases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := reconcileTask
+			task.Inputs = tc.inputs
+			task.PolicyActions = tc.policyActions
+
+			_, err := compileAcknowledged(definition(tc.definition, task))
+			want := `task "reconcile" invokes built-in subcommand "reconcile-branches" but does not declare capability "github:branch:delete"; the capability-scoped credential is not injected, so stale branch reconciliation fails at runtime`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Compile error = %v, want containing %q", err, want)
+			}
+
+			task.Capabilities = []string{string(capability.GitHubBranchDelete)}
+			if _, err := compileAcknowledged(definition(tc.definition+"-capable", task)); err != nil {
+				t.Fatalf("reconcile-branches with branch capability should compile: %v", err)
+			}
+		})
+	}
 }
 
 func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
