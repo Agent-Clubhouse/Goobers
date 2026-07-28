@@ -166,6 +166,7 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so rebased branch publication fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so rebase outcome routing fails at runtime"),
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so trusted sibling-overlap handoff inspection fails at runtime"),
 		},
 	},
 	"reconcile-post-merge": {
