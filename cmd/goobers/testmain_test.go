@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -25,14 +27,43 @@ const suiteRunWaitTimeout = 2 * time.Minute
 // place of the fixed default, so the OS hands out a free port instead (#798).
 const hermeticEphemeralListen = "127.0.0.1:0"
 
-// TestMain arms two whole-suite seams before running any cmd/goobers test:
+type testCopilotModelLister struct{}
+
+func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([]harness.CopilotModelInfo, error) {
+	return []harness.CopilotModelInfo{
+		{ID: "claude-fable-5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "claude-sonnet-5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "claude-sonnet-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
+		{ID: "claude-sonnet-4.5"},
+		{ID: "claude-haiku-4.5"},
+		{ID: "claude-opus-4.8-fast", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "claude-opus-4.8", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "claude-opus-4.7", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "claude-opus-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
+		{ID: "claude-opus-4.5"},
+		{ID: "gpt-5.6-sol", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "gpt-5.6-terra", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "gpt-5.6-luna", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{ID: "gpt-5.5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		{ID: "gpt-5.4", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		{ID: "gpt-5.3-codex", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		{ID: "gpt-5.4-mini", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		{ID: "gpt-5-mini", SupportedReasoningEfforts: []string{"none", "low", "medium", "high"}},
+		{ID: "gemini-3.1-pro-preview", SupportedReasoningEfforts: []string{"none", "low", "medium", "high"}},
+		{ID: "gemini-3.5-flash", SupportedReasoningEfforts: []string{"none", "minimal", "low", "medium", "high"}},
+		{ID: "kimi-k2.7-code"},
+		{ID: "mai-code-1-flash-picker"},
+	}, nil
+}
+
+// TestMain arms the whole-suite seams before running any cmd/goobers test:
 //
-//  1. It neutralizes the harness-preflight seam. These tests drive
+//  1. It neutralizes harness preflight and model discovery. These tests drive
 //     `goobers up`/`run` against configs that declare agentic stages, but CI has
 //     no real, installed Copilot CLI, so the production preflight
-//     (LookPath("copilot")) would fail every such test. The real preflight logic
-//     is exercised directly in preflight_test.go via preflightAgenticHarnesses,
-//     so no coverage is lost by stubbing the wiring seam here.
+//     (LookPath("copilot")) and authenticated models.list query would fail every
+//     such test. The real preflight logic and model-resolution behavior are
+//     exercised directly in their package tests.
 //
 //  2. It makes every daemon-starting test hermetic (#798). A scaffolded instance
 //     defaults to instance.DefaultAPIListenAddress (127.0.0.1:8080), so any test
@@ -73,6 +104,7 @@ func TestMain(m *testing.M) {
 	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
+	copilotModelLister = testCopilotModelLister{}
 
 	baseAPIListenAddress := apiListenAddress
 	apiListenAddress = func(c *instance.Config) string {

@@ -58,6 +58,32 @@ type fakeProcessRunner struct {
 	err     error
 }
 
+type fakeCopilotModelLister struct {
+	models []CopilotModelInfo
+	err    error
+	calls  int
+}
+
+func (f *fakeCopilotModelLister) ListModels(context.Context, []string, []string) ([]CopilotModelInfo, error) {
+	f.calls++
+	return append([]CopilotModelInfo(nil), f.models...), f.err
+}
+
+func testCopilotModelList() []CopilotModelInfo {
+	maxEffort := []string{"none", "low", "medium", "high", "xhigh", "max"}
+	return []CopilotModelInfo{
+		{ID: "claude-fable-5", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-sonnet-5", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-sonnet-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
+		{ID: "claude-sonnet-4.5"},
+		{ID: "claude-opus-4.8-fast", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-opus-4.5"},
+		{ID: "future-model"},
+		{ID: "kimi-k2.7-code"},
+		{ID: "mai-code-1-flash-picker"},
+	}
+}
+
 func testHarnessOptions(t *testing.T, values map[string]interface{}) map[string]apiextensionsv1.JSON {
 	t.Helper()
 	options := make(map[string]apiextensionsv1.JSON, len(values))
@@ -641,7 +667,8 @@ func TestMergeProcessResultsPreservesRecoveryAndDroppedByteAccounting(t *testing
 }
 
 func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
-	adapter := &CopilotAdapter{}
+	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
 	for _, tc := range []struct {
 		name    string
 		model   string
@@ -655,8 +682,9 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
 		{name: "opus 4.5 model supported", model: "claude-opus-4.5"},
 		{name: "kimi model supported", model: "kimi-k2.7-code"},
-		{name: "mai CLI model supported", model: "mai-code-1-flash"},
-		{name: "non-CLI model alias rejected", model: "mai-code-1-flash-picker", wantErr: "unknown model"},
+		{name: "discovered MAI model supported", model: "mai-code-1-flash-picker"},
+		{name: "newly discovered model supported", model: "future-model"},
+		{name: "model absent from discovery rejected", model: "mai-code-1-flash", wantErr: "unknown model"},
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
 		{name: "fallback must be boolean", model: "not-a-model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: "yes"}), wantErr: "must be a boolean"},
@@ -681,6 +709,9 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 			}
 		})
 	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want one cached query", modelLister.calls)
+	}
 
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
@@ -689,7 +720,12 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	adapter = &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		Runner:      runner,
+		ModelLister: &fakeCopilotModelLister{models: testCopilotModelList()},
+	}
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Model:          "claude-sonnet-5",
@@ -717,8 +753,9 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 		fallbackToDefaultOption: true,
 		"context":               "default",
 	})
-	adapter := &CopilotAdapter{}
-	resolution, err := adapter.ResolveConfig("retired-model", options)
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "gpt-5.4"}}}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := adapter.ResolveConfig("claude-sonnet-5", options)
 	if err != nil {
 		t.Fatalf("ResolveConfig: %v", err)
 	}
@@ -733,12 +770,12 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	}
 	if len(resolution.Warnings) != 1 ||
 		resolution.Warnings[0].Kind != ConfigWarningModelFallback ||
-		!strings.Contains(resolution.Warnings[0].Message, `"retired-model"`) {
+		!strings.Contains(resolution.Warnings[0].Message, `"claude-sonnet-5"`) {
 		t.Fatalf("warnings = %+v, want one model fallback warning", resolution.Warnings)
 	}
 
-	if _, err := adapter.ResolveConfig("retired-model", nil); err == nil ||
-		!strings.Contains(err.Error(), "valid models: auto, claude-fable-5") {
+	if _, err := adapter.ResolveConfig("claude-sonnet-5", nil); err == nil ||
+		!strings.Contains(err.Error(), "valid models: auto, gpt-5.4") {
 		t.Fatalf("unknown model error = %v, want sorted valid-model list", err)
 	}
 
@@ -749,10 +786,15 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	adapter = &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		Runner:      runner,
+		ModelLister: modelLister,
+	}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
-		Model:          "retired-model",
+		Model:          "claude-sonnet-5",
 		HarnessOptions: options,
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
@@ -765,6 +807,17 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	contextIndex := slices.Index(runner.lastReq.Command, "--context")
 	if contextIndex < 0 || contextIndex+1 >= len(runner.lastReq.Command) || runner.lastReq.Command[contextIndex+1] != "default" {
 		t.Fatalf("command = %q, want retained --context default", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterFailsClosedWhenModelDiscoveryFails(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: errors.New("runtime unavailable")},
+	}
+	_, err := adapter.ResolveConfig("gpt-5.4", nil)
+	if err == nil || !strings.Contains(err.Error(), "discover available models: runtime unavailable") {
+		t.Fatalf("ResolveConfig error = %v, want model discovery failure", err)
 	}
 }
 

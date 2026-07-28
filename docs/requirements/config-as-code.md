@@ -38,8 +38,10 @@ is delivered to a running instance at each deployment tier.
   arbitrary JSON-compatible `spec.harnessOptions`. The platform preserves the
   model string and options as adapter-owned values; the selected harness adapter
   validates their vocabulary, types, and combinations before the definition can
-  run. An unavailable Copilot model fails admission with the valid-model list
-  unless `spec.harnessOptions.fallback-to-default: true` is set; fallback emits
+  run. The Copilot adapter queries the installed, authenticated runtime for its
+  current model set rather than admitting from a hardcoded list. An unavailable
+  model fails admission with that valid-model list unless
+  `spec.harnessOptions.fallback-to-default: true` is set; fallback emits
   `MODEL002`, omits `--model`, and runs on the CLI default. The Copilot adapter
   also accepts string `context` (`default`/`long_context`) and
   `reasoningEffort` (`none` through `max`) options only where the selected model

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -35,45 +36,41 @@ var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 
 const fallbackToDefaultOption = "fallback-to-default"
 
+const copilotModelDiscoveryTimeout = 30 * time.Second
+
 type copilotModelCapabilities struct {
 	longContext     bool
 	reasoningEffort map[string]struct{}
 }
 
-func copilotEfforts(values ...string) map[string]struct{} {
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		out[value] = struct{}{}
-	}
-	return out
+// CopilotModelInfo is the model metadata needed to validate adapter options.
+type CopilotModelInfo struct {
+	ID                        string
+	SupportedReasoningEfforts []string
 }
 
-var copilotModels = map[string]copilotModelCapabilities{
-	"auto":                 {},
-	"claude-fable-5":       {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-sonnet-5":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-sonnet-4.6":    {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"claude-sonnet-4.5":    {},
-	"claude-haiku-4.5":     {},
-	"claude-opus-4.8-fast": {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.8":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.7":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.6":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"claude-opus-4.5":      {},
-	"gpt-5.6-sol":          {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-terra":        {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-luna":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.5":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.3-codex":        {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4-mini":         {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5-mini":           {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.1-pro-preview": {longContext: true,
-		reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.5-flash": {longContext: true,
-		reasoningEffort: copilotEfforts("none", "minimal", "low", "medium", "high")},
-	"kimi-k2.7-code":   {},
-	"mai-code-1-flash": {},
+// CopilotModelLister queries the installed, authenticated Copilot runtime.
+type CopilotModelLister interface {
+	ListModels(ctx context.Context, command, env []string) ([]CopilotModelInfo, error)
+}
+
+// models.list does not expose context-tier support. This table is used only to
+// validate that optional flag; model availability always comes from ModelLister.
+var copilotLongContextModels = map[string]bool{
+	"claude-fable-5":         true,
+	"claude-sonnet-5":        true,
+	"claude-sonnet-4.6":      true,
+	"claude-opus-4.8-fast":   true,
+	"claude-opus-4.8":        true,
+	"claude-opus-4.7":        true,
+	"claude-opus-4.6":        true,
+	"gpt-5.6-sol":            true,
+	"gpt-5.6-terra":          true,
+	"gpt-5.6-luna":           true,
+	"gpt-5.5":                true,
+	"gpt-5.4":                true,
+	"gemini-3.1-pro-preview": true,
+	"gemini-3.5-flash":       true,
 }
 
 // CopilotAdapter is the V0 harness adapter for the GitHub Copilot CLI
@@ -113,6 +110,9 @@ type CopilotAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
+	// ModelLister discovers models from the authenticated Copilot runtime.
+	// Defaults to the official Copilot SDK.
+	ModelLister CopilotModelLister
 	// VersionArgs are the args used to preflight-check the CLI responds
 	// (default {"--version"}).
 	VersionArgs []string
@@ -139,6 +139,9 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+
+	modelsMu        sync.Mutex
+	availableModels map[string]copilotModelCapabilities
 }
 
 // Name returns the adapter's registry name.
@@ -154,6 +157,10 @@ func (c *CopilotAdapter) ValidateConfig(model string, options map[string]apiexte
 // ResolveConfig validates Copilot configuration and applies the explicit
 // fallback-to-default policy when a requested model is unavailable.
 func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	return c.resolveConfig(context.Background(), model, options)
+}
+
+func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err
@@ -161,17 +168,24 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 	if model == "" && fallback {
 		return ConfigResolution{}, fmt.Errorf("harness option %q requires an explicit model", fallbackToDefaultOption)
 	}
+	var capabilities copilotModelCapabilities
 	if model != "" {
-		if _, ok := copilotModels[model]; !ok {
-			validModels := make([]string, 0, len(copilotModels))
-			for name := range copilotModels {
+		availableModels, err := c.discoverModels(ctx)
+		if err != nil {
+			return ConfigResolution{}, fmt.Errorf("discover available models: %w", err)
+		}
+		var ok bool
+		capabilities, ok = availableModels[model]
+		if !ok {
+			validModels := make([]string, 0, len(availableModels))
+			for name := range availableModels {
 				validModels = append(validModels, name)
 			}
 			sort.Strings(validModels)
 			if !fallback {
 				return ConfigResolution{}, fmt.Errorf("unknown model %q; valid models: %s", model, strings.Join(validModels, ", "))
 			}
-			if _, err := normalizeCopilotConfig("", effectiveOptions); err != nil {
+			if _, err := normalizeCopilotConfig("", effectiveOptions, copilotModelCapabilities{}); err != nil {
 				return ConfigResolution{}, fmt.Errorf("fall back model %q to the harness default: %w", model, err)
 			}
 			return ConfigResolution{
@@ -183,13 +197,61 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 			}, nil
 		}
 	}
-	if _, err := normalizeCopilotConfig(model, effectiveOptions); err != nil {
+	if _, err := normalizeCopilotConfig(model, effectiveOptions, capabilities); err != nil {
 		return ConfigResolution{}, err
 	}
 	return ConfigResolution{
 		Model:          model,
 		HarnessOptions: effectiveOptions,
 	}, nil
+}
+
+func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
+	c.modelsMu.Lock()
+	defer c.modelsMu.Unlock()
+	if c.availableModels != nil {
+		return c.availableModels, nil
+	}
+	command := resolveHarnessCommand(c.Command)
+	if len(command) == 0 {
+		return nil, fmt.Errorf("no command configured")
+	}
+	lister := c.ModelLister
+	if lister == nil {
+		lister = sdkCopilotModelLister{}
+	}
+	discoveryCtx, cancel := context.WithTimeout(ctx, copilotModelDiscoveryTimeout)
+	defer cancel()
+	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
+	if err != nil {
+		return nil, err
+	}
+	available := make(map[string]copilotModelCapabilities, len(models)+1)
+	for _, model := range models {
+		if model.ID == "" {
+			continue
+		}
+		efforts := make(map[string]struct{}, len(model.SupportedReasoningEfforts))
+		for _, effort := range model.SupportedReasoningEfforts {
+			efforts[effort] = struct{}{}
+		}
+		available[model.ID] = copilotModelCapabilities{
+			longContext:     copilotLongContextModels[model.ID],
+			reasoningEffort: efforts,
+		}
+	}
+	if len(available) == 0 {
+		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+	}
+	available["auto"] = copilotModelCapabilities{}
+	c.availableModels = available
+	return c.availableModels, nil
+}
+
+func (c *CopilotAdapter) capabilitiesForModel(model string) copilotModelCapabilities {
+	c.modelsMu.Lock()
+	defer c.modelsMu.Unlock()
+	return c.availableModels[model]
 }
 
 func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]apiextensionsv1.JSON, bool, error) {
@@ -218,15 +280,7 @@ func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]
 	return effective, fallback, nil
 }
 
-func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
-	var capabilities copilotModelCapabilities
-	if model != "" {
-		var ok bool
-		capabilities, ok = copilotModels[model]
-		if !ok {
-			return nil, fmt.Errorf("unknown model %q", model)
-		}
-	}
+func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON, capabilities copilotModelCapabilities) (map[string]string, error) {
 	names := make([]string, 0, len(options))
 	for name := range options {
 		names = append(names, name)
@@ -343,11 +397,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
-	resolution, err := c.ResolveConfig(req.Model, req.HarnessOptions)
+	resolution, err := c.resolveConfig(ctx, req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
 	}
-	harnessOptions, err := normalizeCopilotConfig(resolution.Model, resolution.HarnessOptions)
+	var capabilities copilotModelCapabilities
+	if resolution.Model != "" {
+		capabilities = c.capabilitiesForModel(resolution.Model)
+	}
+	harnessOptions, err := normalizeCopilotConfig(resolution.Model, resolution.HarnessOptions, capabilities)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid resolved configuration: %w", err)
 	}

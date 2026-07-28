@@ -258,6 +258,8 @@ func buildEnvCapabilities() map[string]string {
 	return envCaps
 }
 
+var copilotModelLister harness.CopilotModelLister
+
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
@@ -266,6 +268,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
 		AuthCheckArgs:   copilotAuthCheckArgs,
+		ModelLister:     copilotModelLister,
 		EnvCapabilities: envCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
