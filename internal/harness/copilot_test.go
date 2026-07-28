@@ -660,6 +660,7 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
 		{name: "fallback must be boolean", model: "not-a-model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: "yes"}), wantErr: "must be a boolean"},
+		{name: "fallback must not be null", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: nil}), wantErr: "must be a boolean"},
 		{name: "fallback requires model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}), wantErr: "requires an explicit model"},
 		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
 		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},

@@ -203,9 +203,14 @@ func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]
 			effective[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
 			continue
 		}
-		if err := json.Unmarshal(value.Raw, &fallback); err != nil {
+		var configured *bool
+		if err := json.Unmarshal(value.Raw, &configured); err != nil {
 			return nil, false, fmt.Errorf("harness option %q must be a boolean: %w", name, err)
 		}
+		if configured == nil {
+			return nil, false, fmt.Errorf("harness option %q must be a boolean", name)
+		}
+		fallback = *configured
 	}
 	if len(effective) == 0 {
 		effective = nil
