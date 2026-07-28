@@ -3248,8 +3248,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 // diff is computed by the runner from the actual commits — never self-reported
 // by the implementer's model — so the reviewer judges the real change with the
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
-// when the branch carries no change vs. base (nothing to attach).
+// when the gate has no repository worktree or the branch carries no change vs.
+// base (nothing to attach).
 func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+	if wt == nil {
+		return nil, nil
+	}
 	baseRef := in.RepoRef.Branch
 	if baseRef == "" {
 		baseRef = "main"

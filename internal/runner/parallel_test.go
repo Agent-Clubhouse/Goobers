@@ -499,6 +499,54 @@ func TestRunnerRejectsWritableConcurrentParallelBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestRunnerExecutesConcurrentScratchAgenticGate(t *testing.T) {
+	base := branchGateFanInMachine(t)
+	def := base.Def
+	def.Spec.Parallels[0].MaxConcurrentBranches = 2
+	def.Spec.Gates[0].Evaluator = apiv1.EvaluatorAgentic
+	def.Spec.Gates[0].Automated = nil
+	def.Spec.Gates[0].Agentic = &apiv1.AgenticGate{
+		Goober:    "reviewer",
+		Workspace: apiv1.WorkspaceScratch,
+	}
+	def.Spec.Gates[0].Branches = map[string]string{
+		string(apiv1.VerdictPass):         workflow.TargetJoin,
+		string(apiv1.VerdictNeedsChanges): workflow.TargetJoin,
+		string(apiv1.VerdictFail):         workflow.TargetJoin,
+	}
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile concurrent scratch-gate fixture: %v", err)
+	}
+
+	reviewer := &capturingReviewer{}
+	r, _ := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &countingDeterministic{}, nil
+		},
+	)
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "parallel-scratch-agentic-gate", Gaggle: "demo", Machine: machine,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !reviewer.called {
+		t.Fatal("scratch agentic gate reviewer was not invoked")
+	}
+}
+
 func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
 	base := branchGateFanInMachine(t)
 	def := base.Def
