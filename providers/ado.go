@@ -1047,7 +1047,7 @@ func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id s
 	}
 }
 
-// UpdateWorkItem edits Azure Boards fields, tags, state, and comments.
+// UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
 func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
 		return WorkItem{}, err
@@ -1080,6 +1080,9 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	}
 	if req.Body != nil {
 		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
+	}
+	if req.Assignee != nil {
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
 	}
 	if labelsChanged(req) {
 		labels := applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)

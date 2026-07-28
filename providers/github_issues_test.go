@@ -123,6 +123,7 @@ type issueMock struct {
 	body      string
 	state     string
 	labels    []string
+	assignees []string
 	milestone int
 	comments  []map[string]interface{}
 	nextID    int64
@@ -252,6 +253,14 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 			if v, ok := body["milestone"].(float64); ok {
 				m.milestone = int(v)
 			}
+			if values, ok := body["assignees"].([]interface{}); ok {
+				m.assignees = make([]string, 0, len(values))
+				for _, value := range values {
+					if login, ok := value.(string); ok {
+						m.assignees = append(m.assignees, login)
+					}
+				}
+			}
 		}
 		writeJSON(t, w, m.issueJSON())
 	})
@@ -264,6 +273,11 @@ func (m *issueMock) issueJSON() map[string]interface{} {
 		"html_url": "https://github.com/acme/app/issues/7",
 		"labels":   labelObjects(m.labels),
 	}
+	assignees := make([]map[string]string, 0, len(m.assignees))
+	for _, login := range m.assignees {
+		assignees = append(assignees, map[string]string{"login": login})
+	}
+	out["assignees"] = assignees
 	if m.milestone > 0 {
 		out["milestone"] = map[string]interface{}{
 			"id": m.milestone, "number": m.milestone, "title": fmt.Sprintf("Milestone %d", m.milestone),
@@ -434,12 +448,67 @@ func TestGitHubUpdateWorkItemEditsLabelsCloseComment(t *testing.T) {
 	}
 }
 
+func TestGitHubUpdateWorkItemAssignee(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requested string
+		want      string
+	}{
+		{name: "set", requested: "octocat", want: "octocat"},
+		{name: "clear", requested: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newIssueMock()
+			m.assignees = []string{"mona"}
+			rec := &recordingRecorder{}
+			p, repo := newIssueProvider(t, m, WithMutationRecorder(rec))
+			assignee := tc.requested
+
+			item, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+				Repository: repo,
+				ID:         "7",
+				Assignee:   &assignee,
+			})
+			if err != nil {
+				t.Fatalf("UpdateWorkItem: %v", err)
+			}
+			if item.Assignee != tc.want {
+				t.Fatalf("assignee = %q, want %q", item.Assignee, tc.want)
+			}
+			values, ok := m.patchBody["assignees"].([]interface{})
+			if !ok {
+				t.Fatalf("PATCH assignees = %#v, want an array", m.patchBody["assignees"])
+			}
+			if tc.want == "" {
+				if len(values) != 0 {
+					t.Fatalf("PATCH assignees = %#v, want []", values)
+				}
+			} else if len(values) != 1 || values[0] != tc.want {
+				t.Fatalf("PATCH assignees = %#v, want [%q]", values, tc.want)
+			}
+			ref, ok := rec.last()
+			if !ok {
+				t.Fatal("expected an external-ref mutation to be recorded")
+			}
+			wantDigest := FieldDigest{Before: digestString("mona"), After: digestString(tc.want)}
+			if got := ref.Fields["assignee"]; got != wantDigest {
+				t.Fatalf("assignee digest = %#v, want %#v", got, wantDigest)
+			}
+		})
+	}
+}
+
 func TestGitHubUpdateWorkItemNoChangeSkipsRecord(t *testing.T) {
 	m := newIssueMock()
+	m.assignees = []string{"mona"}
 	rec := &recordingRecorder{}
 	p, repo := newIssueProvider(t, m, WithMutationRecorder(rec))
-	if _, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{Repository: repo, ID: "7"}); err != nil {
+	item, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{Repository: repo, ID: "7"})
+	if err != nil {
 		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	if item.Assignee != "mona" {
+		t.Fatalf("no-op update assignee = %q, want mona", item.Assignee)
 	}
 	if _, ok := rec.last(); ok {
 		t.Fatal("no-op update should record no mutation")

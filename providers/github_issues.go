@@ -358,10 +358,11 @@ func (p *GitHubProvider) listWorkItemLabelTransitions(
 	return transitions, nil
 }
 
-// UpdateWorkItem applies title/body edits, label add/remove, milestone assignment,
-// open/close, and an optional comment to a GitHub issue. Only the fields the
-// caller set are touched. Each applied change is recorded as an external-ref
-// mutation with before/after field digests so the run journal can trace it.
+// UpdateWorkItem applies title/body edits, assignee changes, label add/remove,
+// milestone assignment, open/close, and an optional comment to a GitHub issue.
+// Only the fields the caller set are touched. Each applied change is recorded as
+// an external-ref mutation with before/after field digests so the run journal can
+// trace it.
 func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
@@ -386,6 +387,14 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 	if req.Body != nil {
 		patch["body"] = *req.Body
 		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
+	}
+	if req.Assignee != nil {
+		assignees := []string{}
+		if *req.Assignee != "" {
+			assignees = append(assignees, *req.Assignee)
+		}
+		patch["assignees"] = assignees
+		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
 	}
 	if req.Milestone != nil {
 		milestoneBefore := ""
@@ -804,13 +813,13 @@ func updateOperation(req UpdateWorkItemRequest) string {
 	if strings.EqualFold(req.State, "closed") {
 		return "close"
 	}
-	if req.Milestone != nil && req.Title == nil && req.Body == nil && req.State == "" && req.Comment == "" && !labelsChanged(req) {
+	if req.Milestone != nil && req.Title == nil && req.Body == nil && req.Assignee == nil && req.State == "" && req.Comment == "" && !labelsChanged(req) {
 		return "milestone"
 	}
-	if labelsChanged(req) && req.Title == nil && req.Body == nil && req.Milestone == nil && req.State == "" && req.Comment == "" {
+	if labelsChanged(req) && req.Title == nil && req.Body == nil && req.Assignee == nil && req.Milestone == nil && req.State == "" && req.Comment == "" {
 		return "label"
 	}
-	if req.Comment != "" && req.Title == nil && req.Body == nil && req.Milestone == nil && req.State == "" && !labelsChanged(req) {
+	if req.Comment != "" && req.Title == nil && req.Body == nil && req.Assignee == nil && req.Milestone == nil && req.State == "" && !labelsChanged(req) {
 		return "comment"
 	}
 	return "update"
