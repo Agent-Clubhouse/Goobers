@@ -237,8 +237,8 @@ type Event struct {
 	Outputs map[string]any `json:"outputs,omitempty"`
 	// Artifacts mirrors a stage.finished ResultEnvelope's Artifacts — the
 	// pointers this attempt produced — for the same reconstruction reason as
-	// Outputs. Each entry's Digest is normative; Path/Size/MediaType are not
-	// (see Ref).
+	// Outputs. Each entry's Digest and Integrity are normative;
+	// Path/Size/MediaType are not (see Ref).
 	Artifacts []Ref `json:"artifacts,omitempty"`
 	// Integrity is the provenance grade on an input snapshot, artifact, or
 	// integrity-admission refusal. Normative.

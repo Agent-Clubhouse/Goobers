@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // baseNormativeEvent is a fully-populated stage.finished event covering every
@@ -30,12 +32,18 @@ func baseNormativeEvent() Event {
 		Status:              "success",
 		WorkflowVersion:     3,
 		WorkflowDigest:      "sha256:definition",
-		Ref:                 &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain"},
-		Name:                "plan.txt",
-		ExternalRef:         &ExternalRef{Provider: "github", Kind: "issue", ID: "101", URL: "https://x/101"},
-		Error:               &ErrorDetail{Code: "executor_error", Message: "human-facing detail"},
-		Redaction:           &RedactionInfo{Target: "artifacts/x", OldDigest: "sha256:old", NewDigest: "sha256:new", Reason: "leaked token"},
-		Runner:              map[string]any{"repassAttempt": 2},
+		Artifacts: []Ref{
+			{Path: "artifacts/sha256/11/11", Digest: "sha256:1111", Size: 11, MediaType: "text/plain", Integrity: apiv1.IntegrityDerived},
+			{Path: "artifacts/sha256/22/22", Digest: "sha256:2222", Size: 22, MediaType: "application/json", Integrity: apiv1.IntegrityMaintainer},
+		},
+		Integrity:        apiv1.IntegrityMaintainer,
+		MinimumIntegrity: apiv1.IntegrityUnapproved,
+		Ref:              &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain", Integrity: apiv1.IntegrityTrusted},
+		Name:             "plan.txt",
+		ExternalRef:      &ExternalRef{Provider: "github", Kind: "issue", ID: "101", URL: "https://x/101"},
+		Error:            &ErrorDetail{Code: "executor_error", Message: "human-facing detail"},
+		Redaction:        &RedactionInfo{Target: "artifacts/x", OldDigest: "sha256:old", NewDigest: "sha256:new", Reason: "leaked token"},
+		Runner:           map[string]any{"repassAttempt": 2},
 	}
 }
 
@@ -74,6 +82,33 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"WorkflowDigest", func(e Event) Event { e.WorkflowDigest = "sha256:other"; return e }},
 		{"Name", func(e Event) Event { e.Name = "other.txt"; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
+		{"Ref.Integrity", func(e Event) Event { r := *e.Ref; r.Integrity = apiv1.IntegrityUnapproved; e.Ref = &r; return e }},
+		{"Artifacts[0].Digest", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[0].Digest = "sha256:3333"
+			return e
+		}},
+		{"Artifacts[0].Integrity", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[0].Integrity = apiv1.IntegrityUnapproved
+			return e
+		}},
+		{"Artifacts[1].Digest", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[1].Digest = "sha256:4444"
+			return e
+		}},
+		{"Artifacts[1].Integrity", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[1].Integrity = apiv1.IntegrityTrusted
+			return e
+		}},
+		{"Artifacts order", func(e Event) Event {
+			e.Artifacts = []Ref{e.Artifacts[1], e.Artifacts[0]}
+			return e
+		}},
+		{"Integrity", func(e Event) Event { e.Integrity = apiv1.IntegrityUnapproved; return e }},
+		{"MinimumIntegrity", func(e Event) Event { e.MinimumIntegrity = apiv1.IntegrityMaintainer; return e }},
 		{"ExternalRef.Provider", func(e Event) Event { r := *e.ExternalRef; r.Provider = "ado"; e.ExternalRef = &r; return e }},
 		{"ExternalRef.Kind", func(e Event) Event { r := *e.ExternalRef; r.Kind = "pr"; e.ExternalRef = &r; return e }},
 		{"ExternalRef.ID", func(e Event) Event { r := *e.ExternalRef; r.ID = "202"; e.ExternalRef = &r; return e }},
@@ -115,6 +150,21 @@ func TestConformanceViewExcludesNonNormativeFields(t *testing.T) {
 		{"Ref.Path", func(e Event) Event { r := *e.Ref; r.Path = "artifacts/sha256/cc/dd"; e.Ref = &r; return e }},
 		{"Ref.Size", func(e Event) Event { r := *e.Ref; r.Size = 999; e.Ref = &r; return e }},
 		{"Ref.MediaType", func(e Event) Event { r := *e.Ref; r.MediaType = "application/json"; e.Ref = &r; return e }},
+		{"Artifacts[0].Path", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[0].Path = "artifacts/sha256/33/33"
+			return e
+		}},
+		{"Artifacts[0].Size", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[0].Size = 999
+			return e
+		}},
+		{"Artifacts[0].MediaType", func(e Event) Event {
+			e.Artifacts = append([]Ref(nil), e.Artifacts...)
+			e.Artifacts[0].MediaType = "application/octet-stream"
+			return e
+		}},
 		{"ExternalRef.URL", func(e Event) Event { r := *e.ExternalRef; r.URL = "https://other/101"; e.ExternalRef = &r; return e }},
 		{"Error.Message", func(e Event) Event {
 			r := *e.Error
@@ -144,10 +194,10 @@ func TestConformanceViewExcludesContextManifestDigest(t *testing.T) {
 		Stage:   "implement",
 		Attempt: 1,
 		Name:    ContextManifestArtifactName("implement", 1),
-		Ref:     &Ref{Digest: "sha256:aaaa"},
+		Ref:     &Ref{Digest: "sha256:aaaa", Integrity: apiv1.IntegrityDerived},
 	}
 	other := base
-	other.Ref = &Ref{Digest: "sha256:bbbb"}
+	other.Ref = &Ref{Digest: "sha256:bbbb", Integrity: apiv1.IntegrityDerived}
 
 	got := ConformanceView([]Event{base})
 	want := ConformanceView([]Event{other})
@@ -159,6 +209,9 @@ func TestConformanceViewExcludesContextManifestDigest(t *testing.T) {
 	}
 	if got[0].RefDigest != "" {
 		t.Fatalf("context manifest RefDigest = %q, want excluded", got[0].RefDigest)
+	}
+	if got[0].RefIntegrity != apiv1.IntegrityDerived {
+		t.Fatalf("context manifest RefIntegrity = %q, want %q", got[0].RefIntegrity, apiv1.IntegrityDerived)
 	}
 
 	ordinary := base

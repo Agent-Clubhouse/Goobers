@@ -156,7 +156,7 @@
       "description": "A stage.finished's ResultEnvelope.Artifacts — the pointers this attempt produced — for the same reconstruction reason as outputs.",
       "type": "array",
       "items": { "$ref": "#/$defs/ref" },
-      "x-conformance": "conditional: each entry's digest is normative, path/size/mediaType are not"
+      "x-conformance": "conditional: each entry's digest and integrity are normative, path/size/mediaType are not"
     },
     "integrity": {
       "description": "Provenance grade on an input snapshot, artifact, or integrity-admission refusal.",

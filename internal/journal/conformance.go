@@ -39,6 +39,8 @@ type NormativeEvent struct {
 	WorkflowVersion     int
 	WorkflowDigest      string
 	RefDigest           string
+	RefIntegrity        apiv1.Integrity
+	Artifacts           string
 	Name                string
 	Integrity           apiv1.Integrity
 	MinimumIntegrity    apiv1.Integrity
@@ -97,12 +99,16 @@ func projectNormative(e Event) NormativeEvent {
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
 		Integrity: e.Integrity, MinimumIntegrity: e.MinimumIntegrity,
-		Parallel: e.Parallel, BranchName: e.BranchName,
+		Artifacts: encodeArtifactRefs(e.Artifacts),
+		Parallel:  e.Parallel, BranchName: e.BranchName,
 		BranchStatus: e.BranchStatus,
 		Completeness: encodeCompleteness(e.Completeness),
 	}
-	if e.Ref != nil && !isContextManifestArtifact(e) {
-		ne.RefDigest = e.Ref.Digest
+	if e.Ref != nil {
+		ne.RefIntegrity = e.Ref.Integrity
+		if !isContextManifestArtifact(e) {
+			ne.RefDigest = e.Ref.Digest
+		}
 	}
 	if e.ExternalRef != nil {
 		ne.ExternalRefProvider = e.ExternalRef.Provider
@@ -120,6 +126,19 @@ func projectNormative(e Event) NormativeEvent {
 		ne.RedactionReason = e.Redaction.Reason
 	}
 	return ne
+}
+
+// encodeArtifactRefs flattens the normative fields of stage.finished artifact
+// pointers in their envelope order. Storage metadata remains excluded.
+func encodeArtifactRefs(refs []Ref) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		parts = append(parts, fmt.Sprintf("%s@%s", ref.Digest, ref.Integrity))
+	}
+	return strings.Join(parts, ",")
 }
 
 // encodeCompleteness flattens a branch completeness record into a stable
@@ -171,10 +190,11 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.InstructionAddendum, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
-		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
+		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
+		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
 		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness,
 	)
 }
