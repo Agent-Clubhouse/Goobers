@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 // scriptedDeterministic fails with each scripted error in order, then
@@ -63,7 +64,7 @@ func retrySpec(retry *apiv1.RetryPolicy) apiv1.WorkflowSpec {
 func executeRetryWorkflow(t *testing.T, name string, retry *apiv1.RetryPolicy, det invoke.Deterministic) error {
 	t.Helper()
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, runInput(name, retrySpec(retry)))
 	return env.GetWorkflowError()
@@ -188,7 +189,7 @@ func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
 	workspaces.provisionErrs = []error{invoke.InfrastructureFailure(errors.New("clone: 503 Service Unavailable"))}
 	det := &scriptedDeterministic{}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
 	env.ExecuteWorkflow(Run, runInput("workspace-flaky", retrySpec(nil)))
 	if err := env.GetWorkflowError(); err != nil {

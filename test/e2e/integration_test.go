@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -158,7 +159,7 @@ func (s *runEnvStarter) Start(_ context.Context, in engine.RunInput) (engine.Sta
 	s.goober.onInvoke = func(env apiv1.InvocationEnvelope) { s.invoked = env }
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&engine.Activities{Goober: s.goober, Workspaces: tempWorkspaces{t: s.t}})
 	env.ExecuteWorkflow(engine.Run, in)
 

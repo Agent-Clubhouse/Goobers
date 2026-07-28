@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -103,7 +104,7 @@ func TestDeterministicDispatchFailsClosed(t *testing.T) {
 			}
 			det := &capturingDeterministic{}
 			var ts testsuite.WorkflowTestSuite
-			env := ts.NewTestWorkflowEnvironment()
+			env := temporaltest.NewWorkflowEnvironment(&ts)
 			env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
 			env.ExecuteWorkflow(Run, runInput("fail-closed-run", spec))
 			err := env.GetWorkflowError()
@@ -141,7 +142,7 @@ func TestDeterministicScriptDispatch(t *testing.T) {
 
 	det := &capturingDeterministic{}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
 	input := runInput("inline", spec)
 	input.DSLVersion = "2.0"

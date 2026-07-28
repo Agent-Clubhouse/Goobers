@@ -33,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -436,7 +437,7 @@ func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journ
 		MaxRepasses:            fx.maxRepasses,
 	}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	env.RegisterActivity(&Activities{
 		Goober:     exec,

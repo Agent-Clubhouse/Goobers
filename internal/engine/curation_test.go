@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 // This file is a fixture-driven dry run of the shipped backlog-curation
@@ -106,7 +107,7 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Det: det, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, curationRunInput(spec))
@@ -200,7 +201,7 @@ func TestBacklogCurationRerunIsNoOp(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Det: det, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, curationRunInput(spec))

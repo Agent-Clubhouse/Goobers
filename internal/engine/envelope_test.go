@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -87,7 +88,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Workspaces: workspaces})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
@@ -167,7 +168,7 @@ func TestEnvelopeContextPointersThreadUpstreamArtifacts(t *testing.T) {
 	}}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Det: det, Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, runInput("pointers", spec))
 	if err := env.GetWorkflowError(); err != nil {
@@ -211,7 +212,7 @@ func TestEnvelopeInputsFromOverlaysUpstreamOutputs(t *testing.T) {
 			Outputs: map[string]interface{}{"selectedPr": "1287"},
 		}}
 		var ts testsuite.WorkflowTestSuite
-		env := ts.NewTestWorkflowEnvironment()
+		env := temporaltest.NewWorkflowEnvironment(&ts)
 		env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
 		env.ExecuteWorkflow(Run, runInput("inputsfrom", spec))
 		if err := env.GetWorkflowError(); err != nil {
@@ -230,7 +231,7 @@ func TestEnvelopeInputsFromOverlaysUpstreamOutputs(t *testing.T) {
 	t.Run("missing declared output fails closed", func(t *testing.T) {
 		det := &capturingDeterministic{} // success, but no outputs at all
 		var ts testsuite.WorkflowTestSuite
-		env := ts.NewTestWorkflowEnvironment()
+		env := temporaltest.NewWorkflowEnvironment(&ts)
 		env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
 		env.ExecuteWorkflow(Run, runInput("inputsfrom-missing", spec))
 		err := env.GetWorkflowError()
@@ -268,7 +269,7 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 
 	workspaces := testWorkspaces(t)
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Workspaces: workspaces})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
@@ -307,7 +308,7 @@ func TestDeterministicRunThreadsSyncBase(t *testing.T) {
 	}
 	workspaces := testWorkspaces(t)
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: &capturingDeterministic{}, Workspaces: workspaces})
 	env.ExecuteWorkflow(Run, runInput("sync-base", spec))
 	if err := env.GetWorkflowError(); err != nil {
@@ -378,7 +379,7 @@ func TestGateVerdictSurfacesAsRepassContextPointer(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
@@ -446,7 +447,7 @@ func TestAutomatedGateGetsNoWorkspace(t *testing.T) {
 	workspaces := testWorkspaces(t)
 	var gateEnv apiv1.InvocationEnvelope
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{
 		Det: &capturingDeterministic{},
 		Auto: automatedFunc(func(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
@@ -497,7 +498,7 @@ func TestWorkspaceFailuresFailClosed(t *testing.T) {
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 			}}
 			var ts testsuite.WorkflowTestSuite
-			env := ts.NewTestWorkflowEnvironment()
+			env := temporaltest.NewWorkflowEnvironment(&ts)
 			env.RegisterActivity(&Activities{Goober: inv, Workspaces: tc.workspaces})
 			env.ExecuteWorkflow(Run, runInput("fail-closed", linearSpec()))
 			err := env.GetWorkflowError()
@@ -527,7 +528,7 @@ func TestWorkspaceRemovedPerAttempt(t *testing.T) {
 	}
 	workspaces := testWorkspaces(t)
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{
 		Goober: successInvoker(), Det: &capturingDeterministic{}, Workspaces: workspaces,
 	})
@@ -628,7 +629,7 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 		BranchNamespace:        providers.NormalizeBranchNamespace("goobers"),
 	}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: engineSide, Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
