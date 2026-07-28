@@ -16,13 +16,13 @@ import (
 
 	copilotsdk "github.com/github/copilot-sdk/go"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
-	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -627,14 +627,15 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			}
 
 			out, err := adapter.Run(context.Background(), RunRequest{
-				Envelope:       envelope,
-				Model:          tc.model,
-				HarnessOptions: tc.harnessOptions,
-				Workspace:      workspace,
-				CompletionPath: DefaultResultPath,
-				Tools:          tc.tools,
-				MCPServers:     mcpServers,
-				Credentials:    creds,
+				Envelope:              envelope,
+				Model:                 tc.model,
+				HarnessOptions:        tc.harnessOptions,
+				HarnessConfigResolved: true,
+				Workspace:             workspace,
+				CompletionPath:        DefaultResultPath,
+				Tools:                 tc.tools,
+				MCPServers:            mcpServers,
+				Credentials:           creds,
 			})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -704,6 +705,54 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				t.Fatalf("tool-constrained run wrote a completion file: %v", err)
 			}
 		})
+	}
+}
+
+func TestCopilotAdapterConstrainedRunUsesAdmittedFallback(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "available-model"}}}
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if req.StdoutCapture == nil {
+				return errors.New("tool-constrained run did not capture stdout")
+			}
+			_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+			return err
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	resolution, err := adapter.ResolveConfig("retired-model", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+		Tools:                 []string{"view"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want admitted harness default", runner.lastReq.Command)
+	}
+	if !slices.Contains(runner.lastReq.Command, "--available-tools=view") ||
+		!slices.Contains(runner.lastReq.Command, "--output-format=text") {
+		t.Fatalf("command = %q, want constrained response completion", runner.lastReq.Command)
 	}
 }
 
