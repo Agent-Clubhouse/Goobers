@@ -6,6 +6,7 @@ import {
   evidenceDecision,
   eventHeading,
   eventNodeAtSequence,
+  eventNodeId,
   eventSummary,
   journalEntries,
   orderRunEvents,
@@ -89,6 +90,25 @@ describe("run detail projection", () => {
       "Schema v2-preview is not supported; future.recorded is retained with generic fields.",
     );
     expect(eventSummary(unsupported)).not.toContain("privateImplementationDetail");
+  });
+
+  it("preserves colon-bearing node IDs outside encoded transcript stages", () => {
+    const nodeId = "review:security";
+
+    expect(eventNodeId(event(1, "stage.started", { stage: nodeId }))).toBe(nodeId);
+    expect(eventNodeId(event(2, "gate.evaluated", { gate: nodeId }))).toBe(nodeId);
+    expect(eventNodeId(event(3, "artifact.recorded", {
+      artifact: {
+        digest: "sha256:colon",
+        size: 1,
+        mediaType: "application/json",
+        stage: nodeId,
+      },
+    }))).toBe(nodeId);
+    expect(eventNodeId(event(4, "span.recorded", {
+      stage: `run-1:${nodeId}`,
+      name: "reviewer.transcript",
+    }))).toBe(nodeId);
   });
 
   it("groups adjacent supporting records by stage visit without changing event sequence", () => {
@@ -203,6 +223,103 @@ describe("run detail projection", () => {
     expect(entries.at(-1)).toMatchObject({ kind: "event", event: { seq: 13 } });
     expect(evidenceVisit(events, events[1])).toBe(1);
     expect(evidenceVisit(events, events[8])).toBe(2);
+  });
+
+  it("associates human-rerun evidence with canonical stage visits", () => {
+    const events = [
+      event(1, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+      }),
+      event(2, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          digest: "sha256:initial",
+          size: 1,
+          mediaType: "application/json",
+          stage: "implement",
+          attempt: 1,
+        },
+      }),
+      event(3, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 1,
+        status: "success",
+      }),
+      event(4, "stage.rerun.requested", {
+        category: "decision",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+      }),
+      event(5, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+      }),
+      event(6, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          digest: "sha256:human-1",
+          size: 1,
+          mediaType: "application/json",
+          stage: "implement",
+          attempt: 2,
+          attemptClass: "human",
+        },
+      }),
+      event(7, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 2,
+        attemptClass: "human",
+        status: "failure",
+      }),
+      event(8, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+      }),
+      event(9, "stage.heartbeat", {
+        category: "liveness",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+      }),
+      event(10, "stage.finished", {
+        category: "transition",
+        stage: "implement",
+        attempt: 3,
+        attemptClass: "human",
+        status: "success",
+      }),
+      event(11, "stage.rerun.requested", {
+        category: "decision",
+        stage: "implement",
+        attempt: 4,
+        attemptClass: "human",
+      }),
+      event(12, "stage.started", {
+        category: "transition",
+        stage: "implement",
+        attempt: 4,
+        attemptClass: "human",
+      }),
+      event(13, "span.recorded", {
+        category: "evidence",
+        stage: "run-1:implement",
+        name: "reviewer.transcript",
+      }),
+    ];
+
+    expect(evidenceVisit(events, events[1])).toBe(1);
+    expect(evidenceVisit(events, events[5])).toBe(2);
+    expect(evidenceVisit(events, events[8])).toBe(2);
+    expect(evidenceVisit(events, events[12])).toBe(3);
   });
 
   it("summarizes reviewer evidence, heartbeats, and external operations", () => {

@@ -45,6 +45,12 @@ export interface JournalEventItem {
 
 export type JournalEntry = JournalEventGroup | JournalEventItem;
 
+interface JournalVisitState {
+  ordinal: number;
+  humanVisit: boolean;
+  humanRequested: boolean;
+}
+
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
   const { cache, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("run-detail", runId);
@@ -158,12 +164,14 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
 }
 
 export function eventNodeId(event: RunEvent): string | undefined {
-  const nodeId = event.stage || event.artifact?.stage || event.gate;
-  if (!nodeId) {
-    return undefined;
+  if (event.stage) {
+    if (!isTranscriptEvent(event)) {
+      return event.stage;
+    }
+    const separator = event.stage.indexOf(":");
+    return separator >= 0 ? event.stage.slice(separator + 1) : event.stage;
   }
-  const separator = nodeId.indexOf(":");
-  return separator >= 0 ? nodeId.slice(separator + 1) : nodeId;
+  return event.artifact?.stage || event.gate;
 }
 
 export function eventNodeAtSequence(
@@ -182,7 +190,7 @@ export function eventNodeAtSequence(
 
 export function journalEntries(events: RunEvent[]): JournalEntry[] {
   const entries: JournalEntry[] = [];
-  const visits = new Map<string, number>();
+  const visits = new Map<string, JournalVisitState>();
   const activeNodes = new Map<number, string>();
 
   for (const event of orderRunEvents(events)) {
@@ -192,12 +200,19 @@ export function journalEntries(events: RunEvent[]): JournalEntry[] {
     }
     const nodeId = directNodeId ?? activeNodes.get(event.branch);
     const visitKey = nodeId ? `${event.branch}:${nodeId}` : undefined;
-    if (visitKey && startsVisit(event)) {
-      visits.set(visitKey, (visits.get(visitKey) ?? 0) + 1);
-    } else if (visitKey && !visits.has(visitKey)) {
-      visits.set(visitKey, 1);
+    let visit: number | undefined;
+    if (visitKey) {
+      const state = nextVisitState(
+        event,
+        visits.get(visitKey) ?? {
+          ordinal: 0,
+          humanVisit: false,
+          humanRequested: false,
+        },
+      );
+      visits.set(visitKey, state);
+      visit = Math.max(state.ordinal, 1);
     }
-    const visit = visitKey ? visits.get(visitKey) : undefined;
 
     if (isMajorJournalEvent(event)) {
       entries.push({ kind: "event", event });
@@ -488,12 +503,36 @@ function stateFromGate(event: RunEvent): RunNodeState {
   return stateFromStatus(event.status, "completed");
 }
 
-function startsVisit(event: RunEvent): boolean {
-  return (
-    (event.type === "stage.started" || event.type === "gate.started") &&
-    (event.attempt === undefined || event.attempt === 1) &&
-    (event.attemptClass === undefined || event.attemptClass === "initial")
-  );
+function nextVisitState(event: RunEvent, current: JournalVisitState): JournalVisitState {
+  const next = { ...current };
+  if (event.type === "stage.rerun.requested") {
+    next.humanRequested = true;
+    return next;
+  }
+  if (event.type !== "stage.started" && event.type !== "gate.started") {
+    return next;
+  }
+  switch (event.attemptClass) {
+    case undefined:
+    case "initial":
+      next.ordinal += 1;
+      next.humanVisit = false;
+      next.humanRequested = false;
+      break;
+    case "human":
+      // A retry of an interrupted human rerun remains in the same visit.
+      if (next.humanRequested || !next.humanVisit || next.ordinal === 0) {
+        next.ordinal += 1;
+      }
+      next.humanVisit = true;
+      next.humanRequested = false;
+      break;
+    default:
+      if (next.ordinal === 0) {
+        next.ordinal = 1;
+      }
+  }
+  return next;
 }
 
 export function isTranscriptEvent(event: RunEvent): boolean {
