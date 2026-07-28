@@ -1,7 +1,7 @@
 # Daemon supervision (systemd · launchd · Windows Service)
 
-Runs the `goobers` daemon (`goobers up`) as a supervised, auto-restarting
-background service on each platform, instead of a foreground shell. This
+Runs the `goobers` daemon through a stable, auto-restarting service host that
+launches `goobers up` from the instance's mutable binary slot. This
 resolves **DEP-Q6** (`docs/requirements/deployment.md`): tier 1–2 daemon
 supervision is **systemd** on Linux, **launchd** on macOS, and a **Windows
 Service** wrapper on Windows.
@@ -18,7 +18,8 @@ goobers service uninstall /absolute/path/to/instance
 backoff configured. `uninstall` drives the graceful shutdown contract before
 removing the registration. `status --json` exposes the same state for scripts.
 An existing registration is not overwritten; uninstall it first when changing
-the binary or instance path. The platform sections below document the generated
+the stable host binary or instance path. Product updates keep the registration.
+The platform sections below document the generated
 registration and its native supervisor commands for troubleshooting.
 
 **One shutdown contract, three triggers.** The daemon has a single
@@ -35,6 +36,13 @@ in-flight runs (up to `drainGrace` = 30s + a 5s HTTP grace, see
 A second SIGTERM/SIGINT force-exits immediately (the wedged-shutdown backstop in
 `internal/signals`); the supervisors' hard-kill timeouts below are the final
 fallback beyond that.
+
+## Supervised self-update
+
+The hourly workflow defaults to a checksum-verified release; `manual` pins a tag and
+`on-main` builds the API-pinned commit. Candidates pass version, validation, and
+config-diff checks. The host journals activation, retains the old binary, and rolls
+back with escalation on failed health. Config delivery remains owned by Workflow CD.
 
 > **Credentials & PATH.** Run the daemon as the user that owns the instance's
 > provider token, so it inherits per-user credentials — this is why the Linux
@@ -71,8 +79,8 @@ systemctl --user status  goobers      # status
 journalctl --user -u goobers -f       # logs (follow)
 ```
 
-**Upgrade:** replace the binary, then `systemctl --user restart goobers`. If you
-edit the unit file, `systemctl --user daemon-reload` first.
+**Upgrade:** use `self-update`; reinstall the service only to replace its stable
+host.
 
 `TimeoutStopSec=45` in the template gives the drain window headroom before
 systemd escalates to `SIGKILL`. For a **system-wide** install instead, drop the
@@ -107,8 +115,8 @@ launchctl bootout gui/$(id -u)/com.agent-clubhouse.goobers        # graceful sto
 tail -f "$LOG_DIR"/goobers.err.log                                # logs
 ```
 
-**Upgrade:** replace the binary, then `launchctl kickstart -k …`. If you edit the
-plist, `launchctl bootout …` then `launchctl bootstrap …` again.
+**Upgrade:** use `self-update`; reinstall the LaunchAgent only to replace its
+stable host.
 
 `ExitTimeOut=45` allows the drain window before launchd sends `SIGKILL`;
 `KeepAlive.SuccessfulExit=false` restarts on crashes without fighting an operator
@@ -118,13 +126,9 @@ stop.
 
 ## Windows (Windows Service)
 
-Unlike the unix unit files, Windows services are not config-only — the process
-must speak the Service Control Manager (SCM) protocol. That handler ships in
-[`internal/winsvc`](../../internal/winsvc): when `goobers up` detects it was
-launched by the SCM (`svc.IsWindowsService()`), it runs under the SCM and
-translates `SERVICE_CONTROL_STOP`/`SHUTDOWN` into the **same** context
-cancellation `SIGTERM` drives on unix — so the graceful drain is identical. Off
-Windows the handler is a no-op stub, so the unix signal path is untouched.
+The stable host uses [`internal/winsvc`](../../internal/winsvc) to translate SCM
+stop/shutdown controls into supervisor cancellation, then writes the same
+cross-platform daemon drain request used for update handoffs.
 
 Run `goobers service install <instance-root>` from an elevated PowerShell or
 Command Prompt. Its native equivalent is below. First put
@@ -134,7 +138,7 @@ Command Prompt. Its native equivalent is below. First put
 
 ```powershell
 # Create the service (note the spaces after '=' in sc.exe syntax):
-sc.exe create goobers binPath= "\"C:\Program Files\goobers\goobers.exe\" up \"C:\ProgramData\goobers\instance\"" start= auto DisplayName= "Goobers daemon"
+sc.exe create goobers binPath= "\"C:\Program Files\goobers\goobers.exe\" __service-supervise \"C:\ProgramData\goobers\instance\"" start= auto DisplayName= "Goobers daemon"
 sc.exe description goobers "Goobers agent-workforce daemon (scheduler + local runner)"
 sc.exe failure goobers reset= 86400 actions= restart/5000/restart/30000/restart/60000
 sc.exe failureflag goobers 1

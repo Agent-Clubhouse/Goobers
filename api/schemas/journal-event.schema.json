@@ -60,7 +60,12 @@
         "config.reload.rejected",
         "daemon.started",
         "daemon.clean_shutdown",
-        "daemon.dirty_restart"
+        "daemon.dirty_restart",
+        "daemon.update.drain_started",
+        "daemon.update.restarted",
+        "daemon.update.healthy",
+        "daemon.update.rolled_back",
+        "daemon.update.escalated"
       ],
       "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
     },
