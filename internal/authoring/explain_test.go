@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {

@@ -12,10 +12,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 // ErrUnknownSelector identifies a selector absent from the built-in schemas.
@@ -826,7 +827,7 @@ func minimalRegexpMatch(expression *syntax.Regexp) (string, error) {
 }
 
 func printableClassRune(ranges []rune) (rune, bool) {
-	for _, candidate := range []rune("a0x1A._/-@=+") {
+	for _, candidate := range "a0x1A._/-@=+" {
 		if runeInClass(candidate, ranges) {
 			return candidate, true
 		}
@@ -871,7 +872,7 @@ func primarySchemaType(value any, resolved map[string]any) string {
 }
 
 func jsonValueType(value any) string {
-	switch value.(type) {
+	switch typed := value.(type) {
 	case nil:
 		return "null"
 	case bool:
@@ -879,7 +880,7 @@ func jsonValueType(value any) string {
 	case string:
 		return "string"
 	case json.Number:
-		number := string(value.(json.Number))
+		number := string(typed)
 		if !strings.ContainsAny(number, ".eE") {
 			return "integer"
 		}
