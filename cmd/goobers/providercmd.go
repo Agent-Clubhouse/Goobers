@@ -77,6 +77,7 @@ const (
 
 	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
 	claimLockOperationBacklogScanCursor    = "backlog-query.scan-cursor"
+	claimLockOperationBacklogResweep       = "backlog-query.resweep"
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"
