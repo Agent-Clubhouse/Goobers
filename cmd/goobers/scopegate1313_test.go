@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -93,6 +94,101 @@ func TestGatherSiblingContextParksOversizedPR(t *testing.T) {
 	}
 	if !issueHasLabel(server, 30, scopeGateLabel) {
 		t.Fatal("expected goobers:scope-gate to be applied")
+	}
+}
+
+// TestGatherSiblingContextReevaluatesScopeGateAck is #1813's regression: an
+// operator ack is a review input even when the selected PR's head/base do not
+// move, so the next merge-review cycle must clear the gate and reject the
+// pre-ack cached verdict.
+func TestGatherSiblingContextReevaluatesScopeGateAck(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(30, "Oversized PR")
+	files := make([]fakePRFile, 60)
+	for i := range files {
+		files[i] = fakePRFile{path: "file" + string(rune('a'+i%26)) + ".go", status: "modified", additions: 1}
+	}
+	const (
+		headSHA = "sha30"
+		baseSHA = "base"
+	)
+	server.addOpenPR(30, "goobers/implementation/run-30", "main", headSHA, baseSHA, false, nil, files)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1813")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "30")
+
+	preAckDigest := computeReviewDigest(headSHA, baseSHA, nil)
+	server.addComment(30, renderVerdictComment(apiv1.Verdict{
+		Decision:    apiv1.VerdictPass,
+		Digest:      preAckDigest,
+		SourceRunID: "run-before-ack",
+		HeadSHA:     headSHA,
+		BaseSHA:     baseSHA,
+	}))
+
+	type gatherResult struct {
+		SelectedHeadSHA   string `json:"selectedHeadSha"`
+		SelectedBaseSHA   string `json:"selectedBaseSha"`
+		ReviewDigest      string `json:"reviewDigest"`
+		CachedVerdictJSON string `json:"cachedVerdictJson"`
+		ScopeGateParked   string `json:"scopeGateParked"`
+	}
+	readResult := func(dir string) gatherResult {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+		if err != nil {
+			t.Fatalf("read sibling-context.json: %v", err)
+		}
+		var result gatherResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal sibling-context.json: %v", err)
+		}
+		return result
+	}
+
+	parkDir := t.TempDir()
+	t.Chdir(parkDir)
+	if code, _, stderr := runArgs(t, "gather-sibling-context", root); code != 0 {
+		t.Fatalf("initial gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	}
+	parked := readResult(parkDir)
+	if parked.ScopeGateParked != "true" || parked.CachedVerdictJSON == "" {
+		t.Fatalf("initial result = %+v, want parked with the pre-ack verdict cached", parked)
+	}
+	if !issueHasLabel(server, 30, scopeGateLabel) {
+		t.Fatalf("initial cycle did not apply %s", scopeGateLabel)
+	}
+
+	provider := server.newGitHubProvider("token")
+	if _, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+		ID:         "30",
+		AddLabels:  []string{scopeGateAckLabel},
+	}); err != nil {
+		t.Fatalf("apply %s: %v", scopeGateAckLabel, err)
+	}
+	// The fake keeps pull and issue fixtures separately; mirror GitHub's shared
+	// PR/issue label state into the pull-list response used by the next cycle.
+	server.setPRLabels(30, []string{scopeDriftLabel, scopeGateLabel, scopeGateAckLabel})
+
+	releaseDir := t.TempDir()
+	t.Chdir(releaseDir)
+	if code, _, stderr := runArgs(t, "gather-sibling-context", root); code != 0 {
+		t.Fatalf("post-ack gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	}
+	released := readResult(releaseDir)
+	if released.SelectedHeadSHA != parked.SelectedHeadSHA || released.SelectedBaseSHA != parked.SelectedBaseSHA {
+		t.Fatalf("PR moved between cycles: before (%q, %q), after (%q, %q)",
+			parked.SelectedHeadSHA, parked.SelectedBaseSHA, released.SelectedHeadSHA, released.SelectedBaseSHA)
+	}
+	if released.ScopeGateParked != "false" {
+		t.Fatalf("scopeGateParked = %q, want false after operator ack", released.ScopeGateParked)
+	}
+	if released.ReviewDigest == parked.ReviewDigest || released.CachedVerdictJSON != "" {
+		t.Fatalf("post-ack result = %+v, want a new digest and no pre-ack cached verdict", released)
+	}
+	if issueHasLabel(server, 30, scopeGateLabel) {
+		t.Fatalf("%s still applied after operator ack", scopeGateLabel)
 	}
 }
 

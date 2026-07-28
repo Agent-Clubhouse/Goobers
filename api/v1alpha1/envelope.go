@@ -333,14 +333,12 @@ type Verdict struct {
 	BaseSHA string `json:"baseSha,omitempty"`
 	// Digest is the reviewDigest (issue #523) this verdict was computed
 	// against — a content hash of every input the holistic reviewer saw:
-	// the selected PR's head/base SHAs plus the sorted sibling (PR#,
-	// headSHA) set plus the verdict-schema version. Empty for a Verdict
-	// that doesn't participate in cross-run digest caching (every gate but
-	// merge-review's holistic review, which is the only one whose subject
-	// evidence — the sibling set — persists identically across the
-	// independent runs a schedule-triggered workflow fires as). A later
-	// run computing the identical digest reuses this verdict verbatim
-	// instead of re-invoking the reviewer (gate.Evaluator.CachedVerdict).
+	// the selected PR's head/base SHAs, gate-relevant labels, and the
+	// verdict-schema version. Empty for a Verdict that doesn't participate
+	// in cross-run digest caching (every gate but merge-review's holistic
+	// review). A later run computing the identical digest reuses this verdict
+	// verbatim instead of re-invoking the reviewer
+	// (gate.Evaluator.CachedVerdict).
 	Digest string `json:"digest,omitempty"`
 	// SourceRunID is the run whose reviewer evaluation ORIGINALLY produced
 	// this verdict — never touched by a cache hit, which reuses the

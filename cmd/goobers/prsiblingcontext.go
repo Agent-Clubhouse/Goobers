@@ -395,11 +395,12 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Verdict-level cache: the key is the selected PR's own reviewable state
-	// (head/base SHAs), NOT the whole sibling set (#1237 — see
+	// (head/base SHAs and gate-relevant labels), NOT the whole sibling set
+	// (#1237 — see
 	// computeReviewDigest). Check the selected PR's trusted status comment for a
 	// matching usable verdict. Any missing key component or lookup problem
 	// degrades to a fresh review.
-	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA)
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, selectedLabels)
 	var cachedVerdictJSON string
 	if reviewDigest == "" {
 		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
