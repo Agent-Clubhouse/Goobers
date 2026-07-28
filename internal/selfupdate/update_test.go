@@ -254,8 +254,11 @@ func TestPrepareOnMainBuildsConfiguredRepositoryCommit(t *testing.T) {
 				return nil, errors.New("go build used the invoking worktree")
 			}
 			marker, err := os.ReadFile(filepath.Join(dir, "source-marker"))
-			if err != nil || string(marker) != "configured repository" {
-				return nil, fmt.Errorf("build source marker = %q, %v", marker, err)
+			if err != nil {
+				return nil, fmt.Errorf("read build source marker: %w", err)
+			}
+			if string(marker) != "configured repository" {
+				return nil, fmt.Errorf("build source marker = %q", marker)
 			}
 			for i := range args {
 				if args[i] == "-o" && i+1 < len(args) {

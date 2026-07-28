@@ -25,6 +25,7 @@ import (
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
+// Supported update policies and health defaults.
 const (
 	PolicyManual    = "manual"
 	PolicyOnRelease = "on-release"
@@ -330,7 +331,7 @@ func validatePrepareOptions(opts PrepareOptions) error {
 	return nil
 }
 
-func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
+func resolveRelease(ctx context.Context, opts PrepareOptions) (_ githubRelease, retErr error) {
 	endpoint := strings.TrimRight(opts.APIBaseURL, "/") + "/repos/" +
 		url.PathEscape(opts.Owner) + "/" + url.PathEscape(opts.Repository) + "/releases/"
 	if opts.Policy == PolicyManual {
@@ -347,7 +348,11 @@ func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, er
 	if err != nil {
 		return githubRelease{}, fmt.Errorf("query GitHub release: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close GitHub release response: %w", err))
+		}
+	}()
 	if response.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return githubRelease{}, fmt.Errorf("query GitHub release: status %d: %s", response.StatusCode, strings.TrimSpace(string(detail)))
@@ -365,7 +370,7 @@ func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, er
 	return release, nil
 }
 
-func resolveMainCommit(ctx context.Context, opts PrepareOptions) (string, error) {
+func resolveMainCommit(ctx context.Context, opts PrepareOptions) (_ string, retErr error) {
 	endpoint := githubRepositoryEndpoint(opts) + "/commits/" + url.PathEscape(opts.Branch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -376,7 +381,11 @@ func resolveMainCommit(ctx context.Context, opts PrepareOptions) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("query configured branch: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close configured branch response: %w", err))
+		}
+	}()
 	if response.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return "", fmt.Errorf("query configured branch: status %d: %s", response.StatusCode, strings.TrimSpace(string(detail)))
@@ -431,12 +440,20 @@ func stageRelease(ctx context.Context, opts PrepareOptions, release githubReleas
 	if err := downloadAsset(ctx, opts, archiveURL, archivePath, maxArchiveBytes); err != nil {
 		return "", fmt.Errorf("download %s: %w", archiveName, err)
 	}
-	defer os.Remove(archivePath)
+	defer func() {
+		if err := os.Remove(archivePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove downloaded release archive: %w", err))
+		}
+	}()
 	sumsPath := filepath.Join(stageDir, "SHA256SUMS")
 	if err := downloadAsset(ctx, opts, sumsURL, sumsPath, maxChecksumsSize); err != nil {
 		return "", fmt.Errorf("download SHA256SUMS: %w", err)
 	}
-	defer os.Remove(sumsPath)
+	defer func() {
+		if err := os.Remove(sumsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove downloaded release checksums: %w", err))
+		}
+	}()
 	if err := verifyChecksum(archivePath, sumsPath, archiveName); err != nil {
 		return "", err
 	}
@@ -475,11 +492,19 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 	if err := downloadAsset(ctx, opts, githubRepositoryEndpoint(opts)+"/tarball/"+url.PathEscape(commit), archive, maxArchiveBytes); err != nil {
 		return "", fmt.Errorf("download configured commit %s: %w", commit, err)
 	}
-	defer os.Remove(archive)
+	defer func() {
+		if err := os.Remove(archive); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove downloaded source archive: %w", err))
+		}
+	}()
 	if err := extractSourceTarGz(archive, source); err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(source)
+	defer func() {
+		if err := os.RemoveAll(source); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("remove extracted source tree: %w", err))
+		}
+	}()
 
 	binary := filepath.Join(stageDir, binaryName(opts.GOOS))
 	if err := os.Remove(binary); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -549,7 +574,7 @@ func readVersion(ctx context.Context, runner CommandRunner, dir, binary string) 
 	return info, nil
 }
 
-func downloadAsset(ctx context.Context, opts PrepareOptions, assetURL, path string, limit int64) error {
+func downloadAsset(ctx context.Context, opts PrepareOptions, assetURL, path string, limit int64) (retErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 	if err != nil {
 		return err
@@ -559,7 +584,11 @@ func downloadAsset(ctx context.Context, opts PrepareOptions, assetURL, path stri
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close asset response: %w", err))
+		}
+	}()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %d", response.StatusCode)
 	}
@@ -589,7 +618,7 @@ func setGitHubHeaders(req *http.Request, token string) {
 	}
 }
 
-func verifyChecksum(archivePath, sumsPath, archiveName string) error {
+func verifyChecksum(archivePath, sumsPath, archiveName string) (retErr error) {
 	raw, err := os.ReadFile(sumsPath)
 	if err != nil {
 		return fmt.Errorf("read SHA256SUMS: %w", err)
@@ -609,7 +638,11 @@ func verifyChecksum(archivePath, sumsPath, archiveName string) error {
 	if err != nil {
 		return fmt.Errorf("open staged archive: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close staged archive: %w", err))
+		}
+	}()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return fmt.Errorf("hash staged archive: %w", err)
@@ -620,17 +653,25 @@ func verifyChecksum(archivePath, sumsPath, archiveName string) error {
 	return nil
 }
 
-func extractTarBinary(archivePath, destination string) error {
+func extractTarBinary(archivePath, destination string) (retErr error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open release archive: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close release archive: %w", err))
+		}
+	}()
 	gzipReader, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("open release gzip stream: %w", err)
 	}
-	defer gzipReader.Close()
+	defer func() {
+		if err := gzipReader.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close release gzip stream: %w", err))
+		}
+	}()
 	reader := tar.NewReader(gzipReader)
 	for {
 		header, err := reader.Next()
@@ -648,12 +689,16 @@ func extractTarBinary(archivePath, destination string) error {
 	return errors.New("release archive does not contain goobers")
 }
 
-func extractZipBinary(archivePath, destination string) error {
+func extractZipBinary(archivePath, destination string) (retErr error) {
 	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("open release zip: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close release zip: %w", err))
+		}
+	}()
 	for _, entry := range reader.File {
 		if filepath.ToSlash(entry.Name) != "goobers.exe" || !entry.Mode().IsRegular() {
 			continue
@@ -669,17 +714,25 @@ func extractZipBinary(archivePath, destination string) error {
 	return errors.New("release archive does not contain goobers.exe")
 }
 
-func extractSourceTarGz(archivePath, destination string) error {
+func extractSourceTarGz(archivePath, destination string) (retErr error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open source archive: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close source archive: %w", err))
+		}
+	}()
 	gzipReader, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("open source gzip stream: %w", err)
 	}
-	defer gzipReader.Close()
+	defer func() {
+		if err := gzipReader.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close source gzip stream: %w", err))
+		}
+	}()
 	reader := tar.NewReader(gzipReader)
 	root := ""
 	var extracted int64
@@ -722,7 +775,7 @@ func extractSourceTarGz(archivePath, destination string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return fmt.Errorf("create source directory: %w", err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if header.Size < 0 || extracted > maxArchiveBytes-header.Size {
 				return fmt.Errorf("expanded source archive exceeds %d bytes", maxArchiveBytes)
 			}
@@ -853,7 +906,7 @@ func ReadRequest(root string) (Request, error) {
 	return request, nil
 }
 
-func writeJSONAtomic(path string, value any) error {
+func writeJSONAtomic(path string, value any) (retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create self-update directory: %w", err)
 	}
@@ -867,7 +920,11 @@ func writeJSONAtomic(path string, value any) error {
 		return fmt.Errorf("create self-update state: %w", err)
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() {
+		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove temporary self-update state: %w", err))
+		}
+	}()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("secure self-update state: %w", err)

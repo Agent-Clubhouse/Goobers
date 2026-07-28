@@ -107,7 +107,7 @@ func (p *execProcess) Kill() error        { return p.command.Process.Kill() }
 
 // RunSupervisor launches the mutable binary and owns drain, restart, health,
 // rollback, and escalation around durable update requests.
-func RunSupervisor(ctx context.Context, opts SupervisorOptions) error {
+func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 	opts = defaultSupervisorOptions(opts)
 	if opts.Root == "" || opts.HostExecutable == "" {
 		return errors.New("supervisor instance root and host executable are required")
@@ -119,7 +119,11 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) error {
 	if err != nil {
 		return fmt.Errorf("open supervisor journal: %w", err)
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close supervisor journal: %w", err))
+		}
+	}()
 
 	request, pending, err := pendingRequest(opts.Root)
 	if err != nil {
@@ -775,12 +779,16 @@ func appendCompletionError(log *journal.InstanceLog, request Request, err error)
 	})
 }
 
-func copyExecutable(source, destination string) error {
+func copyExecutable(source, destination string) (retErr error) {
 	sourceFile, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer func() {
+		if err := sourceFile.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close source executable: %w", err))
+		}
+	}()
 	info, err := sourceFile.Stat()
 	if err != nil {
 		return err
@@ -796,7 +804,11 @@ func copyExecutable(source, destination string) error {
 		return err
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() {
+		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove temporary executable: %w", err))
+		}
+	}()
 	if _, err := io.Copy(temp, sourceFile); err != nil {
 		_ = temp.Close()
 		return err
