@@ -76,7 +76,7 @@ func TestSystemdInstallStatusAndUninstall(t *testing.T) {
 	}
 	text := string(unit)
 	for _, want := range []string{
-		`ExecStart="/opt/Goobers Bin/goobers" up "/srv/Goobers Instance"`,
+		`ExecStart="/opt/Goobers Bin/goobers" __service-supervise "/srv/Goobers Instance"`,
 		"WorkingDirectory=/srv/Goobers Instance",
 		"Restart=on-failure",
 		"RestartSec=5",
@@ -209,7 +209,7 @@ func TestWindowsInstallStatusAndUninstall(t *testing.T) {
 		t.Fatalf("failure flag command = %#v", failureFlagCall)
 	}
 	createArgs := strings.Join(runner.calls[1].args, " ")
-	if !strings.Contains(createArgs, `"C:\Program Files\goobers\goobers.exe" up "C:\ProgramData\goobers\instance"`) {
+	if !strings.Contains(createArgs, `"C:\Program Files\goobers\goobers.exe" __service-supervise "C:\ProgramData\goobers\instance"`) {
 		t.Fatalf("create args = %q", createArgs)
 	}
 
