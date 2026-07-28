@@ -124,7 +124,10 @@ function RunDetailWorkspace({
   const initialSeq = latestEvent?.seq ?? 0;
   const [selectedSeq, setSelectedSeq] = useState(initialSeq);
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
-    eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
+    eventNodeAtSequence(events, initialSeq, {
+      branch: latestEvent?.branch,
+      runId,
+    }) ?? run.currentStage,
   );
   const [followingLatest, setFollowingLatest] = useState(true);
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
@@ -133,12 +136,12 @@ function RunDetailWorkspace({
   const [fullscreenMode, setFullscreenMode] =
     useState<WorkflowGraphFullscreenMode>("none");
   const nodeStates = run.graph
-    ? deriveNodeStates(run.graph, events, selectedSeq)
+    ? deriveNodeStates(run.graph, events, selectedSeq, runId)
     : {};
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
-    ? evidenceVisit(events, selectedEvidence)
+    ? evidenceVisit(events, selectedEvidence, runId)
     : undefined;
 
   const revealInspector = () => {
@@ -155,11 +158,16 @@ function RunDetailWorkspace({
       return;
     }
     setSelectedSeq(initialSeq);
-    setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
+    setSelectedNodeId(
+      eventNodeAtSequence(events, initialSeq, {
+        branch: latestEvent?.branch,
+        runId,
+      }) ?? run.currentStage,
+    );
     setSelectedEvidenceSeq(
       latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
     );
-  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage]);
+  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage, runId]);
 
   const selectNode = (nodeId: string, shouldRevealInspector = false) => {
     setSelectedNodeId(nodeId);
@@ -171,7 +179,9 @@ function RunDetailWorkspace({
 
   const selectEvent = (event: RunEvent, shouldRevealInspector = false) => {
     setSelectedSeq(event.seq);
-    setSelectedNodeId(eventNodeAtSequence(events, event.seq));
+    setSelectedNodeId(
+      eventNodeAtSequence(events, event.seq, { branch: event.branch, runId }),
+    );
     setSelectedEvidenceSeq(isInspectableEvidenceEvent(event) ? event.seq : undefined);
     setFollowingLatest(event.seq === initialSeq);
     if (shouldRevealInspector) {
@@ -180,8 +190,11 @@ function RunDetailWorkspace({
   };
 
   const replaySeek = (seq: number) => {
+    const event = events.find((candidate) => candidate.seq === seq);
     setSelectedSeq(seq);
-    setSelectedNodeId(eventNodeAtSequence(events, seq));
+    setSelectedNodeId(
+      eventNodeAtSequence(events, seq, { branch: event?.branch, runId }),
+    );
     setSelectedEvidenceSeq(undefined);
     setFollowingLatest(seq === initialSeq);
   };
@@ -190,7 +203,12 @@ function RunDetailWorkspace({
   const causalEvent =
     causalEventSeq === undefined ? undefined : events.find((event) => event.seq === causalEventSeq);
   const causalNodeId =
-    causalEventSeq === undefined ? undefined : eventNodeAtSequence(events, causalEventSeq);
+    causalEventSeq === undefined
+      ? undefined
+      : eventNodeAtSequence(events, causalEventSeq, {
+          branch: causalEvent?.branch,
+          runId,
+        });
   const focusCausalEvent =
     causalEventSeq === undefined ? undefined : () => replaySeek(causalEventSeq);
 
@@ -316,6 +334,7 @@ function RunDetailWorkspace({
             <ReplayScrubber
               events={events}
               onSeek={replaySeek}
+              runId={runId}
               selectedSeq={selectedSeq}
               terminal={run.finishedAt != null}
             />
@@ -360,7 +379,7 @@ function EventLedger({
   const [view, setView] = useState<"major" | "all">("major");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const grouped = journalEntries(events);
+  const grouped = journalEntries(events, run.id);
   const rows: JournalEntry[] =
     view === "all"
       ? orderRunEvents(events).map((event) => ({ kind: "event", event }))
@@ -503,7 +522,11 @@ function EventLedger({
             const event = entry.event;
             const selected = event.seq === selectedSeq;
             const heading = eventHeading(event);
-            const summary = eventSummary(event, evidenceDecision(events, event));
+            const summary = eventSummary(
+              event,
+              evidenceDecision(events, event, run.id),
+              run.id,
+            );
             const major = isMajorJournalEvent(event);
             return (
               <li

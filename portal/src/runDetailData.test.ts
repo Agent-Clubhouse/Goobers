@@ -92,7 +92,7 @@ describe("run detail projection", () => {
     expect(eventSummary(unsupported)).not.toContain("privateImplementationDetail");
   });
 
-  it("preserves colon-bearing node IDs outside encoded transcript stages", () => {
+  it("decodes only verified run prefixes from transcript stages", () => {
     const nodeId = "review:security";
 
     expect(eventNodeId(event(1, "stage.started", { stage: nodeId }))).toBe(nodeId);
@@ -106,9 +106,17 @@ describe("run detail projection", () => {
       },
     }))).toBe(nodeId);
     expect(eventNodeId(event(4, "span.recorded", {
+      stage: nodeId,
+      name: "reviewer.transcript",
+    }), "run-1")).toBe(nodeId);
+    expect(eventNodeId(event(5, "span.recorded", {
       stage: `run-1:${nodeId}`,
       name: "reviewer.transcript",
-    }))).toBe(nodeId);
+    }), "run-1")).toBe(nodeId);
+    expect(eventNodeId(event(6, "span.recorded", {
+      stage: `run-1:${nodeId}`,
+      name: "reviewer.transcript",
+    }), "run-2")).toBe(`run-1:${nodeId}`);
   });
 
   it("groups adjacent supporting records by stage visit without changing event sequence", () => {
@@ -201,7 +209,7 @@ describe("run detail projection", () => {
       }),
     ];
 
-    const entries = journalEntries(events);
+    const entries = journalEntries(events, "run-1");
     const groups = entries.filter((entry) => entry.kind === "group");
     expect(
       groups.map((group) => ({
@@ -221,8 +229,8 @@ describe("run detail projection", () => {
     ).toEqual(events.map(({ seq }) => seq));
     expect(entries.at(-2)).toMatchObject({ kind: "event", event: { seq: 12 } });
     expect(entries.at(-1)).toMatchObject({ kind: "event", event: { seq: 13 } });
-    expect(evidenceVisit(events, events[1])).toBe(1);
-    expect(evidenceVisit(events, events[8])).toBe(2);
+    expect(evidenceVisit(events, events[1], "run-1")).toBe(1);
+    expect(evidenceVisit(events, events[8], "run-1")).toBe(2);
   });
 
   it("associates human-rerun evidence with canonical stage visits", () => {
@@ -316,10 +324,10 @@ describe("run detail projection", () => {
       }),
     ];
 
-    expect(evidenceVisit(events, events[1])).toBe(1);
-    expect(evidenceVisit(events, events[5])).toBe(2);
-    expect(evidenceVisit(events, events[8])).toBe(2);
-    expect(evidenceVisit(events, events[12])).toBe(3);
+    expect(evidenceVisit(events, events[1], "run-1")).toBe(1);
+    expect(evidenceVisit(events, events[5], "run-1")).toBe(2);
+    expect(evidenceVisit(events, events[8], "run-1")).toBe(2);
+    expect(evidenceVisit(events, events[12], "run-1")).toBe(3);
   });
 
   it("summarizes reviewer evidence, heartbeats, and external operations", () => {
@@ -352,7 +360,7 @@ describe("run detail projection", () => {
     });
 
     expect(eventHeading(transcript)).toBe("Transcript recorded");
-    expect(eventSummary(transcript)).toBe(
+    expect(eventSummary(transcript, undefined, "run-1")).toBe(
       "Transcript for Review was recorded. Select this event to inspect the evidence.",
     );
     expect(eventHeading(verdict)).toBe("Structured verdict recorded");
@@ -369,6 +377,67 @@ describe("run detail projection", () => {
       "Implement attempt 1 reported liveness; workflow state did not change.",
     );
     expect(eventSummary(ref)).toBe("GitHub opened pull request #42.");
+  });
+
+  it("correlates unscoped verdict evidence within its parallel branch", () => {
+    const reviewSecurity = event(1, "gate.started", {
+      branch: 1,
+      gate: "review:security",
+      attempt: 1,
+    });
+    const reviewQuality = event(2, "gate.started", {
+      branch: 2,
+      gate: "review:quality",
+      attempt: 1,
+    });
+    const securityVerdict = event(3, "artifact.recorded", {
+      branch: 1,
+      artifact: {
+        name: "verdict/security.json",
+        digest: "sha256:security",
+        size: 80,
+        mediaType: "application/json",
+      },
+    });
+    const qualityVerdict = event(4, "artifact.recorded", {
+      branch: 2,
+      artifact: {
+        name: "verdict/quality.json",
+        digest: "sha256:quality",
+        size: 80,
+        mediaType: "application/json",
+      },
+    });
+    const qualityDecision = event(5, "gate.evaluated", {
+      branch: 2,
+      gate: "review:quality",
+      verdict: "pass",
+      target: "@complete",
+    });
+    const securityDecision = event(6, "gate.evaluated", {
+      branch: 1,
+      gate: "review:security",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    const events = [
+      reviewSecurity,
+      reviewQuality,
+      securityVerdict,
+      qualityVerdict,
+      qualityDecision,
+      securityDecision,
+    ];
+
+    expect(eventNodeAtSequence(events, securityVerdict.seq)).toBe("review:security");
+    expect(evidenceDecision(events, securityVerdict)).toBe(securityDecision);
+    expect(evidenceDecision(events, qualityVerdict)).toBe(qualityDecision);
+    expect(
+      eventSummary(
+        securityVerdict,
+        evidenceDecision(events, securityVerdict),
+      ),
+    ).toContain("Review:security decision: needs-changes");
   });
 
   it("applies an API-shaped terminal event to the previously active node and skips no-work nodes", () => {

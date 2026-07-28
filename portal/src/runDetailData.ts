@@ -163,13 +163,15 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
   return [...events].sort((left, right) => left.seq - right.seq || left.branch - right.branch);
 }
 
-export function eventNodeId(event: RunEvent): string | undefined {
+export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
   if (event.stage) {
     if (!isTranscriptEvent(event)) {
       return event.stage;
     }
-    const separator = event.stage.indexOf(":");
-    return separator >= 0 ? event.stage.slice(separator + 1) : event.stage;
+    const runPrefix = runId ? `${runId}:` : undefined;
+    return runPrefix && event.stage.startsWith(runPrefix)
+      ? event.stage.slice(runPrefix.length)
+      : event.stage;
   }
   return event.artifact?.stage || event.gate;
 }
@@ -177,24 +179,31 @@ export function eventNodeId(event: RunEvent): string | undefined {
 export function eventNodeAtSequence(
   events: RunEvent[],
   selectedSeq: number,
+  options: { branch?: number; runId?: string } = {},
 ): string | undefined {
+  const orderedEvents = orderRunEvents(events);
+  const selectedBranch =
+    options.branch ?? orderedEvents.find((event) => event.seq === selectedSeq)?.branch;
   let nodeId: string | undefined;
-  for (const event of orderRunEvents(events)) {
+  for (const event of orderedEvents) {
     if (event.seq > selectedSeq) {
       break;
     }
-    nodeId = eventNodeId(event) ?? nodeId;
+    if (selectedBranch !== undefined && event.branch !== selectedBranch) {
+      continue;
+    }
+    nodeId = eventNodeId(event, options.runId) ?? nodeId;
   }
   return nodeId;
 }
 
-export function journalEntries(events: RunEvent[]): JournalEntry[] {
+export function journalEntries(events: RunEvent[], runId?: string): JournalEntry[] {
   const entries: JournalEntry[] = [];
   const visits = new Map<string, JournalVisitState>();
   const activeNodes = new Map<number, string>();
 
   for (const event of orderRunEvents(events)) {
-    const directNodeId = eventNodeId(event);
+    const directNodeId = eventNodeId(event, runId);
     if (directNodeId) {
       activeNodes.set(event.branch, directNodeId);
     }
@@ -241,8 +250,12 @@ export function journalEntries(events: RunEvent[]): JournalEntry[] {
   return entries;
 }
 
-export function evidenceVisit(events: RunEvent[], evidence: RunEvent): number | undefined {
-  for (const entry of journalEntries(events)) {
+export function evidenceVisit(
+  events: RunEvent[],
+  evidence: RunEvent,
+  runId?: string,
+): number | undefined {
+  for (const entry of journalEntries(events, runId)) {
     if (
       entry.kind === "group" &&
       entry.events.some(
@@ -274,16 +287,25 @@ export function isMajorJournalEvent(event: RunEvent): boolean {
 export function evidenceDecision(
   events: RunEvent[],
   evidence: RunEvent,
+  runId?: string,
 ): RunEvent | undefined {
   if (!isVerdictArtifact(evidence)) {
     return undefined;
   }
-  const nodeId = eventNodeId(evidence);
+  const nodeId =
+    eventNodeId(evidence, runId) ??
+    eventNodeAtSequence(events, evidence.seq, { branch: evidence.branch, runId });
   for (const event of orderRunEvents(events)) {
     if (event.seq <= evidence.seq) {
       continue;
     }
-    if (event.type === "gate.evaluated" && (!nodeId || eventNodeId(event) === nodeId)) {
+    if (event.branch !== evidence.branch) {
+      continue;
+    }
+    if (
+      event.type === "gate.evaluated" &&
+      (!nodeId || eventNodeId(event, runId) === nodeId)
+    ) {
       return event;
     }
     if (event.type === "gate.started" || event.type === "stage.started") {
@@ -297,6 +319,7 @@ export function deriveNodeStates(
   graph: WorkflowGraph,
   events: RunEvent[],
   selectedSeq: number,
+  runId?: string,
 ): Record<string, RunNodeState> {
   const states = Object.fromEntries(
     graph.nodes.map((node) => [node.id, "pending" as RunNodeState]),
@@ -315,7 +338,7 @@ export function deriveNodeStates(
       terminal = true;
       continue;
     }
-    const nodeId = eventNodeId(event);
+    const nodeId = eventNodeId(event, runId);
     if (!nodeId || !Object.hasOwn(states, nodeId)) {
       continue;
     }
@@ -381,12 +404,16 @@ export function eventHeading(event: RunEvent): string {
   return headings[event.type] ?? humanize(event.type);
 }
 
-export function eventSummary(event: RunEvent, associatedDecision?: RunEvent): string {
+export function eventSummary(
+  event: RunEvent,
+  associatedDecision?: RunEvent,
+  runId?: string,
+): string {
   if (!event.knownSchema) {
     return `Schema ${event.schema} is not supported; ${event.type} is retained with generic fields.`;
   }
 
-  const node = eventNodeId(event);
+  const node = eventNodeId(event, runId);
   switch (event.type) {
     case "run.started":
       return event.workflow ? `${event.workflow} began execution.` : "The run began execution.";
@@ -407,7 +434,7 @@ export function eventSummary(event: RunEvent, associatedDecision?: RunEvent): st
       const stage = node ? ` for ${humanize(node)}` : "";
       const access = event.artifact ? " Select this event to inspect the artifact." : "";
       if (isVerdictArtifact(event) && associatedDecision?.type === "gate.evaluated") {
-        const gate = humanize(eventNodeId(associatedDecision) || node || "review");
+        const gate = humanize(eventNodeId(associatedDecision, runId) || node || "review");
         const verdict = associatedDecision.verdict || "a verdict";
         const target = associatedDecision.target
           ? ` selecting ${associatedDecision.target}`
