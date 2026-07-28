@@ -42,6 +42,8 @@ var synopsisByID = map[string]string{
 	"status":                 "  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]\n                                validate config, show warnings, list runs newest first, or report daemon health with --daemon\n",
 	"stats":                  "  goobers stats [--since <duration>] [--json] [path]\n                                show the instance lifetime summary card\n",
 	"features":               "  goobers features [--json] [--dsl-version <version>] [--used] [path]\n                                list the workflow-DSL features this build supports\n",
+	"schema":                 "  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build\n",
+	"explain":                "  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema\n",
 	"reset-rate-limit":       "  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/\n",
 	"blocked list":           "  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)\n",
 	"blocked clear":          "  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock\n",

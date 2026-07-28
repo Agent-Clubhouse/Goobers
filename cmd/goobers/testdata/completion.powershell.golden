@@ -28,6 +28,8 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'status'
         'stats'
         'features'
+        'schema'
+        'explain'
         'reset-rate-limit'
         'blocked'
         'claims'

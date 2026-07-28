@@ -3,7 +3,12 @@
 // importing component can validate without reading files from disk.
 package schemas
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+	"sort"
+	"strings"
+)
 
 // FS holds the embedded *.schema.json files.
 //
@@ -37,6 +42,12 @@ const OnboardingAction = "config-source-action.schema.json"
 // ConfigSourceAction is retained as the original name of OnboardingAction.
 const ConfigSourceAction = OnboardingAction
 
+// SchemaOutput is the machine-readable envelope emitted by `goobers schema`.
+const SchemaOutput = "schema-output.schema.json"
+
+// ExplainOutput is the machine-readable envelope emitted by `goobers explain`.
+const ExplainOutput = "explain.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",
@@ -65,25 +76,57 @@ var Journal = map[string]string{
 	"run":   "journal-run.schema.json",
 }
 
-// Files lists every embedded schema file name.
-func Files() []string {
-	return []string{
-		"manifest.schema.json",
-		"gaggle.schema.json",
-		"goober.schema.json",
-		"workflow.schema.json",
-		"invocation.schema.json",
-		"result.schema.json",
-		"verdict.schema.json",
-		"artifact-pointer.schema.json",
-		CandidateFindings,
-		RemediationBriefV1,
-		RemediationBrief,
-		"journal-event.schema.json",
-		"journal-run.schema.json",
-		AgentToolkitManifest,
-		Diagnostics,
-		Features,
-		OnboardingAction,
+// Entry identifies one embedded schema by its CLI-facing kind and file name.
+type Entry struct {
+	Kind string
+	File string
+}
+
+// Entries lists every embedded schema in stable kind order.
+func Entries() []Entry {
+	files, err := fs.Glob(FS, "*.schema.json")
+	if err != nil {
+		panic("glob embedded schemas: " + err.Error())
 	}
+	entries := make([]Entry, 0, len(files))
+	for _, file := range files {
+		entries = append(entries, Entry{
+			Kind: strings.TrimSuffix(file, ".schema.json"),
+			File: file,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Kind < entries[j].Kind
+	})
+	return entries
+}
+
+// Lookup returns the embedded schema entry for a case-insensitive kind.
+func Lookup(kind string) (Entry, bool) {
+	for _, entry := range Entries() {
+		if strings.EqualFold(entry.Kind, kind) {
+			return entry, true
+		}
+	}
+	return Entry{}, false
+}
+
+// Kinds lists every embedded schema kind in stable order.
+func Kinds() []string {
+	entries := Entries()
+	kinds := make([]string, len(entries))
+	for i, entry := range entries {
+		kinds[i] = entry.Kind
+	}
+	return kinds
+}
+
+// Files lists every embedded schema file name in stable kind order.
+func Files() []string {
+	entries := Entries()
+	files := make([]string, len(entries))
+	for i, entry := range entries {
+		files[i] = entry.File
+	}
+	return files
 }

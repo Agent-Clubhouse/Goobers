@@ -53,6 +53,8 @@ Usage:
                                 show the instance lifetime summary card
   goobers features [--json] [--dsl-version <version>] [--used] [path]
                                 list the workflow-DSL features this build supports
+  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
+  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
@@ -184,6 +186,8 @@ Usage:
                                 show the instance lifetime summary card
   goobers features [--json] [--dsl-version <version>] [--used] [path]
                                 list the workflow-DSL features this build supports
+  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
+  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
@@ -669,6 +673,16 @@ root is required.
 
 Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
 2 = usage error.
+
+### explain
+Usage: goobers explain [--human] <selector>
+
+Project field facts from an embedded JSON Schema using a dotted or slash-
+separated selector such as goober.spec.capabilities or
+workflow/spec/gates[]/evaluator. Array elements use []. Missing descriptions
+are marked documented=false; field facts are never inferred. JSON is
+the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+1 = unknown selector or output error, 2 = usage error.
 
 ### features
 Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
@@ -1265,6 +1279,16 @@ Usage: goobers scaffold goober [--force] <name> [path]
 Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
+
+### schema
+Usage: goobers schema [--human] <kind>
+       goobers schema --list [--human]
+
+Emit a canonical JSON Schema embedded in this build, or list every available
+schema kind. JSON is the default and includes the build version, commit, and
+DSL version. --human prints a labeled terminal rendering. No network lookup
+or fallback to another release is performed. Exit codes: 0 = OK, 1 = unknown
+kind or output error, 2 = usage error.
 
 ### service
 Usage: goobers service <subcommand> [path]
