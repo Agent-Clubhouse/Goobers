@@ -168,13 +168,13 @@ remainder unassigned rather than erroring.
 
 | ID | Item | Depends on | Risk | Status |
 |---|---|---|---|---|
-| COORD-1 | G1 — `UpdateWorkItemRequest.Assignee` + GitHub/ADO `UpdateWorkItem` support | — | Low (additive field + method impl) | **approvable** |
-| COORD-2 | G2 — `backlog-query` opt-in `respectAssignee`/`assignedTo` mode | COORD-1 (for reassignment paths; read/filter already exists) | **Med-High** (eligibility core, opt-in but new dispatch logic) | supervised — not auto-approved |
-| COORD-3 | G3 — configured "self" identity (gaggle/instance-level) | — | Low (a config string + plumbing) | **approvable** |
-| COORD-4 | G4 — `backlog-assignment` canonical workflow, constant-cap + round-robin strategies | COORD-1, COORD-2, COORD-3 | **High** (new mutation-writing workflow) | supervised — not auto-approved |
-| COORD-5 | G5 — needs-human → configured assignee routing | COORD-1 only | Low (additive, optional, independent of COORD-2/4) | **approvable** |
-| COORD-6 | G6 — conformance test: cross-identity exclusion + load-balance/cap correctness | COORD-1..4 | Low (test-only) | **approvable** once COORD-2/4 land |
-| COORD-7 | Docs — authoring guide for assignment-aware gaggles, worked multi-instance example | COORD-1..4 | Low (docs-only) | **approvable** once COORD-2/4 land |
+| COORD-1 (#1819) | G1 — `UpdateWorkItemRequest.Assignee` + GitHub/ADO `UpdateWorkItem` support | — | Low (additive field + method impl) | **approvable** |
+| COORD-2 (#1820) | G2 — `backlog-query` opt-in `respectAssignee`/`assignedTo` mode | COORD-1 (for reassignment paths; read/filter already exists) | **Med-High** (eligibility core, opt-in but new dispatch logic) | supervised — not auto-approved |
+| COORD-3 (#1821) | G3 — configured "self" identity (gaggle/instance-level) | — | Low (a config string + plumbing) | **approvable** |
+| COORD-4 (#1822) | G4 — `backlog-assignment` canonical workflow, constant-cap + round-robin strategies | COORD-1, COORD-2, COORD-3 | **High** (new mutation-writing workflow) | supervised — not auto-approved |
+| COORD-5 (#1823) | G5 — needs-human → configured assignee routing | COORD-1 only | Low (additive, optional, independent of COORD-2/4) | **approvable** |
+| COORD-6 (#1824) | G6 — conformance test: cross-identity exclusion + load-balance/cap correctness | COORD-1..4 | Low (test-only) | **approvable** once COORD-2/4 land |
+| COORD-7 (#1825) | Docs — authoring guide for assignment-aware gaggles, worked multi-instance example | COORD-1..4 | Low (docs-only) | **approvable** once COORD-2/4 land |
 
 ## 5. Recommended sequencing
 
