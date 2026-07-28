@@ -29,13 +29,13 @@
     <string>com.agent-clubhouse.goobers</string>
 
     <!--
-      `goobers up <instance-root>` runs the daemon in the foreground and blocks;
-      KeepAlive + RunAtLoad make launchd supervise and restart it.
+      The stable service host launches the mutable binary under the instance,
+      owns self-update health checks and rollback, and blocks until stopped.
     -->
     <key>ProgramArguments</key>
     <array>
         <string>%GOOBERS_BIN%</string>
-        <string>up</string>
+        <string>__service-supervise</string>
         <string>%INSTANCE_ROOT%</string>
     </array>
 
@@ -59,7 +59,7 @@
 
     <!--
       launchd stops a job by sending SIGTERM (then SIGKILL after ExitTimeOut).
-      The daemon drains in-flight runs on SIGTERM (drainGrace 30s + HTTP grace
+      The stable host requests the daemon drain on SIGTERM (drainGrace 30s + HTTP grace
       5s in cmd/goobers/up.go); allow a margin beyond that before the hard kill.
     -->
     <key>ExitTimeOut</key>

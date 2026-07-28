@@ -10,9 +10,9 @@ Usage: goobers service <subcommand> [path]
 
 Install and manage the goobers daemon under the current platform's user
 supervisor: systemd on Linux, launchd on macOS, or the Windows Service
-Control Manager. The managed daemon runs `goobers up <path>`, receives the
-same graceful-shutdown trigger as a foreground daemon, and restarts after
-an unexpected exit with supervisor backoff.
+Control Manager. The stable service host launches the instance's mutable
+binary, receives the same graceful-shutdown trigger as a foreground daemon,
+and owns validated self-update handoff, health checks, and rollback.
 
 Subcommands:
   install     install, enable, and start the service

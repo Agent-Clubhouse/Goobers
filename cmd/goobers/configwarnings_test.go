@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -37,6 +38,31 @@ func warningLines(output string) []string {
 		}
 	}
 	return warnings
+}
+
+func TestAppendGooberHarnessWarningsMapsModelFallback(t *testing.T) {
+	report := &validate.Report{}
+	coded, err := appendGooberHarnessWarnings(report, []gooberHarnessWarning{{
+		Goober: "coder",
+		Warning: harness.ConfigWarning{
+			Kind:    harness.ConfigWarningModelFallback,
+			Message: `requested model "retired-model" is unavailable; using the harness default`,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("appendGooberHarnessWarnings: %v", err)
+	}
+	if len(report.Issues) != 1 ||
+		report.Issues[0].Code != validate.WarningModelFallback ||
+		report.Issues[0].Kind != "Goober" ||
+		report.Issues[0].Name != "coder" {
+		t.Fatalf("report issues = %+v", report.Issues)
+	}
+	if len(coded) != 1 ||
+		coded[0].Code != validate.WarningModelFallback ||
+		coded[0].Scope != "Goober/coder" {
+		t.Fatalf("coded warnings = %+v", coded)
+	}
 }
 
 func withoutGeneratedPreviewWarnings(output string) ([]string, int) {

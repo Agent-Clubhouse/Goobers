@@ -203,8 +203,8 @@ func (m *Manager) installSystemd(ctx context.Context) (Status, error) {
 	}
 	content := strings.ReplaceAll(
 		string(template),
-		"ExecStart=%GOOBERS_BIN% up %INSTANCE_ROOT%",
-		"ExecStart="+quoteSystemd(m.config.Executable)+" up "+quoteSystemd(m.config.InstanceRoot),
+		"ExecStart=%GOOBERS_BIN% __service-supervise %INSTANCE_ROOT%",
+		"ExecStart="+quoteSystemd(m.config.Executable)+" __service-supervise "+quoteSystemd(m.config.InstanceRoot),
 	)
 	content = strings.ReplaceAll(content, "%GOOBERS_BIN%", quoteSystemd(m.config.Executable))
 	content = strings.ReplaceAll(content, "%INSTANCE_ROOT%", escapeSystemdSpecifier(m.config.InstanceRoot))
@@ -368,7 +368,7 @@ func (m *Manager) installWindows(ctx context.Context) (Status, error) {
 	if status.Installed {
 		return Status{}, ErrAlreadyInstalled
 	}
-	binPath := quoteWindowsCommandArg(m.config.Executable) + " up " + quoteWindowsCommandArg(m.config.InstanceRoot)
+	binPath := quoteWindowsCommandArg(m.config.Executable) + " __service-supervise " + quoteWindowsCommandArg(m.config.InstanceRoot)
 	if err := m.runRequired(ctx, "sc.exe", "create", Name,
 		"binPath=", binPath,
 		"start=", "auto",
