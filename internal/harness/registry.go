@@ -75,6 +75,20 @@ func (r *Registry) ValidateConfig(name, model string, options map[string]apiexte
 	return nil
 }
 
+// ResolveConfig validates and resolves harness-scoped configuration through the
+// adapter registered under name.
+func (r *Registry) ResolveConfig(name, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	adapter, err := r.Get(name)
+	if err != nil {
+		return ConfigResolution{}, err
+	}
+	resolution, err := ResolveConfig(adapter, model, options)
+	if err != nil {
+		return ConfigResolution{}, fmt.Errorf("harness: invalid %q configuration: %w", name, err)
+	}
+	return resolution, nil
+}
+
 // Names returns the registered adapter names, for diagnostics.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.adapters))

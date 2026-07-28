@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -47,6 +48,39 @@ func printValidationWarnings(w io.Writer, warnings []validate.CodedWarning) {
 	for _, warning := range warnings {
 		pln(w, warning.String())
 	}
+}
+
+func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarnessWarning) ([]validate.CodedWarning, error) {
+	if len(warnings) == 0 {
+		return nil, nil
+	}
+	if report == nil {
+		return nil, errors.New("validation report is nil")
+	}
+	coded := make([]validate.CodedWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		var code validate.WarningCode
+		switch warning.Warning.Kind {
+		case harness.ConfigWarningModelFallback:
+			code = validate.WarningModelFallback
+		default:
+			return nil, fmt.Errorf("unknown harness configuration warning kind %q", warning.Warning.Kind)
+		}
+		report.Issues = append(report.Issues, validate.Issue{
+			Code:     code,
+			Severity: validate.Warning,
+			Kind:     "Goober",
+			Name:     warning.Goober,
+			Message:  warning.Warning.Message,
+		})
+		coded = append(coded, validate.CodedWarning{
+			Code:        code,
+			Severity:    validate.Warning,
+			Scope:       "Goober/" + warning.Goober,
+			Explanation: warning.Warning.Message,
+		})
+	}
+	return coded, nil
 }
 
 func journalValidationWarnings(log *journal.InstanceLog, warnings []validate.CodedWarning) error {

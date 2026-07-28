@@ -649,6 +649,7 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
+		{name: "available model ignores fallback", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true})},
 		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
 		{name: "fable model supported", model: "claude-fable-5"},
 		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
@@ -658,6 +659,8 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		{name: "non-CLI model alias rejected", model: "mai-code-1-flash-picker", wantErr: "unknown model"},
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
+		{name: "fallback must be boolean", model: "not-a-model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: "yes"}), wantErr: "must be a boolean"},
+		{name: "fallback requires model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}), wantErr: "requires an explicit model"},
 		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
 		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
 		{name: "long context unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
@@ -705,6 +708,62 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		if !strings.Contains(command, want) {
 			t.Errorf("command = %q, want %q", command, want)
 		}
+	}
+}
+
+func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
+	options := testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+		"context":               "default",
+	})
+	adapter := &CopilotAdapter{}
+	resolution, err := adapter.ResolveConfig("retired-model", options)
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if resolution.Model != "" {
+		t.Fatalf("resolved model = %q, want harness default", resolution.Model)
+	}
+	if _, ok := resolution.HarnessOptions[fallbackToDefaultOption]; ok {
+		t.Fatalf("resolved options retain admission-only fallback flag: %v", resolution.HarnessOptions)
+	}
+	if got := string(resolution.HarnessOptions["context"].Raw); got != `"default"` {
+		t.Fatalf("resolved context = %s, want default", got)
+	}
+	if len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback ||
+		!strings.Contains(resolution.Warnings[0].Message, `"retired-model"`) {
+		t.Fatalf("warnings = %+v, want one model fallback warning", resolution.Warnings)
+	}
+
+	if _, err := adapter.ResolveConfig("retired-model", nil); err == nil ||
+		!strings.Contains(err.Error(), "valid models: auto, claude-fable-5") {
+		t.Fatalf("unknown model error = %v, want sorted valid-model list", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Model:          "retired-model",
+		HarnessOptions: options,
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want harness default without --model", runner.lastReq.Command)
+	}
+	contextIndex := slices.Index(runner.lastReq.Command, "--context")
+	if contextIndex < 0 || contextIndex+1 >= len(runner.lastReq.Command) || runner.lastReq.Command[contextIndex+1] != "default" {
+		t.Fatalf("command = %q, want retained --context default", runner.lastReq.Command)
 	}
 }
 

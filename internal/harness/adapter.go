@@ -145,6 +145,29 @@ type PreflightInfo struct {
 	Version string
 }
 
+// ConfigWarningKind identifies a non-blocking harness configuration finding.
+type ConfigWarningKind string
+
+const (
+	// ConfigWarningModelFallback reports that an unavailable requested model was
+	// replaced by the harness default.
+	ConfigWarningModelFallback ConfigWarningKind = "model-fallback"
+)
+
+// ConfigWarning is a non-blocking finding produced while resolving harness
+// configuration.
+type ConfigWarning struct {
+	Kind    ConfigWarningKind
+	Message string
+}
+
+// ConfigResolution is the effective harness configuration after validation.
+type ConfigResolution struct {
+	Model          string
+	HarnessOptions map[string]apiextensionsv1.JSON
+	Warnings       []ConfigWarning
+}
+
 // Adapter is the harness-adapter seam (GBO-051): the only way an agentic
 // stage drives an external coding agent. Implementations are security-critical
 // (GBO-041) — an Adapter is trusted to materialize only the credentials its
@@ -173,6 +196,12 @@ type ConfigValidator interface {
 	ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error
 }
 
+// ConfigResolver is implemented by adapters whose effective configuration can
+// differ from the declaration after an explicit fallback policy is applied.
+type ConfigResolver interface {
+	ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error)
+}
+
 // ValidateConfig delegates model and option validation to adapter. An adapter
 // without a validator may only be used with an empty harness configuration.
 func ValidateConfig(adapter Adapter, model string, options map[string]apiextensionsv1.JSON) error {
@@ -184,6 +213,32 @@ func ValidateConfig(adapter Adapter, model string, options map[string]apiextensi
 		return nil
 	}
 	return validator.ValidateConfig(model, options)
+}
+
+// ResolveConfig validates adapter-owned configuration and applies any explicit
+// fallback policy exposed by that adapter.
+func ResolveConfig(adapter Adapter, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	if resolver, ok := adapter.(ConfigResolver); ok {
+		return resolver.ResolveConfig(model, options)
+	}
+	if err := ValidateConfig(adapter, model, options); err != nil {
+		return ConfigResolution{}, err
+	}
+	return ConfigResolution{
+		Model:          model,
+		HarnessOptions: cloneHarnessOptions(options),
+	}, nil
+}
+
+func cloneHarnessOptions(options map[string]apiextensionsv1.JSON) map[string]apiextensionsv1.JSON {
+	if options == nil {
+		return nil
+	}
+	cloned := make(map[string]apiextensionsv1.JSON, len(options))
+	for name, value := range options {
+		cloned[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
+	}
+	return cloned
 }
 
 // readCompletion reads the harness's declared completion file back out of the

@@ -1671,7 +1671,8 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, fmt.Errorf("resolve goober %q harness: %w", gooberName, err)
 			}
-			if err := harness.ValidateConfig(adapter, spec.Model, spec.HarnessOptions); err != nil {
+			resolution, err := harness.ResolveConfig(adapter, spec.Model, spec.HarnessOptions)
+			if err != nil {
 				return nil, fmt.Errorf("validate goober %q harness config: %w", gooberName, err)
 			}
 			if newAgenticAdapter != nil {
@@ -1700,7 +1701,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
 			opts := []harness.Option{
-				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				harness.WithHarnessConfig(resolution.Model, resolution.HarnessOptions),
 				harness.WithHarnessVersion(harnessInfo[harnessName].Version),
 				harness.WithAssetBundle(assetsByGoober[gooberName]),
 				harness.WithMCPServers(spec.MCPServers),
@@ -1937,6 +1938,11 @@ func (e *gooberHarnessConfigError) Unwrap() error {
 	return e.Err
 }
 
+type gooberHarnessWarning struct {
+	Goober  string
+	Warning harness.ConfigWarning
+}
+
 type workflowCompileError struct {
 	Gaggle   string
 	Workflow string
@@ -1958,29 +1964,39 @@ func (e *workflowCompileError) Unwrap() error {
 // instance level yet, so this pins version 1 for every workflow, matching
 // run.go's existing limitation until a follow-up introduces one.
 func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+	machines, _, err := compiledMachinesWithWarnings(set, goobers)
+	return machines, err
+}
+
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 	adapterRegistry, err := buildHarnessRegistry(nil, nil, "", "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	gooberNames := make([]string, 0, len(goobers))
 	for name := range goobers {
 		gooberNames = append(gooberNames, name)
 	}
 	sort.Strings(gooberNames)
+	var warnings []gooberHarnessWarning
 	for _, name := range gooberNames {
 		spec := goobers[name]
 		harnessName := spec.Harness
 		if harnessName == "" {
 			harnessName = apiv1.HarnessCopilot
 		}
-		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, &gooberHarnessConfigError{Goober: name, Err: err}
+		resolution, err := adapterRegistry.ResolveConfig(string(harnessName), spec.Model, spec.HarnessOptions)
+		if err != nil {
+			return nil, nil, &gooberHarnessConfigError{Goober: name, Err: err}
+		}
+		for _, warning := range resolution.Warnings {
+			warnings = append(warnings, gooberHarnessWarning{Goober: name, Warning: warning})
 		}
 		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
-			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
+			return nil, nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
 		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
@@ -1996,11 +2012,11 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
-			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
-	return machines, nil
+	return machines, warnings, nil
 }
 
 // repoRefsByWorkflow resolves each workflow's RepoRef via its Gaggle's

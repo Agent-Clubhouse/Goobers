@@ -403,7 +403,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 		{
 			name: "unknown model",
 			spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot, Model: "unknown-model"},
-			want: `unknown model "unknown-model"`,
+			want: `unknown model "unknown-model"; valid models:`,
 		},
 		{
 			name: "unknown option",
@@ -461,6 +461,30 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
+	_, warnings, err := compiledMachinesWithWarnings(
+		&instance.ConfigSet{},
+		map[string]apiv1.GooberSpec{
+			"coder": {
+				Harness: apiv1.HarnessCopilot,
+				Model:   "retired-model",
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"fallback-to-default": {Raw: []byte("true")},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("compiledMachinesWithWarnings: %v", err)
+	}
+	if len(warnings) != 1 ||
+		warnings[0].Goober != "coder" ||
+		warnings[0].Warning.Kind != harness.ConfigWarningModelFallback ||
+		!strings.Contains(warnings[0].Warning.Message, `"retired-model"`) {
+		t.Fatalf("warnings = %+v, want one coder model-fallback warning", warnings)
 	}
 }
 

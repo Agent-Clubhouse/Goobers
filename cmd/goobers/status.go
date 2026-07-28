@@ -577,19 +577,24 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	warnings := report.CLIWarnings()
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
-		printValidationWarnings(stderr, warnings)
+		printValidationWarnings(stderr, report.CLIWarnings())
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	if _, _, err := compiledMachinesWithGooberDigests(l.ConfigDir(), set, goobers, instructions); err != nil {
-		printValidationWarnings(stderr, warnings)
+	_, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(l.ConfigDir(), set, goobers, instructions)
+	if err != nil {
+		printValidationWarnings(stderr, report.CLIWarnings())
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
+	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
+		pf(stderr, "error: append harness validation warnings: %v\n", err)
+		return 2
+	}
+	warnings := report.CLIWarnings()
 	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,

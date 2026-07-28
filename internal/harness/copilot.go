@@ -33,6 +33,8 @@ const defaultPromptFlag = "-p"
 // is the credential-scoping this adapter already does via EnvCapabilities.
 var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 
+const fallbackToDefaultOption = "fallback-to-default"
+
 type copilotModelCapabilities struct {
 	longContext     bool
 	reasoningEffort map[string]struct{}
@@ -145,8 +147,70 @@ func (c *CopilotAdapter) Name() string { return "copilot-cli" }
 // ValidateConfig rejects model and option values the Copilot CLI adapter does
 // not know how to express. This is called during config admission.
 func (c *CopilotAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
-	_, err := normalizeCopilotConfig(model, options)
+	_, err := c.ResolveConfig(model, options)
 	return err
+}
+
+// ResolveConfig validates Copilot configuration and applies the explicit
+// fallback-to-default policy when a requested model is unavailable.
+func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	effectiveOptions, fallback, err := copilotFallbackOption(options)
+	if err != nil {
+		return ConfigResolution{}, err
+	}
+	if model == "" && fallback {
+		return ConfigResolution{}, fmt.Errorf("harness option %q requires an explicit model", fallbackToDefaultOption)
+	}
+	if model != "" {
+		if _, ok := copilotModels[model]; !ok {
+			validModels := make([]string, 0, len(copilotModels))
+			for name := range copilotModels {
+				validModels = append(validModels, name)
+			}
+			sort.Strings(validModels)
+			if !fallback {
+				return ConfigResolution{}, fmt.Errorf("unknown model %q; valid models: %s", model, strings.Join(validModels, ", "))
+			}
+			if _, err := normalizeCopilotConfig("", effectiveOptions); err != nil {
+				return ConfigResolution{}, fmt.Errorf("fall back model %q to the harness default: %w", model, err)
+			}
+			return ConfigResolution{
+				HarnessOptions: effectiveOptions,
+				Warnings: []ConfigWarning{{
+					Kind:    ConfigWarningModelFallback,
+					Message: fmt.Sprintf("requested model %q is unavailable; using the harness default", model),
+				}},
+			}, nil
+		}
+	}
+	if _, err := normalizeCopilotConfig(model, effectiveOptions); err != nil {
+		return ConfigResolution{}, err
+	}
+	return ConfigResolution{
+		Model:          model,
+		HarnessOptions: effectiveOptions,
+	}, nil
+}
+
+func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]apiextensionsv1.JSON, bool, error) {
+	if len(options) == 0 {
+		return nil, false, nil
+	}
+	effective := make(map[string]apiextensionsv1.JSON, len(options))
+	fallback := false
+	for name, value := range options {
+		if name != fallbackToDefaultOption {
+			effective[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
+			continue
+		}
+		if err := json.Unmarshal(value.Raw, &fallback); err != nil {
+			return nil, false, fmt.Errorf("harness option %q must be a boolean: %w", name, err)
+		}
+	}
+	if len(effective) == 0 {
+		effective = nil
+	}
+	return effective, fallback, nil
 }
 
 func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
@@ -274,9 +338,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
-	harnessOptions, err := normalizeCopilotConfig(req.Model, req.HarnessOptions)
+	resolution, err := c.ResolveConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+	}
+	harnessOptions, err := normalizeCopilotConfig(resolution.Model, resolution.HarnessOptions)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid resolved configuration: %w", err)
 	}
 	if len(req.MCPServers) > 0 {
 		if err := c.requireMCPModelCredential(ctx, req); err != nil {
@@ -307,8 +375,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	baseCommand := resolveHarnessCommand(c.Command)
 	argv := append(baseCommand, flag, prompt)
 	promptArg := len(baseCommand) + 1
-	if req.Model != "" {
-		argv = append(argv, "--model", req.Model)
+	if resolution.Model != "" {
+		argv = append(argv, "--model", resolution.Model)
 	}
 	if value, ok := harnessOptions["context"]; ok {
 		argv = append(argv, "--context", value)
