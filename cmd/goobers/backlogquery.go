@@ -922,7 +922,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
 			ctx,
-			issueProvider,
+			ghIssueProvider,
 			repo,
 			readOnlyResweep,
 			observedAt,
