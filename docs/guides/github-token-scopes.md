@@ -67,6 +67,14 @@ configured, the Copilot adapter uses the stored CLI session. When a grant is
 configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
 from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
 
+Current limitation: the production harness auth preflight runs before this
+capability credential is resolved. A token-backed agentic stage on a clean
+service or CI profile therefore still needs a stored Copilot CLI sign-in to
+pass startup. The
+[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
+records the failure and the required preflight change; do not bypass the
+capability boundary with ambient token passthrough.
+
 **Cross-org reality — why it must be a separate token.** "Copilot Requests" is
 an **account-level** permission: it can only be granted on a **personal**
 fine-grained PAT, never on a token scoped to an organization's repositories. So

@@ -173,6 +173,13 @@ described in
 [GitHub token scopes](github-token-scopes.md#agentic-copilot-harness-stages-stored-login-or-agentmodel-token).
 Never put either token in this evidence bundle.
 
+The token-only hosted-runner spike in
+[Copilot hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
+found that the current production preflight runs before `agent:model`
+credentials are resolved. A clean ephemeral profile therefore still requires
+the stored sign-in described above; the linked report records the exact
+failure, fixed sentinel, and unblock condition.
+
 ### Run and capture evidence
 
 The commands below are literal except for the one marked value:
