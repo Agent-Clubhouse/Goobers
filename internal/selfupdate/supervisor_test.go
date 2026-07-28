@@ -27,7 +27,7 @@ type fakeLauncher struct {
 	hook    func(int) error
 }
 
-func (l *fakeLauncher) Start(string, string, io.Writer, io.Writer) (Process, error) {
+func (l *fakeLauncher) Start(string, string, io.Writer, io.Writer) (process, error) {
 	l.calls++
 	if l.hook != nil {
 		if err := l.hook(l.calls); err != nil {
@@ -72,13 +72,13 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		_, err := os.Stat(RequestPath(root))
+		_, err := os.Stat(requestPath(root))
 		return errors.Is(err, os.ErrNotExist)
 	})
-	if got, _ := os.ReadFile(CurrentBinary(root, "linux")); string(got) != "candidate" {
+	if got, _ := os.ReadFile(currentBinary(root, "linux")); string(got) != "candidate" {
 		t.Fatalf("current binary = %q", got)
 	}
-	if got, _ := os.ReadFile(PreviousBinary(root, "linux")); string(got) != "old" {
+	if got, _ := os.ReadFile(previousBinary(root, "linux")); string(got) != "old" {
 		t.Fatalf("previous binary = %q", got)
 	}
 	stopSupervisor(t, root, cancel, candidate, done)
@@ -99,7 +99,7 @@ func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("rollback was not escalated")
 	}
-	if got, _ := os.ReadFile(CurrentBinary(root, "linux")); string(got) != "old" {
+	if got, _ := os.ReadFile(currentBinary(root, "linux")); string(got) != "old" {
 		t.Fatalf("rolled-back binary = %q", got)
 	}
 	stopSupervisor(t, root, cancel, restored, done)
@@ -107,37 +107,38 @@ func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
 
 func TestSupervisorKeepsCurrentAfterConsecutiveActivationCrash(t *testing.T) {
 	root, _, request := setupSupervisorRequest(t)
-	writeTestExecutable(t, PreviousBinary(root, "linux"), "stale")
+	writeTestExecutable(t, previousBinary(root, "linux"), "stale")
 	request.Status, request.Target = "activating", "v3"
-	if err := WriteRequest(root, request); err != nil {
+	if err := writeRequest(root, request); err != nil {
 		t.Fatal(err)
 	}
 	launcher := &fakeLauncher{started: make(chan *fakeProcess, 1)}
 	cancel, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
 	current := <-launcher.started
-	if got, _ := os.ReadFile(CurrentBinary(root, "linux")); string(got) != "old" {
+	if got, _ := os.ReadFile(currentBinary(root, "linux")); string(got) != "old" {
 		t.Fatalf("current binary after interrupted second activation = %q", got)
 	}
 	stopSupervisor(t, root, cancel, current, done)
 }
+
 func setupSupervisorRequest(t *testing.T) (string, time.Time, Request) {
 	t.Helper()
 	root := t.TempDir()
-	writeTestExecutable(t, CurrentBinary(root, "linux"), "old")
-	staged := filepath.Join(StagingDir(root), "target", "goobers")
+	writeTestExecutable(t, currentBinary(root, "linux"), "old")
+	staged := filepath.Join(stagingDir(root), "target", "goobers")
 	writeTestExecutable(t, staged, "candidate")
 	now := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)
 	request := Request{
 		RunID: "run", Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers", Target: "v2", StagedPath: staged, RequestedAt: now,
 		HealthTicks: 1, HealthTimeout: time.Minute.String(), Status: "requested",
 	}
-	if err := WriteRequest(root, request); err != nil {
+	if err := writeRequest(root, request); err != nil {
 		t.Fatal(err)
 	}
 	return root, now, request
 }
 
-func startSupervisor(root string, launcher Launcher, escalator Escalator) (context.CancelFunc, <-chan error) {
+func startSupervisor(root string, launcher launcher, escalator escalator) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -153,7 +154,7 @@ func startSupervisor(root string, launcher Launcher, escalator Escalator) (conte
 func drainAndComplete(t *testing.T, root string, process *fakeProcess) {
 	t.Helper()
 	waitFor(t, func() bool {
-		_, err := os.Stat(StopRequestPath(root))
+		_, err := os.Stat(stopRequestPath(root))
 		return err == nil
 	})
 	if _, err := ConsumeStopRequest(root); err != nil {
@@ -166,7 +167,7 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 	t.Helper()
 	cancel()
 	waitFor(t, func() bool {
-		_, err := os.Stat(StopRequestPath(root))
+		_, err := os.Stat(stopRequestPath(root))
 		return err == nil
 	})
 	process.complete(nil)

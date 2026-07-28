@@ -171,5 +171,3 @@ func resolveSelfUpdateEscalationToken(ctx context.Context, cfg *instance.Config,
 	}
 	return resolveRepoToken(configured, configured.Owner+"/"+configured.Name, stores)
 }
-
-var _ selfupdate.Escalator = selfUpdateEscalator{}

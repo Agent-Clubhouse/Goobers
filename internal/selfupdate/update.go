@@ -25,14 +25,19 @@ import (
 )
 
 const (
-	PolicyManual    = "manual"
+	// PolicyManual stages an explicitly selected release.
+	PolicyManual = "manual"
+	// PolicyOnRelease tracks the latest tagged release.
 	PolicyOnRelease = "on-release"
-	PolicyOnMain    = "on-main"
+	// PolicyOnMain tracks the configured product repository branch.
+	PolicyOnMain = "on-main"
 
-	requestSchema        = "goobers.dev/self-update/v1"
-	DefaultHealthTicks   = 3
+	requestSchema = "goobers.dev/self-update/v1"
+	// DefaultHealthTicks is the required number of clean heartbeat intervals.
+	DefaultHealthTicks = 3
+	// DefaultHealthTimeout bounds candidate health monitoring.
 	DefaultHealthTimeout = 5 * time.Minute
-	DefaultPollInterval  = time.Second
+	defaultPollInterval  = time.Second
 	maxArchiveBytes      = 1 << 30
 	maxMetadataBytes     = 1 << 20
 )
@@ -54,28 +59,29 @@ type Request struct {
 	Reason        string    `json:"reason,omitempty"`
 }
 
+// PrepareOptions configures update discovery, staging, and validation.
 type PrepareOptions struct {
 	Root, WorkDir, Policy, Owner, Repository, Branch, Target, Token, RunID string
 	HealthTicks                                                            int
 	HealthTimeout, HeartbeatInterval                                       time.Duration
 	GOOS, GOARCH, APIBaseURL                                               string
 	HTTPClient                                                             *http.Client
-	Runner                                                                 CommandRunner
+	Runner                                                                 commandRunner
 }
 
+// PrepareResult describes the target selected by an update check.
 type PrepareResult struct {
 	UpdateRequested bool   `json:"updateRequested"`
 	Policy          string `json:"policy"`
 	Target          string `json:"target,omitempty"`
 }
 
-type CommandRunner interface {
+type commandRunner interface {
 	Run(context.Context, string, string, ...string) ([]byte, error)
 }
+type execRunner struct{}
 
-type ExecRunner struct{}
-
-func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+func (execRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
 	output, err := command.CombinedOutput()
@@ -85,11 +91,7 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) ([]
 	return output, nil
 }
 
-type versionInfo struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
-}
-
+type versionInfo struct{ Version, Commit string }
 type githubRelease struct {
 	TagName string `json:"tag_name"`
 	Assets  []struct {
@@ -98,22 +100,23 @@ type githubRelease struct {
 	} `json:"assets"`
 }
 
+// Prepare discovers, stages, validates, and publishes an update request.
 func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr error) {
 	opts = defaultPrepareOptions(opts)
 	if err := validatePrepareOptions(opts); err != nil {
 		return PrepareResult{}, err
 	}
-	if err := os.MkdirAll(UpdatesDir(opts.Root), 0o755); err != nil {
+	if err := os.MkdirAll(updatesDir(opts.Root), 0o755); err != nil {
 		return PrepareResult{}, fmt.Errorf("create self-update directory: %w", err)
 	}
-	currentPath := CurrentBinary(opts.Root, opts.GOOS)
+	currentPath := currentBinary(opts.Root, opts.GOOS)
 	if _, err := os.Stat(currentPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return PrepareResult{}, errors.New("self-update requires `goobers service install` and a running supervised daemon")
 		}
 		return PrepareResult{}, fmt.Errorf("inspect supervised binary: %w", err)
 	}
-	if _, err := os.Stat(RequestPath(opts.Root)); err == nil {
+	if _, err := os.Stat(requestPath(opts.Root)); err == nil {
 		return PrepareResult{}, errors.New("a self-update handoff is already pending")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return PrepareResult{}, fmt.Errorf("inspect self-update request: %w", err)
@@ -167,7 +170,7 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		HealthTimeout: opts.HealthTimeout.String(),
 		Status:        "requested",
 	}
-	published, err = writeRequest(opts.Root, request)
+	published, err = publishRequest(opts.Root, request)
 	if err != nil {
 		return PrepareResult{}, err
 	}
@@ -187,7 +190,7 @@ func defaultPrepareOptions(opts PrepareOptions) PrepareOptions {
 		opts.HTTPClient = &http.Client{Timeout: 2 * time.Minute}
 	}
 	if opts.Runner == nil {
-		opts.Runner = ExecRunner{}
+		opts.Runner = execRunner{}
 	}
 	return opts
 }
@@ -276,9 +279,10 @@ func stageRelease(ctx context.Context, opts PrepareOptions, release githubReleas
 	archiveName := fmt.Sprintf("goobers_%s_%s_%s.%s", release.TagName, opts.GOOS, opts.GOARCH, extension)
 	var archiveURL, sumsURL string
 	for _, asset := range release.Assets {
-		if asset.Name == archiveName {
+		switch asset.Name {
+		case archiveName:
 			archiveURL = asset.URL
-		} else if asset.Name == "SHA256SUMS" {
+		case "SHA256SUMS":
 			sumsURL = asset.URL
 		}
 	}
@@ -351,7 +355,7 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 }
 
 func newStageDir(root, target string) (string, func() error, error) {
-	dir := filepath.Join(StagingDir(root), digestName(target))
+	dir := filepath.Join(stagingDir(root), digestName(target))
 	if err := os.RemoveAll(dir); err != nil {
 		return "", nil, fmt.Errorf("clear staging directory: %w", err)
 	}
@@ -380,7 +384,7 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 	return info, nil
 }
 
-func readVersion(ctx context.Context, runner CommandRunner, dir, binary string) (versionInfo, error) {
+func readVersion(ctx context.Context, runner commandRunner, dir, binary string) (versionInfo, error) {
 	raw, err := runner.Run(ctx, dir, binary, "version", "--json")
 	if err != nil {
 		return versionInfo{}, err
@@ -546,33 +550,31 @@ func binaryName(goos string) string {
 	return "goobers"
 }
 
-func UpdatesDir(root string) string      { return filepath.Join(root, "updates") }
-func StagingDir(root string) string      { return filepath.Join(UpdatesDir(root), "staged") }
-func RequestPath(root string) string     { return filepath.Join(UpdatesDir(root), "request.json") }
-func StopRequestPath(root string) string { return filepath.Join(UpdatesDir(root), "stop-request") }
-func CurrentBinary(root, goos string) string {
-	return filepath.Join(UpdatesDir(root), "current", binaryName(goos))
+func updatesDir(root string) string      { return filepath.Join(root, "updates") }
+func stagingDir(root string) string      { return filepath.Join(updatesDir(root), "staged") }
+func requestPath(root string) string     { return filepath.Join(updatesDir(root), "request.json") }
+func stopRequestPath(root string) string { return filepath.Join(updatesDir(root), "stop-request") }
+func currentBinary(root, goos string) string {
+	return filepath.Join(updatesDir(root), "current", binaryName(goos))
 }
-func PreviousBinary(root, goos string) string {
-	return filepath.Join(UpdatesDir(root), "previous", binaryName(goos))
+func previousBinary(root, goos string) string {
+	return filepath.Join(updatesDir(root), "previous", binaryName(goos))
 }
-func WriteRequest(root string, request Request) error {
-	_, err := writeRequest(root, request)
+func writeRequest(root string, request Request) error {
+	_, err := publishRequest(root, request)
 	return err
 }
-
-func writeRequest(root string, request Request) (bool, error) {
+func publishRequest(root string, request Request) (bool, error) {
 	if request.Schema == "" {
 		request.Schema = requestSchema
 	}
 	if request.Schema != requestSchema {
 		return false, fmt.Errorf("unsupported self-update request schema %q", request.Schema)
 	}
-	return writeJSONAtomic(RequestPath(root), request)
+	return writeJSONAtomic(requestPath(root), request)
 }
-
-func ReadRequest(root string) (Request, error) {
-	raw, err := os.ReadFile(RequestPath(root))
+func readRequest(root string) (Request, error) {
+	raw, err := os.ReadFile(requestPath(root))
 	if err != nil {
 		return Request{}, err
 	}
@@ -585,7 +587,6 @@ func ReadRequest(root string) (Request, error) {
 	}
 	return request, nil
 }
-
 func writeJSONAtomic(path string, value any) (bool, error) {
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {

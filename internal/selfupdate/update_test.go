@@ -50,7 +50,7 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 	for _, policy := range []string{PolicyOnRelease, PolicyOnMain} {
 		t.Run(policy, func(t *testing.T) {
 			root, work := t.TempDir(), t.TempDir()
-			current := CurrentBinary(root, "linux")
+			current := currentBinary(root, "linux")
 			writeTestExecutable(t, current, "old")
 			smokes := 0
 			runner := commandFunc(func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
@@ -90,7 +90,7 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			request, err := ReadRequest(root)
+			request, err := readRequest(root)
 			if err != nil {
 				t.Fatal(err)
 			}
