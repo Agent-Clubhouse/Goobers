@@ -237,6 +237,12 @@ headers. Return `NewQueryError` with a stable code, kind, and retryability for
 classified failures. The host independently enforces timeout, retry count,
 row/byte bounds, schema validation, and normalized artifact construction.
 
+Every adapter should run the shared public contract suite from
+`github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest` against a
+successful fixture request. `contracttest.Run(t, connector, request)` verifies
+stable identity, row/column consistency, and cancellation behavior without
+importing Goobers internal packages.
+
 ## Troubleshooting
 
 | Symptom/code | Action |

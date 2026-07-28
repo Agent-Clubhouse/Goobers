@@ -52,7 +52,7 @@ github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-me
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
-github.com/goobers/goobers/internal/externaltelemetry/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
+github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
 github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
 github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
 github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.

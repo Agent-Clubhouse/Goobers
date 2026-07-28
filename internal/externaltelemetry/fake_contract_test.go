@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/externaltelemetry"
-	"github.com/goobers/goobers/internal/externaltelemetry/contracttest"
+	"github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest"
 )
 
 func TestFakeConnectorContract(t *testing.T) {

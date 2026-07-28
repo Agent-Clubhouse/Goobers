@@ -92,7 +92,10 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 	if !containsString(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindExternalTelemetry, required)
 	}
-	connectorName := stringInput(env, InputTelemetryConnector)
+	connectorName, err := telemetryStringInput(env, InputTelemetryConnector)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	if connectorName == "" {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires %s", KindExternalTelemetry, InputTelemetryConnector)
 	}
@@ -151,8 +154,14 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 }
 
 func (e *TelemetryQueryExecutor) requestFromEnvelope(env apiv1.InvocationEnvelope) (externaltelemetry.QueryRequest, error) {
-	query := stringInput(env, InputTelemetryQuery)
-	queryRef := stringInput(env, InputTelemetryQueryRef)
+	query, err := telemetryStringInput(env, InputTelemetryQuery)
+	if err != nil {
+		return externaltelemetry.QueryRequest{}, err
+	}
+	queryRef, err := telemetryStringInput(env, InputTelemetryQueryRef)
+	if err != nil {
+		return externaltelemetry.QueryRequest{}, err
+	}
 	if (query == "") == (queryRef == "") {
 		return externaltelemetry.QueryRequest{}, fmt.Errorf("executor: kind=%s requires exactly one of %s or %s", KindExternalTelemetry, InputTelemetryQuery, InputTelemetryQueryRef)
 	}
@@ -180,10 +189,18 @@ func (e *TelemetryQueryExecutor) requestFromEnvelope(env apiv1.InvocationEnvelop
 		QueryRef: queryRef,
 		Shape:    externaltelemetry.ShapeTable,
 	}
-	if value := stringInput(env, InputTelemetryShape); value != "" {
+	value, err := telemetryStringInput(env, InputTelemetryShape)
+	if err != nil {
+		return externaltelemetry.QueryRequest{}, err
+	}
+	if value != "" {
 		request.Shape = externaltelemetry.ResultShape(value)
 	}
-	if value := stringInput(env, InputTelemetryParameters); value != "" {
+	value, err = telemetryStringInput(env, InputTelemetryParameters)
+	if err != nil {
+		return externaltelemetry.QueryRequest{}, err
+	}
+	if value != "" {
 		if err := decodeStrictJSON(value, &request.Parameters); err != nil {
 			return externaltelemetry.QueryRequest{}, fmt.Errorf("executor: invalid %s: %w", InputTelemetryParameters, err)
 		}
@@ -191,7 +208,11 @@ func (e *TelemetryQueryExecutor) requestFromEnvelope(env apiv1.InvocationEnvelop
 			return externaltelemetry.QueryRequest{}, fmt.Errorf("executor: invalid %s: expected a JSON object", InputTelemetryParameters)
 		}
 	}
-	if value := stringInput(env, InputTelemetryExpectedSchema); value != "" {
+	value, err = telemetryStringInput(env, InputTelemetryExpectedSchema)
+	if err != nil {
+		return externaltelemetry.QueryRequest{}, err
+	}
+	if value != "" {
 		if err := decodeStrictJSON(value, &request.ExpectedColumns); err != nil {
 			return externaltelemetry.QueryRequest{}, fmt.Errorf("executor: invalid %s: %w", InputTelemetryExpectedSchema, err)
 		}
@@ -202,7 +223,6 @@ func (e *TelemetryQueryExecutor) requestFromEnvelope(env apiv1.InvocationEnvelop
 	if err := e.populateWindow(env, &request); err != nil {
 		return externaltelemetry.QueryRequest{}, err
 	}
-	var err error
 	if request.Freshness, err = optionalDurationInput(env, InputTelemetryFreshness); err != nil {
 		return externaltelemetry.QueryRequest{}, err
 	}
@@ -225,9 +245,18 @@ func (e *TelemetryQueryExecutor) requestFromEnvelope(env apiv1.InvocationEnvelop
 }
 
 func (e *TelemetryQueryExecutor) populateWindow(env apiv1.InvocationEnvelope, request *externaltelemetry.QueryRequest) error {
-	relative := stringInput(env, InputTelemetryWindow)
-	start := stringInput(env, InputTelemetryWindowStart)
-	end := stringInput(env, InputTelemetryWindowEnd)
+	relative, err := telemetryStringInput(env, InputTelemetryWindow)
+	if err != nil {
+		return err
+	}
+	start, err := telemetryStringInput(env, InputTelemetryWindowStart)
+	if err != nil {
+		return err
+	}
+	end, err := telemetryStringInput(env, InputTelemetryWindowEnd)
+	if err != nil {
+		return err
+	}
 	if relative != "" && (start != "" || end != "") {
 		return fmt.Errorf("executor: %s is mutually exclusive with %s/%s", InputTelemetryWindow, InputTelemetryWindowStart, InputTelemetryWindowEnd)
 	}
@@ -280,7 +309,10 @@ func decodeStrictJSON(value string, target any) error {
 }
 
 func optionalDurationInput(env apiv1.InvocationEnvelope, key string) (time.Duration, error) {
-	value := stringInput(env, key)
+	value, err := telemetryStringInput(env, key)
+	if err != nil {
+		return 0, err
+	}
 	if value == "" {
 		return 0, nil
 	}
@@ -292,7 +324,10 @@ func optionalDurationInput(env apiv1.InvocationEnvelope, key string) (time.Durat
 }
 
 func optionalPositiveIntInput(env apiv1.InvocationEnvelope, key string) (int, error) {
-	value := stringInput(env, key)
+	value, err := telemetryStringInput(env, key)
+	if err != nil {
+		return 0, err
+	}
 	if value == "" {
 		return 0, nil
 	}
@@ -301,4 +336,16 @@ func optionalPositiveIntInput(env apiv1.InvocationEnvelope, key string) (int, er
 		return 0, fmt.Errorf("executor: invalid %s input %q", key, value)
 	}
 	return parsed, nil
+}
+
+func telemetryStringInput(env apiv1.InvocationEnvelope, key string) (string, error) {
+	value, present := env.Inputs[key]
+	if !present {
+		return "", nil
+	}
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("executor: invalid %s input: expected string, got %T", key, value)
+	}
+	return stringValue, nil
 }

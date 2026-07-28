@@ -147,6 +147,55 @@ func TestTelemetryQueryExecutorRejectsEscapingQueryRef(t *testing.T) {
 	}
 }
 
+func TestTelemetryQueryExecutorRejectsTypedInputsFromValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value any
+	}{
+		{
+			name:  "numeric max rows",
+			key:   InputTelemetryMaxRows,
+			value: json.Number("1"),
+		},
+		{
+			name:  "object parameters",
+			key:   InputTelemetryParameters,
+			value: map[string]any{"region": "west"},
+		},
+		{
+			name: "array expected columns",
+			key:  InputTelemetryExpectedSchema,
+			value: []any{
+				map[string]any{"name": "requests", "type": "integer"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor, recorder := newTelemetryTestExecutor(t)
+			inputs := map[string]any{
+				InputKind:               KindExternalTelemetry,
+				InputTelemetryConnector: "fixture",
+				InputTelemetryQuery:     "request-count",
+				test.key:                test.value,
+			}
+			_, err := executor.Run(context.Background(), apiv1.InvocationEnvelope{
+				Workspace:    t.TempDir(),
+				Capabilities: []string{string(capability.TelemetryRead)},
+				Inputs:       inputs,
+			}, apiv1.DeterministicRun{})
+			if err == nil || !strings.Contains(err.Error(), test.key) ||
+				!strings.Contains(err.Error(), "expected string") {
+				t.Fatalf("typed %s error = %v", test.key, err)
+			}
+			if len(recorder.recorded) != 0 {
+				t.Fatalf("typed %s recorded artifacts: %v", test.key, recorder.recorded)
+			}
+		})
+	}
+}
+
 func newTelemetryTestExecutor(t *testing.T) (*TelemetryQueryExecutor, *fakeRecorder) {
 	t.Helper()
 	registry := externaltelemetry.NewRegistry()

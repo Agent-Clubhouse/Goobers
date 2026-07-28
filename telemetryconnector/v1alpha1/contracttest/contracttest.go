@@ -1,22 +1,22 @@
-// Package contracttest provides the connector checks shared by built-in and
-// extension adapters.
+// Package contracttest provides connector checks shared by built-in and
+// independently maintained extension adapters.
 package contracttest
 
 import (
 	"context"
 	"testing"
 
-	"github.com/goobers/goobers/internal/externaltelemetry"
+	connector "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
 // Run verifies the common connector identity, result, and cancellation contract.
-func Run(t *testing.T, connector externaltelemetry.Connector, request externaltelemetry.QueryRequest) {
+func Run(t *testing.T, implementation connector.Connector, request connector.QueryRequest) {
 	t.Helper()
-	descriptor := connector.Descriptor()
+	descriptor := implementation.Descriptor()
 	if descriptor.Kind == "" || descriptor.Version == "" || descriptor.SourceID == "" {
 		t.Fatalf("incomplete connector descriptor: %+v", descriptor)
 	}
-	result, err := connector.Query(context.Background(), request)
+	result, err := implementation.Query(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -28,7 +28,7 @@ func Run(t *testing.T, connector externaltelemetry.Connector, request externalte
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := connector.Query(ctx, request); err == nil {
+	if _, err := implementation.Query(ctx, request); err == nil {
 		t.Fatal("Query with canceled context unexpectedly succeeded")
 	}
 }

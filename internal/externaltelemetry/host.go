@@ -54,7 +54,7 @@ func (h *Host) Query(ctx context.Context, connectorName string, request QueryReq
 			false,
 			fmt.Errorf("maxBytes must be at least %d", MinimumMaxBytes),
 		))
-		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, QueryProvenance{}, started, h.now()(), 0, entry.limits, queryErr), queryErr
+		return boundedFailedArtifact(connectorName, entry.connector.Descriptor(), request, provenance, started, h.now()(), 0, entry.limits, queryErr), queryErr
 	}
 	limits := effectiveLimits(entry.limits, request.Limits)
 	if provenanceErr != nil {
@@ -208,6 +208,14 @@ func normalize(
 				"limit",
 				false,
 				fmt.Errorf("normalized metadata exceeds %d-byte limit", limits.MaxBytes),
+			)
+		}
+		if artifact.Shape == ShapePoint {
+			return ResultArtifact{}, NewQueryError(
+				"result_too_large",
+				"limit",
+				false,
+				fmt.Errorf("normalized point value exceeds %d-byte limit", limits.MaxBytes),
 			)
 		}
 		artifact.Rows = artifact.Rows[:len(artifact.Rows)-1]

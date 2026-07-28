@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/externaltelemetry"
-	"github.com/goobers/goobers/internal/externaltelemetry/contracttest"
+	"github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest"
 )
 
 const successResponse = `[

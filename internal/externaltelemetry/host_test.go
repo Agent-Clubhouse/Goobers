@@ -66,6 +66,28 @@ func TestHostNormalizesFreshnessSchemaAndLimits(t *testing.T) {
 	}
 }
 
+func TestHostFailsWhenPointValueExceedsByteLimit(t *testing.T) {
+	connector := &sequenceConnector{result: SourceResult{
+		Columns: []Column{{Name: "value", Type: TypeString}},
+		Rows:    [][]any{{strings.Repeat("large-point-value", MinimumMaxBytes)}},
+	}}
+	registry := registryForHostTest(connector, QueryLimits{
+		Timeout: time.Second, MaxAttempts: 1, RetryBackoff: time.Millisecond,
+		MaxRows: 1, MaxBytes: MinimumMaxBytes,
+	})
+
+	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
+		Query: "q", Shape: ShapePoint,
+	})
+	if err == nil || artifact.State != DataFailed || artifact.Failure == nil ||
+		artifact.Failure.Code != "result_too_large" {
+		t.Fatalf("oversized point = state %q failure %+v err %v", artifact.State, artifact.Failure, err)
+	}
+	if len(artifact.Rows) != 0 {
+		t.Fatalf("failed point retained rows: %+v", artifact.Rows)
+	}
+}
+
 func TestHostDistinguishesEmptyAndFailed(t *testing.T) {
 	registry := configuredFakeRegistry(t, ConnectorConfig{
 		Name:    "metrics",
@@ -453,8 +475,10 @@ func TestHostRejectsUndersizedRequestByteLimit(t *testing.T) {
 	})
 
 	artifact, err := (&Host{Registry: registry}).Query(context.Background(), "sequence", QueryRequest{
-		Query: "q",
-		Shape: ShapeTable,
+		Query:      "q",
+		QueryRef:   "queries/q.kql",
+		Parameters: map[string]any{"region": "west"},
+		Shape:      ShapeTable,
 		Limits: QueryLimits{
 			MaxBytes: MinimumMaxBytes - 1,
 		},
@@ -464,6 +488,11 @@ func TestHostRejectsUndersizedRequestByteLimit(t *testing.T) {
 	}
 	if connector.calls != 0 {
 		t.Fatalf("undersized request reached connector %d time(s)", connector.calls)
+	}
+	if artifact.Query.Digest == "" || artifact.Query.Reference != "queries/q.kql" ||
+		artifact.Query.ParameterDigest == "" || len(artifact.Query.ParameterNames) != 1 ||
+		artifact.Query.ParameterNames[0] != "region" {
+		t.Fatalf("undersized request provenance = %+v", artifact.Query)
 	}
 }
 
