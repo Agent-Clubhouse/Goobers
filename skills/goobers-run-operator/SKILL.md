@@ -164,6 +164,9 @@ az devops invoke --http-method GET --area git --resource pullRequests \
   pullRequestId=<id> --org <organization-url> --output json
 ```
 
+For PR reads, `repositoryId` must be the resolver-selected repository identity;
+never infer it from the PR URL, current directory, or project name.
+
 The journal records what the run touched at an event timestamp; the provider
 read reports current state at query time. Cite both when state may have changed.
 If the target mapping or provider read is unavailable, retain the recorded

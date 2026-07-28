@@ -1,12 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/lock"
 )
 
 type runOperatorCorpus struct {
@@ -18,23 +29,27 @@ type runOperatorCorpus struct {
 }
 
 type runOperatorCorpusCase struct {
-	Name        string          `json:"name"`
-	DaemonState string          `json:"daemonState"`
-	Question    string          `json:"question"`
-	Commands    []string        `json:"commands"`
-	Fixture     json.RawMessage `json:"fixture"`
-	Expected    struct {
-		Classification string   `json:"classification"`
-		Facts          []string `json:"facts"`
-		Citations      []struct {
-			Source    string   `json:"source"`
-			RunID     string   `json:"runId"`
-			Seqs      []uint64 `json:"seqs"`
-			Timestamp string   `json:"timestamp"`
-			URL       string   `json:"url"`
-		} `json:"citations"`
-		Uncertainty []string `json:"uncertainty"`
-	} `json:"expected"`
+	Name        string              `json:"name"`
+	DaemonState string              `json:"daemonState"`
+	Question    string              `json:"question"`
+	Commands    []string            `json:"commands"`
+	Fixture     json.RawMessage     `json:"fixture"`
+	Expected    runOperatorExpected `json:"expected"`
+}
+
+type runOperatorExpected struct {
+	Classification string                `json:"classification"`
+	Facts          []string              `json:"facts"`
+	Citations      []runOperatorCitation `json:"citations"`
+	Uncertainty    []string              `json:"uncertainty"`
+}
+
+type runOperatorCitation struct {
+	Source    string   `json:"source"`
+	RunID     string   `json:"runId"`
+	Seqs      []uint64 `json:"seqs"`
+	Timestamp string   `json:"timestamp"`
+	URL       string   `json:"url"`
 }
 
 func TestRunOperatorQuestionCorpus(t *testing.T) {
@@ -97,6 +112,11 @@ func TestRunOperatorQuestionCorpus(t *testing.T) {
 			requiredClassifications[testCase.Expected.Classification] = true
 		}
 		assertRunOperatorFixtureContracts(t, testCase.Name, testCase.Fixture)
+		evidence := inspectRunOperatorFixtureEvidence(t, testCase.Name, testCase.Fixture)
+		if len(evidence.Issues) > 0 && len(testCase.Expected.Uncertainty) == 0 {
+			t.Errorf("%s: incomplete fixture evidence requires uncertainty: %s",
+				testCase.Name, strings.Join(evidence.Issues, "; "))
+		}
 		if len(testCase.Expected.Facts) == 0 || len(testCase.Expected.Citations) == 0 {
 			t.Errorf("%s: expected facts and citations must be populated", testCase.Name)
 		}
@@ -141,6 +161,16 @@ func TestRunOperatorQuestionCorpus(t *testing.T) {
 			if citation.RunID != "" && len(citation.Seqs) == 0 {
 				t.Errorf("%s: run citation %q has no event sequences", testCase.Name, citation.RunID)
 			}
+			for _, seq := range citation.Seqs {
+				if _, ok := evidence.EventSeqs[seq]; !ok {
+					t.Errorf("%s: citation references absent event sequence %d", testCase.Name, seq)
+				}
+			}
+		}
+		for _, causalSeq := range evidence.CausalSeqs {
+			if !runOperatorCitationsContainSeq(testCase.Expected.Citations, causalSeq) {
+				t.Errorf("%s: causal event sequence %d is not cited", testCase.Name, causalSeq)
+			}
 		}
 	}
 	for classification, found := range requiredClassifications {
@@ -161,6 +191,79 @@ func TestRunOperatorQuestionCorpus(t *testing.T) {
 		if hasAllowedRunOperatorPrefix(command, corpus.AllowedCommandPrefixes) {
 			t.Errorf("mutation negative control is accidentally allowlisted: %q", command)
 		}
+	}
+}
+
+func TestRunOperatorQuestionCorpusScenarios(t *testing.T) {
+	corpus := loadRunOperatorCorpus(t)
+	binary := buildRunOperatorCLI(t)
+	for _, name := range []string{
+		"recent-first-pass-success-stopped",
+		"reviewer-repass-live",
+	} {
+		testCase := findRunOperatorCorpusCase(t, corpus, name)
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "instance")
+			if _, err := instance.Init(root); err != nil {
+				t.Fatalf("initialize fixture instance: %v", err)
+			}
+			materializeRunOperatorJournal(t, root, testCase.Fixture)
+			configureRunOperatorDaemonMode(t, root, testCase.DaemonState)
+
+			observation := executeRunOperatorReads(t, binary, root, testCase.Commands)
+			got, err := answerRunOperatorObservation(observation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, testCase.Expected) {
+				t.Errorf("operator answer mismatch:\ngot  %#v\nwant %#v", got, testCase.Expected)
+			}
+		})
+	}
+}
+
+func TestRunOperatorEvidenceInspectionRejectsMissingCausalEvent(t *testing.T) {
+	fixture := json.RawMessage(`{
+		"trace": {
+			"phase": "completed",
+			"outcome": {"causalEventSeq": 11},
+			"events": [
+				{"seq": 9, "type": "stage.finished"},
+				{"seq": 10, "type": "ref.touched"},
+				{"seq": 12, "type": "run.finished"}
+			]
+		}
+	}`)
+	evidence := inspectRunOperatorFixtureEvidence(t, "missing-causal-event", fixture)
+	for _, want := range []string{
+		"event sequence gap between 10 and 12",
+		"causal event sequence 11 is absent",
+	} {
+		if !containsRunOperatorString(evidence.Issues, want) {
+			t.Errorf("evidence issues = %q, want %q", evidence.Issues, want)
+		}
+	}
+}
+
+func TestRunOperatorADOProviderReadRejectsWrongRepository(t *testing.T) {
+	testCase := findRunOperatorCorpusCase(t, loadRunOperatorCorpus(t), "azure-devops-pr-created")
+	var command string
+	for _, candidate := range testCase.Commands {
+		if strings.Contains(candidate, "--resource pullRequests") {
+			command = candidate
+			break
+		}
+	}
+	if command == "" {
+		t.Fatal("Azure DevOps PR case has no pullRequests command")
+	}
+	if err := validateRunOperatorProviderRead(command, testCase.Fixture); err != nil {
+		t.Fatalf("valid provider read rejected: %v", err)
+	}
+	wrongRepository := strings.Replace(command, "repositoryId=widgets-repo-id", "repositoryId=other-repo-id", 1)
+	if err := validateRunOperatorProviderRead(wrongRepository, testCase.Fixture); err == nil ||
+		!strings.Contains(err.Error(), "repository") {
+		t.Fatalf("wrong-repository read error = %v, want repository mismatch", err)
 	}
 }
 
@@ -185,6 +288,7 @@ func TestRunOperatorSkillContract(t *testing.T) {
 		"Merged",
 		"gh pr view",
 		"az devops invoke --http-method GET",
+		"repositoryId",
 		"references/question-corpus.json",
 	} {
 		if !strings.Contains(text, required) {
@@ -221,6 +325,17 @@ func loadRunOperatorCorpus(t *testing.T) runOperatorCorpus {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 	return corpus
+}
+
+func findRunOperatorCorpusCase(t *testing.T, corpus runOperatorCorpus, name string) runOperatorCorpusCase {
+	t.Helper()
+	for _, testCase := range corpus.Cases {
+		if testCase.Name == name {
+			return testCase
+		}
+	}
+	t.Fatalf("corpus case %q not found", name)
+	return runOperatorCorpusCase{}
 }
 
 func hasAllowedRunOperatorPrefix(command string, prefixes []string) bool {
@@ -295,6 +410,108 @@ func assertRunOperatorVerdict(t *testing.T, name string, value any) {
 	}
 }
 
+type runOperatorFixtureEvidence struct {
+	EventSeqs  map[uint64]struct{}
+	CausalSeqs []uint64
+	Issues     []string
+}
+
+func inspectRunOperatorFixtureEvidence(
+	t *testing.T,
+	name string,
+	fixture json.RawMessage,
+) runOperatorFixtureEvidence {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal(fixture, &root); err != nil {
+		t.Fatalf("%s: decode fixture evidence: %v", name, err)
+	}
+	evidence := runOperatorFixtureEvidence{EventSeqs: make(map[uint64]struct{})}
+	trace, _ := root["trace"].(map[string]any)
+	events, _ := trace["events"].([]any)
+	var previous uint64
+	hasRunFinished := false
+	for _, rawEvent := range events {
+		event, _ := rawEvent.(map[string]any)
+		seq := uint64(runOperatorJSONNumber(event["seq"]))
+		if seq == 0 {
+			evidence.Issues = append(evidence.Issues, "event has no positive sequence")
+			continue
+		}
+		if previous != 0 && seq != previous+1 {
+			evidence.Issues = append(evidence.Issues,
+				fmt.Sprintf("event sequence gap between %d and %d", previous, seq))
+		}
+		previous = seq
+		evidence.EventSeqs[seq] = struct{}{}
+		if event["type"] == "run.finished" {
+			hasRunFinished = true
+		}
+		if known, ok := event["knownSchema"].(bool); ok && !known {
+			evidence.Issues = append(evidence.Issues,
+				fmt.Sprintf("event sequence %d has an unknown schema", seq))
+		}
+	}
+	switch trace["phase"] {
+	case "completed", "failed", "aborted", "escalated":
+		if !hasRunFinished {
+			evidence.Issues = append(evidence.Issues, "terminal phase has no run.finished event")
+		}
+	}
+	collectRunOperatorCausalSeqs(root, &evidence.CausalSeqs)
+	for _, seq := range evidence.CausalSeqs {
+		if _, ok := evidence.EventSeqs[seq]; !ok {
+			evidence.Issues = append(evidence.Issues,
+				fmt.Sprintf("causal event sequence %d is absent", seq))
+		}
+	}
+	return evidence
+}
+
+func collectRunOperatorCausalSeqs(value any, seqs *[]uint64) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			collectRunOperatorCausalSeqs(item, seqs)
+		}
+	case map[string]any:
+		for key, item := range value {
+			if key == "causalEventSeq" {
+				if seq := uint64(runOperatorJSONNumber(item)); seq != 0 {
+					*seqs = append(*seqs, seq)
+				}
+				continue
+			}
+			collectRunOperatorCausalSeqs(item, seqs)
+		}
+	}
+}
+
+func runOperatorJSONNumber(value any) float64 {
+	number, _ := value.(float64)
+	return number
+}
+
+func runOperatorCitationsContainSeq(citations []runOperatorCitation, seq uint64) bool {
+	for _, citation := range citations {
+		for _, cited := range citation.Seqs {
+			if cited == seq {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsRunOperatorString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 type runOperatorResolvedTarget struct {
 	Provider        string `json:"provider"`
 	Repository      string `json:"repository"`
@@ -354,6 +571,10 @@ func validateRunOperatorProviderRead(command string, fixture json.RawMessage) er
 		commandAssignment(words, "project") != target.Project {
 		return fmt.Errorf("Azure DevOps read does not use the resolver-selected target")
 	}
+	if resource == "pullRequests" &&
+		(target.Repository == "" || commandAssignment(words, "repositoryId") != target.Repository) {
+		return fmt.Errorf("Azure DevOps PR read does not use resolver-selected repository %q", target.Repository)
+	}
 	if !hasRunOperatorExternalRef(refs, "ado", kind, id) {
 		return fmt.Errorf("Azure DevOps read does not follow a matching externalRef")
 	}
@@ -412,4 +633,291 @@ func commandAssignment(words []string, key string) string {
 		}
 	}
 	return ""
+}
+
+type executableRunOperatorFixture struct {
+	Trace struct {
+		Identity journal.RunIdentity `json:"identity"`
+		Events   []journal.Event     `json:"events"`
+	} `json:"trace"`
+}
+
+func buildRunOperatorCLI(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "goobers")
+	cmd := exec.Command("go", "build", "-o", binary, "./cmd/goobers")
+	cmd.Dir = agentToolkitRepoRoot(t)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build goobers CLI: %v\n%s", err, output)
+	}
+	return binary
+}
+
+func materializeRunOperatorJournal(t *testing.T, root string, raw json.RawMessage) {
+	t.Helper()
+	var fixture executableRunOperatorFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode executable fixture: %v", err)
+	}
+	if fixture.Trace.Identity.Trigger.Kind == "" {
+		fixture.Trace.Identity.Trigger = journal.Trigger{Kind: journal.TriggerManual}
+	}
+	now := fixture.Trace.Identity.StartedAt
+	run, err := journal.Create(
+		instance.NewLayout(root).RunsDir(),
+		fixture.Trace.Identity,
+		nil,
+		journal.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatalf("create fixture journal: %v", err)
+	}
+	nextSeq := uint64(2)
+	for _, event := range fixture.Trace.Events {
+		wantedSeq := event.Seq
+		for nextSeq < wantedSeq {
+			if err := run.Append(journal.Event{
+				Type:   journal.EventRunnerAnnotation,
+				Runner: map[string]any{"fixture": "omitted non-material event"},
+			}); err != nil {
+				t.Fatalf("append fixture filler event: %v", err)
+			}
+			nextSeq++
+		}
+		if wantedSeq != nextSeq {
+			t.Fatalf("fixture event sequence %d follows %d", wantedSeq, nextSeq-1)
+		}
+		now = event.Time
+		if err := run.Append(event); err != nil {
+			t.Fatalf("append fixture event %d: %v", wantedSeq, err)
+		}
+		nextSeq++
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close fixture journal: %v", err)
+	}
+}
+
+func configureRunOperatorDaemonMode(t *testing.T, root, mode string) {
+	t.Helper()
+	lockPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), "up.lock")
+	if mode == "stopped" {
+		held, err := lock.TryAcquire(lockPath)
+		if err != nil {
+			t.Fatalf("stopped-daemon fixture lock is held: %v", err)
+		}
+		if err := held.Release(); err != nil {
+			t.Fatalf("release stopped-daemon fixture probe: %v", err)
+		}
+		return
+	}
+
+	held, err := lock.TryAcquire(lockPath)
+	if err != nil {
+		t.Fatalf("acquire live-daemon fixture lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := held.Release(); err != nil {
+			t.Errorf("release live-daemon fixture lock: %v", err)
+		}
+	})
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	state := struct {
+		PID          int       `json:"pid"`
+		StartedAt    time.Time `json:"startedAt"`
+		InstanceRoot string    `json:"instanceRoot"`
+		Version      string    `json:"version"`
+		HolderKind   string    `json:"holderKind"`
+		HolderPID    int       `json:"holderPid"`
+	}{
+		PID:          os.Getpid(),
+		StartedAt:    startedAt,
+		InstanceRoot: root,
+		Version:      "fixture",
+		HolderKind:   "daemon",
+		HolderPID:    os.Getpid(),
+	}
+	file := held.File()
+	if err := file.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(file).Encode(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemonstate.Refresh(lockPath, time.Now()); err != nil {
+		t.Fatalf("refresh live-daemon fixture heartbeat: %v", err)
+	}
+}
+
+type runOperatorReadObservation struct {
+	DaemonRunning bool
+	RecentLimit   int
+	ListedRunIDs  map[string]struct{}
+	Trace         []byte
+}
+
+func executeRunOperatorReads(
+	t *testing.T,
+	binary string,
+	root string,
+	commands []string,
+) runOperatorReadObservation {
+	t.Helper()
+	observation := runOperatorReadObservation{ListedRunIDs: make(map[string]struct{})}
+	for _, command := range commands {
+		words := strings.Fields(command)
+		if len(words) < 2 || words[0] != "<goobers>" {
+			t.Fatalf("scenario command is not a local Goobers read: %q", command)
+		}
+		args := append([]string(nil), words[1:]...)
+		for i, arg := range args {
+			if arg == "<instance-root>" {
+				args[i] = root
+			}
+			if strings.HasPrefix(arg, "--limit=") {
+				limit, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit="))
+				if err != nil {
+					t.Fatalf("parse scenario limit: %v", err)
+				}
+				observation.RecentLimit = limit
+			}
+		}
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command(binary, args...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("%s: %v\n%s", command, err, stderr.String())
+		}
+		switch args[0] {
+		case "runs":
+			var output struct {
+				Runs []struct {
+					RunID string `json:"runId"`
+				} `json:"runs"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatalf("decode runs list output: %v\n%s", err, stdout.String())
+			}
+			for _, run := range output.Runs {
+				observation.ListedRunIDs[run.RunID] = struct{}{}
+			}
+		case "status":
+			observation.DaemonRunning = strings.Contains(stdout.String(), "daemon running:")
+		case "trace":
+			observation.Trace = append([]byte(nil), stdout.Bytes()...)
+		default:
+			t.Fatalf("unsupported scenario read %q", command)
+		}
+	}
+	return observation
+}
+
+type observedRunOperatorEvent struct {
+	journal.Event
+	KnownSchema *bool `json:"knownSchema,omitempty"`
+}
+
+func answerRunOperatorObservation(observation runOperatorReadObservation) (runOperatorExpected, error) {
+	var trace struct {
+		Identity journal.RunIdentity        `json:"identity"`
+		Phase    journal.RunPhase           `json:"phase"`
+		Repasses int                        `json:"repasses"`
+		Events   []observedRunOperatorEvent `json:"events"`
+	}
+	if err := json.Unmarshal(observation.Trace, &trace); err != nil {
+		return runOperatorExpected{}, fmt.Errorf("decode observed trace: %w", err)
+	}
+
+	var uncertainty []string
+	var previous uint64
+	var terminal *observedRunOperatorEvent
+	var needsChanges, passed *observedRunOperatorEvent
+	for i := range trace.Events {
+		event := &trace.Events[i]
+		if previous != 0 && event.Seq != previous+1 {
+			uncertainty = append(uncertainty,
+				fmt.Sprintf("Sequence %d is absent.", previous+1))
+		}
+		previous = event.Seq
+		if event.KnownSchema != nil && !*event.KnownSchema {
+			uncertainty = append(uncertainty,
+				fmt.Sprintf("Sequence %d has an unknown schema.", event.Seq))
+		}
+		switch {
+		case event.Type == journal.EventRunFinished:
+			terminal = event
+		case event.Type == journal.EventGateEvaluated && event.Verdict == "needs-changes":
+			needsChanges = event
+		case event.Type == journal.EventGateEvaluated && event.Verdict == "pass":
+			passed = event
+		}
+	}
+	if terminal == nil && trace.Phase != journal.PhaseRunning {
+		uncertainty = append(uncertainty, "No understood run.finished event is available.")
+	}
+	if len(uncertainty) > 0 {
+		return runOperatorExpected{
+			Classification: "uncertain",
+			Facts:          []string{"The available evidence does not prove a certain outcome."},
+			Uncertainty:    uncertainty,
+		}, nil
+	}
+	if terminal == nil || passed == nil {
+		return runOperatorExpected{}, fmt.Errorf("observed trace has no supported answer")
+	}
+
+	citation := runOperatorCitation{
+		Source:    "trace",
+		RunID:     trace.Identity.RunID,
+		Timestamp: terminal.Time.UTC().Format(time.RFC3339),
+	}
+	if needsChanges != nil {
+		if !observation.DaemonRunning {
+			return runOperatorExpected{}, fmt.Errorf("live-daemon observation did not report a running daemon")
+		}
+		if trace.Phase != journal.PhaseCompleted ||
+			terminal.Status != string(journal.PhaseCompleted) ||
+			trace.Repasses != 1 ||
+			needsChanges.Target != "implement" ||
+			passed.Target != "done" {
+			return runOperatorExpected{}, fmt.Errorf("reviewer-repass evidence is inconsistent")
+		}
+		citation.Seqs = []uint64{needsChanges.Seq, passed.Seq, terminal.Seq}
+		return runOperatorExpected{
+			Classification: "reviewer-repass",
+			Facts: []string{
+				"Review requested changes and routed back to implement.",
+				"The later review passed and the run completed after one repass.",
+				"Daemon liveness is separate from the workflow outcome.",
+			},
+			Citations:   []runOperatorCitation{citation},
+			Uncertainty: []string{},
+		}, nil
+	}
+	if _, ok := observation.ListedRunIDs[trace.Identity.RunID]; !ok {
+		return runOperatorExpected{}, fmt.Errorf("bounded run list did not contain %s", trace.Identity.RunID)
+	}
+	if trace.Phase != journal.PhaseCompleted ||
+		terminal.Status != string(journal.PhaseCompleted) ||
+		trace.Repasses != 0 {
+		return runOperatorExpected{}, fmt.Errorf("first-pass evidence is inconsistent")
+	}
+	citation.Seqs = []uint64{passed.Seq, terminal.Seq}
+	return runOperatorExpected{
+		Classification: "first-pass-success",
+		Facts: []string{
+			fmt.Sprintf("The bounded recent window was %d runs.", observation.RecentLimit),
+			fmt.Sprintf("%s completed after %s passed with zero repasses.",
+				trace.Identity.RunID, passed.Gate),
+		},
+		Citations:   []runOperatorCitation{citation},
+		Uncertainty: []string{},
+	}, nil
 }
