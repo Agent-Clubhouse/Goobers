@@ -40,6 +40,86 @@ type ReadyPoolHealth struct {
 	ImplementationDemand      int       `json:"implementationDemand"`
 }
 
+// ImplementationOutcome identifies one terminal implementation run and the
+// backlog item claimed by that run.
+type ImplementationOutcome struct {
+	RunID        string    `json:"runId"`
+	ItemID       string    `json:"itemId"`
+	Status       string    `json:"status"`
+	StartedAt    time.Time `json:"startedAt"`
+	FinishedAt   time.Time `json:"finishedAt"`
+	Stage        string    `json:"stage,omitempty"`
+	ErrorCode    string    `json:"errorCode,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	Gate         string    `json:"gate,omitempty"`
+	Verdict      string    `json:"verdict,omitempty"`
+}
+
+// ImplementationOutcomes returns terminal implementation runs that claimed an
+// issue, with the latest error and gate verdict retained as bounded evidence.
+func (db *DB) ImplementationOutcomes(gaggle string, since time.Time) ([]ImplementationOutcome, error) {
+	clauses := []string{
+		"r.workflow = 'implementation'",
+		"r.finished_at IS NOT NULL",
+		"pm.kind = 'issue'",
+		"pm.operation = 'claim'",
+	}
+	var args []any
+	if gaggle != "" {
+		clauses = append(clauses, "r.gaggle = ?")
+		args = append(args, gaggle)
+	}
+	if !since.IsZero() {
+		clauses = append(clauses, "r.started_at >= ?")
+		args = append(args, formatTime(since).String)
+	}
+	rows, err := db.sql.Query(`
+		SELECT DISTINCT
+			r.run_id, pm.external_id, COALESCE(r.status, ''),
+			r.started_at, r.finished_at,
+			COALESCE(re.stage, ''), COALESCE(re.code, ''), COALESCE(re.message, ''),
+			COALESCE(gv.gate, ''), COALESCE(gv.verdict, '')
+		FROM runs r
+		JOIN provider_mutations pm ON pm.run_id = r.run_id
+		LEFT JOIN run_errors re
+			ON re.run_id = r.run_id
+			AND re.seq = (SELECT MAX(latest_re.seq) FROM run_errors latest_re WHERE latest_re.run_id = r.run_id)
+		LEFT JOIN gate_verdicts gv
+			ON gv.run_id = r.run_id
+			AND gv.seq = (SELECT MAX(latest_gv.seq) FROM gate_verdicts latest_gv WHERE latest_gv.run_id = r.run_id)
+		WHERE `+strings.Join(clauses, " AND ")+`
+		ORDER BY r.started_at, r.run_id, pm.external_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query implementation outcomes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var outcomes []ImplementationOutcome
+	for rows.Next() {
+		var outcome ImplementationOutcome
+		var startedAt, finishedAt sql.NullString
+		if err := rows.Scan(
+			&outcome.RunID, &outcome.ItemID, &outcome.Status,
+			&startedAt, &finishedAt,
+			&outcome.Stage, &outcome.ErrorCode, &outcome.ErrorMessage,
+			&outcome.Gate, &outcome.Verdict,
+		); err != nil {
+			return nil, fmt.Errorf("rollup: scan implementation outcome: %w", err)
+		}
+		if outcome.StartedAt, err = parseTime(startedAt); err != nil {
+			return nil, err
+		}
+		if outcome.FinishedAt, err = parseTime(finishedAt); err != nil {
+			return nil, err
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rollup: iterate implementation outcomes: %w", err)
+	}
+	return outcomes, nil
+}
+
 func (db *DB) curationStats(req StatsRequest, transitions []storedReadyLabelTransition) (CurationStats, error) {
 	if agentStatsActive(req) || (req.Workflow != "" && req.Workflow != "backlog-curation") {
 		return CurationStats{}, nil
