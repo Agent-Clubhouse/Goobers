@@ -165,8 +165,8 @@ func TestRegisterEngineWiresGooberActivities(t *testing.T) {
 
 	registerEngine(fw, goober)
 
-	if len(fw.workflows) != 1 {
-		t.Fatalf("registered workflows = %d, want 1", len(fw.workflows))
+	if len(fw.workflows) != 4 {
+		t.Fatalf("registered workflows = %d, want 4", len(fw.workflows))
 	}
 	if len(fw.activities) != 1 {
 		t.Fatalf("registered activities = %d, want 1", len(fw.activities))

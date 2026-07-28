@@ -13,9 +13,9 @@ import (
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	sdktemporal "go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -28,9 +28,8 @@ const (
 	maxScheduleCatchupWindow = 24 * time.Hour
 	scheduleStateVersion     = 1
 	scheduleStateWorkflow    = "goobers.schedule-state.v1"
+	scheduleReconcileUpdate  = "goobers.reconcile-schedules.v1"
 	scheduleRPCTimeout       = 10 * time.Second
-	scheduleReconcileLease   = time.Minute
-	scheduleReconcilePoll    = 100 * time.Millisecond
 )
 
 // ScheduleSnapshot is one atomically-applied config snapshot. Runs are pinned
@@ -52,32 +51,43 @@ type scheduleReconcileState struct {
 }
 
 type pendingScheduleReconcile struct {
-	Snapshot   ScheduleSnapshot `json:"snapshot"`
-	Owner      string           `json:"owner,omitempty"`
-	LeaseUntil time.Time        `json:"leaseUntil,omitempty"`
+	Snapshot ScheduleSnapshot `json:"snapshot"`
+	Owner    string           `json:"owner,omitempty"`
 }
 
 // ScheduleReconciler materializes a config snapshot as Temporal Schedules.
 type ScheduleReconciler struct {
-	client        scheduleStore
-	taskQueue     string
-	catchupWindow time.Duration
+	client         scheduleStore
+	temporalClient client.Client
+	namespace      string
+	taskQueue      string
+	catchupWindow  time.Duration
 }
 
 // NewScheduleReconciler constructs a reconciler with explicit schedule policy.
 func NewScheduleReconciler(
-	service workflowservice.WorkflowServiceClient,
+	temporalClient client.Client,
 	namespace string,
 	taskQueue string,
 	catchupWindow time.Duration,
 ) (*ScheduleReconciler, error) {
-	if service == nil {
-		return nil, errors.New("engine: Temporal workflow service client is required")
+	if temporalClient == nil {
+		return nil, errors.New("engine: Temporal client is required")
 	}
 	if strings.TrimSpace(namespace) == "" {
 		return nil, errors.New("engine: Temporal schedule namespace is required")
 	}
-	return newScheduleReconciler(newTemporalScheduleStore(service, namespace), taskQueue, catchupWindow)
+	reconciler, err := newScheduleReconciler(
+		newTemporalScheduleStore(temporalClient.WorkflowService(), namespace),
+		taskQueue,
+		catchupWindow,
+	)
+	if err != nil {
+		return nil, err
+	}
+	reconciler.temporalClient = temporalClient
+	reconciler.namespace = namespace
+	return reconciler, nil
 }
 
 func newScheduleReconciler(c scheduleStore, taskQueue string, catchupWindow time.Duration) (*ScheduleReconciler, error) {
@@ -119,17 +129,99 @@ type desiredSchedule struct {
 	options client.ScheduleOptions
 }
 
-// Reconcile advances one instance to a complete config generation. A paused
-// Temporal state schedule serializes generations with conflict-token CAS and
-// carries the authoritative IDs from the last applied snapshot.
+// Reconcile advances one instance to a complete config generation. Public
+// reconcilers serialize mutations through one durable Temporal workflow per
+// instance; the direct path is reserved for that workflow's activity and tests.
 func (r *ScheduleReconciler) Reconcile(ctx context.Context, snapshot ScheduleSnapshot) error {
 	if _, err := r.desired(snapshot); err != nil {
 		return err
 	}
-	owner, err := scheduleRequestID()
+	if r.temporalClient == nil {
+		return r.reconcileDirect(ctx, snapshot)
+	}
+	return r.reconcileDurably(ctx, snapshot)
+}
+
+func (r *ScheduleReconciler) reconcileDurably(ctx context.Context, snapshot ScheduleSnapshot) error {
+	updateID, err := scheduleRequestID()
 	if err != nil {
 		return err
 	}
+	workflowID := scheduleOwnedPrefix(snapshot.InstanceID) + "reconciler"
+	start := r.temporalClient.NewWithStartWorkflowOperation(client.StartWorkflowOptions{
+		ID:                       workflowID,
+		TaskQueue:                r.taskQueue,
+		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		RetryPolicy: &sdktemporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	}, ReconcileSchedules)
+	handle, err := r.temporalClient.UpdateWithStartWorkflow(ctx, client.UpdateWithStartWorkflowOptions{
+		StartWorkflowOperation: start,
+		UpdateOptions: client.UpdateWorkflowOptions{
+			UpdateID:   updateID,
+			UpdateName: scheduleReconcileUpdate,
+			Args: []interface{}{scheduleReconcileActivityInput{
+				Namespace:     r.namespace,
+				TaskQueue:     r.taskQueue,
+				CatchupWindow: r.catchupWindow,
+				Snapshot:      snapshot,
+			}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("engine: submit Temporal schedule snapshot: %w", err)
+	}
+	if err := handle.Get(ctx, nil); err != nil {
+		return fmt.Errorf("engine: apply Temporal schedule snapshot: %w", err)
+	}
+	return nil
+}
+
+// ReconcileSchedules durably serializes schedule mutations for one instance.
+func ReconcileSchedules(ctx workflow.Context) error {
+	mutex := workflow.NewMutex(ctx)
+	err := workflow.SetUpdateHandler(
+		ctx,
+		scheduleReconcileUpdate,
+		func(updateCtx workflow.Context, input scheduleReconcileActivityInput) error {
+			if err := mutex.Lock(updateCtx); err != nil {
+				return err
+			}
+			defer mutex.Unlock()
+
+			activityCtx := workflow.WithActivityOptions(updateCtx, workflow.ActivityOptions{
+				ScheduleToCloseTimeout: 30 * time.Minute,
+				StartToCloseTimeout:    10 * time.Minute,
+				HeartbeatTimeout:       30 * time.Second,
+				WaitForCancellation:    true,
+				RetryPolicy: &sdktemporal.RetryPolicy{
+					InitialInterval:    time.Second,
+					BackoffCoefficient: 2,
+					MaximumInterval:    time.Minute,
+					MaximumAttempts:    10,
+				},
+			})
+			return workflow.ExecuteActivity(activityCtx, ActReconcileSchedules, input).Get(updateCtx, nil)
+		},
+	)
+	if err != nil {
+		return err
+	}
+	return workflow.Await(ctx, func() bool { return false })
+}
+
+func (r *ScheduleReconciler) reconcileDirect(ctx context.Context, snapshot ScheduleSnapshot) error {
+	if _, err := r.desired(snapshot); err != nil {
+		return err
+	}
+	owner := scheduleHash(
+		snapshot.InstanceID,
+		fmt.Sprintf("%d", snapshot.ConfigGeneration),
+		snapshot.ConfigSHA,
+	)
 	prefix := scheduleOwnedPrefix(snapshot.InstanceID)
 	stateID := prefix + "state"
 
@@ -143,21 +235,15 @@ func (r *ScheduleReconciler) Reconcile(ctx context.Context, snapshot ScheduleSna
 		}
 		if revision.state.Pending != nil {
 			if revision.state.Pending.Owner != owner {
-				if revision.state.Pending.Owner != "" &&
-					time.Now().Before(revision.state.Pending.LeaseUntil) {
-					timer := time.NewTimer(scheduleReconcilePoll)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return ctx.Err()
-					case <-timer.C:
-					}
-					continue
+				if revision.state.Pending.Owner != "" {
+					return fmt.Errorf(
+						"engine: Temporal schedule snapshot is owned by another durable reconcile: %w",
+						errScheduleStateConflict,
+					)
 				}
 				next := revision.state
 				pending := *revision.state.Pending
 				pending.Owner = owner
-				pending.LeaseUntil = time.Now().Add(scheduleReconcileLease)
 				next.Pending = &pending
 				if err := r.client.CompareAndSwapState(ctx, stateID, revision, next); err != nil {
 					if errors.Is(err, errScheduleStateConflict) {
@@ -167,7 +253,7 @@ func (r *ScheduleReconciler) Reconcile(ctx context.Context, snapshot ScheduleSna
 				}
 				continue
 			}
-			err := r.applyPending(ctx, stateID, revision)
+			err := r.applyPending(ctx, stateID, owner, revision)
 			if errors.Is(err, errScheduleStateConflict) {
 				continue
 			}
@@ -197,9 +283,8 @@ func (r *ScheduleReconciler) Reconcile(ctx context.Context, snapshot ScheduleSna
 
 		next := revision.state
 		pending := pendingScheduleReconcile{
-			Snapshot:   snapshot,
-			Owner:      owner,
-			LeaseUntil: time.Now().Add(scheduleReconcileLease),
+			Snapshot: snapshot,
+			Owner:    owner,
 		}
 		next.Pending = &pending
 		if err := r.client.CompareAndSwapState(ctx, stateID, revision, next); err != nil {
@@ -223,7 +308,6 @@ func (r *ScheduleReconciler) releasePending(ctx context.Context, stateID, owner 
 		next := revision.state
 		pending := *revision.state.Pending
 		pending.Owner = ""
-		pending.LeaseUntil = time.Time{}
 		next.Pending = &pending
 		if err := r.client.CompareAndSwapState(ctx, stateID, revision, next); err != nil {
 			if errors.Is(err, errScheduleStateConflict) {
@@ -278,6 +362,7 @@ func (r *ScheduleReconciler) loadOrCreateState(ctx context.Context, stateID stri
 func (r *ScheduleReconciler) applyPending(
 	ctx context.Context,
 	stateID string,
+	owner string,
 	revision scheduleStateRevision,
 ) error {
 	pending := revision.state.Pending
@@ -300,7 +385,7 @@ func (r *ScheduleReconciler) applyPending(
 	sort.Strings(desiredIDs)
 	for _, id := range desiredIDs {
 		var err error
-		revision, err = r.renewPendingLease(ctx, stateID, revision)
+		revision, err = r.reloadPendingOwner(ctx, stateID, owner)
 		if err != nil {
 			return err
 		}
@@ -315,7 +400,7 @@ func (r *ScheduleReconciler) applyPending(
 			continue
 		}
 		var err error
-		revision, err = r.renewPendingLease(ctx, stateID, revision)
+		revision, err = r.reloadPendingOwner(ctx, stateID, owner)
 		if err != nil {
 			return err
 		}
@@ -332,27 +417,16 @@ func (r *ScheduleReconciler) applyPending(
 	return r.client.CompareAndSwapState(ctx, stateID, revision, next)
 }
 
-func (r *ScheduleReconciler) renewPendingLease(
+func (r *ScheduleReconciler) reloadPendingOwner(
 	ctx context.Context,
 	stateID string,
-	revision scheduleStateRevision,
+	owner string,
 ) (scheduleStateRevision, error) {
-	pending := revision.state.Pending
-	if pending == nil || pending.Owner == "" {
-		return scheduleStateRevision{}, errScheduleStateConflict
-	}
-	next := revision.state
-	renewed := *pending
-	renewed.LeaseUntil = time.Now().Add(scheduleReconcileLease)
-	next.Pending = &renewed
-	if err := r.client.CompareAndSwapState(ctx, stateID, revision, next); err != nil {
-		return scheduleStateRevision{}, err
-	}
 	revision, err := r.client.LoadState(ctx, stateID)
 	if err != nil {
-		return scheduleStateRevision{}, fmt.Errorf("engine: reload renewed Temporal schedule state %q: %w", stateID, err)
+		return scheduleStateRevision{}, fmt.Errorf("engine: reload Temporal schedule state %q: %w", stateID, err)
 	}
-	if revision.state.Pending == nil || revision.state.Pending.Owner != renewed.Owner {
+	if revision.state.Pending == nil || revision.state.Pending.Owner != owner {
 		return scheduleStateRevision{}, errScheduleStateConflict
 	}
 	return revision, nil
@@ -443,9 +517,6 @@ func validateScheduleState(state scheduleReconcileState, instanceID, prefix stri
 				state.AppliedGeneration,
 			)
 		}
-		if state.Pending.Owner != "" && state.Pending.LeaseUntil.IsZero() {
-			return errors.New("engine: owned pending Temporal schedule snapshot has no lease")
-		}
 	}
 	return nil
 }
@@ -459,7 +530,7 @@ func (r *ScheduleReconciler) scheduleOptions(
 ) (client.ScheduleOptions, error) {
 	action := &client.ScheduleWorkflowAction{
 		ID:        id,
-		Workflow:  RunScheduled,
+		Workflow:  ClaimScheduled,
 		Args:      []interface{}{run},
 		TaskQueue: r.taskQueue,
 		RetryPolicy: &sdktemporal.RetryPolicy{

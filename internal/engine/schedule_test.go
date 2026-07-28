@@ -12,14 +12,11 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	sdktemporal "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -414,58 +411,6 @@ func TestScheduleOverlapSkipsWhileRunInFlight(t *testing.T) {
 	}
 }
 
-func TestScheduleReconcilerConcurrentSnapshotsAdvanceMonotonically(t *testing.T) {
-	store := newFakeScheduleClient()
-	store.applyDelay = 20 * time.Millisecond
-	first, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Reconcile(context.Background(), scheduledSnapshot("0 * * * *")); err != nil {
-		t.Fatal(err)
-	}
-
-	generationTwo := scheduledSnapshot("15 * * * *")
-	generationTwo.ConfigSHA = "generation-two"
-	generationTwo.ConfigGeneration = 2
-	generationThree := scheduledSnapshot("30 * * * *")
-	generationThree.ConfigSHA = "generation-three"
-	generationThree.ConfigGeneration = 3
-
-	errs := make(chan error, 2)
-	go func() { errs <- first.Reconcile(context.Background(), generationTwo) }()
-	go func() { errs <- second.Reconcile(context.Background(), generationThree) }()
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	id := ScheduleID("prod-west", "web", "implement", 0)
-	description, err := store.GetHandle(context.Background(), id).Describe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := description.Schedule.Spec.CronExpressions; len(got) != 1 || got[0] != "30 * * * *" {
-		t.Fatalf("final cron = %v, want generation three", got)
-	}
-	stateID := scheduleOwnedPrefix("prod-west") + "state"
-	revision, err := store.LoadState(context.Background(), stateID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if revision.state.AppliedGeneration != 3 || revision.state.AppliedConfigSHA != "generation-three" {
-		t.Fatalf("applied state = %+v", revision.state)
-	}
-	if got := store.maxConcurrentApplies(); got != 1 {
-		t.Fatalf("concurrent schedule applies = %d, want serialized reconciliation", got)
-	}
-}
-
 func TestScheduleReconcilerStaleOwnerCannotResurrectRemovedSchedule(t *testing.T) {
 	store := newFakeScheduleClient()
 	reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
@@ -482,36 +427,29 @@ func TestScheduleReconcilerStaleOwnerCannotResurrectRemovedSchedule(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := revision
 	staleSnapshot := scheduledSnapshot("15 * * * *")
 	staleSnapshot.ConfigSHA = "stale"
-	staleSnapshot.ConfigGeneration = 2
-	stale.state.Pending = &pendingScheduleReconcile{
-		Snapshot:   staleSnapshot,
-		Owner:      "stale-owner",
-		LeaseUntil: time.Now().Add(-time.Minute),
+	staleSnapshot.ConfigGeneration = 4
+	stale := revision.state
+	stale.AppliedGeneration = 3
+	stale.AppliedConfigSHA = "newer"
+	stale.ManagedScheduleIDs = nil
+	stale.Pending = &pendingScheduleReconcile{
+		Snapshot: staleSnapshot,
+		Owner:    "stale-owner",
 	}
-	if err := store.CompareAndSwapState(context.Background(), stateID, revision, stale.state); err != nil {
+	if err := store.CompareAndSwapState(context.Background(), stateID, revision, stale); err != nil {
 		t.Fatal(err)
 	}
-	stale, err = store.LoadState(context.Background(), stateID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	store.mu.Lock()
-	current := store.states[stateID]
-	current.state.AppliedGeneration = 3
-	current.state.AppliedConfigSHA = "newer"
-	current.state.ManagedScheduleIDs = nil
-	current.state.Pending = nil
-	current.version++
-	store.states[stateID] = current
 	delete(store.schedules, ScheduleID(initial.InstanceID, "web", "implement", 0))
 	store.mu.Unlock()
 
-	if _, err := reconciler.renewPendingLease(context.Background(), stateID, stale); !errors.Is(err, errScheduleStateConflict) {
-		t.Fatalf("stale lease renewal error = %v, want conflict", err)
+	newer := scheduledSnapshot("30 * * * *")
+	newer.ConfigSHA = "newest"
+	newer.ConfigGeneration = 5
+	if err := reconciler.Reconcile(context.Background(), newer); !errors.Is(err, errScheduleStateConflict) {
+		t.Fatalf("competing durable reconcile error = %v, want conflict", err)
 	}
 	if _, exists := store.schedules[ScheduleID(initial.InstanceID, "web", "implement", 0)]; exists {
 		t.Fatal("stale owner resurrected a removed schedule")
@@ -584,22 +522,14 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 		taskQueue = "goobers-schedule-integration"
 	)
 	temporalClient := server.Client()
-	connection, err := grpc.NewClient(
-		server.FrontendHostPort(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("dial raw Temporal service: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := connection.Close(); err != nil {
-			t.Errorf("close raw Temporal service: %v", err)
-		}
-	})
-	scheduleService := workflowservice.NewWorkflowServiceClient(connection)
+	scheduleService := temporalClient.WorkflowService()
 	blocker := newBlockingScheduleStages()
 	temporalWorker := worker.New(temporalClient, taskQueue, worker.Options{})
-	RegisterWith(temporalWorker, &Activities{Det: blocker, Workspaces: testWorkspaces(t)})
+	RegisterWith(temporalWorker, &Activities{
+		Det:             blocker,
+		Workspaces:      testWorkspaces(t),
+		ScheduleService: scheduleService,
+	})
 	if err := temporalWorker.Start(); err != nil {
 		t.Fatalf("start Temporal worker: %v", err)
 	}
@@ -607,7 +537,7 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 	t.Cleanup(blocker.releaseRun)
 
 	const catchup = 15 * time.Minute
-	reconciler, err := NewScheduleReconciler(scheduleService, namespace, taskQueue, catchup)
+	reconciler, err := NewScheduleReconciler(temporalClient, namespace, taskQueue, catchup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +570,7 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 	updated := scheduledSnapshot("0 0 2 1 *")
 	updated.ConfigSHA = "ghi789"
 	updated.ConfigGeneration = 3
-	secondReconciler, err := NewScheduleReconciler(scheduleService, namespace, taskQueue, catchup)
+	secondReconciler, err := NewScheduleReconciler(temporalClient, namespace, taskQueue, catchup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,15 +624,6 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 	if err := handle.Backfill(ctx, backfill); err != nil {
 		t.Fatalf("duplicate backfill: %v", err)
 	}
-	_, err = temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                                       claimID,
-		TaskQueue:                                taskQueue,
-		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, RunScheduled, runInput)
-	if !isAlreadyStarted(err) {
-		t.Fatalf("duplicate claim start error = %v, want already started", err)
-	}
 	if err := handle.Trigger(ctx, client.ScheduleTriggerOptions{}); err != nil {
 		t.Fatalf("trigger overlapping fire: %v", err)
 	}
@@ -717,6 +638,24 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 	var result RunResult
 	if err := temporalClient.GetWorkflow(ctx, claimID, "").Get(ctx, &result); err != nil {
 		t.Fatalf("scheduled workflow result: %v", err)
+	}
+	duplicate, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                                       claimID,
+		TaskQueue:                                taskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+		RetryPolicy: &sdktemporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	}, ClaimScheduled, runInput)
+	if err != nil {
+		t.Fatalf("start duplicate completed schedule action: %v", err)
+	}
+	if err := duplicate.Get(ctx, &result); err != nil {
+		t.Fatalf("duplicate completed schedule action: %v", err)
+	}
+	if got := blocker.callCount(); got != 1 {
+		t.Fatalf("activity calls after completed duplicate = %d, want exactly one", got)
 	}
 
 	removed := updated

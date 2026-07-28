@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -137,17 +138,43 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	return run(ctx, in, nil)
 }
 
-// RunScheduled binds a Temporal Schedule action's timestamped workflow ID to
-// the run and records the nominal fire in the scheduler-journal projection.
+// ClaimScheduled converts a Schedule action into an exactly-once run start.
+// Temporal forbids WorkflowIDReusePolicy on Schedule actions, so the action
+// workflow claims the fire with a child ID whose reuse policy rejects duplicates.
+func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
+	claimID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+		WorkflowID:            claimID + "-run",
+		TaskQueue:             workflow.GetInfo(ctx).TaskQueueName,
+		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	in.RunID = claimID
+	var result RunResult
+	err := workflow.ExecuteChildWorkflow(childCtx, RunScheduled, in).Get(childCtx, &result)
+	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+		return RunResult{}, nil
+	}
+	return result, err
+}
+
+// RunScheduled binds a timestamped schedule claim to the run and records the
+// nominal fire in the scheduler-journal projection.
 func RunScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	fireTime, err := scheduledFireTime(in.TriggerRef, workflowID)
+	claimID := in.RunID
+	if claimID == "" {
+		claimID = workflowID
+	}
+	fireTime, err := scheduledFireTime(in.TriggerRef, claimID)
 	if err != nil {
 		return RunResult{}, err
 	}
 	// Temporal's claim ID carries an RFC3339 timestamp (and therefore colons).
 	// Hash it into the same portable trace/run ID shape every other starter uses.
-	in.RunID = RunID(workflowID)
+	in.RunID = RunID(claimID)
 	in.TriggerKind = string(journal.TriggerSchedule)
 	return run(ctx, in, &fireTime)
 }
