@@ -137,7 +137,8 @@ const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
 	"it is entirely cross-PR-ordering asks and the selected PR is the elected\n" +
 	"lander of its overlap cluster (lowest PR number), emit elected=true to\n" +
 	"route the PR into merge-pr; otherwise emit elected=false to route it to\n" +
-	"apply-verdict. Requires selectedNumber (inputsFrom gather-sibling-context).\n" +
+	"apply-verdict. Advisory-mode PRs are never elected. Requires selectedNumber\n" +
+	"and advisoryMode (inputsFrom gather-sibling-context).\n" +
 	"Exit codes: 0 = decided (elected or not — both normal), 1 = business\n" +
 	"error, 2 = usage/IO error.\n"
 
@@ -187,6 +188,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	selectedHeadSha := providerInput("selectedHeadSha", "")
 	selectedBaseSha := providerInput("selectedBaseSha", "")
 	reviewDigest := providerInput("reviewDigest", "")
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
 	resultFile := providerInput("resultFile", "election.json")
 	// Deterministic file-overlap set threaded from gather-sibling-context
 	// (#990). Parsed for the election backstop; passed through verbatim so
@@ -210,6 +216,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 			"selectedBaseSha":        selectedBaseSha,
 			"reviewDigest":           reviewDigest,
 			"overlappingSiblingsCsv": overlappingSiblingsCsv,
+			"advisoryMode":           strconv.FormatBool(advisoryMode),
 		})
 		if err != nil {
 			pf(stderr, "error: marshal election result: %v\n", err)
@@ -220,6 +227,10 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+	if advisoryMode {
+		pf(stdout, "PR #%d is advisory-only — skipping lander election\n", selectedNumber)
+		return writeResult(false)
 	}
 
 	runID, _, err := providerRunContext()

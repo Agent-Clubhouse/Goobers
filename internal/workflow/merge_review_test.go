@@ -110,6 +110,12 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if got := prSelect.Inputs["headPrefixes"]; got != wantHeadPrefixes {
 				t.Errorf("pr-select headPrefixes = %q, want %q", got, wantHeadPrefixes)
 			}
+			if got := prSelect.Inputs["authorScope"]; got != "any" {
+				t.Errorf("pr-select authorScope = %q, want any", got)
+			}
+			if want := []string{"number", "head", "base", "advisoryMode"}; !reflect.DeepEqual(prSelect.ExpectedOutputs, want) {
+				t.Errorf("pr-select expectedOutputs = %v, want %v", prSelect.ExpectedOutputs, want)
+			}
 			if _, legacy := prSelect.Inputs["headPrefix"]; legacy {
 				t.Error("pr-select retained legacy headPrefix input")
 			}
@@ -122,6 +128,11 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if want := []string{"flag-scope-drift"}; !reflect.DeepEqual(gatherSiblings.PolicyActions, want) {
 				t.Errorf("gather-sibling-context policyActions = %v, want %v", gatherSiblings.PolicyActions, want)
+			}
+			if gatherSiblings.Inputs["authorScope"] != "any" ||
+				gatherSiblings.Inputs["headPrefixes"] != wantHeadPrefixes ||
+				gatherSiblings.InputsFrom["advisoryMode"] != "advisoryMode" {
+				t.Errorf("gather-sibling-context advisory wiring = inputs %v inputsFrom %v", gatherSiblings.Inputs, gatherSiblings.InputsFrom)
 			}
 
 			review, ok := m.Gate("review")
@@ -158,6 +169,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if electLander.Next != "elect-gate" {
 				t.Errorf("elect-lander.next = %q, want elect-gate", electLander.Next)
 			}
+			if electLander.InputsFrom["advisoryMode"] != "advisoryMode" {
+				t.Errorf("elect-lander advisoryMode input = %q, want advisoryMode", electLander.InputsFrom["advisoryMode"])
+			}
 			electGate, ok := m.Gate("elect-gate")
 			if !ok {
 				t.Fatal("elect-gate gate not found")
@@ -191,19 +205,35 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(applyVerdict.Capabilities, wantApplyCapabilities) {
 				t.Errorf("apply-verdict capabilities = %v, want %v", applyVerdict.Capabilities, wantApplyCapabilities)
 			}
-			if applyVerdict.Next != "published-verdict" {
-				t.Errorf("apply-verdict.next = %q, want published-verdict", applyVerdict.Next)
+			if applyVerdict.Next != "advisory-verdict" {
+				t.Errorf("apply-verdict.next = %q, want advisory-verdict", applyVerdict.Next)
 			}
 			wantApplyInputs := map[string]string{
 				"selectedNumber":      "selectedNumber",
 				"selectedHeadSha":     "selectedHeadSha",
 				"selectedBaseSha":     "selectedBaseSha",
+				"advisoryMode":        "advisoryMode",
 				"reviewDigest":        "reviewDigest",
 				"overlappingSiblings": "overlappingSiblingsCsv",
 			}
 			if !reflect.DeepEqual(applyVerdict.InputsFrom, wantApplyInputs) {
 				t.Errorf("apply-verdict inputsFrom = %v, want %v", applyVerdict.InputsFrom, wantApplyInputs)
 			}
+			advisoryVerdict, ok := m.Gate("advisory-verdict")
+			if !ok {
+				t.Fatal("advisory-verdict gate not found")
+			}
+			if advisoryVerdict.Automated == nil ||
+				advisoryVerdict.Automated.Check != "output-equals" ||
+				advisoryVerdict.Automated.Params["key"] != "advisoryMode" ||
+				advisoryVerdict.Automated.Params["equals"] != "true" {
+				t.Errorf("advisory-verdict check = %+v, want advisoryMode == true", advisoryVerdict.Automated)
+			}
+			wantAdvisoryBranches := map[string]string{"pass": TerminalComplete, "fail": "published-verdict"}
+			if !reflect.DeepEqual(advisoryVerdict.Branches, wantAdvisoryBranches) {
+				t.Errorf("advisory-verdict branches = %v, want %v", advisoryVerdict.Branches, wantAdvisoryBranches)
+			}
+
 			publishedVerdict, ok := m.Gate("published-verdict")
 			if !ok {
 				t.Fatal("published-verdict gate not found")

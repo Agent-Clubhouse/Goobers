@@ -49,6 +49,7 @@ spec:
         command: ["goobers", "pr-select"]
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -58,6 +59,7 @@ spec:
         - number
         - head
         - base
+        - advisoryMode
       next: gather-sibling-context
 
     - name: gather-sibling-context
@@ -67,7 +69,10 @@ spec:
         command: ["goobers", "gather-sibling-context"]
       inputsFrom:
         selectedNumber: number
+        advisoryMode: advisoryMode
       inputs:
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
@@ -77,6 +82,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - reviewDigest
         # #990: deterministic file-overlap set, threaded to elect-lander +
         # apply-verdict. Empty string when nothing overlaps.
@@ -97,6 +103,7 @@ spec:
         # only an optional cross-check against this pin.
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: same deterministic overlap set the election used.
         overlappingSiblings: overlappingSiblingsCsv
@@ -118,10 +125,11 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - decision
         - verdictAuthor
         - priorityDispatchRequested
-      next: published-verdict
+      next: advisory-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
     # mutually-sibling-blocked cluster (lowest PR number) and routes it into
@@ -135,6 +143,7 @@ spec:
         selectedNumber: selectedNumber
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: deterministic overlap set; passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
@@ -153,6 +162,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - reviewDigest
         # Passed through for apply-verdict on the parked branch (#990).
         - overlappingSiblingsCsv
@@ -348,6 +358,17 @@ spec:
       branches:
         pass: merge-pr
         fail: ""
+
+    - name: advisory-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: advisoryMode
+          equals: "true"
+      branches:
+        pass: ""
+        fail: published-verdict
 
     - name: merge-gate
       # Distinguishes an actual merge from a merge-queue enqueue (issue

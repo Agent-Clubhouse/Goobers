@@ -502,7 +502,7 @@ func init() {
 			withExamples("goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
 			withSynopsis(synopsisByID["pr-select"]).
-			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
+			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
 		command("gather-sibling-context", apicontract.ActionWorkflowExecution, runGatherSiblingContext).
 			withSynopsis(synopsisByID["gather-sibling-context"]).
@@ -514,7 +514,7 @@ func init() {
 			withExamples("goobers gather-implement-context"),
 		command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict).
 			withSynopsis(synopsisByID["apply-verdict"]).
-			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
+			withHelp("publish a managed or advisory merge-review verdict (a workflow stage)", applyVerdictHelp).
 			withExamples("goobers apply-verdict"),
 		command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander).
 			withSynopsis(synopsisByID["elect-lander"]).

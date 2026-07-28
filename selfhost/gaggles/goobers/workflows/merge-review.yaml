@@ -74,12 +74,12 @@ spec:
       next: pr-select
 
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI implementation, docs-updater, or
-    # low-risk Tutor PR not already carrying a merge-review label. pr-select
-    # classifies Tutor diffs and excludes structure/skill/validation changes;
-    # those remain manual-only even if every ordinary merge gate passes.
-    # The selected PR is leased in the same claim namespace
-    # gather-pr-context uses, excluding concurrent review/remediation of one PR.
+    # PRs): one open, non-draft, green-CI PR not carrying a merge-review or
+    # goobers:no-merge-review label. Implementation, docs-updater, and low-risk
+    # Tutor PRs retain the managed lifecycle; any other branch is admitted for
+    # advisory review only. pr-select still classifies Tutor diffs and excludes
+    # structure/skill/validation changes. The selected PR is leased in the same
+    # claim namespace gather-pr-context uses.
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.
@@ -87,6 +87,7 @@ spec:
         command: ["goobers", "pr-select"]
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
+        authorScope: "any"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -96,6 +97,7 @@ spec:
         - number
         - head
         - base
+        - advisoryMode
       next: gather-sibling-context
 
     # The cross-PR value stage (design doc §3): "this is where the cross-PR
@@ -110,7 +112,10 @@ spec:
         command: ["goobers", "gather-sibling-context"]
       inputsFrom:
         selectedNumber: number
+        advisoryMode: advisoryMode
       inputs:
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
+        authorScope: "any"
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
@@ -124,6 +129,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         # reviewDigest (#523) is threaded to apply-verdict's inputsFrom too —
         # apply-verdict stamps it onto a genuinely fresh verdict before
         # posting, so the NEXT gather-sibling-context can find and reuse it.
@@ -164,6 +170,7 @@ spec:
         selectedNumber: selectedNumber
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: the same deterministic overlap set the election used —
         # gather-sibling-context emits it on the review-gate branch,
@@ -192,10 +199,11 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - decision
         - verdictAuthor
         - priorityDispatchRequested
-      next: published-verdict
+      next: advisory-verdict
 
     - name: elect-lander
       type: deterministic
@@ -208,6 +216,7 @@ spec:
         selectedNumber: selectedNumber
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: the deterministic file-overlap set (backstops the election so a
         # green file-collision reaches sequencing even if the reviewer
@@ -241,6 +250,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - reviewDigest
         # Passed through so apply-verdict on the parked (not-elected) branch
         # resolves the same deterministic overlap set (#990).
@@ -509,6 +519,19 @@ spec:
       branches:
         pass: merge-pr
         fail: ""
+
+    - name: advisory-verdict
+      # Outside-prefix PRs receive the published verdict but no remediation
+      # handoff, lander election, merge, or post-merge mutation.
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: advisoryMode
+          equals: "true"
+      branches:
+        pass: ""
+        fail: published-verdict
 
     - name: merge-gate
       # Issue #758: distinguishes an actual GitHub merge from a
