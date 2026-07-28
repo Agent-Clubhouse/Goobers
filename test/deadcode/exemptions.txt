@@ -91,10 +91,17 @@ github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine
 github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
 github.com/goobers/goobers/internal/engine.ProjectRun # Temporal history->journal projection (#629) retained for tier 3, exercised by the dual-runner conformance harness.
 github.com/goobers/goobers/internal/engine.ProjectCompletedRun # Temporal history->journal projection entrypoint (#629) retained for tier 3, exercised by projection tests.
+github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
+github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
+github.com/goobers/goobers/internal/engine.queryProjection # Temporal projection query helper shared by quarantined tier-3 entrypoints, exercised by projection and schedule tests.
 github.com/goobers/goobers/internal/engine.validateProjection # Projection fail-closed validator (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.validateOp # Projection op validator (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.projectionClock.set # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.projectionClock.now # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
+github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
+github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
+github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
+github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
 github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
 github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
