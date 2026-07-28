@@ -740,10 +740,23 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	if _, err := compileAcknowledged(definition("ordinary-telemetry-query", telemetryTask)); err != nil {
 		t.Fatalf("ordinary telemetry-query should not require Tutor's PR capability: %v", err)
 	}
-	telemetryTask.Run.Command = []string{"goobers", "telemetry-query", "--format", "tutor-live-verification"}
-	_, err = compileAcknowledged(definition("tutor-holdout-query", telemetryTask))
-	if err == nil || !strings.Contains(err.Error(), `subcommand "telemetry-query" but does not declare capability "github:pr:write"`) {
-		t.Fatalf("Tutor telemetry-query error = %v, want conditional PR capability diagnostic", err)
+	telemetryCommands := []struct {
+		name    string
+		command []string
+	}{
+		{name: "double dash split", command: []string{"goobers", "telemetry-query", "--format", "tutor-live-verification"}},
+		{name: "double dash equals", command: []string{"goobers", "telemetry-query", "--format=tutor-live-verification"}},
+		{name: "single dash split", command: []string{"goobers", "telemetry-query", "-format", "tutor-live-verification"}},
+		{name: "single dash equals", command: []string{"goobers", "telemetry-query", "-format=tutor-live-verification"}},
+	}
+	for _, tc := range telemetryCommands {
+		t.Run(tc.name, func(t *testing.T) {
+			telemetryTask.Run.Command = tc.command
+			_, err := compileAcknowledged(definition("tutor-holdout-query", telemetryTask))
+			if err == nil || !strings.Contains(err.Error(), `subcommand "telemetry-query" but does not declare capability "github:pr:write"`) {
+				t.Fatalf("Tutor telemetry-query error = %v, want conditional PR capability diagnostic", err)
+			}
+		})
 	}
 
 	reconcileTask := apiv1.Task{

@@ -277,14 +277,19 @@ func (u CapabilityUse) required(args []string) bool {
 	if u.flag == "" {
 		return true
 	}
+	flagName := strings.TrimLeft(u.flag, "-")
 	for i, arg := range args {
-		if u.flagValue == "" && (arg == u.flag || strings.HasPrefix(arg, u.flag+"=")) {
+		name, value, hasValue := strings.Cut(arg, "=")
+		if name != "-"+flagName && name != "--"+flagName {
+			continue
+		}
+		if u.flagValue == "" {
 			return true
 		}
-		if arg == u.flag && i+1 < len(args) && args[i+1] == u.flagValue {
+		if hasValue && value == u.flagValue {
 			return true
 		}
-		if value, ok := strings.CutPrefix(arg, u.flag+"="); ok && value == u.flagValue {
+		if !hasValue && i+1 < len(args) && args[i+1] == u.flagValue {
 			return true
 		}
 	}

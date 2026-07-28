@@ -39,6 +39,18 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.TelemetryRead, capability.GitHubPRWrite},
 		},
 		{
+			name:    "conditional capability single dash split flag",
+			command: "telemetry-query",
+			args:    []string{"-format", "tutor-live-verification"},
+			want:    []capability.Capability{capability.TelemetryRead, capability.GitHubPRWrite},
+		},
+		{
+			name:    "conditional capability single dash equals flag",
+			command: "telemetry-query",
+			args:    []string{"-format=tutor-live-verification"},
+			want:    []capability.Capability{capability.TelemetryRead, capability.GitHubPRWrite},
+		},
+		{
 			name:    "unconditional capability without flag",
 			command: "reconcile-branches",
 			want:    []capability.Capability{capability.GitHubBranchDelete},
