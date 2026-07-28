@@ -39,7 +39,8 @@ const (
 // ExporterKind selects the built-in span exporter.
 type ExporterKind string
 
-// Config controls tracer/meter setup and exporter selection.
+// Config controls tracer/meter setup and exporter selection. ExporterOTLP
+// requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
 	ServiceName        string
 	ServiceVersion     string
@@ -289,13 +290,15 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 			return nil, fmt.Errorf("create stdout telemetry exporter: %w", err)
 		}
 	case ExporterOTLP:
+		endpoint := strings.TrimSpace(cfg.OTLPEndpoint)
+		if endpoint == "" {
+			return nil, errors.New("create otlp telemetry exporter: endpoint must be explicitly configured")
+		}
 		opts := []otlptracegrpc.Option{}
-		if cfg.OTLPEndpoint != "" {
-			if strings.Contains(cfg.OTLPEndpoint, "://") {
-				opts = append(opts, otlptracegrpc.WithEndpointURL(cfg.OTLPEndpoint))
-			} else {
-				opts = append(opts, otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint))
-			}
+		if strings.Contains(endpoint, "://") {
+			opts = append(opts, otlptracegrpc.WithEndpointURL(endpoint))
+		} else {
+			opts = append(opts, otlptracegrpc.WithEndpoint(endpoint))
 		}
 		if cfg.OTLPInsecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())

@@ -33,6 +33,10 @@ func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, e
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }
 
+func (j *branchJournal) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	return j.run.RecordBranchArtifactBounded(j.branch, name, data, maxBytes)
+}
+
 func (j *branchJournal) RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchStageArtifact(j.branch, stage, attempt, class, name, data)
 }

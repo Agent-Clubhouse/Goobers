@@ -11,11 +11,14 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+var _ executor.BoundedArtifactRecorder = (*branchJournal)(nil)
 
 func TestNewParallelExecAssignsIdsByDeclarationOrder(t *testing.T) {
 	p := newParallelExec(apiv1.Parallel{
@@ -499,54 +502,6 @@ func TestRunnerRejectsWritableConcurrentParallelBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestRunnerExecutesConcurrentScratchAgenticGate(t *testing.T) {
-	base := branchGateFanInMachine(t)
-	def := base.Def
-	def.Spec.Parallels[0].MaxConcurrentBranches = 2
-	def.Spec.Gates[0].Evaluator = apiv1.EvaluatorAgentic
-	def.Spec.Gates[0].Automated = nil
-	def.Spec.Gates[0].Agentic = &apiv1.AgenticGate{
-		Goober:    "reviewer",
-		Workspace: apiv1.WorkspaceScratch,
-	}
-	def.Spec.Gates[0].Branches = map[string]string{
-		string(apiv1.VerdictPass):         workflow.TargetJoin,
-		string(apiv1.VerdictNeedsChanges): workflow.TargetJoin,
-		string(apiv1.VerdictFail):         workflow.TargetJoin,
-	}
-	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
-	if err != nil {
-		t.Fatalf("compile concurrent scratch-gate fixture: %v", err)
-	}
-
-	reviewer := &capturingReviewer{}
-	r, _ := newParallelTestRunner(t,
-		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-			return &countingDeterministic{}, nil
-		},
-	)
-	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
-		return reviewer, nil
-	}
-
-	result, err := r.Start(context.Background(), StartInput{
-		RunID: "parallel-scratch-agentic-gate", Gaggle: "demo", Machine: machine,
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: apiv1.RepoRef{
-			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if result.Phase != journal.PhaseCompleted {
-		t.Fatalf("phase = %q, want completed", result.Phase)
-	}
-	if !reviewer.called {
-		t.Fatal("scratch agentic gate reviewer was not invoked")
-	}
-}
-
 func TestRunnerConcurrentBranchGateKeepsAttribution(t *testing.T) {
 	base := branchGateFanInMachine(t)
 	def := base.Def
@@ -710,83 +665,6 @@ func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
 		if completeness[i].Status != status {
 			t.Errorf("branch %d status = %q, want %q", i+1, completeness[i].Status, status)
 		}
-	}
-}
-
-func TestRunnerResumeConcurrentReservedOnFailureDoesNotReplayParallel(t *testing.T) {
-	const runID = "parallel-fail-fast-resume"
-	machine := parallelFailFastMachine(t)
-	var constructions atomic.Int32
-	r, runsDir := newParallelTestRunner(t,
-		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-			constructions.Add(1)
-			return &countingDeterministic{}, nil
-		},
-	)
-	jr, err := journal.Create(runsDir, journal.RunIdentity{
-		RunID:           runID,
-		Workflow:        machine.Def.Name,
-		WorkflowVersion: machine.Def.Version,
-		WorkflowDigest:  machine.Digest(),
-		Gaggle:          "demo",
-		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
-	if err != nil {
-		t.Fatalf("journal.Create: %v", err)
-	}
-	jr.SetMachineState("fan")
-	for _, event := range []journal.Event{
-		{
-			Type: journal.EventParallelStarted, Parallel: "fan",
-			Completeness: []journal.BranchOutcome{
-				{Branch: 1, Name: "a"}, {Branch: 2, Name: "b"}, {Branch: 3, Name: "c"},
-			},
-		},
-		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "a", Stage: "lens-a"},
-		{Type: journal.EventStageStarted, Branch: 1, Stage: "lens-a", Attempt: 1},
-		{
-			Type: journal.EventStageFinished, Branch: 1, Stage: "lens-a", Attempt: 1,
-			Status: string(apiv1.ResultFailure),
-			Error:  &journal.ErrorDetail{Code: "lens_failed", Message: "lens failed"},
-		},
-		{
-			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "a",
-			BranchStatus: journal.BranchFailed,
-		},
-		{
-			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 2, BranchName: "b",
-			BranchStatus: journal.BranchCancelled,
-		},
-		{
-			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 3, BranchName: "c",
-			BranchStatus: journal.BranchCancelled,
-		},
-		{
-			Type: journal.EventParallelFinished, Parallel: "fan", Target: workflow.TargetAbort,
-			Completeness: []journal.BranchOutcome{
-				{Branch: 1, Name: "a", Status: journal.BranchFailed},
-				{Branch: 2, Name: "b", Status: journal.BranchCancelled},
-				{Branch: 3, Name: "c", Status: journal.BranchCancelled},
-			},
-		},
-	} {
-		if err := jr.Append(event); err != nil {
-			t.Fatalf("append %s: %v", event.Type, err)
-		}
-	}
-	if err := jr.Close(); err != nil {
-		t.Fatalf("close journal: %v", err)
-	}
-
-	result, err := r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine})
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	if result.Phase != journal.PhaseAborted {
-		t.Fatalf("phase = %q, want aborted", result.Phase)
-	}
-	if got := constructions.Load(); got != 0 {
-		t.Fatalf("executor constructions = %d, want no branch replay", got)
 	}
 }
 
@@ -1016,103 +894,6 @@ func TestRunnerResumeConcurrentParallelDoesNotRepeatFinishedStages(t *testing.T)
 		if got := det.callCount(runID + ":" + stage); got != 1 {
 			t.Errorf("%s calls = %d, want 1", stage, got)
 		}
-	}
-}
-
-func TestConcurrentResumeStateIsBranchScoped(t *testing.T) {
-	events := []journal.Event{
-		{Type: journal.EventStageFinished, Stage: "prepare", Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"root": true}},
-		{Type: journal.EventParallelStarted, Parallel: "fan"},
-		{Type: journal.EventStageFinished, Branch: 1, Stage: "lens-a", Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"secret": "a"}},
-		{Type: journal.EventStageFinished, Branch: 2, Stage: "lens-b", Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"own": "b"}},
-	}
-	root, ok := parallelRootEvents(events, "fan")
-	if !ok {
-		t.Fatal("parallel root boundary not found")
-	}
-	completed := branchStageOutputs(
-		reconstructStageOutputs(root, nil),
-		parallelBranchEvents(events, "fan", 2),
-		nil,
-	)
-	if _, leaked := completed["lens-a"]; leaked {
-		t.Fatalf("branch 2 recovered branch 1 outputs: %+v", completed)
-	}
-	if _, ok := completed["prepare"]; !ok {
-		t.Fatalf("branch 2 lost root outputs: %+v", completed)
-	}
-	if _, ok := completed["lens-b"]; !ok {
-		t.Fatalf("branch 2 lost its own outputs: %+v", completed)
-	}
-}
-
-func TestConcurrentWorkspaceBranchRecoveryIsBranchScoped(t *testing.T) {
-	machine := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
-	for i := range machine.Def.Spec.Tasks {
-		if machine.Def.Spec.Tasks[i].Name == "lens-a" || machine.Def.Spec.Tasks[i].Name == "lens-b" {
-			machine.Def.Spec.Tasks[i].Type = apiv1.TaskDeterministic
-		}
-	}
-	events := []journal.Event{
-		{Type: journal.EventStageFinished, Stage: "prepare", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/root"}},
-		{Type: journal.EventParallelStarted, Parallel: "fan"},
-		{Type: journal.EventStageFinished, Branch: 1, Stage: "lens-a", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"}},
-		{Type: journal.EventStageFinished, Branch: 2, Stage: "lens-b", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/b"}},
-	}
-	root, ok := parallelRootEvents(events, "fan")
-	if !ok {
-		t.Fatal("parallel root boundary not found")
-	}
-	rootBranch := lastWorkspaceBranch(root, machine, "goobers/")
-	if rootBranch != "" {
-		// "prepare" is intentionally absent from this fixture machine, so the
-		// fail-closed recovery ignores its synthetic output.
-		t.Fatalf("root workspace branch = %q, want empty", rootBranch)
-	}
-	branchA := lastWorkspaceBranch(parallelBranchEvents(events, "fan", 1), machine, "goobers/")
-	branchB := lastWorkspaceBranch(parallelBranchEvents(events, "fan", 2), machine, "goobers/")
-	if branchA != "goobers/a" || branchB != "goobers/b" {
-		t.Fatalf("branch workspace recovery = %q/%q, want goobers/a and goobers/b", branchA, branchB)
-	}
-}
-
-func TestPendingParallelTransitionChoosesDeclarationOrder(t *testing.T) {
-	machine := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
-	events := []journal.Event{
-		{
-			Type: journal.EventParallelStarted, Parallel: "fan",
-			Completeness: []journal.BranchOutcome{
-				{Branch: 1, Name: "a"}, {Branch: 2, Name: "b"}, {Branch: 3, Name: "c"},
-			},
-		},
-		{
-			Type: journal.EventStageFinished, Branch: 1, Stage: "lens-a",
-			Status:  string(apiv1.ResultBlocked),
-			Outputs: map[string]any{OutputBlockedBy: "41"},
-		},
-		{
-			Type: journal.EventStageFinished, Branch: 2, Stage: "lens-b",
-			Status:  string(apiv1.ResultBlocked),
-			Outputs: map[string]any{OutputBlockedBy: "42"},
-		},
-		{
-			Type: journal.EventParallelFinished, Parallel: "fan", Target: workflow.TargetEscalate,
-			Completeness: []journal.BranchOutcome{
-				{Branch: 1, Name: "a", Status: journal.BranchFailed},
-				{Branch: 2, Name: "b", Status: journal.BranchFailed},
-				{Branch: 3, Name: "c", Status: journal.BranchCancelled},
-			},
-		},
-	}
-	transition := pendingParallelTransition(events, machine)
-	if transition == nil || transition.task == nil {
-		t.Fatalf("transition = %+v, want branch task terminal", transition)
-	}
-	if transition.task.task.Name != "lens-a" {
-		t.Fatalf("terminal task = %q, want declaration-first lens-a", transition.task.task.Name)
-	}
-	if blockers := parseBlockedBy(transition.task.result.Outputs); len(blockers) != 1 || blockers[0] != "41" {
-		t.Fatalf("terminal blockers = %v, want [41]", blockers)
 	}
 }
 

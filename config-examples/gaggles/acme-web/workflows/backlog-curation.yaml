@@ -40,6 +40,27 @@ spec:
         - claim-backlog-items
       expectedOutputs:
         - backlog-reconciliation
+      next: implementation-feedback
+    # Re-open chronically failing ready items to curation before measuring the
+    # pool. The threshold is consecutive outcomes since the latest ready event,
+    # so a one-off failure is preserved and a later re-ready starts a new cohort.
+    - name: implementation-feedback
+      type: deterministic
+      goal: Route chronically failing implementation items back to curation with evidence.
+      run:
+        command: ["goobers", "backlog-health", "--feedback"]
+      inputs:
+        trustLabel: "goobers:approved"
+        readyLabel: "goobers:ready"
+        implementationFailureThreshold: "3"
+        resultFile: "implementation-feedback.json"
+      capabilities:
+        - github:issues:write
+        - telemetry:read
+      policyActions:
+        - update-issue
+      expectedOutputs:
+        - implementation-feedback
       next: sample-ready-pool
     - name: sample-ready-pool
       type: deterministic

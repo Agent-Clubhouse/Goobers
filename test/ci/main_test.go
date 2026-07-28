@@ -51,6 +51,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	want := []string{
 		"fmt-check",
 		"tidy-check",
+		"no-phone-home",
 		"vet",
 		"build-config-sync",
 		"portal-install",
@@ -73,7 +74,11 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[12]
+	// Looked up by label rather than by position: this assertion previously
+	// used a hardcoded index, which silently selected the wrong check as soon
+	// as a new check was inserted earlier in the list (adding no-phone-home
+	// shifted "test" from 12 to 13). A label lookup cannot drift that way.
+	testCheck := checkByLabel(t, gotChecks, "test")
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -100,25 +105,25 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
-	shippedCheck := gotChecks[10]
+	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
 		t.Fatalf("shipped workflow check = %#v", shippedCheck)
 	}
-	schemaCoverageCheck := gotChecks[11]
+	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
 		!reflect.DeepEqual(schemaCoverageCheck.args, []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"}) {
 		t.Fatalf("schema description coverage check = %#v", schemaCoverageCheck)
 	}
 
-	buildCheck := gotChecks[7]
+	buildCheck := checkByLabel(t, gotChecks, "build-goobers")
 	if got := filepath.ToSlash(strings.Join(buildCheck.args, " ")); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
 		t.Fatalf("goobers build args = %q", got)
 	}
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, versionPackage+".Version=v1.2.3") {
 		t.Fatalf("goobers build args missing metadata: %q", got)
 	}
-	validateCheck := gotChecks[8]
+	validateCheck := checkByLabel(t, gotChecks, "validate-configs")
 	if got := filepath.ToSlash(strings.Join(validateCheck.args, " ")); got != "run ./test/configvalidate bin/goobers" {
 		t.Fatalf("validate-configs args = %q", got)
 	}
@@ -147,6 +152,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
+		"no-phone-home",
 		"vet",
 		"build-config-sync",
 		"build-goobers",
@@ -252,10 +258,10 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		"windows",
 		"",
 	)
-	if args := filepath.ToSlash(strings.Join(got[6].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
+	if args := filepath.ToSlash(strings.Join(got[7].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
-	if args := filepath.ToSlash(strings.Join(got[7].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
+	if args := filepath.ToSlash(strings.Join(got[8].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {
@@ -282,7 +288,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -827,4 +833,22 @@ func TestRunRejectsUnknownGroup(t *testing.T) {
 	if !strings.Contains(stderr.String(), "unknown check group") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+// checkByLabel returns the single check with the given label, failing if it is
+// absent or ambiguous. Positional indexing into checks() is fragile: inserting
+// a check shifts every later index, and the resulting assertion failure points
+// at the wrong check rather than at the insertion.
+func checkByLabel(t *testing.T, all []check, label string) check {
+	t.Helper()
+	var found []check
+	for _, current := range all {
+		if current.label == label {
+			found = append(found, current)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("checks with label %q = %d, want exactly 1", label, len(found))
+	}
+	return found[0]
 }

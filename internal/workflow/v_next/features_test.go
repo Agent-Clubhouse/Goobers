@@ -524,7 +524,12 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll",
 				Run:    &apiv1.DeterministicRun{Command: []string{"false"}},
-				Inputs: map[string]string{"kind": "ci-poll"}, ContinueOnError: true, Next: "status-equals",
+				Inputs: map[string]string{"kind": "ci-poll"}, ContinueOnError: true, Next: "external-telemetry",
+			},
+			{
+				Name: "external-telemetry", Type: apiv1.TaskDeterministic, Goal: "query",
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}},
+				Inputs: map[string]string{"kind": "external-telemetry"}, Next: "status-equals",
 			},
 		},
 		Gates: []apiv1.Gate{
@@ -814,6 +819,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.next",
 		"stage.shell",
 		"stage.ci-poll",
+		"stage.external-telemetry",
 		"stage.run.command",
 		"stage.run.script",
 		"stage.run.env",

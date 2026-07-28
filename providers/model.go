@@ -418,10 +418,10 @@ type PullRequestPollRequest struct {
 
 // PullRequestPollResult is the deterministic stage-output envelope a repass gate
 // branches on: mergeability, review decision, combined check state + failure
-// detail refs, and comments since the last poll (BL-031). Draft/HeadSHA/BaseSHA
-// (issue #360) are the live signal a conjunctive auto-merge action re-checks
-// against a previously-computed verdict's SHA-pin before acting on it — never
-// trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
+// detail refs, and comments since the last poll (BL-031). Draft, labels,
+// HeadSHA, and BaseSHA are live signals a conjunctive auto-merge action
+// re-checks before acting on a previously computed verdict — never trust a
+// caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
 	Number    int        `json:"number"`
 	Title     string     `json:"title,omitempty"`
@@ -430,6 +430,7 @@ type PullRequestPollResult struct {
 	MergedAt  *time.Time `json:"mergedAt,omitempty"`
 	Mergeable *bool      `json:"mergeable,omitempty"`
 	Draft     bool       `json:"draft"`
+	Labels    []string   `json:"labels,omitempty"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete
@@ -684,6 +685,16 @@ type EnqueuePullRequestResult struct {
 	Message  string `json:"message,omitempty"`
 }
 
+// DequeuePullRequestRequest removes a pull request that a caller previously
+// observed in GitHub's merge queue. PullRequestNodeID comes from
+// PollMergeQueueEntryResult so the dequeue is one mutation with no intervening
+// lookup race.
+type DequeuePullRequestRequest struct {
+	Repository        RepositoryRef `json:"repository"`
+	PullID            string        `json:"pullId"`
+	PullRequestNodeID string        `json:"pullRequestNodeId"`
+}
+
 // MergeQueueEntryState normalizes the possible outcomes of watching a pull
 // request already enqueued via EnqueuePullRequest resolve (issue #758).
 type MergeQueueEntryState string
@@ -725,6 +736,12 @@ type PollMergeQueueEntryRequest struct {
 // entry state.
 type PollMergeQueueEntryResult struct {
 	State MergeQueueEntryState `json:"state"`
+	// PullRequestNodeID is the provider-native identity required to remove
+	// this pull request from GitHub's merge queue.
+	PullRequestNodeID string `json:"pullRequestNodeId,omitempty"`
+	// Labels are read in the same live query as the queue entry so a watcher
+	// can honor an opt-out without a second, racy provider read.
+	Labels []string `json:"labels,omitempty"`
 	// MergeSHA, on a merged outcome, is the commit that actually landed on
 	// the base branch — never the pull request's head SHA, which under the
 	// squash method a merge queue requires is a different commit entirely.

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -59,19 +61,24 @@ func TestParseRemediationStateCommentNoPayloadIsNotFound(t *testing.T) {
 type remediationCheckpointServerState struct {
 	mu sync.Mutex
 
-	number             int
-	headSHA, baseSHA   string
-	listedHeadSHA      string
-	liveBaseSHA        string
-	state              string
-	merged             bool
-	terminalOnComments bool
-	mergeOnComments    bool
-	labels             []string
-	comments           []string
-	files              []providers.ChangedFile
-	siblings           []remediationCheckpointSibling
-	labelRemovalAuth   string
+	number              int
+	headSHA, baseSHA    string
+	listedHeadSHA       string
+	liveBaseSHA         string
+	state               string
+	merged              bool
+	terminalOnComments  bool
+	mergeOnComments     bool
+	labels              []string
+	comments            []string
+	files               []providers.ChangedFile
+	siblings            []remediationCheckpointSibling
+	labelRemovalAuth    string
+	pullListRequests    int
+	pullReadStatus      int
+	deleteCommentOnEdit bool
+	headAfterComments   string
+	baseAfterComments   string
 }
 
 type remediationCheckpointSibling struct {
@@ -92,6 +99,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
+		st.pullListRequests++
 		state := r.URL.Query().Get("state")
 		currentState := st.state
 		if currentState == "" {
@@ -141,6 +149,10 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d", prefix, st.number), func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
+		if st.pullReadStatus != 0 {
+			http.Error(w, "pull request read failed", st.pullReadStatus)
+			return
+		}
 		state := st.state
 		if state == "" {
 			state = "open"
@@ -227,6 +239,14 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			st.state = "closed"
 			st.merged = st.mergeOnComments
 		}
+		if st.headAfterComments != "" {
+			st.headSHA = st.headAfterComments
+			st.headAfterComments = ""
+		}
+		if st.baseAfterComments != "" {
+			st.baseSHA = st.baseAfterComments
+			st.baseAfterComments = ""
+		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
 			out[i] = map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c, "created_at": "2026-07-15T00:00:00Z"}
@@ -273,6 +293,12 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		defer st.mu.Unlock()
 		if idx < 1 || idx > len(st.comments) {
 			http.Error(w, "comment not found", http.StatusNotFound)
+			return
+		}
+		if st.deleteCommentOnEdit {
+			st.deleteCommentOnEdit = false
+			st.comments = append(st.comments[:idx-1], st.comments[idx:]...)
+			http.Error(w, "comment deleted", http.StatusNotFound)
 			return
 		}
 		st.comments[idx-1] = body.Body
@@ -999,6 +1025,138 @@ func TestRemediationCheckpointIgnoresStaleStructuralConflictEvidenceWithPriorChe
 	}
 }
 
+func TestRemediationCheckpointRecomputesDigestWhenHeadChangesBeforePublication(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	baseSHA, initialHeadSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+	initialDigest, err := diffDigest(".", baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest initial head: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: initialDigest, HeadSHA: initialHeadSHA, BaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", "--branch", branch, origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "concurrent.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatalf("write concurrent change: %v", err)
+	}
+	runGitT(t, concurrent, "add", "concurrent.txt")
+	runGitT(t, concurrent, "commit", "-m", "concurrent PR update")
+	runGitT(t, concurrent, "push", "origin", "HEAD")
+	advancedHeadSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	advancedDigest, err := diffDigest(concurrent, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest advanced head: %v", err)
+	}
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: initialHeadSHA, baseSHA: baseSHA,
+		labels:            []string{needsRemediationLabel},
+		comments:          []string{priorComment},
+		headAfterComments: advancedHeadSHA,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want ordinary checkpoint for the advanced head", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, concurrent head must not be escalated using the prior head's digest", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.Cycles != 2 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary cycle 2", state, ok)
+	}
+	if state.HeadSHA != advancedHeadSHA || state.LastDiffDigest != advancedDigest {
+		t.Fatalf(
+			"checkpoint head/digest = %q/%q, want recomputed %q/%q",
+			state.HeadSHA, state.LastDiffDigest, advancedHeadSHA, advancedDigest,
+		)
+	}
+}
+
+func TestRemediationCheckpointRecomputesDigestWhenBaseChangesBeforePublication(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	initialBaseSHA, headSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+	initialDigest, err := diffDigest(".", initialBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest initial base: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: initialDigest, HeadSHA: headSHA, BaseSHA: initialBaseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	runGitT(t, concurrent, "merge", "--no-ff", "origin/"+branch, "-m", "merge PR into advancing base")
+	runGitT(t, concurrent, "push", "origin", "main")
+	advancedBaseSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	runGitT(t, concurrent, "checkout", branch)
+	advancedDigest, err := diffDigest(concurrent, advancedBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest advanced base: %v", err)
+	}
+	if advancedDigest == initialDigest {
+		t.Fatalf("test setup produced identical digests %q; base race would not be observable", advancedDigest)
+	}
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: initialBaseSHA,
+		labels:            []string{needsRemediationLabel},
+		comments:          []string{priorComment},
+		baseAfterComments: advancedBaseSHA,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want ordinary checkpoint for the advanced base", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, concurrent base advance must not be escalated using the prior base's digest", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.Cycles != 2 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary cycle 2", state, ok)
+	}
+	if state.BaseSHA != advancedBaseSHA || state.LastDiffDigest != advancedDigest {
+		t.Fatalf(
+			"checkpoint base/digest = %q/%q, want recomputed %q/%q",
+			state.BaseSHA, state.LastDiffDigest, advancedBaseSHA, advancedDigest,
+		)
+	}
+}
+
 func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.T) {
 	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	now := time.Now().UTC()
@@ -1152,6 +1310,174 @@ func TestRemediationCheckpointPRNoLongerOpenIsMoot(t *testing.T) {
 	if !strings.Contains(stdout, "no longer open") {
 		t.Fatalf("stdout = %q, want a mention that the PR is no longer open", stdout)
 	}
+	assertTerminalCheckpointResult(t, "checkpoint-result.json", 77)
+}
+
+func TestRemediationCheckpointClassifiesTerminalPRPastCachedList(t *testing.T) {
+	tests := []struct {
+		name               string
+		merged             bool
+		terminalOnComments bool
+		escalate           bool
+	}{
+		{name: "closed before exact read"},
+		{name: "merged before escalation publication", merged: true, terminalOnComments: true, escalate: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+			st := &remediationCheckpointServerState{
+				number: 77, headSHA: headSHA, baseSHA: baseSHA,
+				labels: []string{needsRemediationLabel},
+			}
+			server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+			instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+			const snapshotID = "tick-before-checkpoint"
+			t.Setenv(providersnapshot.EnvVar, snapshotID)
+			repo, err := providerRepo(instanceRoot)
+			if err != nil {
+				t.Fatalf("providerRepo: %v", err)
+			}
+			cached := newCachedGitHubProvider(instanceRoot, "test-token")
+			prs, err := cached.ListPullRequests(t.Context(), providers.ListPullRequestsRequest{
+				Repository: repo, Base: "main", HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+			})
+			if err != nil || len(prs) != 1 {
+				t.Fatalf("seed pull-request snapshot: prs=%v, err=%v", prs, err)
+			}
+
+			st.mu.Lock()
+			if tt.terminalOnComments {
+				st.terminalOnComments = true
+				st.mergeOnComments = tt.merged
+			} else {
+				st.state = "closed"
+				st.merged = tt.merged
+			}
+			st.mu.Unlock()
+
+			var code int
+			var stdout, stderr string
+			if tt.escalate {
+				code, stdout, stderr = runArgs(t, "remediation-checkpoint", "--escalate", "reviewer rejected", instanceRoot)
+			} else {
+				code, stdout, stderr = runArgs(t, "remediation-checkpoint", instanceRoot)
+			}
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "no longer open") {
+				t.Fatalf("stdout = %q, want terminal-PR business outcome", stdout)
+			}
+			assertTerminalCheckpointResult(t, "checkpoint-result.json", 77)
+
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			if st.pullListRequests != 1 {
+				t.Fatalf("pull-list requests = %d, want command to replay the seeded provider snapshot", st.pullListRequests)
+			}
+			if len(st.comments) != 0 {
+				t.Fatalf("comments = %v, want terminal PR untouched", st.comments)
+			}
+			if len(st.labels) != 1 || st.labels[0] != needsRemediationLabel {
+				t.Fatalf("labels = %v, want terminal PR labels untouched", st.labels)
+			}
+		})
+	}
+}
+
+func TestRemediationCheckpointKeepsUnclassifiedReadErrorGeneric(t *testing.T) {
+	initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{
+		number: 77, pullReadStatus: http.StatusInternalServerError,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, _, _ := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, want provider-stage failure", code)
+	}
+	result := readProviderStageResult(t, "checkpoint-result.json")
+	for _, key := range []string{
+		executor.OutputErrorCode,
+		executor.OutputErrorMessage,
+		executor.OutputErrorRetryable,
+	} {
+		if _, ok := result[key]; !ok {
+			t.Fatalf("result = %v, want generic provider field %q", result, key)
+		}
+	}
+	for _, key := range []string{"continueRemediation", "selectedNumber", "head", "headSha"} {
+		if _, ok := result[key]; ok {
+			t.Fatalf("result = %v, unclassified provider error must not masquerade as a checkpoint outcome", result)
+		}
+	}
+}
+
+func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, HeadSHA: headSHA, BaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:              []string{needsRemediationLabel},
+		comments:            []string{priorComment},
+		deleteCommentOnEdit: true,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--escalate", "reviewer rejected", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	want := map[string]string{
+		"continueRemediation": "false",
+		"selectedNumber":      "77",
+		"head":                "goobers/impl/remediation-364",
+		"headSha":             headSHA,
+	}
+	if len(result) != len(want) {
+		t.Fatalf("checkpoint result = %v, want classified result %v", result, want)
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Fatalf("checkpoint result[%q] = %q, want %q (result: %v)", key, result[key], value, result)
+		}
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "reviewer rejected") {
+		t.Fatalf("comments = %v, want deleted sticky comment recreated with escalation state", st.comments)
+	}
+}
+
+func assertTerminalCheckpointResult(t *testing.T, path string, selectedNumber int) {
+	t.Helper()
+	result := readCheckpointResult(t, path)
+	want := map[string]string{
+		"continueRemediation": "false",
+		"selectedNumber":      strconv.Itoa(selectedNumber),
+		"head":                "",
+		"headSha":             "",
+	}
+	if len(result) != len(want) {
+		t.Fatalf("checkpoint result = %v, want complete terminal result %v", result, want)
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Fatalf("checkpoint result[%q] = %q, want %q (result: %v)", key, result[key], value, result)
+		}
+	}
 }
 
 // TestRemediationCheckpointRefusesWithoutCapability proves
@@ -1205,5 +1531,92 @@ func TestRemediationCheckpointRequiresSelectedNumber(t *testing.T) {
 	code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (selectedNumber required)", code, stderr)
+	}
+}
+
+// TestRemediationCheckpointResetsBudgetWhenOperatorClearsEscalation is #1808's
+// acceptance: the escalation comment promises "a human removes
+// goobers:merge-escalated" as an unpark path, and it did not work. The repass
+// count lives in this checkpoint's comment payload rather than the label, so
+// clearing the label re-admitted the PR with its counter still over budget and
+// the next cycle re-escalated immediately — on PR #1729, in under six minutes,
+// with the count stuck at 12/10 the whole time.
+//
+// Prior state here is an escalated, over-budget record; the PR no longer
+// carries the label. One cycle must run without re-escalating.
+func TestRemediationCheckpointResetsBudgetWhenOperatorClearsEscalation(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:           12,
+		AttemptsByCause:  remediationAttempts{Substantive: 10},
+		Escalated:        true,
+		EscalatedReason:  "substantive budget exhausted (10/10 attempts)",
+		EscalatedHeadSHA: headSHA,
+		EscalatedBaseSHA: baseSHA,
+		HeadSHA:          headSHA,
+		BaseSHA:          baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		// The operator has removed goobers:merge-escalated.
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "10", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, l := range st.labels {
+		if l == remediationEscalatedLabel {
+			t.Fatalf("PR was re-escalated on the very next cycle after an operator cleared the "+
+				"escalation — the documented unpark path is inert (labels = %v, stdout = %q)",
+				st.labels, stdout)
+		}
+	}
+}
+
+// TestRemediationCheckpointKeepsBudgetWhileStillEscalated is the over-reach
+// guard: the reset must key on the operator having cleared the label, not on
+// the record merely being an escalation. A PR still carrying
+// goobers:merge-escalated must keep its counter, or escalation would never
+// stick and the budget would mean nothing.
+func TestRemediationCheckpointKeepsBudgetWhileStillEscalated(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:           12,
+		AttemptsByCause:  remediationAttempts{Substantive: 10},
+		Escalated:        true,
+		EscalatedReason:  "substantive budget exhausted (10/10 attempts)",
+		EscalatedHeadSHA: headSHA,
+		EscalatedBaseSHA: baseSHA,
+		HeadSHA:          headSHA,
+		BaseSHA:          baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel, remediationEscalatedLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "10", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "escalated") {
+		t.Fatalf("stdout = %q, want the over-budget PR to stay escalated", stdout)
 	}
 }

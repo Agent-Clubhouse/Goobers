@@ -1,0 +1,53 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: external-telemetry-fixture
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+spec:
+  instance:
+    name: external-telemetry-fixture
+    environment: dev
+  gaggles:
+    - telemetry-fixture
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: telemetry-fixture
+spec:
+  project:
+    provider: github
+    owner: example
+    name: service
+  backlog:
+    provider: github
+    project: example/service
+  isolation:
+    namespace: telemetry-fixture
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: query-health
+spec:
+  gaggle: telemetry-fixture
+  triggers:
+    - type: manual
+  start: query-health
+  tasks:
+    - name: query-health
+      type: deterministic
+      goal: Query the fixture service health telemetry.
+      run:
+        command: ["goobers", "external-telemetry"]
+        workspace: scratch
+        network: none
+      inputs:
+        kind: external-telemetry
+        connector: fixture
+        query: health
+        shape: point
+        expectedColumns: '[{"name":"healthy","type":"boolean"}]'
+      capabilities:
+        - telemetry:read

@@ -121,6 +121,8 @@ Before making the daemon API reachable beyond loopback, follow the
 [tier-2 OIDC authentication guide](docs/guides/oidc-authentication.md).
 Azure DevOps instances can use
 [Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
+Operational workflows can query ADX or compiled organization adapters through
+[external telemetry connectors](docs/guides/external-telemetry-connectors.md).
 
 ## Repository assistance with an agent
 
