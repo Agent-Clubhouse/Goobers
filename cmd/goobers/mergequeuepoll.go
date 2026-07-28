@@ -23,13 +23,12 @@ import (
 // like ci-poll — internal/executor/cipoll.go's own doc) neither happens
 // before this stage's own poll times out.
 //
-// Merged, evicted, and timed out are successful determinations (exit 0):
+// Merged, evicted, timed out, and skipped are successful determinations (exit 0):
 // a merged pull request gets the same branch cleanup merge-pr's direct path
 // already does; evicted and timed-out pull requests are labeled
 // goobers:needs-remediation with an explanatory comment before reporting the
-// outcome. The routing is part of the outcome, so a failure to apply that label
-// is a genuine stage failure (exit 1), not a swallowed warning that would
-// silently leave the pull request unrouted.
+// outcome. A skipped pull request acquired goobers:no-merge-review while
+// queued and is dequeued without any comment or label mutation.
 const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"Watch a pull request already enqueued to its repo's merge queue (issue\n" +
 	"#758's Land, in merge-queue-enqueue policy) until the queue merges or\n" +
@@ -40,8 +39,10 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"queue-result.json). An eviction or timeout applies\n" +
 	"goobers:needs-remediation plus an explanatory comment before reporting\n" +
 	"its queueOutcome — a failure to apply that trail is a stage failure,\n" +
-	"not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,\n" +
-	"or still-pending-timeout — see the result file's queueOutcome field),\n" +
+	"not a swallowed warning. A live goobers:no-merge-review opt-out dequeues\n" +
+	"the pull request and reports skipped without remediation. Exit codes:\n" +
+	"0 = evaluated (merged, evicted, skipped, or still-pending-timeout —\n" +
+	"see the result file's queueOutcome field),\n" +
 	"1 = business error (missing capability/config,\n" +
 	"provider failure), 2 = usage/IO error.\n"
 
@@ -140,43 +141,89 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	// Length of the current unbroken streak of absent reads; reset by any
 	// conclusive non-absent read.
 	absentStreak := 0
+	optedOut := false
 	for attempt := 0; ; attempt++ {
 		result, pollErr := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
 			return failProviderStage(stderr, "poll merge queue entry", pollErr, resultFile)
 		}
 		if pollErr == nil {
-			switch result.State {
-			case providers.MergeQueueEntryMerged:
-				return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
-			case providers.MergeQueueEntryEvicted:
-				return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
-			case providers.MergeQueueEntryPending:
-				entrySeen = true
-				// A conclusive non-absent read breaks the absence streak.
-				absentStreak = 0
-			case providers.MergeQueueEntryAbsent:
-				absentStreak++
-				switch {
-				case !entrySeen && time.Now().Before(graceUntil):
-					// No entry has ever been seen and we are still inside the
-					// enqueue-propagation grace window: treat as pending.
-				case absentStreak >= mergeQueueAbsenceConfirmPolls:
-					// Absence held across independent reads. A merge landing
-					// in the gap would have resolved to Merged by now, so this
-					// is a real eviction.
-					pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
+			if hasAnyLabel(result.Labels, []string{noMergeReviewLabel}) {
+				optedOut = true
+			}
+			if optedOut {
+				switch result.State {
+				case providers.MergeQueueEntryMerged:
+					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+				case providers.MergeQueueEntryPending:
+					entrySeen = true
+					absentStreak = 0
+					if err := provider.DequeuePullRequest(ctx, providers.DequeuePullRequestRequest{
+						Repository: repo, PullID: pullNumber, PullRequestNodeID: result.PullRequestNodeID,
+					}); err == nil {
+						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+					} else {
+						pf(stderr, "warning: dequeue opted-out pull request #%s: %v; continuing to monitor and retry\n", pullNumber, err)
+					}
+				case providers.MergeQueueEntryEvicted:
+					return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+				case providers.MergeQueueEntryAbsent:
+					absentStreak++
+					if (entrySeen || !time.Now().Before(graceUntil)) && absentStreak >= mergeQueueAbsenceConfirmPolls {
+						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+					}
+					pf(stdout, "pr #%s opted out but its merge queue entry is not visible; waiting to dequeue or confirm absence\n", pullNumber)
+				}
+			} else {
+				switch result.State {
+				case providers.MergeQueueEntryMerged:
+					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+				case providers.MergeQueueEntryEvicted:
 					return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
-				default:
-					// First absent read of this streak. Do NOT commit to an
-					// eviction yet — this is exactly what a successful merge
-					// also looks like for an instant (#924). Poll again and
-					// let the merge become visible if that is what happened.
-					pf(stdout, "pr #%s has no merge queue entry; re-polling to confirm before calling it an eviction\n", pullNumber)
+				case providers.MergeQueueEntryPending:
+					entrySeen = true
+					// A conclusive non-absent read breaks the absence streak.
+					absentStreak = 0
+				case providers.MergeQueueEntryAbsent:
+					absentStreak++
+					switch {
+					case !entrySeen && time.Now().Before(graceUntil):
+						// No entry has ever been seen and we are still inside the
+						// enqueue-propagation grace window: treat as pending.
+					case absentStreak >= mergeQueueAbsenceConfirmPolls:
+						// Absence held across independent reads. A merge landing
+						// in the gap would have resolved to Merged by now, so this
+						// is a real eviction.
+						pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
+						return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
+					default:
+						// First absent read of this streak. Do NOT commit to an
+						// eviction yet — this is exactly what a successful merge
+						// also looks like for an instant (#924). Poll again and
+						// let the merge become visible if that is what happened.
+						pf(stdout, "pr #%s has no merge queue entry; re-polling to confirm before calling it an eviction\n", pullNumber)
+					}
 				}
 			}
 		}
 		if time.Now().After(deadline) {
+			if optedOut {
+				// Removal was never confirmed, so the entry may still be queued
+				// and may still merge after this watcher exits. Record it for
+				// post-merge reconciliation before reporting the failure:
+				// otherwise a late merge lands with none of the follow-up the
+				// normal path performs — branch cleanup, issue close-out,
+				// sibling fan-out, unparking — and nothing is left pointing at
+				// the PR to notice. Recording an entry that turns out never to
+				// merge is harmless; reconciliation is keyed on the merge
+				// actually happening.
+				if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
+					pf(stderr, "error: record unconfirmed opt-out dequeue for reconciliation: %v\n", err)
+					return 1
+				}
+				pf(stderr, "error: pull request #%s opted out, but its merge queue removal could not be confirmed before timeout\n", pullNumber)
+				return 1
+			}
 			if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
 				pf(stderr, "error: record timed-out merge queue entry for reconciliation: %v\n", err)
 				return 1
@@ -190,6 +237,16 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		case <-time.After(mergeQueuePollBackoff(interval, maxInterval, attempt)):
 		}
 	}
+}
+
+func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("pull request #%s is labeled %s and was removed from merge-review landing", pullNumber, noMergeReviewLabel)
+	if err := writeQueueResult(resultFile, pullNumber, mergeReviewOptOutOutcome, "", nil, reason); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "merge queue skipped pr #%s after %s opt-out\n", pullNumber, noMergeReviewLabel)
+	return 0
 }
 
 // mergeQueuePollMerged reports a queue-merged pull request and runs the
@@ -263,8 +320,8 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 
 // writeQueueResult writes merge-queue-poll's declared result file's flat
 // JSON — selectedNumber (always present), queueOutcome
-// ("merged"/"evicted"/"timeout", always present — this stage always
-// determines one of the three before returning, matching ci-poll's own
+// ("merged"/"evicted"/"timeout"/"skipped", always present — this stage always
+// determines one of the four before returning, matching ci-poll's own
 // "always succeeds at determining an outcome" philosophy), mergeSha (on
 // merged), reason (on evicted or timeout), and headBranch/branchCleanup/
 // branchCleanupError (after a merge) — the same flat-scalar convention

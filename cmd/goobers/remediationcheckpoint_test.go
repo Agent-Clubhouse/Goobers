@@ -1207,3 +1207,90 @@ func TestRemediationCheckpointRequiresSelectedNumber(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q, want 1 (selectedNumber required)", code, stderr)
 	}
 }
+
+// TestRemediationCheckpointResetsBudgetWhenOperatorClearsEscalation is #1808's
+// acceptance: the escalation comment promises "a human removes
+// goobers:merge-escalated" as an unpark path, and it did not work. The repass
+// count lives in this checkpoint's comment payload rather than the label, so
+// clearing the label re-admitted the PR with its counter still over budget and
+// the next cycle re-escalated immediately — on PR #1729, in under six minutes,
+// with the count stuck at 12/10 the whole time.
+//
+// Prior state here is an escalated, over-budget record; the PR no longer
+// carries the label. One cycle must run without re-escalating.
+func TestRemediationCheckpointResetsBudgetWhenOperatorClearsEscalation(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:           12,
+		AttemptsByCause:  remediationAttempts{Substantive: 10},
+		Escalated:        true,
+		EscalatedReason:  "substantive budget exhausted (10/10 attempts)",
+		EscalatedHeadSHA: headSHA,
+		EscalatedBaseSHA: baseSHA,
+		HeadSHA:          headSHA,
+		BaseSHA:          baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		// The operator has removed goobers:merge-escalated.
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "10", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, l := range st.labels {
+		if l == remediationEscalatedLabel {
+			t.Fatalf("PR was re-escalated on the very next cycle after an operator cleared the "+
+				"escalation — the documented unpark path is inert (labels = %v, stdout = %q)",
+				st.labels, stdout)
+		}
+	}
+}
+
+// TestRemediationCheckpointKeepsBudgetWhileStillEscalated is the over-reach
+// guard: the reset must key on the operator having cleared the label, not on
+// the record merely being an escalation. A PR still carrying
+// goobers:merge-escalated must keep its counter, or escalation would never
+// stick and the budget would mean nothing.
+func TestRemediationCheckpointKeepsBudgetWhileStillEscalated(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:           12,
+		AttemptsByCause:  remediationAttempts{Substantive: 10},
+		Escalated:        true,
+		EscalatedReason:  "substantive budget exhausted (10/10 attempts)",
+		EscalatedHeadSHA: headSHA,
+		EscalatedBaseSHA: baseSHA,
+		HeadSHA:          headSHA,
+		BaseSHA:          baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel, remediationEscalatedLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "10", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "escalated") {
+		t.Fatalf("stdout = %q, want the over-budget PR to stay escalated", stdout)
+	}
+}

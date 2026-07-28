@@ -359,11 +359,11 @@ func reachabilityProblems(m *Machine) []string {
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	for _, t := range def.Spec.Tasks {
-		declared := toSet(t.Capabilities)
+		capabilities := toSet(t.Capabilities)
 		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {
 			subcommand := t.Run.Command[1]
 			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				if !declared[string(use.Capability)] {
+				if !capabilities[string(use.Capability)] {
 					problems = append(problems, fmt.Sprintf(
 						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
 						t.Name, subcommand, use.Capability, use.Consequence,
@@ -371,8 +371,11 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				}
 			}
 		}
-		if t.Inputs["kind"] == "ci-poll" && !declared[string(capability.GitHubPRWrite)] {
+		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
+		}
+		if t.Inputs["kind"] == "external-telemetry" && !capabilities[string(capability.TelemetryRead)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))
 		}
 		for _, c := range t.Capabilities {
 			if capability.Known(c) && !capability.StageDeclarable(c) {

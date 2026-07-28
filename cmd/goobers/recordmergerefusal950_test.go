@@ -111,6 +111,31 @@ func TestRecordMergeRefusalSkipsAdvisory(t *testing.T) {
 	}
 }
 
+func TestRecordMergeRefusalSkipsMergeReviewOptOut(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(82, "goobers/implementation/opted-out", "main", "sha-opted-out", "base1", false, []string{noMergeReviewLabel}, nil)
+	server.addIssue(82, "opted-out pr")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "82")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-opted-out")
+	t.Setenv("GOOBERS_INPUT_REASON", mergeReviewOptOutReason)
+	t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "record-merge-refusal", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[82].comments...)
+	labels := append([]string(nil), server.issues[82].labels...)
+	server.mu.Unlock()
+	if len(comments) != 0 || len(labels) != 0 {
+		t.Fatalf("opt-out refusal mutated PR: comments=%v issue labels=%v", comments, labels)
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.

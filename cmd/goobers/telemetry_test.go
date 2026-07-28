@@ -362,6 +362,10 @@ func (r *telemetryParityReader) Artifact(context.Context, string, string) (reads
 	return readservice.ArtifactContent{}, readservice.ErrNotFound
 }
 
+func (r *telemetryParityReader) Transcript(context.Context, string, uint64) (readservice.TranscriptContent, error) {
+	return readservice.TranscriptContent{}, readservice.ErrNotFound
+}
+
 func (r *telemetryParityReader) Instance(context.Context) (readservice.Instance, error) {
 	return readservice.Instance{}, nil
 }

@@ -95,8 +95,10 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
 - **TEL-044 (MUST):** *(Tiers 1–2)* Run spans MUST additionally be exported as
   **OTLP/JSON files** in the journal, re-emittable from journals
   (`goobers telemetry export`); an **opt-in OTLP push** endpoint MAY be configured
-  per instance. Standard OTel tooling consumes both. Cloud collection is the tier-3
-  drop-in of the same exporter (design D3).
+  per instance. The endpoint MUST have no default and MUST be supplied explicitly
+  by the user; no maintainer-facing collection path is permitted (`SEC-048`).
+  Standard OTel tooling consumes both. Cloud collection is the tier-3 drop-in of
+  the same exporter (design D3).
 - **TEL-045 (MUST):** *(All tiers)* The query surface MUST be reachable from inside
   workflows as a built-in **connector stage** (the `backlog-query` pattern) emitting
   a **versioned candidate-findings artifact** with journal evidence pointers

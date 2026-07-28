@@ -1,8 +1,8 @@
 // Package executor implements deterministic stage execution (ARCHITECTURE.md
 // §5, TSK-020): running a declared shell command inside a stage's worktree and
-// mapping the result to the stage contract's ResultEnvelope, plus the ci-poll
+// mapping the result to the stage contract's ResultEnvelope, the ci-poll
 // built-in deterministic-stage kind that drives the implementation workflow's
-// CI-poll/repass loop.
+// CI-poll/repass loop, and the host-governed external-telemetry query stage.
 //
 // ci-poll is a TASK (TaskDeterministic), not a gate: CIPollExecutor polls to a
 // terminal check state and reports it via ResultEnvelope.Outputs["ciStatus"]
@@ -20,7 +20,8 @@
 // Because a caller (the runner, #17) constructs exactly one invoke.Deterministic
 // per run, TaskExecutor is the single dispatcher registered for
 // apiv1.TaskDeterministic: it routes InvocationEnvelope.Inputs[InputKind]
-// through a KindRegistry populated at the composition root.
+// through a KindRegistry populated at the composition root, including the
+// host-governed external telemetry query kind.
 //
 // ShellExecutor implements invoke.Deterministic — the existing engine↔runtime
 // seam (internal/invoke) — so it plugs into the runner (#17) the same way any

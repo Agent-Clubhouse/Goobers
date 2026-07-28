@@ -237,3 +237,69 @@ func TestApplyVerdictReadsCurrentPRPastTickSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyVerdictMarksStandingVerdictStaleWhenHeadMoved is #1733's fix. A
+// voided verdict used to publish nothing at all, which left whatever verdict
+// was already on the PR standing as if it were current. pr-remediation reads
+// that comment, so it kept fixing findings from a superseded head, pushed —
+// moving the head again — and voided the next review in turn.
+//
+// PR #1719 burned 3 hours over 4 cycles that way. The run journal shows the
+// loop is NOT a verdict-cache defect as first suspected (`verdictCacheHit:
+// false`); the head simply advanced mid-run and apply-verdict voided with
+// "PR head moved from deterministic review pin", publishing nothing.
+func TestApplyVerdictMarksStandingVerdictStaleWhenHeadMoved(t *testing.T) {
+	const (
+		prNumber = 10
+		pinHead  = "reviewed-head"
+		pinBase  = "reviewed-base"
+		runID    = "review-run"
+	)
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(prNumber, "Selected PR")
+	// The head has advanced past the pin the review was computed against.
+	server.addOpenPR(prNumber, "goobers/implementation/run-10", "main", "current-head", pinBase, false, nil, nil)
+
+	// A verdict from an earlier cycle is already published and still names its
+	// own (now superseded) findings.
+	standing := mergeReviewStatusMarker + "\n**merge-review verdict: needs-changes**\n\nmid-parallel resume parity"
+	server.addComment(prNumber, standing)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges, Summary: "stale review", HeadSHA: pinHead, BaseSHA: pinBase,
+	})
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", pinHead)
+	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", pinBase)
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "verdict void") {
+		t.Fatalf("stdout = %q, want the verdict voided", stdout)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	comments := append([]string(nil), server.issues[prNumber].comments...)
+	var status []string
+	for _, c := range comments {
+		if strings.HasPrefix(c, mergeReviewStatusMarker) {
+			status = append(status, c)
+		}
+	}
+	if len(status) != 1 {
+		t.Fatalf("got %d merge-review status comments, want exactly 1 (the standing one, edited in place): %v",
+			len(status), status)
+	}
+	if !strings.Contains(status[0], "stale") {
+		t.Fatalf("standing verdict was left presented as current — pr-remediation will keep acting on "+
+			"superseded findings; comment = %q", status[0])
+	}
+}

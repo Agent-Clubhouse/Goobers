@@ -49,9 +49,8 @@
 //     closed today), but it must land with that wiring.
 //   - The context-manifest artifact is journaled even when workspace
 //     provisioning failed; the gate-evaluator has no per-attempt deadline; a
-//     provider-mutation ref.touched analogue is absent; InputsFrom failures
-//     produce no stage-attributed events; and StartWorkflow leaves
-//     WorkflowIDReusePolicy at the default (a completed run-id can re-execute).
+//     provider-mutation ref.touched analogue is absent; and InputsFrom failures
+//     produce no stage-attributed events.
 //
 // The verdict-ArtifactPointer projection hazard (a pre-scrub pointer can dangle
 // when scrubbing changes the bytes) is the same class and tracked with them.

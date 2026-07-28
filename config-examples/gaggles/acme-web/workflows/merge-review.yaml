@@ -49,6 +49,7 @@ spec:
         command: ["goobers", "pr-select"]
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -58,6 +59,7 @@ spec:
         - number
         - head
         - base
+        - advisoryMode
       next: gather-sibling-context
 
     - name: gather-sibling-context
@@ -67,7 +69,10 @@ spec:
         command: ["goobers", "gather-sibling-context"]
       inputsFrom:
         selectedNumber: number
+        advisoryMode: advisoryMode
       inputs:
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
@@ -77,6 +82,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - reviewDigest
         # #990: deterministic file-overlap set, threaded to elect-lander +
         # apply-verdict. Empty string when nothing overlaps.
@@ -97,6 +103,7 @@ spec:
         # only an optional cross-check against this pin.
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: same deterministic overlap set the election used.
         overlappingSiblings: overlappingSiblingsCsv
@@ -118,10 +125,11 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - decision
         - verdictAuthor
         - priorityDispatchRequested
-      next: published-verdict
+      next: advisory-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
     # mutually-sibling-blocked cluster (lowest PR number) and routes it into
@@ -135,6 +143,7 @@ spec:
         selectedNumber: selectedNumber
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
         reviewDigest: reviewDigest
         # #990: deterministic overlap set; passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
@@ -153,6 +162,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - advisoryMode
         - reviewDigest
         # Passed through for apply-verdict on the parked branch (#990).
         - overlappingSiblingsCsv
@@ -191,16 +201,17 @@ spec:
       expectedOutputs:
         - selectedNumber
         - merged
+        - optedOut
         # reason is always emitted (empty on a merge/enqueue) so
         # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
         # selectedHeadSha (the echoed SHA-pin) keys the demotion by head.
         - reason
         - selectedHeadSha
-      next: merge-gate
+      next: merge-opt-out-gate
 
     - name: queue-watch
       type: deterministic
-      goal: Watch a merge-queue-enqueued PR until it merges, is evicted, or needs timeout remediation.
+      goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
       run:
         command: ["goobers", "merge-queue-poll"]
       inputsFrom:
@@ -234,7 +245,7 @@ spec:
       expectedOutputs:
         - selectedNumber
         - queueOutcome
-      next: queue-gate
+      next: queue-opt-out-gate
 
     - name: post-merge
       type: deterministic
@@ -349,6 +360,28 @@ spec:
         pass: merge-pr
         fail: ""
 
+    - name: advisory-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: advisoryMode
+          equals: "true"
+      branches:
+        pass: ""
+        fail: published-verdict
+
+    - name: merge-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: optedOut
+          equals: "true"
+      branches:
+        pass: ""
+        fail: merge-gate
+
     - name: merge-gate
       # Distinguishes an actual merge from a merge-queue enqueue (issue
       # #758) — a plain output-equals(merged==true) would conflate
@@ -364,6 +397,17 @@ spec:
         # so a lander that repeatedly cannot merge at an unchanged head is
         # counted and eventually demoted, letting its cluster drain around it.
         fail: record-merge-refusal
+
+    - name: queue-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: queueOutcome
+          equals: skipped
+      branches:
+        pass: ""
+        fail: queue-gate
 
     - name: queue-gate
       # queue-watch already labels and comments on both evicted and timed-out

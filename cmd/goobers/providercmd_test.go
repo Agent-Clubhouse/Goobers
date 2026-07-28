@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,7 +109,13 @@ type fakeGitHubServer struct {
 	// branchTips answers GET .../git/ref/heads/<branch> (GitHubProvider.
 	// BranchTipSHA) — the LIVE base-branch tip the merge-escalated self-heal
 	// check (#1052) compares against, distinct from any PR's pinned baseSHA.
-	branchTips    map[string]string
+	branchTips map[string]string
+	// repoLabels is the repository's label set (GET/POST /repos/o/r/labels),
+	// distinct from any issue's applied labels. It lets a test model a label the
+	// code names but the repository does not actually define — the #1801 failure,
+	// where goobers:scope-gate-ack was referenced by a constant and existed
+	// nowhere, so the escape hatch it advertised was unreachable.
+	repoLabels    map[string]string
 	nextPR        int
 	nextCommentID int64
 	nextEventID   int64
@@ -169,7 +176,8 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	s := &fakeGitHubServer{
 		owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{},
 		compares: map[string]fakeCompare{}, contents: map[string]string{}, branchTips: map[string]string{},
-		nextPR: 1, authenticatedLogin: "goobers",
+		repoLabels: map[string]string{},
+		nextPR:     1, authenticatedLogin: "goobers",
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -183,9 +191,60 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
+	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+// handleRepoLabels serves the repository label set: GET lists it, POST defines a
+// new one. Modelling this separately from issue labels is what lets a test
+// distinguish "the code named a label" from "the repository defines it".
+func (s *fakeGitHubServer) handleRepoLabels(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch r.Method {
+	case http.MethodGet:
+		names := make([]string, 0, len(s.repoLabels))
+		for name := range s.repoLabels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		labels := make([]map[string]string, 0, len(names))
+		for _, name := range names {
+			labels = append(labels, map[string]string{"name": name, "description": s.repoLabels[name]})
+		}
+		writeFakeJSON(w, labels)
+	case http.MethodPost:
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad label body", http.StatusBadRequest)
+			return
+		}
+		if _, exists := s.repoLabels[body["name"]]; exists {
+			http.Error(w, "label already exists", http.StatusUnprocessableEntity)
+			return
+		}
+		s.repoLabels[body["name"]] = body["description"]
+		writeFakeJSON(w, body)
+	default:
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+	}
+}
+
+// addRepoLabel declares a label as already defined in the repository.
+func (s *fakeGitHubServer) addRepoLabel(name, description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repoLabels[name] = description
+}
+
+// hasRepoLabel reports whether the repository defines a label.
+func (s *fakeGitHubServer) hasRepoLabel(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.repoLabels[name]
+	return ok
 }
 
 func (s *fakeGitHubServer) setFileContent(ref, path, content string) {

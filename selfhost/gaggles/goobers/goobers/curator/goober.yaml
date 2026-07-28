@@ -31,6 +31,7 @@ spec:
     - triage
   tools:
     - github
+    - shell
   scaleFactor: 1
   workflows:
     - backlog-curation

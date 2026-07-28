@@ -45,6 +45,12 @@ func TestElectionDecision(t *testing.T) {
 		return apiv1.Finding{Class: apiv1.FindingCrossPRBlocked, BlockingPRs: blockers}
 	}
 	substantive := apiv1.Finding{Class: apiv1.FindingSubstantive}
+	// #1726: an `info` nit — e.g. "this generated patch is byte-for-byte
+	// identical to the selected PR's, there is no semantic conflict" — is not a
+	// reason to withhold landing authority.
+	infoNit := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityInfo}
+	warningDefect := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityWarning}
+	errorDefect := apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityError}
 
 	tests := []struct {
 		name     string
@@ -58,6 +64,16 @@ func TestElectionDecision(t *testing.T) {
 		{"empty findings -> not electable", nil, 810, false},
 		{"multiple cross-pr findings, lowest overall -> elected", []apiv1.Finding{crossPR(811), crossPR(812)}, 810, true},
 		{"multiple cross-pr findings, a lower one present -> parked", []apiv1.Finding{crossPR(812), crossPR(809)}, 810, false},
+		// #1726: the live deadlock — winner carried only info-severity findings.
+		{"cross-pr + info nit -> still electable", []apiv1.Finding{crossPR(811), infoNit}, 810, true},
+		{"cross-pr + several info nits -> still electable", []apiv1.Finding{crossPR(811), infoNit, infoNit, infoNit}, 810, true},
+		{"cross-pr + warning defect -> not electable", []apiv1.Finding{crossPR(811), warningDefect}, 810, false},
+		{"cross-pr + error defect -> not electable", []apiv1.Finding{crossPR(811), errorDefect}, 810, false},
+		// An unset severity must keep failing closed: a malformed verdict cannot
+		// launder itself into landing authority.
+		{"cross-pr + unset-severity defect -> not electable", []apiv1.Finding{crossPR(811), substantive}, 810, false},
+		// Info alone is not an ordering finding, so there is no cluster to win.
+		{"info nit only, no ordering finding -> not electable", []apiv1.Finding{infoNit}, 810, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,5 +357,70 @@ func TestResolveElectionPolicy(t *testing.T) {
 				t.Fatalf("resolved policy %q elected(%d, %v) = %v, want %v", gotName, tt.thisPR, tt.blockers, got, tt.wantElected)
 			}
 		})
+	}
+}
+
+// TestInfoFindingsDoNotDeadlockCluster covers the #1726 deadlock end to end at
+// the predicate level: the winner's review carries only `info` findings that
+// each say in their own text that there is no conflict, so it must be crowned
+// and no human-intervention escalation must be emitted.
+//
+// Both gates have to agree for this to work. withOverlapBackstop must still
+// synthesise the ordering finding (an info nit used to suppress it, leaving no
+// cross-pr-blocked finding to elect on), and electionDecision must then crown
+// the winner. Fixing only one leaves the cluster stalled.
+func TestInfoFindingsDoNotDeadlockCluster(t *testing.T) {
+	infoNit := func(msg string) apiv1.Finding {
+		return apiv1.Finding{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityInfo, Message: msg}
+	}
+	// The live cluster: #1717 the winner, siblings #1719/#1723/#1724, all three
+	// findings identical-generated-churn notes.
+	findings := []apiv1.Finding{
+		infoNit("zz_generated.deepcopy.go patch is byte-for-byte identical; there is no semantic conflict"),
+		infoNit("overlaps only in separate Windows/WSL guidance strings"),
+		infoNit("fan-in implementation is otherwise in a separate subsystem"),
+	}
+	siblings := []int{1719, 1723, 1724}
+
+	backstopped := withOverlapBackstop(findings, siblings)
+	if len(backstopped) != len(findings)+1 {
+		t.Fatalf("withOverlapBackstop returned %d findings, want %d — info nits must not suppress the ordering backstop",
+			len(backstopped), len(findings)+1)
+	}
+
+	if !electionDecision(backstopped, 1717, electedLander, nil) {
+		t.Fatal("winner carrying only info findings was not crowned — the cluster deadlocks")
+	}
+
+	if reason := noLanderEscalationReason(
+		apiv1.VerdictNeedsChanges, backstopped, 1717, siblings, electedLander, nil, "fifo",
+	); reason != "" {
+		t.Fatalf("emitted a human-intervention escalation for a crownable winner: %s", reason)
+	}
+}
+
+// TestRealDefectStillBlocksCrowning is the guard against over-reach: #1719 in
+// the same live cluster carried genuine error-severity findings and was
+// correctly left in remediation. Severity-awareness must not launder that.
+func TestRealDefectStillBlocksCrowning(t *testing.T) {
+	findings := []apiv1.Finding{
+		{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityInfo, Message: "identical generated churn"},
+		{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityError, Message: "mid-parallel resume parity"},
+	}
+	// The defect sits on the deterministic winner (lowest number under fifo),
+	// which is the only shape that produces the asymmetric no-lander state.
+	const winner = 1717
+	siblings := []int{1719, 1723, 1724}
+
+	if got := withOverlapBackstop(findings, siblings); len(got) != len(findings) {
+		t.Fatalf("withOverlapBackstop appended to findings carrying a real defect (%d -> %d)", len(findings), len(got))
+	}
+	if electionDecision(findings, winner, electedLander, nil) {
+		t.Fatal("crowned a PR carrying an error-severity finding")
+	}
+	if reason := noLanderEscalationReason(
+		apiv1.VerdictNeedsChanges, findings, winner, siblings, electedLander, nil, "fifo",
+	); reason == "" {
+		t.Fatal("no escalation for a genuine no-lander state — the asymmetric case must still surface")
 	}
 }

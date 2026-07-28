@@ -95,6 +95,14 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   provider's own permission model makes enforceable — workflows MUST NOT claim
   unapproved items. Instances on private/trusted backlogs MAY relax the gate
   explicitly in config.
+- **SEC-048 (MUST):** *(All tiers)* **No phone-home.** Goobers MUST NOT transmit
+  usage data, metrics, telemetry, diagnostics, or user information to project
+  maintainers or to any default or built-in collection endpoint. Run journals
+  and rollups remain on the user's machine. Outbound telemetry is permitted only
+  to an OTLP collector endpoint the user explicitly configures; no collector
+  endpoint may have a default. Opt-in does not permit a maintainer-facing
+  collection path: this repository MUST contain no such path, enabled or
+  disabled. Users own their data and may choose to self-report it.
 
 ### Isolation
 
@@ -148,6 +156,39 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   constrained (allowlisting) to limit exfiltration or out-of-scope actions (`GBO-Q2`) —
   realized at every tier by capability admission (`SEC-042`); **Tier 3 (V2)** adds
   restricted pod egress via network policy.
+
+## No-phone-home guard and compliance audit
+
+`go run ./test/nophonehome` is part of the portable merge gate and its fast
+subset. It parses production Go syntax and tokenizes production JavaScript and
+TypeScript call sites instead of searching arbitrary text. The guard rejects
+statically resolved destinations passed to package-level and `http.Client`
+HTTP methods, browser HTTP/beacon/socket APIs, gRPC, SMTP, raw network, and
+OTLP egress APIs; rejects default-valued telemetry/reporting endpoint
+assignments; and rejects new OTLP exporter constructors with implicit
+destinations. The single OTLP constructor is pinned to
+`internal/telemetry.spanExporters`, where `telemetry.New` also fails unless the
+caller supplies a non-empty endpoint.
+
+This check exists to enforce `SEC-048`, not to maintain a list of approved
+collection services. Do not make a failure pass by adding a maintainer,
+analytics, crash-reporting, or other telemetry endpoint to an allowlist. There
+is intentionally no endpoint allowlist. Remove the collection path; for
+legitimate user-owned OTLP export, pass the endpoint from explicit instance or
+environment configuration through the existing exporter seam.
+
+**Audit (2026-07-26): compliant after closing the low-level SDK-default seam.**
+
+- Run telemetry is written to the local journal and SQLite rollup.
+- OTLP push is disabled without `telemetry.otlp.endpoint` or
+  `GOOBERS_OTLP_ENDPOINT`; the exporter rejects an empty endpoint and ignores
+  the OpenTelemetry SDK's ambient endpoint variables.
+- The remaining production egress surfaces are user-directed operational
+  connections: configured repository/backlog providers, OIDC discovery,
+  GitHub App token exchange, cluster/registry preflight, and the loopback
+  dashboard API. None sends telemetry or user data to Goobers maintainers.
+- No maintainer-owned telemetry, reporting, diagnostics, crash-reporting, or
+  adoption endpoint is present.
 
 ## Relationships
 

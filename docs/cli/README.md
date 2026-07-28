@@ -12,7 +12,7 @@
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
 | [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
-| [`goobers apply-verdict`](#goobers-apply-verdict) | publish a merge-review verdict as a native review (a workflow stage) |
+| [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
@@ -57,13 +57,13 @@
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
-| [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged or evicted (a workflow stage) |
+| [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage) |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
-| [`goobers pr-select`](#goobers-pr-select) | select one eligible open PR for merge-review (a workflow stage) |
+| [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
@@ -72,6 +72,7 @@
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
+| [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -211,7 +212,7 @@ $ goobers agent-kit update --write ./config-repo
 
 ## `goobers apply-verdict`
 
-publish a merge-review verdict as a native review (a workflow stage)
+publish a managed or advisory merge-review verdict (a workflow stage)
 
 ~~~text
 Usage: goobers apply-verdict [--gate name] [path]
@@ -219,9 +220,10 @@ Usage: goobers apply-verdict [--gate name] [path]
 Read the holistic review gate's Verdict from this run's own journal,
 cross-check its optional SHA echo against the deterministic review
 pin, re-check that pin against the PR's current head/base, and — if
-still valid — post the verdict as a native GitHub review and retain
-the PR-comment handoff. Non-pass verdicts also apply a remediation
-label. A
+still valid — publish the verdict. Managed PRs receive a native GitHub
+review plus the PR-comment handoff; non-pass verdicts also receive a
+remediation label. advisoryMode=true publishes only the non-blocking
+comment, without closing, labeling, electing, or merging the PR. A
 stale SHA pin voids the verdict: no comment, no label, exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
@@ -267,11 +269,13 @@ $ goobers backlog-dedupe
 snapshot ready-pool depth and age (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-health [path]
+Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
-persist the paginated ready-transition ledger for telemetry rollups. Exit
-codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
+persist the paginated ready-transition ledger for telemetry rollups.
+--feedback instead de-readies items whose consecutive failed/escalated
+implementation runs meet the implementationFailureThreshold input (minimum 2).
+Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 ~~~
 
 **Examples**
@@ -759,7 +763,8 @@ Read the holistic review gate's Verdict from this run's journal and, when
 it is entirely cross-PR-ordering asks and the selected PR is the elected
 lander of its overlap cluster (lowest PR number), emit elected=true to
 route the PR into merge-pr; otherwise emit elected=false to route it to
-apply-verdict. Requires selectedNumber (inputsFrom gather-sibling-context).
+apply-verdict. Advisory-mode PRs are never elected. Requires selectedNumber
+and advisoryMode (inputsFrom gather-sibling-context).
 Exit codes: 0 = decided (elected or not — both normal), 1 = business
 error, 2 = usage/IO error.
 ~~~
@@ -1071,10 +1076,12 @@ load other open PRs as review evidence (a workflow stage)
 ~~~text
 Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]
 
-Load the other open goober-authored PRs' touched files + state as
+Load the other open PRs' touched files + state as
 evidence for the holistic review (a workflow stage, follows
-pr-select). Requires selectedNumber/selectedHead/selectedBase inputs
-(Task.InputsFrom pr-select's own outputs). Sibling files are memoized
+pr-select). authorScope=any permits an outside-headPrefixes selection and
+requires pr-select's advisoryMode output. Managed selections retain their
+namespace-wide goober sibling set; advisory selections see every open PR.
+Requires selectedNumber from Task.InputsFrom. Sibling files are memoized
 per head SHA under the instance scheduler dir, while check state is
 always refreshed; --no-cache bypasses the file memo entirely (neither
 read nor written) to force a fully fresh gather. Separately, this stage
@@ -1281,7 +1288,7 @@ $ goobers merge-pr
 
 ## `goobers merge-queue-poll`
 
-watch an enqueued PR until merged or evicted (a workflow stage)
+watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 
 ~~~text
 Usage: goobers merge-queue-poll [path]
@@ -1295,8 +1302,10 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
-or still-pending-timeout — see the result file's queueOutcome field),
+not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
+the pull request and reports skipped without remediation. Exit codes:
+0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
+see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 ~~~
@@ -1441,16 +1450,18 @@ $ goobers post-merge
 
 ## `goobers pr-select`
 
-select one eligible open PR for merge-review (a workflow stage)
+select one managed or advisory open PR for merge-review (a workflow stage)
 
 ~~~text
 Usage: goobers pr-select [path]
 
-Select at most one open, non-draft, green-CI goober-authored PR for
-merge-review to evaluate this cycle (a workflow stage). Before selection,
+Select at most one open, non-draft, green-CI PR for merge-review to
+evaluate this cycle (a workflow stage). authorScope defaults to goobers;
+set it to any to admit PRs outside headPrefixes as advisory-only. PRs
+labeled goobers:no-merge-review are always excluded. Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
-selected PR's number/head/base/headSha/baseSha/url to the declared
+selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared
 result file. Exit codes: 0 = selected (or no-work), 1 = business error,
 2 = usage/IO error.
 ~~~
@@ -1662,6 +1673,34 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers remediation-checkpoint
+~~~
+
+## `goobers report-pr-status`
+
+publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+
+~~~text
+Usage: goobers report-pr-status [path]
+
+Publish a provider-native pull-request status (Azure DevOps PR status) as
+goobers' own evidence — the agentic reviewer verdict and the local-CI
+result — so a repository's status-check branch policy can gate on it and
+the validation loop can prove PR correctness against the repo's required
+policies (#772). Reaching this stage on the happy path is itself the
+evidence: the run only advances here after the review gate and local-CI
+gate both pass, so the default published state is `succeeded`.
+
+Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),
+statusName (default "validation"), statusGenre (default "goobers"),
+state (succeeded|failed|pending, default succeeded), description,
+targetUrl (default the PR url), resultFile (default status-result.json).
+Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers report-pr-status
 ~~~
 
 ## `goobers reset-rate-limit`

@@ -31,6 +31,7 @@ import type {
   TelemetryErrorsPage,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TranscriptContent,
   WorkflowDetail,
   WorkflowPage,
 } from "./types";
@@ -48,6 +49,7 @@ export interface DaemonFixtures {
   stageUsage?: Record<string, FixtureStageUsage[]>;
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
+  transcripts?: Record<string, TranscriptContent>;
   telemetryStats: TelemetryStatsResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
@@ -204,6 +206,20 @@ export class FixtureDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<ArtifactContent> {
     const value = required(this.fixtures.artifacts, fixtureKey(runId, digest), "artifact");
+    throwIfCancelled(options);
+    return { ...value, bytes: value.bytes.slice(0) };
+  }
+
+  async getTranscript(
+    runId: string,
+    seq: number,
+    options?: RequestOptions,
+  ): Promise<TranscriptContent> {
+    const value = required(
+      this.fixtures.transcripts,
+      fixtureKey(runId, String(seq)),
+      "transcript",
+    );
     throwIfCancelled(options);
     return { ...value, bytes: value.bytes.slice(0) };
   }

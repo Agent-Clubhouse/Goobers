@@ -7,7 +7,12 @@ import type {
   StageAttempt,
   WorkflowGraphNode,
 } from "../api/types";
-import { eventSummary, formatDuration } from "../runDetailData";
+import {
+  eventHeading,
+  eventSummary,
+  formatDuration,
+  isTranscriptEvent,
+} from "../runDetailData";
 import { Icon } from "../ui/Icon";
 import { Inspector } from "../ui/Inspector";
 
@@ -89,11 +94,8 @@ function repassDecision(
   return undefined;
 }
 
-// RunStageInspector drills into a selected graph node's stage: it loads that
-// stage's live attempts (DASH-20), shows the current attempt as of the selected
-// sequence — status, outputs, artifacts with digest/provenance — and previews
-// textual artifact bodies on demand. The daemon already returns all of this;
-// the run page previously never read it.
+// RunStageInspector drills into a selected graph node's attempts or the
+// transcript/artifact evidence selected from the journal.
 export function RunStageInspector({
   client,
   runId,
@@ -101,6 +103,8 @@ export function RunStageInspector({
   selectedSeq,
   events = [],
   inspectorRef,
+  selectedEvidence,
+  selectedEvidenceVisit,
 }: {
   client: DaemonClient;
   runId: string;
@@ -108,6 +112,8 @@ export function RunStageInspector({
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
+  selectedEvidence?: RunEvent;
+  selectedEvidenceVisit?: number;
 }) {
   const [attempts, setAttempts] = useState<StageAttempt[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "error">("idle");
@@ -120,6 +126,12 @@ export function RunStageInspector({
   useEffect(() => {
     if (!stageId) {
       setAttempts([]);
+      return;
+    }
+    if (selectedEvidence) {
+      setAttempts([]);
+      setLoadState("idle");
+      setError(undefined);
       return;
     }
     const controller = new AbortController();
@@ -140,7 +152,7 @@ export function RunStageInspector({
         setLoadState("error");
       });
     return () => controller.abort();
-  }, [client, runId, stageId]);
+  }, [client, runId, selectedEvidence, stageId]);
 
   if (!node) {
     return (
@@ -227,95 +239,211 @@ export function RunStageInspector({
         </div>
       </div>
 
-      {loadState === "loading" && (
-        <div className="artifact-load-state" role="status">
-          <span aria-hidden="true" className="loading-mark" />
-          <span>Loading attempts…</span>
-        </div>
-      )}
-      {loadState === "error" && (
-        <div className="artifact-load-error" role="alert">
-          Could not load attempts: {error}
-        </div>
-      )}
+      {selectedEvidence ? (
+        <EvidenceDetail
+          client={client}
+          event={selectedEvidence}
+          key={`${selectedEvidence.branch}-${selectedEvidence.seq}`}
+          node={node}
+          runId={runId}
+          visit={selectedEvidenceVisit}
+        />
+      ) : (
+        <>
+          {loadState === "loading" && (
+            <div className="artifact-load-state" role="status">
+              <span aria-hidden="true" className="loading-mark" />
+              <span>Loading attempts…</span>
+            </div>
+          )}
+          {loadState === "error" && (
+            <div className="artifact-load-error" role="alert">
+              Could not load attempts: {error}
+            </div>
+          )}
 
-      {loadState === "idle" &&
-        (visible.length === 0 ? (
-          <div className="not-reached">
-            <span>Not reached at this point</span>
-            <small>Move the playhead forward to inspect this stage.</small>
-          </div>
-        ) : (
-          <>
-            {visible.length > 1 && (
+          {loadState === "idle" &&
+            (visible.length === 0 ? (
+              <div className="not-reached">
+                <span>Not reached at this point</span>
+                <small>Move the playhead forward to inspect this stage.</small>
+              </div>
+            ) : (
               <>
-                <div aria-label="Stage visits" className="attempt-switcher" role="group">
-                  {visits.map((visit, index) => (
-                    <button
-                      aria-pressed={selectedVisit?.ordinal === visit.ordinal}
-                      className={
-                        selectedVisit?.ordinal === visit.ordinal
-                          ? "attempt-button attempt-button-active"
-                          : "attempt-button"
-                      }
-                      key={visit.id}
-                      onClick={() => selectVisit(visit)}
-                      onKeyDown={(event) => onVisitKeyDown(event, index)}
-                      ref={(element) => {
-                        visitButtons.current[index] = element;
-                      }}
-                      tabIndex={selectedVisit?.ordinal === visit.ordinal ? 0 : -1}
-                      type="button"
-                    >
-                      Visit {visit.ordinal}
-                    </button>
-                  ))}
-                </div>
-                {selectedVisit && (
-                  <div
-                    aria-label={`Visit ${selectedVisit.ordinal} attempts`}
-                    className="retry-switcher"
-                    role="group"
-                  >
-                    {selectedVisit.attempts.map((attempt, index) => (
-                      <button
-                        aria-label={`Visit ${selectedVisit.ordinal} · ${attemptLabel(attempt)}`}
-                        aria-pressed={selected?.id === attempt.id}
-                        className={
-                          selected?.id === attempt.id
-                            ? "attempt-button attempt-button-active"
-                            : "attempt-button"
-                        }
-                        key={attempt.id}
-                        onClick={() => setSelectedId(attempt.id)}
-                        onKeyDown={(event) => onAttemptKeyDown(event, index)}
-                        ref={(element) => {
-                          attemptButtons.current[index] = element;
-                        }}
-                        tabIndex={selected?.id === attempt.id ? 0 : -1}
-                        type="button"
+                {visible.length > 1 && (
+                  <>
+                    <div aria-label="Stage visits" className="attempt-switcher" role="group">
+                      {visits.map((visit, index) => (
+                        <button
+                          aria-pressed={selectedVisit?.ordinal === visit.ordinal}
+                          className={
+                            selectedVisit?.ordinal === visit.ordinal
+                              ? "attempt-button attempt-button-active"
+                              : "attempt-button"
+                          }
+                          key={visit.id}
+                          onClick={() => selectVisit(visit)}
+                          onKeyDown={(event) => onVisitKeyDown(event, index)}
+                          ref={(element) => {
+                            visitButtons.current[index] = element;
+                          }}
+                          tabIndex={selectedVisit?.ordinal === visit.ordinal ? 0 : -1}
+                          type="button"
+                        >
+                          Visit {visit.ordinal}
+                        </button>
+                      ))}
+                    </div>
+                    {selectedVisit && (
+                      <div
+                        aria-label={`Visit ${selectedVisit.ordinal} attempts`}
+                        className="retry-switcher"
+                        role="group"
                       >
-                        {attemptLabel(attempt)}
-                      </button>
-                    ))}
+                        {selectedVisit.attempts.map((attempt, index) => (
+                          <button
+                            aria-label={`Visit ${selectedVisit.ordinal} · ${attemptLabel(attempt)}`}
+                            aria-pressed={selected?.id === attempt.id}
+                            className={
+                              selected?.id === attempt.id
+                                ? "attempt-button attempt-button-active"
+                                : "attempt-button"
+                            }
+                            key={attempt.id}
+                            onClick={() => setSelectedId(attempt.id)}
+                            onKeyDown={(event) => onAttemptKeyDown(event, index)}
+                            ref={(element) => {
+                              attemptButtons.current[index] = element;
+                            }}
+                            tabIndex={selected?.id === attempt.id ? 0 : -1}
+                            type="button"
+                          >
+                            {attemptLabel(attempt)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                {decision && (
+                  <div className="repass-context">
+                    <span>
+                      Repass decision · Sequence {decision.seq}
+                    </span>
+                    <strong>{eventSummary(decision)}</strong>
                   </div>
                 )}
+                {selected && (
+                  <AttemptDetail attempt={selected} client={client} runId={runId} />
+                )}
               </>
-            )}
-            {decision && (
-              <div className="repass-context">
-                <span>
-                  Repass decision · Sequence {decision.seq}
-                </span>
-                <strong>{eventSummary(decision)}</strong>
-              </div>
-            )}
-            {selected && (
-              <AttemptDetail attempt={selected} client={client} runId={runId} />
-            )}
-          </>
-        ))}
+            ))}
+        </>
+      )}
     </Inspector>
+  );
+}
+
+function EvidenceDetail({
+  client,
+  event,
+  node,
+  runId,
+  visit,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  node: WorkflowGraphNode;
+  runId: string;
+  visit?: number;
+}) {
+  return (
+    <div className="attempt-content">
+      <div className="repass-context">
+        <span>
+          {node.id} evidence · Visit {visit ?? "unknown"} · Sequence {event.seq}
+        </span>
+        <strong>{eventHeading(event)}</strong>
+      </div>
+      {isTranscriptEvent(event) ? (
+        <TranscriptRow client={client} event={event} runId={runId} />
+      ) : event.artifact ? (
+        <div className="artifact-list">
+          <ArtifactRow
+            artifact={{
+              ...event.artifact,
+              recordedSeq: event.artifact.recordedSeq ?? event.seq,
+            }}
+            attemptNumber={event.artifact.attempt ?? event.attempt}
+            attemptVisit={visit}
+            client={client}
+            runId={runId}
+          />
+        </div>
+      ) : (
+        <p className="artifact-load-error" role="alert">
+          Evidence content is unavailable.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TranscriptRow({
+  client,
+  event,
+  runId,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  runId: string;
+}) {
+  const [content, setContent] = useState<string>();
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [error, setError] = useState<string>();
+
+  const load = () => {
+    setState("loading");
+    setError(undefined);
+    client
+      .getTranscript(runId, event.seq)
+      .then((value) => {
+        setContent(new TextDecoder().decode(value.bytes));
+        setState("idle");
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Unknown error");
+        setState("error");
+      });
+  };
+
+  return (
+    <article className="artifact-row">
+      <div className="artifact-row-heading">
+        <Icon name="artifact" size={17} />
+        <span>
+          <strong>Transcript</strong>
+          <small>{event.name ?? "transcript"}</small>
+        </span>
+      </div>
+      {content === undefined ? (
+        <button
+          className="artifact-action"
+          disabled={state === "loading"}
+          onClick={load}
+          type="button"
+        >
+          {state === "loading" ? "Loading…" : "View transcript"}
+        </button>
+      ) : (
+        <pre className="artifact-content code-block">{content}</pre>
+      )}
+      {state === "error" && (
+        <p className="artifact-load-error" role="alert">
+          Could not load transcript: {error}
+        </p>
+      )}
+    </article>
   );
 }
 
@@ -387,8 +515,8 @@ function ArtifactRow({
   runId,
 }: {
   artifact: ArtifactMetadata;
-  attemptNumber: number;
-  attemptVisit: number;
+  attemptNumber?: number;
+  attemptVisit?: number;
   client: DaemonClient;
   runId: string;
 }) {
@@ -428,7 +556,8 @@ function ArtifactRow({
         <div>
           <dt>Provenance</dt>
           <dd>
-            Visit {attemptVisit} · Attempt {attemptNumber}
+            {attemptVisit !== undefined ? `Visit ${attemptVisit}` : "Visit unavailable"}
+            {attemptNumber !== undefined ? ` · Attempt ${attemptNumber}` : ""}
             {artifact.recordedSeq !== undefined ? ` · Seq ${artifact.recordedSeq}` : ""}
           </dd>
         </div>

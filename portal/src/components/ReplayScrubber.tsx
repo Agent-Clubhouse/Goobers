@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RunEvent } from "../api/types";
 import {
   formatReplayClock,
@@ -22,22 +22,99 @@ const chapterPresentation = {
   terminal: { label: "Terminal outcome", glyph: "■" },
 } satisfies Record<ReplayChapterKind, { label: string; glyph: string }>;
 
+const chapterMarkerWidth = 30;
+
+interface ReplayChapterGroup {
+  chapters: ReplayChapter[];
+  key: string;
+  left: string;
+}
+
+function groupReplayChapters(
+  chapters: ReplayChapter[],
+  trackWidth: number,
+): ReplayChapterGroup[] {
+  if (trackWidth <= 0) {
+    return chapters.map((chapter) => ({
+      chapters: [chapter],
+      key: `${chapter.event.branch}-${chapter.event.seq}`,
+      left: `${chapter.percent}%`,
+    }));
+  }
+
+  const edgeInset = Math.min(chapterMarkerWidth / 2, trackWidth / 2);
+  const positioned = chapters.map((chapter) => ({
+    chapter,
+    center: Math.min(
+      Math.max((chapter.percent / 100) * trackWidth, edgeInset),
+      trackWidth - edgeInset,
+    ),
+  }));
+  const groups: Array<{
+    chapters: ReplayChapter[];
+    centerTotal: number;
+  }> = [];
+
+  for (const positionedChapter of positioned) {
+    const current = groups.at(-1);
+    const currentCenter = current
+      ? current.centerTotal / current.chapters.length
+      : undefined;
+    if (
+      current &&
+      currentCenter !== undefined &&
+      positionedChapter.center - currentCenter < chapterMarkerWidth
+    ) {
+      current.chapters.push(positionedChapter.chapter);
+      current.centerTotal += positionedChapter.center;
+      continue;
+    }
+    groups.push({
+      chapters: [positionedChapter.chapter],
+      centerTotal: positionedChapter.center,
+    });
+  }
+
+  return groups.map((group) => {
+    const first = group.chapters[0].event;
+    const last = group.chapters.at(-1)?.event ?? first;
+    const center = group.centerTotal / group.chapters.length;
+    return {
+      chapters: group.chapters,
+      key: `${first.branch}-${first.seq}-${last.branch}-${last.seq}`,
+      left: `${center}px`,
+    };
+  });
+}
+
 // ReplayScrubber plays every durable event while adding semantic chapter
 // navigation over the same deterministic sequence.
 export function ReplayScrubber({
   events,
+  runId,
   selectedSeq,
   onSeek,
   terminal,
 }: {
   events: RunEvent[];
+  runId: string;
   selectedSeq: number;
   onSeek: (seq: number) => void;
   terminal: boolean;
 }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<ReplaySpeed>(1);
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [expandedChapterGroup, setExpandedChapterGroup] = useState<string>();
+  const timelineRef = useRef<HTMLDivElement>(null);
   const timeline = useMemo(() => replayTimeline(events), [events]);
+  const chapterGroups = useMemo(
+    () => groupReplayChapters(timeline.chapters, trackWidth),
+    [timeline.chapters, trackWidth],
+  );
+  const expandedGroup = chapterGroups.find(
+    (group) => group.key === expandedChapterGroup && group.chapters.length > 1,
+  );
   const ordered = timeline.events;
   const index = ordered.findIndex((event) => event.seq === selectedSeq);
   const position = index < 0 ? 0 : index;
@@ -48,6 +125,29 @@ export function ReplayScrubber({
     .reverse()
     .find((chapter) => chapter.index < index);
   const nextChapter = timeline.chapters.find((chapter) => chapter.index > index);
+
+  useLayoutEffect(() => {
+    const element = timelineRef.current;
+    if (!element) {
+      return;
+    }
+    const measure = () => setTrackWidth(element.clientWidth);
+    measure();
+    window.addEventListener("resize", measure);
+    const observer =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (expandedChapterGroup && !expandedGroup) {
+      setExpandedChapterGroup(undefined);
+    }
+  }, [expandedChapterGroup, expandedGroup]);
 
   useEffect(() => {
     if (!playing || ordered.length === 0) {
@@ -106,6 +206,16 @@ export function ReplayScrubber({
     }
   };
 
+  const chapterDescription = (chapter: ReplayChapter) => {
+    const heading = eventHeading(chapter.event);
+    const summary = eventSummary(chapter.event, undefined, runId);
+    return {
+      heading,
+      summary,
+      label: `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${heading}. ${summary}`,
+    };
+  };
+
   const seekTimelineOffset = (offsetMs: number) => {
     let nearest = timeline.points[0];
     for (const point of timeline.points.slice(1)) {
@@ -120,7 +230,7 @@ export function ReplayScrubber({
   };
 
   const heading = eventHeading(currentPoint.event);
-  const summary = eventSummary(currentPoint.event);
+  const summary = eventSummary(currentPoint.event, undefined, runId);
   const currentChapterPosition = selectedChapter
     ? timeline.chapters.indexOf(selectedChapter) + 1
     : undefined;
@@ -158,7 +268,7 @@ export function ReplayScrubber({
         </span>
       </div>
 
-      <div className="replay-timeline">
+      <div className="replay-timeline" ref={timelineRef}>
         <div aria-hidden="true" className="replay-track">
           <span
             className="replay-track-progress"
@@ -210,29 +320,109 @@ export function ReplayScrubber({
           type="range"
           value={currentPoint.compressedOffsetMs}
         />
-        {timeline.chapters.map((chapter) => {
-          const chapterHeading = eventHeading(chapter.event);
-          const chapterSummary = eventSummary(chapter.event);
-          const label = `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${chapterHeading}. ${chapterSummary}`;
+        {chapterGroups.map((group) => {
+          if (group.chapters.length === 1) {
+            const chapter = group.chapters[0];
+            const description = chapterDescription(chapter);
+            return (
+              <button
+                aria-current={chapter.index === index ? "step" : undefined}
+                aria-label={description.label}
+                className={`replay-chapter replay-chapter-${chapter.kind} ${
+                  chapter.index === index ? "replay-chapter-selected" : ""
+                }`}
+                key={group.key}
+                onClick={() => seek(chapter.event)}
+                style={{ left: group.left }}
+                title={description.label}
+                type="button"
+              >
+                <span aria-hidden="true" className="replay-chapter-shape">
+                  {chapterPresentation[chapter.kind].glyph}
+                </span>
+              </button>
+            );
+          }
+
+          const containsSelectedChapter = group.chapters.some(
+            (chapter) => chapter.index === index,
+          );
+          const panelId = `replay-chapter-cluster-${group.key}`;
+          const label = `Show ${group.chapters.length} clustered chapters`;
           return (
             <button
-              aria-current={chapter.index === index ? "step" : undefined}
+              aria-current={containsSelectedChapter ? "step" : undefined}
+              aria-controls={panelId}
+              aria-expanded={group.key === expandedChapterGroup}
               aria-label={label}
-              className={`replay-chapter replay-chapter-${chapter.kind} ${
-                chapter.index === index ? "replay-chapter-selected" : ""
+              className={`replay-chapter replay-chapter-cluster ${
+                containsSelectedChapter ? "replay-chapter-selected" : ""
               }`}
-              key={`${chapter.event.branch}-${chapter.event.seq}`}
-              onClick={() => seek(chapter.event)}
-              style={{ left: `${chapter.percent}%` }}
+              key={group.key}
+              onClick={() =>
+                setExpandedChapterGroup((current) =>
+                  current === group.key ? undefined : group.key,
+                )
+              }
+              style={{ left: group.left }}
               title={label}
               type="button"
             >
               <span aria-hidden="true" className="replay-chapter-shape">
-                {chapterPresentation[chapter.kind].glyph}
+                {group.chapters.length}
               </span>
             </button>
           );
         })}
+        {expandedGroup ? (
+          <div
+            aria-label={`${expandedGroup.chapters.length} clustered chapters`}
+            className="replay-chapter-cluster-panel"
+            id={`replay-chapter-cluster-${expandedGroup.key}`}
+            role="region"
+          >
+            <div className="replay-chapter-cluster-heading">
+              <strong>{expandedGroup.chapters.length} chapters</strong>
+              <span>Choose a chapter in this crowded timeline stretch.</span>
+              <button
+                aria-label="Close chapter cluster"
+                onClick={() => setExpandedChapterGroup(undefined)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <ul aria-label="Chapters in cluster">
+              {expandedGroup.chapters.map((chapter) => {
+                const description = chapterDescription(chapter);
+                return (
+                  <li key={`${chapter.event.branch}-${chapter.event.seq}`}>
+                    <button
+                      aria-current={chapter.index === index ? "step" : undefined}
+                      aria-label={description.label}
+                      className={`replay-chapter-cluster-option replay-chapter-${chapter.kind}`}
+                      onClick={() => {
+                        setExpandedChapterGroup(undefined);
+                        seek(chapter.event);
+                      }}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="replay-chapter-shape">
+                        {chapterPresentation[chapter.kind].glyph}
+                      </span>
+                      <span className="replay-chapter-cluster-copy">
+                        <strong>{description.heading}</strong>
+                        <span>
+                          Event {chapter.index + 1} · {description.summary}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
         <span
           aria-hidden="true"
           className="replay-playhead"

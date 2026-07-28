@@ -671,6 +671,7 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 			caps: []string{string(capability.GitHubPRWrite)},
 		},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := apiv1.WorkflowSpec{
@@ -794,6 +795,39 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 			task.Capabilities = []string{string(capability.GitHubBranchDelete)}
 			if _, err := compileAcknowledged(definition(tc.definition+"-capable", task)); err != nil {
 				t.Fatalf("reconcile-branches with branch capability should compile: %v", err)
+			}
+		})
+	}
+}
+
+func TestCompileExternalTelemetryRequiresTelemetryRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		caps []string
+		ok   bool
+	}{
+		{name: "missing required capability"},
+		{name: "required capability declared", caps: []string{string(capability.TelemetryRead)}, ok: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "query",
+				Tasks: []apiv1.Task{{
+					Name:         "query",
+					Type:         apiv1.TaskDeterministic,
+					Goal:         "query operational telemetry",
+					Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}},
+					Inputs:       map[string]string{"kind": "external-telemetry", "connector": "metrics", "query": "health"},
+					Capabilities: tc.caps,
+				}},
+			}
+			_, err := compileAcknowledged(Definition{Name: "external-telemetry", Version: 1, Spec: spec})
+			if tc.ok && err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			if !tc.ok && (err == nil || !strings.Contains(err.Error(), `must declare capability "telemetry:read"`)) {
+				t.Fatalf("Compile error = %v", err)
 			}
 		})
 	}
@@ -925,6 +959,31 @@ func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 				t.Fatalf("Compile error = %v, want containing %q", err, want)
 			}
 		})
+	}
+}
+
+func TestCompileBacklogHealthFeedbackRequiresUpdateAction(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "feedback",
+		Tasks: []apiv1.Task{{
+			Name:         "feedback",
+			Type:         apiv1.TaskDeterministic,
+			Goal:         "re-curate chronically failing items",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-health", "--feedback"}},
+			Capabilities: []string{string(capability.GitHubIssuesWrite)},
+		}},
+	}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const want = `command "goobers backlog-health" prescribes policy action "update-issue"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"update-issue"}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared feedback action and capability should compile: %v", err)
 	}
 }
 
