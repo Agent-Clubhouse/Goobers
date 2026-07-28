@@ -19,14 +19,16 @@ Return a successful result whose outputs contain
 sentinel=GOOBERS_GHCP_AUTH_SPIKE_V1. Make no repository changes.
 ```
 
-The task declared `expectedOutputs: [sentinel]`. The standard completion
-contract therefore had one unambiguous successful value:
+The task declared `expectedOutputs: [sentinel]`, which declares the output name
+but does not constrain its value. The target result envelope was:
 
 ```json
 {"status":"success","outputs":{"sentinel":"GOOBERS_GHCP_AUTH_SPIKE_V1"},"summary":"fixed hosted-auth sentinel","metrics":{}}
 ```
 
-No model-specific wording or output interpretation was involved.
+The exact value and terminal run state were checked from `events.jsonl` with
+the deterministic `jq` assertion below. No model-specific wording or output
+interpretation was involved.
 
 ## Environment and observations
 
@@ -145,11 +147,24 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN
 ```
 
-Then run the clean-profile case. The commands disclose only versions and
-terminal state:
+The instance placeholder below must point to a disposable instance already
+created with `goobers init`. Its target repository and `smoke` gaggle must be
+configured, the goober and workflow files above must be installed in its config
+source, and the credential reference above must be present in `instance.yaml`.
+The host must provide `copilot`, `go`, and `jq`; on GitHub-hosted runners,
+`RUNNER_TEMP` is provided by the runner and `COPILOT_GITHUB_TOKEN` is the
+repository secret supplied to the step.
+
+Then run the clean-profile case. Replace the one marked instance path. The
+commands disclose only versions and terminal state:
 
 ```bash
 set -euo pipefail
+
+# REQUIRED PLACEHOLDER: replace this value with the disposable instance root.
+export GOOBERS_INSTANCE="/absolute/path/to/disposable-auth-spike-instance"
+: "${COPILOT_GITHUB_TOKEN:?repository secret is required}"
+: "${RUNNER_TEMP:?hosted-runner temporary directory is required}"
 
 go build -o ./bin/goobers ./cmd/goobers
 copilot --version
@@ -166,6 +181,37 @@ mkdir -p "$COPILOT_HOME"
 `validate --check-harness` fails at the sign-in probe. If validation is omitted,
 `run` performs the same preflight and fails before printing `created run`.
 Neither path writes a run journal or attempts completion parsing.
+
+For a control or future rerun that reaches the stage, capture the run ID printed
+by `goobers run` and verify the parsed result and terminal journal state
+directly. This assertion fails if the output is absent or differs by even one
+character; `expectedOutputs` alone does not provide that value check:
+
+```bash
+set -euo pipefail
+
+export GOOBERS_INSTANCE="/absolute/path/to/disposable-auth-spike-instance"
+export RUN_ID="<run-id printed by goobers run>"
+export SENTINEL="GOOBERS_GHCP_AUTH_SPIKE_V1"
+
+RUN_DIR="$(find "$GOOBERS_INSTANCE/gaggles" -type d \
+  -path "*/runs/$RUN_ID" -print -quit)"
+test -n "$RUN_DIR"
+
+jq -e -s --arg sentinel "$SENTINEL" '
+  ([.[] | select(
+    .type == "stage.finished"
+    and .stage == "echo"
+    and .status == "success"
+    and .outputs.sentinel == $sentinel
+  )] | length == 1)
+  and
+  ([.[] | select(
+    .type == "run.finished"
+    and .status == "completed"
+  )] | length == 1)
+' "$RUN_DIR/events.jsonl" >/dev/null
+```
 
 ## Fallback and unblock condition
 
