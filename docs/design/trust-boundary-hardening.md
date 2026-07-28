@@ -177,23 +177,27 @@ before it exists.
 
 | Phase | Ships | Gate |
 |---|---|---|
-| 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | **Pending:** PO + second-reviewer sign-off (architectural blast radius); no implementation issue may land first |
+| 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | PO sign-off (architectural blast radius); no implementation issue may land first until recorded |
 | 1 | TBH-1 for merge/close; TBH-2 staged-lite on those capabilities | Selfhost runs with merge/close behind proposals for a full watched round |
 | 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on selfhost |
 | 3 | TBH-2 full staged mode; TBH-4 integrity labels | Stranger-repo pilot onboards in staged mode |
 
-The phase-0 sign-offs are recorded on this sign-off PR, which pins the RFC revision
+The phase-0 sign-off is recorded on this sign-off PR, which pins the RFC revision
 presented for approval to merge commit
 [`b741345aa6de32cff59a9f848d209845d27c6984`](https://github.com/Agent-Clubhouse/Goobers/commit/b741345aa6de32cff59a9f848d209845d27c6984)
 (PR #1613). Filing or approving an implementation issue is not a substitute.
 
+A second-reviewer sign-off is not required for this repo at this stage (2026-07-27
+ruling) — this repo does not currently have a second reviewer available. Revisit this
+gate if/when it does; until then, PO sign-off alone authorizes phase-1 implementation.
+
 | Phase-0 sign-off role | Name | Date |
 |---|---|---|
-| Product owner (PO) | | |
-| Second reviewer | | |
+| Product owner (PO) | Mason Allen | 2026-07-27 |
 
-Until both sign-off rows contain a human name and date, this document authorizes
-design review only.
+Once the PO sign-off row above contains a name and date, this document authorizes
+phase-1 implementation (TBH-1 for merge/close, TBH-2 staged-lite), not just design
+review.
 
 ## 4. Resolved and open questions
 
