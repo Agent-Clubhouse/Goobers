@@ -9,6 +9,7 @@ import {
 } from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
+  evidenceVisit,
   evidenceDecision,
   eventHeading,
   eventNodeAtSequence,
@@ -17,6 +18,7 @@ import {
   formatElapsed,
   formatTimestamp,
   isMajorJournalEvent,
+  isInspectableEvidenceEvent,
   journalEntries,
   orderRunEvents,
   type JournalEntry,
@@ -125,6 +127,7 @@ function RunDetailWorkspace({
     eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
   );
   const [followingLatest, setFollowingLatest] = useState(true);
+  const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
   const inspectorRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
@@ -133,6 +136,10 @@ function RunDetailWorkspace({
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
+  const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
+  const selectedEvidenceVisit = selectedEvidence
+    ? evidenceVisit(events, selectedEvidence)
+    : undefined;
 
   const revealInspector = () => {
     const inspector = inspectorRef.current;
@@ -149,10 +156,14 @@ function RunDetailWorkspace({
     }
     setSelectedSeq(initialSeq);
     setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
-  }, [events, followingLatest, initialSeq, run.currentStage]);
+    setSelectedEvidenceSeq(
+      latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
+    );
+  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage]);
 
   const selectNode = (nodeId: string, shouldRevealInspector = false) => {
     setSelectedNodeId(nodeId);
+    setSelectedEvidenceSeq(undefined);
     if (shouldRevealInspector) {
       revealInspector();
     }
@@ -161,6 +172,7 @@ function RunDetailWorkspace({
   const selectEvent = (event: RunEvent, shouldRevealInspector = false) => {
     setSelectedSeq(event.seq);
     setSelectedNodeId(eventNodeAtSequence(events, event.seq));
+    setSelectedEvidenceSeq(isInspectableEvidenceEvent(event) ? event.seq : undefined);
     setFollowingLatest(event.seq === initialSeq);
     if (shouldRevealInspector) {
       revealInspector();
@@ -170,6 +182,7 @@ function RunDetailWorkspace({
   const replaySeek = (seq: number) => {
     setSelectedSeq(seq);
     setSelectedNodeId(eventNodeAtSequence(events, seq));
+    setSelectedEvidenceSeq(undefined);
     setFollowingLatest(seq === initialSeq);
   };
 
@@ -315,6 +328,8 @@ function RunDetailWorkspace({
               inspectorRef={inspectorRef}
               node={selectedNode}
               runId={runId}
+              selectedEvidence={selectedEvidence}
+              selectedEvidenceVisit={selectedEvidenceVisit}
               selectedSeq={selectedSeq}
             />
           )}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RunEvent, WorkflowGraph } from "./api/types";
 import {
   deriveNodeStates,
+  evidenceVisit,
   evidenceDecision,
   eventHeading,
   eventNodeAtSequence,
@@ -200,6 +201,8 @@ describe("run detail projection", () => {
     ).toEqual(events.map(({ seq }) => seq));
     expect(entries.at(-2)).toMatchObject({ kind: "event", event: { seq: 12 } });
     expect(entries.at(-1)).toMatchObject({ kind: "event", event: { seq: 13 } });
+    expect(evidenceVisit(events, events[1])).toBe(1);
+    expect(evidenceVisit(events, events[8])).toBe(2);
   });
 
   it("summarizes reviewer evidence, heartbeats, and external operations", () => {
@@ -233,7 +236,7 @@ describe("run detail projection", () => {
 
     expect(eventHeading(transcript)).toBe("Transcript recorded");
     expect(eventSummary(transcript)).toBe(
-      "Transcript for Review was recorded. Select this event to inspect the associated attempt.",
+      "Transcript for Review was recorded. Select this event to inspect the evidence.",
     );
     expect(eventHeading(verdict)).toBe("Structured verdict recorded");
     expect(eventSummary(verdict)).toContain(

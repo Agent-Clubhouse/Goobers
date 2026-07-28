@@ -507,6 +507,14 @@ export interface ArtifactContent {
   bytes: ArrayBuffer;
 }
 
+export interface TranscriptContent {
+  seq: number;
+  stage: string;
+  name: string;
+  size: number;
+  bytes: ArrayBuffer;
+}
+
 export interface TelemetryStatsOptions {
   workflow?: string;
   gaggle?: string;
@@ -732,6 +740,7 @@ export interface DaemonClient {
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;
   getArtifact(runId: string, digest: string, options?: RequestOptions): Promise<ArtifactContent>;
+  getTranscript(runId: string, seq: number, options?: RequestOptions): Promise<TranscriptContent>;
   getTelemetryStats(
     request?: TelemetryStatsOptions,
     options?: RequestOptions,

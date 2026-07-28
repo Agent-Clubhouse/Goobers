@@ -82,6 +82,18 @@ describe("HttpDaemonClient", () => {
         response.end(body);
         return;
       }
+      if (request.url?.includes("/transcripts/")) {
+        const body = Buffer.from("review evidence");
+        response.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Length": body.byteLength,
+          "X-Goobers-Event-Sequence": "7",
+          "X-Goobers-Stage": "review",
+          "X-Goobers-Transcript-Name": "reviewer.transcript",
+        });
+        response.end(body);
+        return;
+      }
       if (request.url === "/api/v1/health") {
         json(response, health);
         return;
@@ -130,6 +142,12 @@ describe("HttpDaemonClient", () => {
       mediaType: "text/plain",
       size: 8,
     });
+    await expect(client.getTranscript("run-1", 7)).resolves.toMatchObject({
+      seq: 7,
+      stage: "review",
+      name: "reviewer.transcript",
+      size: 15,
+    });
     await client.getTelemetryStats({
       workflow: "implementation",
       gaggle: "core",
@@ -168,6 +186,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/runs/run-1/events",
       "/api/v1/runs/run-1/stages/implement/attempts",
       "/api/v1/runs/run-1/artifacts/sha256%3Aabc",
+      "/api/v1/runs/run-1/transcripts/7",
       "/api/v1/telemetry/stats?workflow=implementation&gaggle=core&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z",
       "/api/v1/telemetry/error-signatures?workflow=implementation&gaggle=core&stage=review&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20",
       "/api/v1/telemetry/errors?workflow=implementation&gaggle=core&stage=review&code=harness.crash&class=timeout&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20&cursor=error-page",

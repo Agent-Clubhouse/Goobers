@@ -38,6 +38,7 @@ type Reader interface {
 	RunEvents(context.Context, string) (EventList, error)
 	StageAttempts(context.Context, string, string) (AttemptList, error)
 	Artifact(context.Context, string, string) (ArtifactContent, error)
+	Transcript(context.Context, string, uint64) (TranscriptContent, error)
 	Instance(context.Context) (Instance, error)
 	Gaggles(context.Context, PageRequest) (GagglePage, error)
 	Goobers(context.Context, string, PageRequest) (GooberPage, error)

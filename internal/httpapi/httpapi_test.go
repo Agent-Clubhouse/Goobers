@@ -32,10 +32,12 @@ type fakeReader struct {
 	events       readservice.EventList
 	attempts     readservice.AttemptList
 	artifact     readservice.ArtifactContent
+	transcript   readservice.TranscriptContent
 	options      readservice.RunListOptions
 	runID        string
 	stage        string
 	digest       string
+	seq          uint64
 	instance     readservice.Instance
 	portalConfig readservice.PortalConfig
 	gaggles      readservice.GagglePage
@@ -109,6 +111,12 @@ func (f *fakeReader) Artifact(_ context.Context, runID, digest string) (readserv
 	f.runID = runID
 	f.digest = digest
 	return f.artifact, f.err
+}
+
+func (f *fakeReader) Transcript(_ context.Context, runID string, seq uint64) (readservice.TranscriptContent, error) {
+	f.runID = runID
+	f.seq = seq
+	return f.transcript, f.err
 }
 
 func (f *fakeReader) Instance(context.Context) (readservice.Instance, error) {
@@ -324,6 +332,12 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 			},
 			Bytes: []byte(`{"ok":true}`),
 		},
+		transcript: readservice.TranscriptContent{
+			Seq:   7,
+			Stage: "review",
+			Name:  "reviewer.transcript",
+			Bytes: []byte("review evidence"),
+		},
 	}
 	handler, err := NewHandler(reader, AllowAll, discardLogger())
 	if err != nil {
@@ -383,6 +397,25 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 		response.Header().Get("ETag") != `"sha256:abc"` ||
 		response.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("artifact headers = %+v", response.Header())
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, RunsPath+"/run-1/transcripts/7", nil),
+	)
+	if response.Code != http.StatusOK || response.Body.String() != "review evidence" {
+		t.Fatalf("transcript response = %d %q", response.Code, response.Body.String())
+	}
+	if reader.runID != "run-1" || reader.seq != 7 {
+		t.Fatalf("transcript path values = run %q, seq %d", reader.runID, reader.seq)
+	}
+	if response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		response.Header().Get("X-Goobers-Event-Sequence") != "7" ||
+		response.Header().Get("X-Goobers-Stage") != "review" ||
+		response.Header().Get("X-Goobers-Transcript-Name") != "reviewer.transcript" ||
+		response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("transcript headers = %+v", response.Header())
 	}
 }
 

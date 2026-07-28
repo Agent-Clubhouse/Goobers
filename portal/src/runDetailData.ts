@@ -226,6 +226,24 @@ export function journalEntries(events: RunEvent[]): JournalEntry[] {
   return entries;
 }
 
+export function evidenceVisit(events: RunEvent[], evidence: RunEvent): number | undefined {
+  for (const entry of journalEntries(events)) {
+    if (
+      entry.kind === "group" &&
+      entry.events.some(
+        (event) => event.branch === evidence.branch && event.seq === evidence.seq,
+      )
+    ) {
+      return entry.visit;
+    }
+  }
+  return undefined;
+}
+
+export function isInspectableEvidenceEvent(event: RunEvent): boolean {
+  return isTranscriptEvent(event) || (event.type === "artifact.recorded" && !!event.artifact);
+}
+
 export function isMajorJournalEvent(event: RunEvent): boolean {
   if (!event.knownSchema || !event.category) {
     return true;
@@ -386,7 +404,7 @@ export function eventSummary(event: RunEvent, associatedDecision?: RunEvent): st
     case "span.recorded": {
       const stage = node ? ` for ${humanize(node)}` : "";
       const kind = isTranscriptEvent(event) ? "Transcript" : "Trace evidence";
-      return `${kind}${stage} was recorded. Select this event to inspect the associated attempt.`;
+      return `${kind}${stage} was recorded. Select this event to inspect the evidence.`;
     }
     case "stage.heartbeat": {
       const attempt = event.attempt ? ` attempt ${event.attempt}` : "";
@@ -478,12 +496,12 @@ function startsVisit(event: RunEvent): boolean {
   );
 }
 
-function isTranscriptEvent(event: RunEvent): boolean {
+export function isTranscriptEvent(event: RunEvent): boolean {
   const name = event.name?.toLowerCase() ?? "";
   return event.type === "span.recorded" && (name === "transcript" || name.endsWith(".transcript"));
 }
 
-function isVerdictArtifact(event: RunEvent): boolean {
+export function isVerdictArtifact(event: RunEvent): boolean {
   const name = (event.artifact?.name || event.name || "").toLowerCase();
   return event.type === "artifact.recorded" && name.includes("verdict");
 }

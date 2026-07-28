@@ -333,6 +333,42 @@ describe("run detail", () => {
       }),
     ];
     detail.lastSeq = 15;
+    const transcriptOne = "Review visit 1 transcript: implementation needs changes.";
+    const transcriptTwo = "Review visit 2 transcript: implementation passes.";
+    const verdictOne = JSON.stringify({ decision: "needs-changes", target: "implement" });
+    const verdictTwo = JSON.stringify({ decision: "pass", target: "@complete" });
+    fixtures.transcripts = {
+      [fixtureKey(runId, "3")]: {
+        seq: 3,
+        stage: "review",
+        name: "reviewer.transcript",
+        size: transcriptOne.length,
+        bytes: new TextEncoder().encode(transcriptOne).buffer,
+      },
+      [fixtureKey(runId, "10")]: {
+        seq: 10,
+        stage: "review",
+        name: "reviewer.transcript",
+        size: transcriptTwo.length,
+        bytes: new TextEncoder().encode(transcriptTwo).buffer,
+      },
+    };
+    fixtures.artifacts = {
+      [fixtureKey(runId, "sha256:verdict-1")]: {
+        digest: "sha256:verdict-1",
+        mediaType: "application/json",
+        size: verdictOne.length,
+        etag: '"sha256:verdict-1"',
+        bytes: new TextEncoder().encode(verdictOne).buffer,
+      },
+      [fixtureKey(runId, "sha256:verdict-2")]: {
+        digest: "sha256:verdict-2",
+        mediaType: "application/json",
+        size: verdictTwo.length,
+        etag: '"sha256:verdict-2"',
+        bytes: new TextEncoder().encode(verdictTwo).buffer,
+      },
+    };
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
     const majorEvents = await screen.findByRole("button", { name: "Major events" });
@@ -351,7 +387,7 @@ describe("run detail", () => {
     fireEvent.click(firstGroup);
     const gateStart = screen.getByRole("button", { name: /^Select sequence 2:/ });
     const transcript = screen.getByRole("button", { name: /^Select sequence 3:/ });
-    expect(screen.getByText("Transcript for Review was recorded. Select this event to inspect the associated attempt.")).toBeInTheDocument();
+    expect(screen.getByText("Transcript for Review was recorded. Select this event to inspect the evidence.")).toBeInTheDocument();
     expect(
       screen.getByText(
         "verdict/review-1.json captured the Review decision: needs-changes selecting implement. Select this event to inspect the artifact.",
@@ -366,6 +402,16 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
     ).toHaveAttribute("aria-pressed", "true");
+    let inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
+    expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
+    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
+    fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
+    expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
     expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(15);
@@ -384,11 +430,80 @@ describe("run detail", () => {
       "href",
       "https://github.example/pull/1432",
     );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Select sequence 10:/ }));
+    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
+    fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
+    expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
+    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
+    fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
+    expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();
+
     expect(
       screen.getAllByRole("button", { name: /^Select sequence/ }).map((button) =>
         Number(button.getAttribute("aria-label")?.match(/^Select sequence (\d+):/)?.[1]),
       ),
     ).toEqual(Array.from({ length: 15 }, (_, index) => index + 1));
+  });
+
+  it("keeps the latest evidence visible when returning from replay history", async () => {
+    const runId = "01JZ455ESCALATE";
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!eventList || !detail) {
+      throw new Error("Expected completed run fixtures.");
+    }
+    eventList.events = [
+      {
+        schema: "v1",
+        seq: 1,
+        type: "run.started",
+        branch: 0,
+        time: "2026-07-18T02:00:01Z",
+        knownSchema: true,
+        category: "transition",
+      },
+      {
+        schema: "v1",
+        seq: 2,
+        type: "gate.started",
+        branch: 0,
+        time: "2026-07-18T02:00:02Z",
+        knownSchema: true,
+        category: "bookkeeping",
+        gate: "review",
+        attempt: 1,
+      },
+      {
+        schema: "v1",
+        seq: 3,
+        type: "span.recorded",
+        branch: 0,
+        time: "2026-07-18T02:00:03Z",
+        knownSchema: true,
+        category: "evidence",
+        stage: `${runId}:review`,
+        name: "reviewer.transcript",
+      },
+    ];
+    detail.lastSeq = 3;
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Select sequence 1:/ }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Expand 2 supporting events for Review · Visit 1, sequences 2 through 3/,
+      }),
+    );
+    const transcript = screen.getByRole("button", { name: /^Select sequence 3:/ });
+    fireEvent.click(transcript);
+    expect(screen.getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
   });
 
   it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
