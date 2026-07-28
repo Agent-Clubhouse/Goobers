@@ -157,7 +157,14 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
 					entrySeen = true
-					return mergeQueuePollDequeueOptOut(ctx, provider, repo, pullNumber, result.PullRequestNodeID, resultFile, stdout, stderr)
+					absentStreak = 0
+					if err := provider.DequeuePullRequest(ctx, providers.DequeuePullRequestRequest{
+						Repository: repo, PullID: pullNumber, PullRequestNodeID: result.PullRequestNodeID,
+					}); err == nil {
+						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+					} else {
+						pf(stderr, "warning: dequeue opted-out pull request #%s: %v; continuing to monitor and retry\n", pullNumber, err)
+					}
 				case providers.MergeQueueEntryEvicted:
 					return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryAbsent:
@@ -217,30 +224,6 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		case <-time.After(mergeQueuePollBackoff(interval, maxInterval, attempt)):
 		}
 	}
-}
-
-func mergeQueuePollDequeueOptOut(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, nodeID, resultFile string, stdout, stderr io.Writer) int {
-	dequeueErr := provider.DequeuePullRequest(ctx, providers.DequeuePullRequestRequest{
-		Repository: repo, PullID: pullNumber, PullRequestNodeID: nodeID,
-	})
-	if dequeueErr == nil {
-		return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
-	}
-
-	// The queue can land or evict the PR between the poll and dequeue mutation.
-	// Resolve that race before treating the mutation error as a stage failure.
-	result, pollErr := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{
-		Repository: repo, PullID: pullNumber,
-	})
-	if pollErr == nil {
-		switch result.State {
-		case providers.MergeQueueEntryMerged:
-			return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
-		case providers.MergeQueueEntryEvicted, providers.MergeQueueEntryAbsent:
-			return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
-		}
-	}
-	return failProviderStage(stderr, "dequeue opted-out pull request", dequeueErr, resultFile)
 }
 
 func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writer) int {

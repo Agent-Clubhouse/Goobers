@@ -64,6 +64,7 @@ type mergeQueuePollServerState struct {
 	optOutAfterGraphQLPolls int
 	dequeueCalls            int
 	dequeueFails            bool
+	dequeueFailures         int
 }
 
 func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePollServerState) *httptest.Server {
@@ -114,7 +115,17 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 			st.mu.Lock()
 			st.dequeueCalls++
 			fails := st.dequeueFails
+			transientFailure := st.dequeueFailures > 0
+			if transientFailure {
+				st.dequeueFailures--
+			}
 			st.mu.Unlock()
+			if transientFailure {
+				writeFakeJSON(w, map[string]interface{}{
+					"data": nil, "errors": []map[string]string{{"type": "INTERNAL", "message": "temporary failure"}},
+				})
+				return
+			}
 			if fails {
 				writeFakeJSON(w, map[string]interface{}{
 					"data": nil, "errors": []map[string]string{{"type": "UNPROCESSABLE", "message": "merge queue entry already resolved"}},
@@ -289,6 +300,9 @@ func mergeQueuePollEnv(t *testing.T, serverURL string, inputs map[string]string)
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_MERGE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_BRANCH_DELETE", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, "github")
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	for k, v := range inputs {
 		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
 	}
@@ -372,6 +386,36 @@ func TestMergeQueuePollDequeuesAfterLateOptOutWithoutRemediation(t *testing.T) {
 	}
 }
 
+func TestMergeQueuePollRetriesTransientDequeueFailure(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		graphqlScript:           []string{"pending", "pending", "pending"},
+		pendingCalls:            1_000_000,
+		terminalState:           "open",
+		labels:                  []string{noMergeReviewLabel},
+		optOutAfterGraphQLPolls: 1,
+		dequeueFailures:         1,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != mergeReviewOptOutOutcome {
+		t.Fatalf("result = %+v, want queueOutcome=%s", result, mergeReviewOptOutOutcome)
+	}
+	if st.dequeueCalls != 2 {
+		t.Fatalf("dequeue calls = %d, want retry after the transient failure", st.dequeueCalls)
+	}
+	if st.labelCalls != 0 || st.commentPostCalls != 0 || st.deleteCalls != 0 {
+		t.Fatalf("post-opt-out mutations = labels:%d comments:%d branch deletes:%d, want none", st.labelCalls, st.commentPostCalls, st.deleteCalls)
+	}
+}
+
 func TestMergeQueuePollResolvesMergeThatRacesOptOutDequeue(t *testing.T) {
 	st := &mergeQueuePollServerState{
 		graphqlScript:           []string{"pending", "pending", "merged"},
@@ -397,6 +441,40 @@ func TestMergeQueuePollResolvesMergeThatRacesOptOutDequeue(t *testing.T) {
 	}
 	if st.dequeueCalls != 1 || st.labelCalls != 0 || st.commentPostCalls != 0 {
 		t.Fatalf("race calls = dequeue:%d labels:%d comments:%d, want 1/0/0", st.dequeueCalls, st.labelCalls, st.commentPostCalls)
+	}
+}
+
+func TestMergeQueuePollConfirmsAbsentAfterFailedDequeue(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		graphqlScript:           []string{"pending", "pending", "absent", "merged"},
+		pendingCalls:            0,
+		terminalState:           "closed",
+		terminalMerged:          true,
+		labels:                  []string{noMergeReviewLabel},
+		optOutAfterGraphQLPolls: 1,
+		dequeueFails:            true,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged after one ambiguous absent read", result)
+	}
+	if st.dequeueCalls != 1 || st.graphqlPolls != 4 {
+		t.Fatalf("queue calls = dequeue:%d polls:%d, want 1/4", st.dequeueCalls, st.graphqlPolls)
+	}
+	if st.labelCalls != 0 || st.commentPostCalls != 0 {
+		t.Fatalf("post-race remediation mutations = labels:%d comments:%d, want none", st.labelCalls, st.commentPostCalls)
+	}
+	if st.deleteCalls != 1 {
+		t.Fatalf("branch deletes = %d, want merged bookkeeping to clean up the branch", st.deleteCalls)
 	}
 }
 
