@@ -80,10 +80,11 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // electionDecision reports whether the selected PR should be crowned the lander
 // of its cluster and routed to merge (#833). It is the pure core of the
 // elect-lander stage: election fires only when the verdict is entirely
-// cross-PR-ordering asks (allCrossPRBlocked — the PR is individually fine and
-// merely waiting on a sibling) AND this PR wins its cluster's election under
+// cross-PR-ordering asks (electableUnderOrdering — the PR is individually fine
+// and merely waiting on a sibling) AND this PR wins its cluster's election under
 // the configured policy. Any verdict carrying a real defect (a substantive/
-// conflict/rebase-needed finding) is never electable.
+// conflict/rebase-needed finding above `info` severity) is never electable; an
+// `info` finding is a nit and does not withhold landing authority (#1726).
 func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
 	// #950: a demoted lander (one that repeatedly could not merge at an
 	// unchanged head) is never crowned — that is exactly the re-election that
@@ -94,7 +95,7 @@ func electionDecision(findings []apiv1.Finding, selectedNumber int, policy elect
 	if demoted[selectedNumber] {
 		return false
 	}
-	if !allCrossPRBlocked(findings) {
+	if !electableUnderOrdering(findings) {
 		return false
 	}
 	return policy(selectedNumber, withoutDemoted(unionBlockingPRs(findings), demoted))
@@ -111,12 +112,13 @@ func electionClusterBlockers(findings []apiv1.Finding, overlappingSiblings []int
 
 // noLanderEscalationReason detects the asymmetric zero-winner case: the
 // deterministic policy winner cannot be crowned because its own review contains
-// a real defect, while every otherwise-green sibling will defer to that winner.
+// a real defect (severity above `info` — see findingIsRealDefect), while every
+// otherwise-green sibling will defer to that winner.
 // Escalating is safer than laundering the defect into a pass and more explicit
 // than silently parking the rest of the cluster.
 func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.Finding, selectedNumber int, overlappingSiblings []int, policy electionPolicyFunc, demoted map[int]bool, policyName string) string {
 	if decision != apiv1.VerdictNeedsChanges || len(overlappingSiblings) == 0 ||
-		demoted[selectedNumber] || allCrossPRBlocked(findings) {
+		demoted[selectedNumber] || electableUnderOrdering(findings) {
 		return ""
 	}
 	clusterBlockers := electionClusterBlockers(findings, overlappingSiblings)
