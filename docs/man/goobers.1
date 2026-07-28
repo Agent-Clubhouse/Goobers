@@ -219,6 +219,9 @@ record a merge refusal and demote a persistently-stuck lander (a workflow stage)
 \fBgoobers remediation-checkpoint\fR
 durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 .TP
+\fBgoobers report-pr-status\fR
+publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+.TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
 .TP
@@ -409,6 +412,7 @@ show a workflow as a text DAG
 \fBgoobers-reconcile-post-merge\fR(1),
 \fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
+\fBgoobers-report-pr-status\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),

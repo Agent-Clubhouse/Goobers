@@ -388,6 +388,80 @@ func TestCopilotAdapterStillFailsClosedForMissingRequiredCredential(t *testing.T
 	}
 }
 
+func TestCredentialEnvToleratesMissingRepoPushOnADO(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"repo:push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		EnvCapabilities: map[string]string{"repo:push": "GOOBERS_REPO_TOKEN"},
+	}
+	env := testEnvelope(t.TempDir(), "repo:push")
+	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "Example Service", Name: "Example.Repo"}
+	got, err := adapter.credentialEnv(context.Background(), RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if err != nil {
+		t.Fatalf("credentialEnv on ADO repo = %v, want nil (repo:push tolerated)", err)
+	}
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "GOOBERS_REPO_TOKEN=") {
+			t.Fatalf("repo:push token injected without a grant: %q", kv)
+		}
+	}
+	if !containsEnv(got, executor.RepoProjectEnvVar+"=Example Service") {
+		t.Fatalf("ADO project not injected into harness env: %v", got)
+	}
+}
+
+func TestCredentialEnvFailsClosedForMissingRepoPushOnGitHub(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"repo:push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		EnvCapabilities: map[string]string{"repo:push": "GOOBERS_REPO_TOKEN"},
+	}
+	env := testEnvelope(t.TempDir(), "repo:push")
+	_, err = adapter.credentialEnv(context.Background(), RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("credentialEnv on GitHub repo = %v, want ErrNoCredentialForCapability", err)
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, kv := range env {
+		if kv == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{

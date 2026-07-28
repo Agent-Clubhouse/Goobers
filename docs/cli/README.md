@@ -72,6 +72,7 @@
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
+| [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -1662,6 +1663,34 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers remediation-checkpoint
+~~~
+
+## `goobers report-pr-status`
+
+publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+
+~~~text
+Usage: goobers report-pr-status [path]
+
+Publish a provider-native pull-request status (Azure DevOps PR status) as
+goobers' own evidence — the agentic reviewer verdict and the local-CI
+result — so a repository's status-check branch policy can gate on it and
+the validation loop can prove PR correctness against the repo's required
+policies (#772). Reaching this stage on the happy path is itself the
+evidence: the run only advances here after the review gate and local-CI
+gate both pass, so the default published state is `succeeded`.
+
+Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),
+statusName (default "validation"), statusGenre (default "goobers"),
+state (succeeded|failed|pending, default succeeded), description,
+targetUrl (default the PR url), resultFile (default status-result.json).
+Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers report-pr-status
 ~~~
 
 ## `goobers reset-rate-limit`

@@ -42,14 +42,21 @@ var policyActionContracts = map[string]policyActionContract{
 	"record-merge-refusal":          {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"record-remediation-checkpoint": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"update-pr-branch":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"watch-merge-queue":             {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
+	// report-pr-status publishes goobers' own evidence (reviewer verdict +
+	// local-CI result) as a provider-native, policy-gate-able pull-request
+	// status. Unlike the backlog/PR actions above — whose canonical capability
+	// name is a GitHub name the credential seam rebinds per provider — this is
+	// an Azure DevOps parity capability with no GitHub equivalent, so it
+	// requires ado:pr:status directly (#772).
+	"report-pr-status":         {requiredCapabilities: []capability.Capability{capability.ADOPRStatus}},
+	"respond-to-findings":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"rework-pr":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
+	"route-queue-outcome":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"route-verdict":            {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"unpark-resolved-siblings": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"update-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"update-pr-branch":         {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"watch-merge-queue":        {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 }
 
 var commandPolicyActions = map[string][]string{
@@ -59,6 +66,7 @@ var commandPolicyActions = map[string][]string{
 	"merge-pr":               {"merge-pr", "delete-branch"},
 	"merge-queue-poll":       {"watch-merge-queue", "route-queue-outcome", "delete-branch"},
 	"open-pr":                {"open-or-update-pr"},
+	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},

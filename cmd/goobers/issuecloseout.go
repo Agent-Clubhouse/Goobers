@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,6 +15,17 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+// issueCloseOutProvider is the provider surface issue-close-out needs: resolve
+// the run's PR to link it (FindPullRequestByBranch), mirror the terminal
+// processing status (UpdateWorkItemStatus), and the label/comment edits for the
+// needs-human park and claim-marker release (UpdateWorkItem). Both the GitHub
+// and ADO providers satisfy it, so close-out runs against either backend.
+type issueCloseOutProvider interface {
+	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
+	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
+}
 
 const issueCloseOutNeedsHuman providers.WorkItemStatus = "needs-human"
 
@@ -134,12 +146,25 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubIssuesWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	var provider issueCloseOutProvider
+	if repo.Provider == providers.ProviderADO {
+		adoProvider, aerr := newADOProviderForStage(root, repo)
+		if aerr != nil {
+			pf(stderr, "error: %v\n", aerr)
+			return 1
+		}
+		provider = adoProvider
+	} else {
+		token, terr := providerToken(capability.GitHubIssuesWrite)
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
+		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	// Work items (the claimed PBI) live in the backlog project on ADO, not the
+	// routed code repo whose branch/PR this stage links; address them there.
+	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {
@@ -205,7 +230,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			comment = "Implementation parked for human review: " + reason
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repo,
+			Repository:   backlogRepo,
 			ID:           claim.ItemID,
 			Comment:      comment,
 			AddLabels:    []string{providers.LabelNeedsHuman},
@@ -232,7 +257,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
-			Repository: repo,
+			Repository: backlogRepo,
 			ID:         claim.ItemID,
 			Status:     status,
 			Comment:    comment,
@@ -253,10 +278,19 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// not this label, is what's actually authoritative for eligibility, so a
 	// failed removal here leaves only a stale human-visible marker, not a
 	// stuck item.
+	// The claim marker's label form diverges by provider: GitHub uses the plain
+	// LabelClaimed ("goobers:claimed"), while ADO writes the status-form
+	// "goobers/status:claimed" (ClaimWorkItem via statusLabel). Removing the
+	// GitHub constant on ADO never matches, leaving the marker stuck — so
+	// translate to the ADO status form when parking an ADO work item.
+	claimMarker := providers.LabelClaimed
+	if repo.Provider == providers.ProviderADO {
+		claimMarker = providers.StatusLabelFor(providers.WorkItemStatusClaimed)
+	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository:   repo,
+		Repository:   backlogRepo,
 		ID:           claim.ItemID,
-		RemoveLabels: []string{providers.LabelClaimed},
+		RemoveLabels: []string{claimMarker},
 	}); err != nil {
 		pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
 	}
