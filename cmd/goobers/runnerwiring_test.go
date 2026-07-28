@@ -296,7 +296,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
 		t.Fatalf("agent:model env = %q, want COPILOT_GITHUB_TOKEN", got)
 	}
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimeCredentialedCapabilities {
 		want := credentialGrantEnv
 		if c == capability.GitHubIssuesApprove || c == capability.GitHubMilestonesWrite {
 			want = executor.CredentialEnvVar(string(c))
@@ -516,7 +516,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	}
 
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimeCredentialedCapabilities {
 		if got[string(c)] != "tokenA" {
 			t.Fatalf("capability %s = %q, want repo token tokenA", c, got[string(c)])
 		}
@@ -901,7 +901,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 		t.Fatalf("minting source built for %+v, want the github-app repo", gotRepo)
 	}
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimeCredentialedCapabilities {
 		if !strings.HasPrefix(got[string(c)], "minted-token-") {
 			t.Fatalf("capability %s = %q, want a minted installation token", c, got[string(c)])
 		}
@@ -1266,7 +1266,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 	if got["agent:model"] != "copilottok" {
 		t.Fatalf("agent:model = %q, want copilottok", got["agent:model"])
 	}
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimeCredentialedCapabilities {
 		if got[string(c)] != "tokenA" {
 			t.Fatalf("capability %s = %q, want repo token tokenA", c, got[string(c)])
 		}

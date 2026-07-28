@@ -239,8 +239,10 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.ContentsRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.ContentsRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
+
+var runtimeCredentialedCapabilities = append(credentialedCapabilities, capability.ProviderPRWrite)
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
 // environment variable that consumes its token. General org-repo capabilities
@@ -248,8 +250,8 @@ var credentialedCapabilities = []capability.Capability{
 // dedicated GOOBERS_CRED_* variables, and agent:model uses
 // COPILOT_GITHUB_TOKEN (the model backend's var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
-	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
-	for _, c := range credentialedCapabilities {
+	envCaps := make(map[string]string, len(runtimeCredentialedCapabilities)+1)
+	for _, c := range runtimeCredentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
 	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
@@ -385,8 +387,8 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
 
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
+	caps := make([]string, len(runtimeCredentialedCapabilities))
+	for i, c := range runtimeCredentialedCapabilities {
 		caps[i] = string(c)
 	}
 	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
