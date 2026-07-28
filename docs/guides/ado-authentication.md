@@ -92,12 +92,8 @@ Azure DevOps votes and builds map to the provider-neutral lifecycle as follows:
 - A completed `succeeded` build passes. `partiallySucceeded`, `failed`, and
   `canceled` fail. Incomplete builds and completed builds without a result remain
   pending. Polling keeps the newest current-head build per pipeline definition.
-- `completed` pull requests are merged and `abandoned` pull requests are closed
-  without merge. Closing an active pull request abandons it; merging completes
-  it with the requested merge strategy. Azure DevOps auto-complete backs the
-  explicit enqueue/watch methods and is registered to the authenticated caller
-  resolved from Azure DevOps connection data, while normal policy detection
-  remains direct because Azure Repos has no native merge queue.
+- Polling maps `completed` pull requests to merged and `abandoned` pull requests
+  to closed without merge. Closing an active pull request abandons it.
 
 Pull-request descriptions are bounded to Azure DevOps' 4,000 UTF-16-code-unit
 limit while preserving the Goobers run footer.
@@ -144,5 +140,6 @@ iteration paths are left unchanged. Claims write `goobers:claimed` plus an
 internal run-owner tag in one revision-tested patch, so concurrent schedulers
 settle on one visible owner without overwriting unrelated tags.
 
-Human branch policies remain authoritative; Azure DevOps enforces them when
-Goobers requests completion or auto-complete.
+Repository and pull-request parity remains incremental. Keep human branch
+policies authoritative for ADO repo operations that the provider does not yet
+implement.
