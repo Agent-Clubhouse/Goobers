@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"regexp/syntax"
 	"sort"
@@ -148,15 +149,6 @@ func projectFacts(selector string, declared, resolved map[string]any, required *
 	if description, ok := schemaString(declared, resolved, "description"); ok {
 		explanation.Description = description
 		explanation.Documented = strings.TrimSpace(description) != ""
-	}
-	if schemaType, ok := schemaValue(declared, resolved, "type"); ok {
-		explanation.Type = schemaType
-	} else if value, ok := schemaValue(declared, resolved, "const"); ok {
-		explanation.Type = jsonValueType(value)
-	} else if values, ok := schemaSlice(declared, resolved, "enum"); ok && len(values) > 0 {
-		explanation.Type = jsonValueType(values[0])
-	} else if schemaType := primarySchemaType(nil, resolved); schemaType != "" {
-		explanation.Type = schemaType
 	}
 	explanation.AllowedValues = schemaAllowedValues(declared, resolved)
 	if value, ok := schemaValue(declared, resolved, "default"); ok {
@@ -617,16 +609,11 @@ func validateSchemaExample(doc *schemaDocument, selected map[string]any, example
 			return err
 		}
 	}
-
-	const validationSchema = "__explain-example.schema.json"
-	standalone := make(map[string]any, len(selected)+3)
-	for key, value := range selected {
-		if key != "$id" && key != "$schema" && key != "$defs" {
-			standalone[key] = value
-		}
+	standalone := maps.Clone(selected)
+	for _, key := range []string{"$id", "$schema", "$defs"} {
+		delete(standalone, key)
 	}
 	standalone["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-	standalone["$id"] = schemas.BaseURI + validationSchema
 	if definitions, ok := doc.root["$defs"]; ok {
 		standalone["$defs"] = definitions
 	}
@@ -634,13 +621,11 @@ func validateSchemaExample(doc *schemaDocument, selected map[string]any, example
 	if err != nil {
 		return err
 	}
-	if err := compiler.AddResource(
-		schemas.BaseURI+validationSchema,
-		bytes.NewReader(raw),
-	); err != nil {
+	const resource = schemas.BaseURI + "__explain-example.schema.json"
+	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		return err
 	}
-	compiled, err := compiler.Compile(schemas.BaseURI + validationSchema)
+	compiled, err := compiler.Compile(resource)
 	if err != nil {
 		return err
 	}
@@ -661,48 +646,43 @@ func (r *registry) schemaType(
 	if value, ok := schemaValue(declared, resolved, "const"); ok {
 		return jsonValueType(value), nil
 	}
+	var types []string
 	if values, ok := schemaSlice(declared, resolved, "enum"); ok && len(values) > 0 {
-		types := make([]string, 0, len(values))
 		for _, value := range values {
 			types = appendUniqueString(types, jsonValueType(value))
 		}
-		return projectedTypes(types)
-	}
-	if _, ok := resolved["properties"]; ok {
-		return "object", nil
-	}
-	if _, ok := resolved["items"]; ok {
-		return "array", nil
-	}
-	for _, keyword := range []string{"oneOf", "anyOf"} {
-		alternatives, ok := schemaSlice(declared, resolved, keyword)
-		if !ok {
-			continue
-		}
-		types := make([]string, 0, len(alternatives))
-		for _, alternative := range alternatives {
-			node, ok := alternative.(map[string]any)
+	} else if _, ok := resolved["properties"]; ok {
+		types = []string{"object"}
+	} else if _, ok := resolved["items"]; ok {
+		types = []string{"array"}
+	} else {
+		for _, keyword := range []string{"oneOf", "anyOf"} {
+			alternatives, ok := schemaSlice(declared, resolved, keyword)
 			if !ok {
 				continue
 			}
-			alternativeDoc, alternativeResolved, err := r.resolve(doc, node)
-			if err != nil {
-				return nil, err
+			for _, alternative := range alternatives {
+				node, ok := alternative.(map[string]any)
+				if !ok {
+					continue
+				}
+				alternativeDoc, alternativeResolved, err := r.resolve(doc, node)
+				if err != nil {
+					return nil, err
+				}
+				value, err := r.schemaType(alternativeDoc, node, alternativeResolved, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				types = appendTypeValue(types, value)
 			}
-			value, err := r.schemaType(
-				alternativeDoc,
-				node,
-				alternativeResolved,
-				depth+1,
-			)
-			if err != nil {
-				return nil, err
-			}
-			types = appendTypeValue(types, value)
+			break
 		}
-		return projectedTypes(types)
 	}
-	return []any{"null", "boolean", "object", "array", "number", "string", "integer"}, nil
+	if types == nil {
+		return []any{"null", "boolean", "object", "array", "number", "string", "integer"}, nil
+	}
+	return projectedTypes(types)
 }
 
 func appendTypeValue(types []string, value any) []string {
@@ -720,15 +700,15 @@ func appendTypeValue(types []string, value any) []string {
 }
 
 func appendUniqueString(values []string, value string) []string {
-	if value == "" {
-		return values
-	}
 	for _, existing := range values {
 		if existing == value {
 			return values
 		}
 	}
-	return append(values, value)
+	if value != "" {
+		values = append(values, value)
+	}
+	return values
 }
 
 func projectedTypes(types []string) (any, error) {
@@ -787,35 +767,27 @@ func minimalRegexpMatch(expression *syntax.Regexp) (string, error) {
 		return string(character), nil
 	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
 		return "a", nil
-	case syntax.OpCapture:
+	case syntax.OpCapture, syntax.OpPlus:
 		return minimalRegexpMatch(expression.Sub[0])
-	case syntax.OpConcat:
-		var builder strings.Builder
-		for _, subexpression := range expression.Sub {
-			value, err := minimalRegexpMatch(subexpression)
-			if err != nil {
-				return "", err
-			}
-			builder.WriteString(value)
-		}
-		return builder.String(), nil
-	case syntax.OpAlternate:
-		var shortest string
+	case syntax.OpConcat, syntax.OpAlternate:
+		values := make([]string, len(expression.Sub))
 		for i, subexpression := range expression.Sub {
 			value, err := minimalRegexpMatch(subexpression)
 			if err != nil {
 				return "", err
 			}
-			if i == 0 || len(value) < len(shortest) ||
-				(len(value) == len(shortest) && value < shortest) {
-				shortest = value
-			}
+			values[i] = value
 		}
-		return shortest, nil
+		if expression.Op == syntax.OpConcat {
+			return strings.Join(values, ""), nil
+		}
+		sort.Slice(values, func(i, j int) bool {
+			return len(values[i]) < len(values[j]) ||
+				(len(values[i]) == len(values[j]) && values[i] < values[j])
+		})
+		return values[0], nil
 	case syntax.OpQuest, syntax.OpStar:
 		return "", nil
-	case syntax.OpPlus:
-		return minimalRegexpMatch(expression.Sub[0])
 	case syntax.OpRepeat:
 		value, err := minimalRegexpMatch(expression.Sub[0])
 		if err != nil {
@@ -829,8 +801,10 @@ func minimalRegexpMatch(expression *syntax.Regexp) (string, error) {
 
 func printableClassRune(ranges []rune) (rune, bool) {
 	for _, candidate := range "a0x1A._/-@=+" {
-		if runeInClass(candidate, ranges) {
-			return candidate, true
+		for i := 0; i+1 < len(ranges); i += 2 {
+			if candidate >= ranges[i] && candidate <= ranges[i+1] {
+				return candidate, true
+			}
 		}
 	}
 	for i := 0; i+1 < len(ranges); i += 2 {
@@ -841,15 +815,6 @@ func printableClassRune(ranges []rune) (rune, bool) {
 		}
 	}
 	return 0, false
-}
-
-func runeInClass(value rune, ranges []rune) bool {
-	for i := 0; i+1 < len(ranges); i += 2 {
-		if value >= ranges[i] && value <= ranges[i+1] {
-			return true
-		}
-	}
-	return false
 }
 
 func primarySchemaType(value any, resolved map[string]any) string {

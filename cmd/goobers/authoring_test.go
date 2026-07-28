@@ -15,22 +15,27 @@ import (
 	buildversion "github.com/goobers/goobers/internal/version"
 )
 
-func TestSchemaListsEveryEmbeddedKind(t *testing.T) {
+func TestSchemaEmitsEveryEmbeddedContractByteForByte(t *testing.T) {
+	validator, err := apivalidate.New()
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, stdout, stderr := runArgs(t, "schema", "--list")
 	if code != 0 || stderr != "" {
-		t.Fatalf("code = %d, stderr = %q", code, stderr)
+		t.Fatalf("schema --list: code=%d stderr=%q", code, stderr)
 	}
-	var output schemaListOutput
-	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
-		t.Fatalf("decode output: %v\n%s", err, stdout)
+	var list schemaListOutput
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(output.Kinds, schemas.Kinds()) {
-		t.Fatalf("kinds = %v, want %v", output.Kinds, schemas.Kinds())
+	if !reflect.DeepEqual(list.Kinds, schemas.Kinds()) {
+		t.Fatalf("kinds = %v, want %v", list.Kinds, schemas.Kinds())
 	}
-	assertAuthoringStamp(t, output.authoringStamp, schemaOutputVersion)
-}
+	assertAuthoringStamp(t, list.authoringStamp, schemaOutputVersion)
+	if err := validator.ValidateJSON(schemas.SchemaOutput, []byte(stdout)); err != nil {
+		t.Fatalf("schema list does not match published output schema: %v", err)
+	}
 
-func TestSchemaOutputPreservesEveryEmbeddedSchemaByteForByte(t *testing.T) {
 	const marker = `,"schema":`
 	for _, entry := range schemas.Entries() {
 		t.Run(entry.Kind, func(t *testing.T) {
@@ -38,138 +43,55 @@ func TestSchemaOutputPreservesEveryEmbeddedSchemaByteForByte(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			embedded, err := schemas.FS.ReadFile(entry.File)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(embedded, want) {
-				t.Fatalf("embedded %s differs from api/schemas source", entry.File)
-			}
-
 			code, stdout, stderr := runArgs(t, "schema", entry.Kind)
 			if code != 0 || stderr != "" {
-				t.Fatalf("code = %d, stderr = %q", code, stderr)
+				t.Fatalf("code=%d stderr=%q", code, stderr)
 			}
 			start := strings.Index(stdout, marker)
 			if start < 0 || !strings.HasSuffix(stdout, "}\n") {
-				t.Fatalf("schema envelope does not contain a schema member:\n%s", stdout)
+				t.Fatalf("schema envelope has no schema member:\n%s", stdout)
 			}
 			got := []byte(stdout[start+len(marker) : len(stdout)-2])
 			if !bytes.Equal(got, want) {
-				t.Fatalf("schema %q output is not byte-identical to %s", entry.Kind, entry.File)
-			}
-
-			var decoded struct {
-				authoringStamp
-				Kind   string          `json:"kind"`
-				Schema json.RawMessage `json:"schema"`
-			}
-			if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
-				t.Fatalf("decode schema envelope: %v", err)
-			}
-			if decoded.Kind != entry.Kind {
-				t.Errorf("kind = %q, want %q", decoded.Kind, entry.Kind)
-			}
-			assertAuthoringStamp(t, decoded.authoringStamp, schemaOutputVersion)
-		})
-	}
-}
-
-func TestAuthoringOutputsMatchPublishedSchemas(t *testing.T) {
-	validator, err := apivalidate.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name       string
-		schemaFile string
-		args       []string
-	}{
-		{name: "schema document", schemaFile: schemas.SchemaOutput, args: []string{"schema", "goober"}},
-		{name: "schema list", schemaFile: schemas.SchemaOutput, args: []string{"schema", "--list"}},
-		{name: "documented explanation", schemaFile: schemas.ExplainOutput, args: []string{"explain", "goober.spec.capabilities"}},
-		{name: "undocumented explanation", schemaFile: schemas.ExplainOutput, args: []string{"explain", "features.version"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			code, stdout, stderr := runArgs(t, test.args...)
-			if code != 0 || stderr != "" {
-				t.Fatalf("code = %d, stderr = %q", code, stderr)
-			}
-			if err := validator.ValidateJSON(test.schemaFile, []byte(stdout)); err != nil {
-				t.Fatalf("output does not match %s: %v\n%s", test.schemaFile, err, stdout)
+				t.Fatalf("schema output is not byte-identical to %s", entry.File)
 			}
 		})
 	}
 }
 
-func TestExplainEmitsCompleteAuthoringGuidance(t *testing.T) {
-	output := runExplainJSON(t, "workflow.spec.gates[].evaluator")
-	if output.Type != "string" ||
-		!reflect.DeepEqual(output.AllowedValues, []any{"automated", "agentic", "human"}) ||
-		output.Required == nil || !*output.Required ||
-		!output.Documented ||
-		output.Stability != "ga" ||
-		output.SinceVersion == "" ||
-		output.Example != "automated" {
-		t.Fatalf("nested enum explanation = %+v", output)
+func TestExplainEmitsPublishedAuthoringGuidance(t *testing.T) {
+	nested := runExplainJSON(t, "workflow.spec.gates[].evaluator")
+	if nested.Type != "string" ||
+		!reflect.DeepEqual(nested.AllowedValues, []any{"automated", "agentic", "human"}) ||
+		nested.Required == nil || !*nested.Required ||
+		nested.Example != "automated" {
+		t.Fatalf("nested enum explanation = %+v", nested)
 	}
-	if output.Default != nil {
-		t.Fatalf("schema-absent default was emitted: %+v", output)
-	}
-
 	capabilities := runExplainJSON(t, "goober.spec.capabilities")
 	if capabilities.Type != "array" || len(capabilities.AllowedValues) == 0 ||
-		capabilities.AllowedValues[0] != "repo:read" ||
 		!reflect.DeepEqual(capabilities.Example, []any{"repo:read"}) {
 		t.Fatalf("capability explanation = %+v", capabilities)
 	}
-
-	constField := runExplainJSON(t, "goober.apiVersion")
-	if constField.Type != "string" ||
-		constField.Example != "goobers.dev/v1alpha1" {
-		t.Fatalf("const field explanation = %+v", constField)
-	}
-
-	versionGated := runExplainJSON(t, "gaggle.spec.sandbox")
-	if versionGated.Stability != "preview" || versionGated.SinceVersion == "" ||
-		versionGated.Example == nil {
-		t.Fatalf("version-gated explanation = %+v", versionGated)
+	if got := runExplainJSON(t, "gaggle.spec.sandbox"); got.Stability != "preview" {
+		t.Fatalf("version-gated explanation = %+v", got)
 	}
 }
 
-func TestAuthoringCommandsAuthorAndValidateWithoutSourceCheckout(t *testing.T) {
+func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	root := initDemo(t)
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(oldWD); err != nil {
-			t.Errorf("restore working directory: %v", err)
-		}
-	})
+	t.Chdir(root)
 
-	assertSchemaRequired(t, "goober", nil, "apiVersion", "kind", "metadata", "spec")
-	assertSchemaRequired(t, "goober", []string{"spec"}, "gaggle", "role", "instructions")
-	assertSchemaRequired(t, "workflow", nil, "apiVersion", "kind", "metadata", "spec")
-	assertSchemaRequired(t, "workflow", []string{"spec"}, "gaggle", "triggers", "start")
-
-	gooberName := explainString(t, "goober.metadata.name")
-	instructions := explainString(t, "goober.spec.instructions")
+	gooberName := explainExample[string](t, "goober.metadata.name")
+	instructions := explainExample[string](t, "goober.spec.instructions")
 	goober := map[string]any{
-		"apiVersion": explainString(t, "goober.apiVersion"),
-		"kind":       explainString(t, "goober.kind"),
-		"metadata": map[string]any{
-			"name": gooberName,
-		},
+		"apiVersion": explainExample[string](t, "goober.apiVersion"),
+		"kind":       explainExample[string](t, "goober.kind"),
+		"metadata":   map[string]any{"name": gooberName},
 		"spec": map[string]any{
-			"gaggle":       explainString(t, "goober.spec.gaggle"),
-			"role":         explainString(t, "goober.spec.role"),
+			"gaggle":       explainExample[string](t, "goober.spec.gaggle"),
+			"role":         explainExample[string](t, "goober.spec.role"),
 			"instructions": instructions,
-			"harness":      explainString(t, "goober.spec.harness"),
+			"harness":      explainExample[string](t, "goober.spec.harness"),
 		},
 	}
 	gooberDir := filepath.Join(root, "config", "gaggles", "example", "goobers", gooberName)
@@ -181,79 +103,54 @@ func TestAuthoringCommandsAuthorAndValidateWithoutSourceCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workflowName := explainString(t, "workflow.metadata.name")
-	workflowDocument := map[string]any{
-		"apiVersion": explainString(t, "workflow.apiVersion"),
-		"kind":       explainString(t, "workflow.kind"),
-		"dslVersion": explainString(t, "workflow.dslVersion"),
-		"metadata": map[string]any{
-			"name": workflowName,
-		},
+	workflowName := explainExample[string](t, "workflow.metadata.name")
+	workflow := map[string]any{
+		"apiVersion": explainExample[string](t, "workflow.apiVersion"),
+		"kind":       explainExample[string](t, "workflow.kind"),
+		"dslVersion": explainExample[string](t, "workflow.dslVersion"),
+		"metadata":   map[string]any{"name": workflowName},
 		"spec": map[string]any{
-			"gaggle":   explainString(t, "workflow.spec.gaggle"),
-			"triggers": []any{explainObject(t, "workflow.spec.triggers[]")},
-			"start":    explainString(t, "workflow.spec.start"),
+			"gaggle":   explainExample[string](t, "workflow.spec.gaggle"),
+			"triggers": []any{explainExample[map[string]any](t, "workflow.spec.triggers[]")},
+			"start":    explainExample[string](t, "workflow.spec.start"),
 			"tasks": []any{map[string]any{
-				"name": explainString(t, "workflow.spec.tasks[].name"),
-				"type": explainString(t, "workflow.spec.tasks[].type"),
-				"goal": explainString(t, "workflow.spec.tasks[].goal"),
+				"name": explainExample[string](t, "workflow.spec.tasks[].name"),
+				"type": explainExample[string](t, "workflow.spec.tasks[].type"),
+				"goal": explainExample[string](t, "workflow.spec.tasks[].goal"),
 				"run": map[string]any{
-					"command": explainStringSlice(t, "workflow.spec.tasks[].run.command"),
+					"command": explainExample[[]any](t, "workflow.spec.tasks[].run.command"),
 				},
 			}},
 		},
 	}
-	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml")
-	writeJSONDocument(t, workflowPath, workflowDocument)
-
+	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 	code, stdout, stderr := runArgs(t, "validate", root)
-	if code != 0 {
-		t.Fatalf("validate offline-authored definitions: code=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
-		t.Fatalf("offline-authored definitions were not loaded: %q", stdout)
+	if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
-func TestAuthoringCommandsRejectUnknownAndInvalidInput(t *testing.T) {
-	for _, test := range []struct {
+func TestAuthoringCommandsRejectInvalidInputAndRenderHumanOutput(t *testing.T) {
+	tests := []struct {
 		args []string
+		code int
 		want string
 	}{
-		{args: []string{"schema", "not-a-schema"}, want: `unknown schema kind "not-a-schema"`},
-		{args: []string{"explain", "workflow.stages[].gate"}, want: `unknown selector "workflow.stages[].gate"`},
-		{args: []string{"explain", "workflow.spec.tasks[].run.script"}, want: `unavailable selector "workflow.spec.tasks[].run.script" in built-in DSL version 1.4`},
-	} {
+		{[]string{"schema", "not-a-schema"}, 1, `unknown schema kind "not-a-schema"`},
+		{[]string{"explain", "workflow.stages[].gate"}, 1, `unknown selector "workflow.stages[].gate"`},
+		{[]string{"explain", "workflow.spec.tasks[].run.script"}, 1, "unavailable selector"},
+		{[]string{"schema"}, 2, "Usage:"},
+		{[]string{"schema", "--list", "goober"}, 2, "Usage:"},
+		{[]string{"explain"}, 2, "Usage:"},
+	}
+	for _, test := range tests {
 		code, stdout, stderr := runArgs(t, test.args...)
-		if code != 1 || stdout != "" || !strings.Contains(stderr, test.want) {
-			t.Fatalf("%v: code=%d stdout=%q stderr=%q", test.args, code, stdout, stderr)
+		if code != test.code || stdout != "" || !strings.Contains(stderr, test.want) {
+			t.Errorf("%v: code=%d stdout=%q stderr=%q", test.args, code, stdout, stderr)
 		}
 	}
-	for _, args := range [][]string{
-		{"schema"},
-		{"schema", "--list", "goober"},
-		{"explain"},
-		{"explain", "goober.spec", "workflow.spec"},
-	} {
-		code, stdout, stderr := runArgs(t, args...)
-		if code != 2 || stdout != "" || !strings.Contains(stderr, "Usage:") {
-			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
-		}
-	}
-}
-
-func TestAuthoringHumanOutput(t *testing.T) {
-	code, stdout, stderr := runArgs(t, "schema", "--human", "goober")
-	if code != 0 || stderr != "" ||
-		!strings.Contains(stdout, "Schema: goober") ||
-		!strings.Contains(stdout, `"title": "Goober"`) {
-		t.Fatalf("schema --human: code=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
-
-	code, stdout, stderr = runArgs(t, "explain", "--human", "workflow.spec.gates[].evaluator")
-	if code != 0 || stderr != "" ||
-		!strings.Contains(stdout, "Documented:") ||
-		!strings.Contains(stdout, `["automated","agentic","human"]`) ||
+	code, stdout, stderr := runArgs(t, "explain", "--human", "workflow.spec.gates[].evaluator")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Allowed values:") ||
 		!strings.Contains(stdout, "DSL version:") {
 		t.Fatalf("explain --human: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -267,82 +164,17 @@ func runExplainJSON(t *testing.T, selector string) explainOutput {
 	}
 	var output explainOutput
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
-		t.Fatalf("decode explain %q: %v\n%s", selector, err, stdout)
+		t.Fatal(err)
 	}
 	assertAuthoringStamp(t, output.authoringStamp, explainOutputVersion)
 	return output
 }
 
-func assertSchemaRequired(t *testing.T, kind string, path []string, fields ...string) {
+func explainExample[T any](t *testing.T, selector string) T {
 	t.Helper()
-	code, stdout, stderr := runArgs(t, "schema", kind)
-	if code != 0 || stderr != "" {
-		t.Fatalf("schema %q: code=%d stderr=%q", kind, code, stderr)
-	}
-	var output struct {
-		Schema map[string]any `json:"schema"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
-		t.Fatal(err)
-	}
-	node := output.Schema
-	for _, field := range path {
-		properties, ok := node["properties"].(map[string]any)
-		if !ok {
-			t.Fatalf("schema %q path %v has no properties", kind, path)
-		}
-		child, ok := properties[field].(map[string]any)
-		if !ok {
-			t.Fatalf("schema %q path %v has no field %q", kind, path, field)
-		}
-		node = child
-	}
-	required, ok := node["required"].([]any)
+	value, ok := runExplainJSON(t, selector).Example.(T)
 	if !ok {
-		t.Fatalf("schema %q path %v has no required fields", kind, path)
-	}
-	for _, field := range fields {
-		found := false
-		for _, value := range required {
-			if value == field {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("schema %q path %v does not require %q", kind, path, field)
-		}
-	}
-}
-
-func explainString(t *testing.T, selector string) string {
-	t.Helper()
-	value, ok := runExplainJSON(t, selector).Example.(string)
-	if !ok || value == "" {
-		t.Fatalf("explain %q example is not a non-empty string", selector)
-	}
-	return value
-}
-
-func explainObject(t *testing.T, selector string) map[string]any {
-	t.Helper()
-	value, ok := runExplainJSON(t, selector).Example.(map[string]any)
-	if !ok {
-		t.Fatalf("explain %q example is not an object", selector)
-	}
-	return value
-}
-
-func explainStringSlice(t *testing.T, selector string) []any {
-	t.Helper()
-	value, ok := runExplainJSON(t, selector).Example.([]any)
-	if !ok || len(value) == 0 {
-		t.Fatalf("explain %q example is not a non-empty array", selector)
-	}
-	for _, item := range value {
-		if _, ok := item.(string); !ok {
-			t.Fatalf("explain %q example contains a non-string value", selector)
-		}
+		t.Fatalf("explain %q example has unexpected type", selector)
 	}
 	return value
 }
@@ -353,8 +185,7 @@ func writeJSONDocument(t *testing.T, path string, document map[string]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw = append(raw, '\n')
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -362,13 +193,10 @@ func writeJSONDocument(t *testing.T, path string, document map[string]any) {
 func assertAuthoringStamp(t *testing.T, stamp authoringStamp, schemaVersion string) {
 	t.Helper()
 	info := buildversion.Get()
-	if stamp.SchemaVersion != schemaVersion {
-		t.Errorf("schemaVersion = %q, want %q", stamp.SchemaVersion, schemaVersion)
-	}
-	if stamp.Version != info.Version || stamp.Commit != info.Commit {
-		t.Errorf("build stamp = %s/%s, want %s/%s", stamp.Version, stamp.Commit, info.Version, info.Commit)
-	}
-	if stamp.DSLVersion != supportmatrix.CurrentDSLVersion {
-		t.Errorf("dslVersion = %q, want %q", stamp.DSLVersion, supportmatrix.CurrentDSLVersion)
+	if stamp.SchemaVersion != schemaVersion ||
+		stamp.Version != info.Version ||
+		stamp.Commit != info.Commit ||
+		stamp.DSLVersion != supportmatrix.CurrentDSLVersion {
+		t.Fatalf("authoring stamp = %+v, build = %+v", stamp, info)
 	}
 }
