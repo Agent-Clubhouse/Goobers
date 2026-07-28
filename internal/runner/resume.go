@@ -340,6 +340,8 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+	parallelTransition := pendingParallelTransition(seedEvents, in.Machine)
+	concurrentParallelResume := activeParallel != nil && activeParallel.spec.MaxConcurrentBranches > 1
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
@@ -400,6 +402,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// the final branch stage from immediately before the fan-in completed.
 		startState = seed.fanIn.spec.Join
 	}
+	if rerun == nil && parallelTransition != nil {
+		startState = parallelTransition.target
+	}
 	if seed.parallel != nil {
 		current := seed.parallel.current()
 		switch {
@@ -421,7 +426,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 	var completedGate *gate.Result
 	resumedGateTransition := false
-	if rerun == nil {
+	if rerun == nil && !concurrentParallelResume {
 		if retryTarget, pending := pendingRetryTarget(segment, in.Machine, lastStage, lastResult); pending {
 			jr.SetMachineState(retryTarget)
 			startState = retryTarget
@@ -479,7 +484,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 
 	var resume *resumeContext
-	if t, isTask := in.Machine.Task(startState); isTask {
+	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
 				stage:   startState,
@@ -549,6 +554,43 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
 	setStalledAttemptContext(ctx)
+
+	if parallelTransition != nil {
+		var result Result
+		var transitionErr error
+		switch {
+		case parallelTransition.task != nil:
+			_, result, _, transitionErr = r.taskOutcome(
+				ctx, in.RunID, jr, in.Machine, in.RepoRef, item,
+				parallelTransition.task.task, parallelTransition.task.result, 0,
+			)
+		case parallelTransition.gate != nil:
+			_, result, _, transitionErr = r.gateTransition(
+				ctx, jr, in.RunID, in.Machine, in.RepoRef, item,
+				parallelTransition.gate.result, parallelTransition.gate.lastStage,
+				parallelTransition.gate.lastResult, 0,
+			)
+		default:
+			switch {
+			case parallelTransition.aggregate && parallelTransition.target == workflow.TargetAbort:
+				result, transitionErr = r.finish(in.RunID, jr, journal.PhaseAborted, parallelTransition.parallel, 0)
+			case parallelTransition.aggregate && parallelTransition.target == workflow.TargetEscalate:
+				result, transitionErr = r.finish(in.RunID, jr, journal.PhaseEscalated, parallelTransition.parallel, 0)
+			case workflow.IsReservedAnyTarget(parallelTransition.target):
+				return Result{}, fmt.Errorf("runner: restore parallel terminal %q: source branch outcome is missing", parallelTransition.target)
+			}
+		}
+		aggregateTerminal := parallelTransition.aggregate &&
+			(parallelTransition.target == workflow.TargetAbort || parallelTransition.target == workflow.TargetEscalate)
+		if parallelTransition.task != nil || parallelTransition.gate != nil || aggregateTerminal {
+			if transitionErr != nil {
+				span.Fail(transitionErr)
+				return result, transitionErr
+			}
+			completeRunSpan(span, result)
+			return result, nil
+		}
+	}
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
@@ -1079,6 +1121,126 @@ func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelEx
 		return fanInFromFinished(spec, event)
 	}
 	return nil
+}
+
+type parallelResumeTransition struct {
+	parallel  string
+	target    string
+	aggregate bool
+	task      *parallelTaskTerminal
+	gate      *parallelGateTerminal
+}
+
+// pendingParallelTransition restores the root transition after a crash between
+// parallel.finished and the next root dispatch or terminal event.
+func pendingParallelTransition(events []journal.Event, machine *workflow.Machine) *parallelResumeTransition {
+	finished := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		switch event.Type {
+		case journal.EventRunFinished, journal.EventRunResumed, journal.EventStageRerunRequested:
+			return nil
+		case journal.EventStageStarted, journal.EventStageFinished,
+			journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated,
+			journal.EventParallelStarted:
+			if event.Branch == 0 {
+				return nil
+			}
+		case journal.EventParallelFinished:
+			if event.Branch == 0 {
+				finished = i
+			}
+		}
+		if finished >= 0 {
+			break
+		}
+	}
+	if finished < 0 {
+		return nil
+	}
+
+	event := events[finished]
+	spec, ok := machine.Parallel(event.Parallel)
+	if !ok || event.Target == spec.Join {
+		return nil
+	}
+	transition := &parallelResumeTransition{
+		parallel: event.Parallel, target: event.Target, aggregate: event.Target == spec.OnFailure,
+	}
+	if event.Target != workflow.TargetAbort && event.Target != workflow.TargetEscalate {
+		return transition
+	}
+
+	type terminalCandidate struct {
+		branch int
+		task   *parallelTaskTerminal
+		gate   *parallelGateTerminal
+	}
+	var candidate *terminalCandidate
+	for i := finished - 1; i >= 0; i-- {
+		source := events[i]
+		if source.Type == journal.EventParallelStarted && source.Parallel == event.Parallel {
+			break
+		}
+		if source.Branch == 0 {
+			continue
+		}
+		if source.Type == journal.EventGateEvaluated && source.Target == event.Target {
+			result := gateResultFromEvent(source)
+			history := parallelBranchEvents(events[:i], event.Parallel, source.Branch)
+			lastStage, lastResult, _ := lastFinishedSubject(history)
+			if candidate == nil || source.Branch < candidate.branch {
+				candidate = &terminalCandidate{
+					branch: source.Branch,
+					gate: &parallelGateTerminal{
+						result: result, lastStage: lastStage, lastResult: lastResult,
+					},
+				}
+			}
+			continue
+		}
+		if source.Type != journal.EventStageFinished || isInterruptedAttemptMarker(source) {
+			continue
+		}
+		task, ok := machine.Task(source.Stage)
+		if !ok {
+			continue
+		}
+		_, result, ok := lastFinishedSubject([]journal.Event{source})
+		if !ok {
+			continue
+		}
+		taskTarget := ""
+		switch result.Status {
+		case apiv1.ResultBlocked:
+			taskTarget = workflow.TargetEscalate
+		case apiv1.ResultFailure:
+			if task.ContinueOnError {
+				taskTarget = task.Next
+			} else if _, nextIsGate := machine.Gate(task.Next); nextIsGate && isNonRetryableEscalation(result.Error) {
+				taskTarget = taskEscalationTarget(machine, task)
+				if taskTarget == workflow.TerminalComplete {
+					taskTarget = workflow.TargetEscalate
+				}
+			}
+		case apiv1.ResultSuccess:
+			taskTarget = task.Next
+		}
+		if taskTarget == event.Target {
+			if candidate == nil || source.Branch < candidate.branch {
+				candidate = &terminalCandidate{
+					branch: source.Branch,
+					task:   &parallelTaskTerminal{task: task, result: result},
+				}
+			}
+		}
+	}
+	if candidate != nil {
+		transition.task = candidate.task
+		transition.gate = candidate.gate
+		transition.aggregate = false
+	}
+	return transition
 }
 
 // rerunFanIn restores the fan-in associated with an explicitly rerun join;

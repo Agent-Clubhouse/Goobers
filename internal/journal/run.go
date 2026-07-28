@@ -407,6 +407,12 @@ func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
 	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data)
 }
 
+// RecordBranchArtifact records an artifact with explicit parallel-branch
+// attribution instead of using the run's sequential branch default.
+func (r *Run) RecordBranchArtifact(branch int, name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name}, data)
+}
+
 // ContextManifestArtifactName is the stable journal name for the context
 // manifest supplied to one stage attempt.
 func ContextManifestArtifactName(stage string, attempt int) string {
@@ -419,6 +425,14 @@ func ContextManifestArtifactName(stage string, attempt int) string {
 func (r *Run) RecordStageArtifact(stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
 	return r.recordArtifact(Event{
 		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
+	}, data)
+}
+
+// RecordBranchStageArtifact is RecordStageArtifact with explicit
+// parallel-branch attribution.
+func (r *Run) RecordBranchStageArtifact(branch int, stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
 	}, data)
 }
 
