@@ -8,5 +8,6 @@ import "go.temporal.io/sdk/worker"
 // executable on a task queue.
 func RegisterWith(w worker.Worker, a *Activities) {
 	w.RegisterWorkflow(Run)
+	w.RegisterWorkflow(RunScheduled)
 	w.RegisterActivity(a)
 }

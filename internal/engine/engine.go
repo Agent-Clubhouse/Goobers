@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -133,6 +134,39 @@ const temporalHumanGateUnsupported = "engine: human gates require occurrence-bou
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
+	return run(ctx, in, nil)
+}
+
+// RunScheduled binds a Temporal Schedule action's timestamped workflow ID to
+// the run and records the nominal fire in the scheduler-journal projection.
+func RunScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
+	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	fireTime, err := scheduledFireTime(in.TriggerRef, workflowID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// Temporal's claim ID carries an RFC3339 timestamp (and therefore colons).
+	// Hash it into the same portable trace/run ID shape every other starter uses.
+	in.RunID = RunID(workflowID)
+	in.TriggerKind = string(journal.TriggerSchedule)
+	return run(ctx, in, &fireTime)
+}
+
+func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
+	// Temporal Schedules append "-"+nominal.UTC().Format(time.RFC3339) to the
+	// configured action ID and reject reuse of the resulting workflow ID.
+	prefix := scheduleID + "-"
+	if scheduleID == "" || !strings.HasPrefix(workflowID, prefix) {
+		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q does not encode schedule %q", workflowID, scheduleID)
+	}
+	fireTime, err := time.Parse(time.RFC3339, strings.TrimPrefix(workflowID, prefix))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q has invalid fire time: %w", workflowID, err)
+	}
+	return fireTime, nil
+}
+
+func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
@@ -150,6 +184,9 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 	rec.runStarted(ctx)
+	if scheduledAt != nil {
+		rec.triggerFiredAt(*scheduledAt, in)
+	}
 	rec.recordRunBranchUpfront(ctx, in)
 
 	res, err := walk(ctx, in, m, rec)
