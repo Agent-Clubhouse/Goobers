@@ -28,6 +28,8 @@ spec:
       goal: Elect the next pull request to land.
       run:
         command: ["goobers", "elect-lander"]
+      capabilities:
+        - github:pr:write
       inputs:
         selectedNumber: "42"
       expectedOutputs:
