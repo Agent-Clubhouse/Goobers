@@ -130,9 +130,16 @@ inline — use a supported token reference such as `token.env`, `token.file`,
 Omitting only the `agent:model` entry opts into stored Copilot CLI
 authentication. Missing grants for repository capabilities remain errors.
 
-Verify before a live run: `goobers validate --check-harness` preflights the
-Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
-mis-scoped token fails fast at validation rather than mid-run.
+Verify harness availability before a live run with
+`goobers validate --check-harness`. When `AuthCheckArgs` is configured, its
+authentication probe receives only the base environment, not the configured
+`agent:model` credential, so it can validate a stored CLI session but not the
+token's scope. The token is first resolved and injected as
+`COPILOT_GITHUB_TOKEN` when `CopilotAdapter.Run` executes an agentic stage, so a
+mis-scoped token fails there. On a clean profile, the current preflight blocks
+before that stage; token-backed preflight validation requires the change
+documented in the
+[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md).
 
 ## GitHub App installation tokens (`auth.kind: github-app`)
 
