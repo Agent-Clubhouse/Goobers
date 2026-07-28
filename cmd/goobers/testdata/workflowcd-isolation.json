@@ -1,0 +1,20 @@
+{
+  "goober": "implementer",
+  "codeCapability": "repo:push",
+  "workflowSource": {
+    "gitName": "workflow-config.git",
+    "tokenEnv": "WCD_TEST_CD_PAT",
+    "token": "fixture-cd-pat-config-only",
+    "marker": "workflow.txt",
+    "content": "workflow configuration\n"
+  },
+  "codeRepository": {
+    "gitName": "product-code.git",
+    "owner": "acme",
+    "name": "product-code",
+    "tokenEnv": "WCD_TEST_CODE_PAT",
+    "token": "fixture-code-pat-code-only",
+    "marker": "product.txt",
+    "content": "product code\n"
+  }
+}
