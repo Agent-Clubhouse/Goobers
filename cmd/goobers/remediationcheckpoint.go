@@ -503,24 +503,20 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	var budgets remediationBudgets
 	if !forced {
 		rawCauses := providerInput("remediationCauses", "")
-		if strings.TrimSpace(rawCauses) == "" {
-			if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA); err != nil {
+		if strings.TrimSpace(rawCauses) != "" {
+			causes, err = parseRemediationCauses(rawCauses)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
 				return 1
 			}
-			pln(stdout, "no observed remediation cause to budget; checkpoint halted without consuming an allowance")
-			return 0
-		}
-		causes, err = parseRemediationCauses(rawCauses)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		budgets, err = declaredRemediationBudgets(*budgetOverride)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
+			budgets, err = declaredRemediationBudgets(*budgetOverride)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
 		}
 	}
+	hasObservedCause := len(causes) > 0
 	attemptMatchesLiveHead := false
 	if conflicted && !forced && attemptedHeadSHA != "" {
 		liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
@@ -696,10 +692,18 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
-	if err := writeCheckpointResult(stderr, true, selectedNumber, current.Head, current.HeadSHA); err != nil {
+	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA); err != nil {
 		return 1
 	}
 
+	if !hasObservedCause {
+		pf(
+			stdout,
+			"recorded no-cause checkpoint for PR #%d: cycle %d, counters unchanged, digest %s; remediation halted without consuming an allowance\n",
+			selectedNumber, cycles, digest,
+		)
+		return 0
+	}
 	pf(
 		stdout,
 		"recorded checkpoint for PR #%d: cycle %d, attempts by cause %s, digest %s\n",

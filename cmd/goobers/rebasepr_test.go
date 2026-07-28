@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,34 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 		}
 		writeFakeJSON(w, out)
 	})
+	mux.HandleFunc(prefix+"/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "want PATCH", http.StatusMethodNotAllowed)
+			return
+		}
+		id, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/issues/comments/"))
+		if err != nil {
+			http.Error(w, "invalid comment id", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Body string `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if id < 1 || id > len(s.comments) {
+			http.NotFound(w, r)
+			return
+		}
+		s.comments[id-1] = req.Body
+		writeFakeJSON(w, map[string]interface{}{
+			"id": id, "user": map[string]string{"login": "goobers-bot"}, "body": req.Body,
+		})
+	})
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]string{"login": "goobers-bot"})
 	})
@@ -97,6 +126,9 @@ func rebasePREnv(t *testing.T, serverURL, wtPath string, inputs map[string]strin
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_REPO_PROVIDER", "github")
+	t.Setenv("GOOBERS_REPO_OWNER", "your-org")
+	t.Setenv("GOOBERS_REPO_NAME", "your-repo")
 	for k, v := range inputs {
 		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
 	}
@@ -500,6 +532,14 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			wantCauses:     "sibling-overlap",
 		},
 		{
+			name:           "sibling overlap supersedes stale holistic substantive signal",
+			remediate:      defaultRemediatePolicy,
+			substantive:    true,
+			siblingOverlap: true,
+			wantNeedsAgent: true,
+			wantCauses:     "sibling-overlap",
+		},
+		{
 			name:               "empty policy excludes everything detected",
 			remediate:          "",
 			conflict:           true,
@@ -671,6 +711,68 @@ func TestRebasePRSiblingOverlapHandoffDefersToCheckpoint(t *testing.T) {
 	))
 	if remoteHeadSHA != targetHeadSHA {
 		t.Fatalf("remote head = %q, want unchanged %q until sibling-overlap remediation is complete", remoteHeadSHA, targetHeadSHA)
+	}
+}
+
+func TestRebasePROpenSiblingOverlapSupersedesHolisticSubstantiveCause(t *testing.T) {
+	const prBranch = "goobers/impl/run-open-sibling-overlap"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 68)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "68",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "true",
+		"hasSiblingOverlap":      "true",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if got := result["remediationCauses"]; got != "sibling-overlap" {
+		t.Fatalf("remediationCauses = %q, want sibling-overlap only", got)
+	}
+}
+
+func TestRebasePRMigratesTrustedLegacySiblingHandoff(t *testing.T) {
+	const prBranch = "goobers/impl/run-legacy-sibling-overlap"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	targetHeadSHA := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "HEAD"))
+	legacy := `**Post-merge remediation handoff**
+
+<!-- post-merge-remediation: {"displacingPullNumber":66,"reason":"file-overlap:shared.go","overlappingFiles":["shared.go"]} -->`
+	st := &rebasePRServerState{
+		labels:   []string{needsRemediationLabel},
+		comments: []string{legacy},
+	}
+	server := st.start(t, "your-org", "your-repo", 69)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber": "69",
+		"head":           prBranch,
+		"base":           "main",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if got := result["remediationCauses"]; got != "sibling-overlap" {
+		t.Fatalf("remediationCauses = %q, want migrated legacy sibling-overlap", got)
+	}
+	st.mu.Lock()
+	migratedBody := st.comments[0]
+	st.mu.Unlock()
+	migrated, ok := parsePostMergeRemediationHandoff(migratedBody)
+	if !ok || migrated.Version != postMergeRemediationHandoffVersion ||
+		migrated.TargetHeadSHA != targetHeadSHA {
+		t.Fatalf("migrated handoff = %+v, ok=%v; want version %d pinned to %s",
+			migrated, ok, postMergeRemediationHandoffVersion, targetHeadSHA)
 	}
 }
 
@@ -1305,6 +1407,8 @@ func TestRebasePRPushFailurePreservesDownstreamContract(t *testing.T) {
 		"attemptedHeadSha":       attemptedHeadSHA,
 		"rebaseBaseSha":          rebaseBaseSHA,
 		"remediationCauses":      "failing-ci",
+		"policyExcluded":         "false",
+		"policyExcludedReason":   "",
 		executor.OutputErrorCode: errorCodeProvider,
 	}
 	for key, value := range want {
@@ -1347,5 +1451,30 @@ func TestRebasePRFailureWritesDownstreamContract(t *testing.T) {
 		if result[key] != value {
 			t.Errorf("%s = %v, want %v", key, result[key], value)
 		}
+	}
+}
+
+func TestRebasePRFailurePreservesSiblingPolicyExclusion(t *testing.T) {
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-363-sibling-nocap")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "70")
+	t.Setenv("GOOBERS_INPUT_HEAD", "goobers/impl/run-sibling-nocap")
+	t.Setenv("GOOBERS_INPUT_HASSIBLINGOVERLAP", "true")
+	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", "true")
+	t.Setenv("GOOBERS_INPUT_REMEDIATE", "conflict")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want 1", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "rebase-result.json"))
+	if result["remediationCauses"] != "" ||
+		result["policyExcluded"] != "true" ||
+		!strings.Contains(fmt.Sprint(result["policyExcludedReason"]), "sibling-overlap") {
+		t.Fatalf("failure policy output = causes=%q excluded=%q reason=%q, want sibling-overlap exclusion preserved",
+			result["remediationCauses"], result["policyExcluded"], result["policyExcludedReason"])
 	}
 }

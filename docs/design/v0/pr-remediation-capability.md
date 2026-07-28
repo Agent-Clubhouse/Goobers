@@ -166,6 +166,10 @@ inputs:
 
 The default shipped config is the liberal one. An author who wants only mechanical
 rebases writes `remediate: "conflict,behind-base"` and gets exactly that.
+Sibling context is gathered before this policy decision. When deterministic file
+overlap or a trusted post-merge handoff is present, it supersedes the holistic
+review's stale `substantive` bit so one overlap consumes only the
+`sibling-overlap` allowance.
 
 ### D3 — Respond to the review, don't just silently re-push
 

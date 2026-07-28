@@ -82,72 +82,76 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	base := providerInput("base", "main")
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
-	if selectedNumber == "" || head == "" {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
-	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
 	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
+	hasSiblingOverlap := providerInput("hasSiblingOverlap", "false") == "true"
 	remediate := providerInput("remediate", defaultRemediatePolicy)
+	conflict := false
+	var conflictLocations []rebaseConflictLocation
+	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
+	fail := func(err error) int {
+		return failRebasePR(
+			stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
+			conflict, conflictLocations, policy, err,
+		)
+	}
+	if selectedNumber == "" || head == "" {
+		return fail(errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	provider := newGitHubProvider(issuesToken)
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	handoffProvider := newGitHubProvider(prToken)
 
 	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
+		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
-	hasSiblingOverlap, err := trustedSiblingOverlapHandoff(
+	hasSiblingHandoff, err := trustedSiblingOverlapHandoff(
 		ctx, handoffProvider, repo, selectedNumber, attemptedHeadSHA,
 	)
 	if err != nil {
-		return failRebasePR(
-			stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, err),
-		)
+		return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, err))
 	}
+	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 
-	conflict, conflictLocations, rebaseBaseSHA, err := attemptRebase(".", base, pushToken)
+	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
 	if err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
+		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
 
-	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 
 	if !policy.needsAgent {
 		// Nothing detected at all — the liberal-default behavior this
 		// reproduces exactly regardless of the declared policy.
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
+			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
 		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+			return fail(err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
 		return 0
@@ -162,7 +166,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		// policyExcludedReason below) escalates immediately rather than
 		// spending a repass budget on a cause the policy declined to touch.
 		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+			return fail(err)
 		}
 		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
 		return 0
@@ -174,13 +178,12 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	// fired), since that push does not touch or hide the firing cause.
 	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-				fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
 
 	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, err)
+		return fail(err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
@@ -230,6 +233,13 @@ type remediatePolicyOutcome struct {
 // evaluateRemediatePolicy applies the declared `remediate` policy (#941/
 // PRR-6) to this cycle's detected causes.
 func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI, siblingOverlap bool) remediatePolicyOutcome {
+	// Holistic merge review reports overlap findings as substantive. Once the
+	// deterministic sibling gatherer or a durable post-merge handoff identifies
+	// that overlap, classify it only as sibling-overlap so one condition cannot
+	// consume two independent budgets.
+	if siblingOverlap {
+		substantive = false
+	}
 	allowed := make(map[string]bool)
 	for _, cause := range splitLabelList(remediate) {
 		allowed[cause] = true
@@ -272,27 +282,33 @@ func evaluateRemediatePolicy(remediate string, conflict, substantive, failingCI,
 	return outcome
 }
 
-func failRebasePR(stderr io.Writer, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string, err error) int {
+func failRebasePR(
+	stderr io.Writer,
+	resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA string,
+	conflict bool,
+	conflictLocations []rebaseConflictLocation,
+	policy remediatePolicyOutcome,
+	err error,
+) int {
 	pf(stderr, "error: %v\n", err)
 	code, retryable, extra := classifyProviderError(err)
-	policy := evaluateRemediatePolicy(
-		providerInput("remediate", defaultRemediatePolicy),
-		false,
-		providerInput("hasSubstantiveFindings", "false") == "true",
-		providerInput("hasFailingCI", "false") == "true",
-		false,
-	)
+	locationsJSON := "[]"
+	if len(conflictLocations) > 0 {
+		if data, marshalErr := json.Marshal(conflictLocations); marshalErr == nil {
+			locationsJSON = string(data)
+		}
+	}
 	payload := map[string]interface{}{
 		"selectedNumber":              selectedNumber,
 		"head":                        head,
 		"needsAgent":                  "true",
-		"conflict":                    "false",
-		"conflictLocations":           "[]",
+		"conflict":                    strconv.FormatBool(conflict),
+		"conflictLocations":           locationsJSON,
 		"attemptedHeadSha":            attemptedHeadSHA,
 		"rebaseBaseSha":               rebaseBaseSHA,
 		"remediationCauses":           formatRemediationCauses(policy.policyResult.causes),
-		"policyExcluded":              "false",
-		"policyExcludedReason":        "",
+		"policyExcluded":              strconv.FormatBool(policy.policyExcluded),
+		"policyExcludedReason":        policy.excludedReason,
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,
@@ -366,14 +382,38 @@ func trustedSiblingOverlapHandoff(
 	if err != nil {
 		return false, err
 	}
-	if !hasSiblingOverlapHandoff(comments, "", targetHeadSHA) {
+	if !hasPotentialSiblingOverlapHandoff(comments, targetHeadSHA) {
 		return false, nil
 	}
 	author, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return false, err
 	}
-	return hasSiblingOverlapHandoff(comments, author, targetHeadSHA), nil
+	for i := len(comments) - 1; i >= 0; i-- {
+		if !isTrustedMergeReviewAuthor(comments[i].Author, author) {
+			continue
+		}
+		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)
+		if !ok || !isSiblingOverlapHandoff(handoff) {
+			continue
+		}
+		if handoff.TargetHeadSHA != "" && handoff.TargetHeadSHA != targetHeadSHA {
+			continue
+		}
+		if handoff.Version == 0 {
+			handoff.Version = postMergeRemediationHandoffVersion
+			handoff.TargetHeadSHA = targetHeadSHA
+			body, err := renderPostMergeRemediationHandoff(handoff)
+			if err != nil {
+				return false, err
+			}
+			if err := provider.UpdateComment(ctx, repo, comments[i].ID, body); err != nil {
+				return false, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func hasSiblingOverlapHandoff(comments []providers.Comment, author, targetHeadSHA string) bool {
@@ -389,11 +429,29 @@ func hasSiblingOverlapHandoff(comments []providers.Comment, author, targetHeadSH
 			continue
 		}
 		if handoff.TargetHeadSHA == targetHeadSHA &&
-			(len(handoff.OverlappingFiles) > 0 || strings.HasPrefix(handoff.Reason, "file-overlap:")) {
+			isSiblingOverlapHandoff(handoff) {
 			return true
 		}
 	}
 	return false
+}
+
+func hasPotentialSiblingOverlapHandoff(comments []providers.Comment, targetHeadSHA string) bool {
+	for i := len(comments) - 1; i >= 0; i-- {
+		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)
+		if !ok || !isSiblingOverlapHandoff(handoff) {
+			continue
+		}
+		if handoff.TargetHeadSHA == targetHeadSHA ||
+			(handoff.Version == 0 && handoff.TargetHeadSHA == "") {
+			return true
+		}
+	}
+	return false
+}
+
+func isSiblingOverlapHandoff(handoff postMergeRemediationHandoff) bool {
+	return len(handoff.OverlappingFiles) > 0 || strings.HasPrefix(handoff.Reason, "file-overlap:")
 }
 
 // attemptRebase resolves only the narrow case where both sides added one

@@ -48,6 +48,8 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", "true")
+	t.Setenv("GOOBERS_INPUT_HASFAILINGCI", "false")
 	t.Setenv("GOOBERS_INPUT_NOVERDICTCACHE", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -64,7 +66,12 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 			Number  int      `json:"number"`
 			Overlap []string `json:"overlap"`
 		} `json:"siblings"`
-		OverlappingSiblings []int `json:"overlappingSiblings"`
+		OverlappingSiblings []int  `json:"overlappingSiblings"`
+		Head                string `json:"head"`
+		Base                string `json:"base"`
+		HasSubstantive      string `json:"hasSubstantiveFindings"`
+		HasFailingCI        string `json:"hasFailingCI"`
+		HasSiblingOverlap   string `json:"hasSiblingOverlap"`
 	}
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -82,5 +89,11 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 	}
 	if want := []int{overlapSibling}; !reflect.DeepEqual(ctx.OverlappingSiblings, want) {
 		t.Fatalf("overlappingSiblings = %v, want %v", ctx.OverlappingSiblings, want)
+	}
+	if ctx.Head != "goobers/implementation/run-10" || ctx.Base != "main" ||
+		ctx.HasSubstantive != "true" || ctx.HasFailingCI != "false" ||
+		ctx.HasSiblingOverlap != "true" {
+		t.Fatalf("routing outputs = head=%q base=%q substantive=%q failingCI=%q siblingOverlap=%q",
+			ctx.Head, ctx.Base, ctx.HasSubstantive, ctx.HasFailingCI, ctx.HasSiblingOverlap)
 	}
 }

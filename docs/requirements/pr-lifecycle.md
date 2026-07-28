@@ -307,8 +307,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   check that escalates on a **byte-identical diff at an unchanged base**.
   Distinct causes MUST NOT consume one another's allowance, and stage or
   infrastructure failures without an observed remediation cause MUST NOT be
-  charged to one. A clean rebase that reproduces the same diff while advancing
-  the base is progress, not a stall (#832). Escalation applies
+  charged to one, but MUST still persist and compare the independent stall
+  digest. Open sibling overlap MUST be classified before loop control and MUST
+  supersede the holistic verdict's substantive signal so one overlap cannot
+  consume both budgets. A clean rebase that reproduces the same diff while
+  advancing the base is progress, not a stall (#832). Escalation applies
   `goobers:merge-escalated`, clears `needs-remediation`, and records the
   exhausted cause (when budget-driven), reason, and head/live-base-tip snapshot
   on the sticky state comment.

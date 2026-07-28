@@ -153,7 +153,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	}
 	next := make(map[string]siblingCacheEntry, len(prs))
 
-	var selectedHeadSHA, selectedBaseSHA string
+	var selectedHead, selectedHeadSHA, selectedBaseSHA string
 	selectedFound := false
 	var selectedFiles []string
 	var selectedLines int
@@ -167,7 +167,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// fresh query — this is what the review gate's Verdict should
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
-			selectedHeadSHA, selectedBaseSHA = pr.HeadSHA, pr.BaseSHA
+			selectedHead, selectedHeadSHA, selectedBaseSHA = pr.Head, pr.HeadSHA, pr.BaseSHA
 			// Its current labels, for the #1111 scope-drift flag's idempotency.
 			selectedLabels = pr.Labels
 			// Capture its own changed files too (#989), so overlap against
@@ -348,11 +348,16 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// float64 in the merged Outputs, so it was silently dropped and
 		// apply-verdict aborted with "selectedNumber is required" on every run —
 		// no PR ever received a merge-review label since #381.
-		"selectedNumber":  selectedNumberStr,
-		"selectedHeadSha": selectedHeadSHA,
-		"selectedBaseSha": selectedBaseSHA,
-		"reviewDigest":    reviewDigest,
-		"siblings":        siblings,
+		"selectedNumber":         selectedNumberStr,
+		"head":                   selectedHead,
+		"base":                   base,
+		"hasSubstantiveFindings": providerInput("hasSubstantiveFindings", "false"),
+		"hasFailingCI":           providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
+		"selectedHeadSha":        selectedHeadSHA,
+		"selectedBaseSha":        selectedBaseSHA,
+		"reviewDigest":           reviewDigest,
+		"siblings":               siblings,
 		// overlappingSiblings: PR numbers whose files intersect the selected
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".

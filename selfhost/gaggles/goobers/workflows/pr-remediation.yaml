@@ -150,6 +150,38 @@ spec:
         - hasSubstantiveFindings
         - hasFailingCI
         - workspaceBranch
+      next: gather-sibling-context
+
+    # Reuse merge-review's sibling gatherer before cause classification so an
+    # open file overlap is charged only to sibling-overlap, never also to the
+    # holistic verdict's substantive bit. The command reuses the instance-wide
+    # per-head sibling memo; only its unrelated verdict-cache lookup is disabled.
+    # Its routing scalars pass through to rebase-pr, while sibling-context.json
+    # remains available to the implementer as evidence.
+    - name: gather-sibling-context
+      type: deterministic
+      goal: Load the other open PRs' touched files and classify overlap before remediation budgeting.
+      run:
+        command: ["goobers", "gather-sibling-context", "--no-verdict-cache"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        head: head
+        base: base
+        hasSubstantiveFindings: hasSubstantiveFindings
+        hasFailingCI: hasFailingCI
+      inputs:
+        resultFile: "sibling-context.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - flag-scope-drift
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - base
+        - hasSubstantiveFindings
+        - hasFailingCI
+        - hasSiblingOverlap
       next: rebase-pr
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
@@ -192,6 +224,7 @@ spec:
         base: base
         hasSubstantiveFindings: hasSubstantiveFindings
         hasFailingCI: hasFailingCI
+        hasSiblingOverlap: hasSiblingOverlap
       inputs:
         resultFile: "rebase-result.json"
         # #941/PRR-6: which detected causes may trigger the agentic chain.
@@ -283,28 +316,6 @@ spec:
         - head
         - headSha
       next: checkpoint-gate
-
-    # Reuse merge-review's sibling gatherer immediately before agentic work so
-    # the remediator sees every open sibling's files and deterministic overlap
-    # set. The command reuses the instance-wide per-head sibling memo; only its
-    # unrelated verdict-cache lookup is disabled. selectedNumber flows through
-    # checkpoint-gate from remediation-checkpoint.
-    - name: gather-sibling-context
-      type: deterministic
-      goal: Load the other open PRs' touched files and overlap with the PR being remediated.
-      run:
-        command: ["goobers", "gather-sibling-context", "--no-verdict-cache"]
-      inputsFrom:
-        selectedNumber: selectedNumber
-      inputs:
-        resultFile: "sibling-context.json"
-      capabilities:
-        - github:pr:write
-      policyActions:
-        - flag-scope-drift
-      expectedOutputs:
-        - selectedNumber
-      next: gather-review-threads
 
     # PRR-3 / design doc D1: replace only the review-thread section of the
     # versioned brief with native review bodies and anchored inline comments.
@@ -594,7 +605,7 @@ spec:
           key: continueRemediation
           equals: "true"
       branches:
-        pass: gather-sibling-context
+        pass: gather-review-threads
         fail: ""
 
     # A malformed or partial finding account is repairable agent output, not a

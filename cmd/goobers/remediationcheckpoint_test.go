@@ -393,6 +393,9 @@ func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability 
 
 	t.Setenv("GOOBERS_RUN_ID", "run-364")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_REPO_PROVIDER", "github")
+	t.Setenv("GOOBERS_REPO_OWNER", "your-org")
+	t.Setenv("GOOBERS_REPO_NAME", "your-repo")
 	if !withoutCapability {
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 		t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
@@ -617,8 +620,25 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	if !strings.Contains(stdout, "without consuming an allowance") {
 		t.Fatalf("stdout = %q, want explicit no-cause halt", stdout)
 	}
-	if len(st.comments) != 0 {
-		t.Fatalf("comments = %v, want no attempt checkpoint without an observed cause", st.comments)
+	if len(st.comments) != 1 {
+		t.Fatalf("comments = %v, want a persisted no-cause checkpoint for independent stall detection", st.comments)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" || state.AttemptsByCause != (remediationAttempts{}) {
+		t.Fatalf("no-cause state = %+v, ok=%v, want cycle and digest with unchanged counters", state, ok)
+	}
+
+	code, stdout, stderr = runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("repeat: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "byte-identical") {
+		t.Fatalf("repeat stdout = %q, want independent same-diff escalation", stdout)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, want merge-escalated on repeated no-cause failure", st.labels)
 	}
 }
 
