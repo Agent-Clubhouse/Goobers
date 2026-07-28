@@ -51,8 +51,8 @@ const (
 	// goobers:approved to a nominated issue. It is separate from general issue
 	// writes so a workflow must explicitly opt into approving its own output.
 	GitHubIssuesApprove Capability = "github:issues:approve"
-	// ProviderPRWrite grants provider-selected pull-request open, update, and
-	// polling operations without coupling a workflow to GitHub or Azure DevOps.
+	// ProviderPRWrite grants provider-selected pull-request open, update, poll,
+	// and close operations without coupling a workflow to one provider.
 	ProviderPRWrite Capability = "provider:pr:write"
 	// GitHubPRWrite grants GitHub PR open/poll/close (the implementation
 	// workflows' GitHub-specific PR lifecycle stages).

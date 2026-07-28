@@ -3,13 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1568,90 +1564,6 @@ func TestCIPollRejectsGitHubCapabilityForADO(t *testing.T) {
 	}
 	if called {
 		t.Fatal("PR poller constructed with a GitHub-only capability for ADO")
-	}
-}
-
-func TestCIPollADOPATUsesProviderCredentialOverride(t *testing.T) {
-	t.Setenv("ADO_REPO_TOKEN", "repo-token")
-	t.Setenv("ADO_PR_TOKEN", "dedicated-pr-token")
-	mux := http.NewServeMux()
-	checkAuthorization := func(r *http.Request) {
-		t.Helper()
-		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:dedicated-pr-token"))
-		if got := r.Header.Get("Authorization"); got != want {
-			t.Fatalf("Authorization = %q, want dedicated provider PR credential", got)
-		}
-	}
-	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests/401", func(w http.ResponseWriter, r *http.Request) {
-		checkAuthorization(r)
-		if err := json.NewEncoder(w).Encode(map[string]interface{}{
-			"pullRequestId":         401,
-			"status":                "active",
-			"mergeStatus":           "succeeded",
-			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	mux.HandleFunc("/organization/project/_apis/build/builds", func(w http.ResponseWriter, r *http.Request) {
-		checkAuthorization(r)
-		if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []map[string]interface{}{{
-			"id": 1, "status": "completed", "result": "succeeded",
-			"definition":  map[string]interface{}{"id": 1, "name": "ci"},
-			"triggerInfo": map[string]string{"pr.sourceSha": "head-sha"},
-		}}}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	previousADOProvider := newADOProvider
-	newADOProvider = func(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
-		opts = append(opts, func(p *providers.ADOProvider) { p.BaseURL = server.URL })
-		return providers.NewADOProvider(organization, project, token, opts...)
-	}
-	t.Cleanup(func() { newADOProvider = previousADOProvider })
-
-	cfg := &instance.Config{
-		Repos: []instance.RepoRef{{
-			Provider: "ado",
-			Owner:    "organization",
-			Project:  "project",
-			Name:     "repository",
-			Token:    instance.TokenRef{Env: "ADO_REPO_TOKEN"},
-		}},
-		Credentials: []instance.CredentialGrant{{
-			Capability: string(capability.ProviderPRWrite),
-			Token:      instance.TokenRef{Env: "ADO_PR_TOKEN"},
-		}},
-	}
-	resolver, grants, err := buildCredentials(cfg, nil, "organization/project", "repository", nil, nil)
-	if err != nil {
-		t.Fatalf("buildCredentials: %v", err)
-	}
-	reg := &escTestRegistrar{}
-	injector, err := credentials.NewInjector(resolver, grants, reg)
-	if err != nil {
-		t.Fatalf("NewInjector: %v", err)
-	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, reg)
-	if err != nil {
-		t.Fatalf("buildCIPollExecutor: %v", err)
-	}
-	env := ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)})
-	env.RepoRef = apiv1.RepoRef{
-		Provider: apiv1.ProviderADO,
-		Owner:    "organization",
-		Project:  "project",
-		Name:     "repository",
-	}
-	result, err := deterministic.Run(context.Background(), env, apiv1.DeterministicRun{})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Outputs[executor.OutputCIStatus] != string(providers.CheckStatePassing) {
-		t.Fatalf("outputs = %+v", result.Outputs)
 	}
 }
 

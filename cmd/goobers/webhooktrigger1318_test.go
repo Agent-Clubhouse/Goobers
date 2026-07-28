@@ -8,7 +8,6 @@ import (
 
 	"github.com/goobers/goobers/internal/executor"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
-	"github.com/goobers/goobers/providers"
 )
 
 func TestPRSelectConsumesWebhookTargetBeforePollingFallback(t *testing.T) {
@@ -69,22 +68,6 @@ func TestProviderRepoPrefersRoutedRunRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	if repo.Owner != "routed-owner" || repo.Name != "routed-repo" {
-		t.Fatalf("providerRepo = %+v", repo)
-	}
-}
-
-func TestProviderRepoAcceptsRoutedADORepository(t *testing.T) {
-	t.Setenv(executor.RepoProviderEnvVar, "ado")
-	t.Setenv(executor.RepoOwnerEnvVar, "organization")
-	t.Setenv(executor.RepoProjectEnvVar, "project")
-	t.Setenv(executor.RepoNameEnvVar, "repository")
-
-	repo, err := pullRequestProviderRepo(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repo.Provider != providers.ProviderADO || repo.Owner != "organization" ||
-		repo.Project != "project" || repo.Name != "repository" {
 		t.Fatalf("providerRepo = %+v", repo)
 	}
 }

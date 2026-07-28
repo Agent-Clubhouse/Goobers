@@ -85,6 +85,11 @@ For PAT repositories, an explicit `provider:pr:write` credential overrides the
 repository PAT for PR open/update and polling. Entra-backed repositories keep
 using their configured identity source.
 
+`provider:pr:write` is the canonical capability for provider-selected PR
+stages. `github:pr:write` remains available for GitHub-specific stages and as a
+compatibility declaration for existing GitHub-only provider-neutral stages; it
+never authorizes an Azure DevOps invocation.
+
 Azure DevOps votes and builds map to the provider-neutral lifecycle as follows:
 
 - Votes `-10` (rejected) and `-5` (waiting for author) request changes; votes
