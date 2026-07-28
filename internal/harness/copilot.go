@@ -38,6 +38,8 @@ const fallbackToDefaultOption = "fallback-to-default"
 
 const copilotModelDiscoveryTimeout = 30 * time.Second
 
+const copilotModelPolicyDisabled = "disabled"
+
 type copilotModelCapabilities struct {
 	longContext     bool
 	reasoningEffort map[string]struct{}
@@ -46,6 +48,7 @@ type copilotModelCapabilities struct {
 // CopilotModelInfo is the model metadata needed to validate adapter options.
 type CopilotModelInfo struct {
 	ID                        string
+	PolicyState               string
 	SupportedReasoningEfforts []string
 }
 
@@ -226,9 +229,19 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if err != nil {
 		return nil, err
 	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+	}
 	available := make(map[string]copilotModelCapabilities, len(models)+1)
+	autoDisabled := false
 	for _, model := range models {
 		if model.ID == "" {
+			continue
+		}
+		if model.PolicyState == copilotModelPolicyDisabled {
+			if model.ID == "auto" {
+				autoDisabled = true
+			}
 			continue
 		}
 		efforts := make(map[string]struct{}, len(model.SupportedReasoningEfforts))
@@ -240,18 +253,14 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 			reasoningEffort: efforts,
 		}
 	}
+	if !autoDisabled {
+		available["auto"] = copilotModelCapabilities{}
+	}
 	if len(available) == 0 {
 		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
 	}
-	available["auto"] = copilotModelCapabilities{}
 	c.availableModels = available
 	return c.availableModels, nil
-}
-
-func (c *CopilotAdapter) capabilitiesForModel(model string) copilotModelCapabilities {
-	c.modelsMu.Lock()
-	defer c.modelsMu.Unlock()
-	return c.availableModels[model]
 }
 
 func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]apiextensionsv1.JSON, bool, error) {
@@ -281,6 +290,22 @@ func copilotFallbackOption(options map[string]apiextensionsv1.JSON) (map[string]
 }
 
 func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON, capabilities copilotModelCapabilities) (map[string]string, error) {
+	normalized, err := normalizeResolvedCopilotConfig(model, options)
+	if err != nil {
+		return nil, err
+	}
+	if normalized["context"] == "long_context" && !capabilities.longContext {
+		return nil, fmt.Errorf("context value %q is not supported by model %q", normalized["context"], model)
+	}
+	if value, ok := normalized["reasoningEffort"]; ok {
+		if _, supported := capabilities.reasoningEffort[value]; !supported {
+			return nil, fmt.Errorf("reasoningEffort value %q is not supported by model %q", value, model)
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeResolvedCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
 	names := make([]string, 0, len(options))
 	for name := range options {
 		names = append(names, name)
@@ -304,16 +329,10 @@ func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSO
 				if model == "" {
 					return nil, fmt.Errorf("context value %q requires an explicit model", value)
 				}
-				if !capabilities.longContext {
-					return nil, fmt.Errorf("context value %q is not supported by model %q", value, model)
-				}
 			}
 		case "reasoningEffort":
 			if model == "" {
 				return nil, fmt.Errorf("reasoningEffort requires an explicit model")
-			}
-			if _, ok := capabilities.reasoningEffort[value]; !ok {
-				return nil, fmt.Errorf("reasoningEffort value %q is not supported by model %q", value, model)
 			}
 		}
 		normalized[name] = value
@@ -397,15 +416,18 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
-	resolution, err := c.resolveConfig(ctx, req.Model, req.HarnessOptions)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+	resolution := ConfigResolution{
+		Model:          req.Model,
+		HarnessOptions: cloneHarnessOptions(req.HarnessOptions),
 	}
-	var capabilities copilotModelCapabilities
-	if resolution.Model != "" {
-		capabilities = c.capabilitiesForModel(resolution.Model)
+	if !req.HarnessConfigResolved {
+		var err error
+		resolution, err = c.resolveConfig(ctx, req.Model, req.HarnessOptions)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+		}
 	}
-	harnessOptions, err := normalizeCopilotConfig(resolution.Model, resolution.HarnessOptions, capabilities)
+	harnessOptions, err := normalizeResolvedCopilotConfig(resolution.Model, resolution.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid resolved configuration: %w", err)
 	}

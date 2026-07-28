@@ -59,6 +59,35 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 	return out
 }
 
+type runnerWiringModelLister struct {
+	responses [][]harness.CopilotModelInfo
+	env       []string
+	calls     int
+}
+
+func (l *runnerWiringModelLister) ListModels(_ context.Context, _ []string, env []string) ([]harness.CopilotModelInfo, error) {
+	l.env = append([]string(nil), env...)
+	response := l.responses[min(l.calls, len(l.responses)-1)]
+	l.calls++
+	return append([]harness.CopilotModelInfo(nil), response...), nil
+}
+
+type runnerWiringHarnessRecorder struct {
+	dir string
+}
+
+func (r runnerWiringHarnessRecorder) RecordArtifact(string, []byte) (journal.Ref, error) {
+	return journal.ArtifactRef(nil)
+}
+
+func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data []byte) (journal.Ref, error) {
+	return journal.ArtifactRef(data)
+}
+
+func (r runnerWiringHarnessRecorder) Dir() string {
+	return r.dir
+}
+
 func TestResolveOTLPHeaders(t *testing.T) {
 	t.Setenv("OTLP_AUTHORIZATION", "Bearer collector-secret")
 	registry := journal.NewRegistryScrubber()
@@ -453,9 +482,10 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := compiledMachinesWithWarnings(
+			_, _, _, err := compiledMachinesWithWarnings(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -465,7 +495,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 }
 
 func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
-	_, warnings, err := compiledMachinesWithWarnings(
+	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
 		&instance.ConfigSet{},
 		map[string]apiv1.GooberSpec{
 			"coder": {
@@ -476,6 +506,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 				},
 			},
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -485,6 +516,93 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		warnings[0].Warning.Kind != harness.ConfigWarningModelFallback ||
 		!strings.Contains(warnings[0].Warning.Message, `"retired-model"`) {
 		t.Fatalf("warnings = %+v, want one coder model-fallback warning", warnings)
+	}
+	if resolvedGoobers["coder"].Model != "" ||
+		len(resolvedGoobers["coder"].HarnessOptions) != 0 {
+		t.Fatalf("resolved goober = %+v, want harness default without admission-only options", resolvedGoobers["coder"])
+	}
+}
+
+func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *testing.T) {
+	copilotHome := t.TempDir()
+	t.Setenv("COPILOT_HOME", copilotHome)
+	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+	}}
+	previousLister := copilotModelLister
+	copilotModelLister = lister
+	t.Cleanup(func() { copilotModelLister = previousLister })
+	var runRequest harness.RunRequest
+	previousAdapter := newAgenticAdapter
+	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			runRequest = req
+			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}}
+	}
+	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+
+	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+		&instance.ConfigSet{},
+		map[string]apiv1.GooberSpec{
+			"coder": {
+				Harness: apiv1.HarnessCopilot,
+				Model:   "retired-model",
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"fallback-to-default": {Raw: []byte("true")},
+				},
+			},
+		},
+		[]string{"COPILOT_HOME"},
+	)
+	if err != nil {
+		t.Fatalf("compiledMachinesWithWarnings: %v", err)
+	}
+	if len(warnings) != 1 || resolvedGoobers["coder"].Model != "" {
+		t.Fatalf("admission = goober %+v warnings %+v, want fallback to default", resolvedGoobers["coder"], warnings)
+	}
+	if !slices.Contains(lister.env, "COPILOT_HOME="+copilotHome) {
+		t.Fatalf("model discovery env = %v, want configured COPILOT_HOME", lister.env)
+	}
+
+	layout := instance.NewLayout(t.TempDir())
+	runnerCfg, _, err := buildRunnerConfig(
+		layout,
+		&instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
+		resolvedGoobers,
+		map[string]string{"coder": "instructions"},
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		apiv1.RepoRef{},
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	recorder := runnerWiringHarnessRecorder{dir: t.TempDir()}
+	agentic, err := runnerCfg.NewAgentic("coder", recorder, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("NewAgentic: %v", err)
+	}
+	if _, err := agentic.Invoke(context.Background(), apiv1.InvocationEnvelope{
+		TaskID:    "implement",
+		Workspace: recorder.dir,
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if !runRequest.HarnessConfigResolved || runRequest.Model != "" ||
+		len(runRequest.HarnessOptions) != 0 {
+		t.Fatalf("runtime request = %+v, want admitted harness default", runRequest)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", lister.calls)
 	}
 }
 
@@ -1105,7 +1223,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{})
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

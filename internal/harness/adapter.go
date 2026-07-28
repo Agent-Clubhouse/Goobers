@@ -75,6 +75,9 @@ type RunRequest struct {
 	Model string
 	// HarnessOptions are the goober's opaque, adapter-validated settings.
 	HarnessOptions map[string]apiextensionsv1.JSON
+	// HarnessConfigResolved reports that Model and HarnessOptions are the
+	// effective configuration produced during admission, not raw declarations.
+	HarnessConfigResolved bool
 	// MCPServers are the goober's external MCP declarations for this invocation.
 	MCPServers []apiv1.MCPServer
 	// Tools is the goober's default-deny tool allowlist.

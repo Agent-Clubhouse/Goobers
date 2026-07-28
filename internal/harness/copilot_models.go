@@ -32,10 +32,19 @@ func (sdkCopilotModelLister) ListModels(ctx context.Context, command, env []stri
 	}
 	result := make([]CopilotModelInfo, 0, len(models))
 	for _, model := range models {
-		result = append(result, CopilotModelInfo{
-			ID:                        model.ID,
-			SupportedReasoningEfforts: append([]string(nil), model.SupportedReasoningEfforts...),
-		})
+		result = append(result, mapCopilotModelInfo(model))
 	}
 	return result, nil
+}
+
+func mapCopilotModelInfo(model copilot.ModelInfo) CopilotModelInfo {
+	policyState := ""
+	if model.Policy != nil {
+		policyState = model.Policy.State
+	}
+	return CopilotModelInfo{
+		ID:                        model.ID,
+		PolicyState:               policyState,
+		SupportedReasoningEfforts: append([]string(nil), model.SupportedReasoningEfforts...),
+	}
 }

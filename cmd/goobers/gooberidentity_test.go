@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -79,6 +80,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(filepath.Join(instructionsDir, "instructions.md"), []byte("instructions"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -128,5 +130,60 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	}
 	if before[identity] == after[identity] {
 		t.Fatalf("goober digest did not change with skill support file: %s", after[identity])
+	}
+}
+
+func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
+	configDir := t.TempDir()
+	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")
+	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instructionsDir, "instructions.md"), []byte("instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Gaggle:       "alpha",
+			Instructions: "instructions.md",
+			Harness:      apiv1.HarnessCopilot,
+			Model:        "retired-model",
+			HarnessOptions: map[string]apiextensionsv1.JSON{
+				"fallback-to-default": {Raw: []byte("true")},
+			},
+		},
+	}
+	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implement"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "alpha",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
+				Goober: "coder", Next: workflow.TerminalComplete,
+			}},
+		},
+	}}}
+	instructions, err := loadGooberInstructions(configDir, goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines, digests, resolvedGoobers, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
+	resolvedDigest, err := workflow.ComputeGooberDigest(machines[identity].Def, resolvedGoobers, instructions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaredDigest, err := workflow.ComputeGooberDigest(machines[identity].Def, goobers, instructions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digests[identity] != resolvedDigest || digests[identity] == declaredDigest {
+		t.Fatalf("goober digest = %s, resolved = %s, declared = %s", digests[identity], resolvedDigest, declaredDigest)
 	}
 }

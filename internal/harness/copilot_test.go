@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	copilotsdk "github.com/github/copilot-sdk/go"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -59,14 +60,19 @@ type fakeProcessRunner struct {
 }
 
 type fakeCopilotModelLister struct {
-	models []CopilotModelInfo
-	err    error
-	calls  int
+	models    []CopilotModelInfo
+	responses [][]CopilotModelInfo
+	err       error
+	calls     int
 }
 
 func (f *fakeCopilotModelLister) ListModels(context.Context, []string, []string) ([]CopilotModelInfo, error) {
+	response := f.models
+	if len(f.responses) > 0 {
+		response = f.responses[min(f.calls, len(f.responses)-1)]
+	}
 	f.calls++
-	return append([]CopilotModelInfo(nil), f.models...), f.err
+	return append([]CopilotModelInfo(nil), response...), f.err
 }
 
 func testCopilotModelList() []CopilotModelInfo {
@@ -807,6 +813,157 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	contextIndex := slices.Index(runner.lastReq.Command, "--context")
 	if contextIndex < 0 || contextIndex+1 >= len(runner.lastReq.Command) || runner.lastReq.Command[contextIndex+1] != "default" {
 		t.Fatalf("command = %q, want retained --context default", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterTreatsPolicyDisabledModelsAsUnavailable(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{
+		{ID: "disabled-model", PolicyState: copilotModelPolicyDisabled},
+	}}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+
+	_, err := adapter.ResolveConfig("disabled-model", nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown model "disabled-model"`) {
+		t.Fatalf("strict disabled model error = %v, want unknown-model error", err)
+	}
+	if !strings.Contains(err.Error(), "valid models: auto") ||
+		strings.Contains(err.Error(), "valid models: auto, disabled-model") {
+		t.Fatalf("strict disabled model error = %v, want valid list excluding disabled model", err)
+	}
+
+	resolution, err := adapter.ResolveConfig("disabled-model", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("fallback disabled model: %v", err)
+	}
+	if resolution.Model != "" || len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback {
+		t.Fatalf("fallback disabled model resolution = %+v, want default with model-fallback warning", resolution)
+	}
+}
+
+func TestCopilotAdapterTreatsPolicyDisabledAutoAsUnavailable(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{models: []CopilotModelInfo{
+			{ID: "auto", PolicyState: copilotModelPolicyDisabled},
+			{ID: "gpt-5.4"},
+		}},
+	}
+
+	_, err := adapter.ResolveConfig("auto", nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown model "auto"; valid models: gpt-5.4`) {
+		t.Fatalf("strict disabled auto error = %v, want valid list excluding auto", err)
+	}
+	resolution, err := adapter.ResolveConfig("auto", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("fallback disabled auto: %v", err)
+	}
+	if resolution.Model != "" || len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback {
+		t.Fatalf("fallback disabled auto resolution = %+v, want harness default with warning", resolution)
+	}
+}
+
+func TestCopilotSDKModelMappingPreservesPolicyState(t *testing.T) {
+	got := mapCopilotModelInfo(copilotsdk.ModelInfo{
+		ID:     "disabled-model",
+		Policy: &copilotsdk.ModelPolicy{State: copilotModelPolicyDisabled},
+	})
+	if got.ID != "disabled-model" || got.PolicyState != copilotModelPolicyDisabled {
+		t.Fatalf("mapped model = %+v, want disabled policy state", got)
+	}
+}
+
+func TestCopilotAdapterRunsAdmittedResolutionWithoutRediscovery(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+		{{ID: "claude-sonnet-5"}},
+	}}
+	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := admissionAdapter.ResolveConfig(
+		"claude-sonnet-5",
+		testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}),
+	)
+	if err != nil {
+		t.Fatalf("admission ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	runtimeAdapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	if _, err := runtimeAdapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("run admitted resolution: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want admitted harness default", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterRunsAdmittedExplicitModelWithoutRediscovery(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+		{{ID: "claude-sonnet-5"}},
+	}}
+	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := admissionAdapter.ResolveConfig("gpt-5.4", nil)
+	if err != nil {
+		t.Fatalf("admission ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	runtimeAdapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	if _, err := runtimeAdapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("run admitted resolution: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	modelIndex := slices.Index(runner.lastReq.Command, "--model")
+	if modelIndex < 0 || modelIndex+1 >= len(runner.lastReq.Command) ||
+		runner.lastReq.Command[modelIndex+1] != "gpt-5.4" {
+		t.Fatalf("command = %q, want admitted --model gpt-5.4", runner.lastReq.Command)
 	}
 }
 
