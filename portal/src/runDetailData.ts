@@ -30,6 +30,21 @@ export interface RunDetailQuery {
   state: QueryState<RunDetailSnapshot>;
 }
 
+export interface JournalEventGroup {
+  kind: "group";
+  id: string;
+  events: RunEvent[];
+  nodeId?: string;
+  visit?: number;
+}
+
+export interface JournalEventItem {
+  kind: "event";
+  event: RunEvent;
+}
+
+export type JournalEntry = JournalEventGroup | JournalEventItem;
+
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
   const { cache, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("run-detail", runId);
@@ -143,7 +158,12 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
 }
 
 export function eventNodeId(event: RunEvent): string | undefined {
-  return event.stage || event.gate || undefined;
+  const nodeId = event.stage || event.artifact?.stage || event.gate;
+  if (!nodeId) {
+    return undefined;
+  }
+  const separator = nodeId.indexOf(":");
+  return separator >= 0 ? nodeId.slice(separator + 1) : nodeId;
 }
 
 export function eventNodeAtSequence(
@@ -158,6 +178,86 @@ export function eventNodeAtSequence(
     nodeId = eventNodeId(event) ?? nodeId;
   }
   return nodeId;
+}
+
+export function journalEntries(events: RunEvent[]): JournalEntry[] {
+  const entries: JournalEntry[] = [];
+  const visits = new Map<string, number>();
+  const activeNodes = new Map<number, string>();
+
+  for (const event of orderRunEvents(events)) {
+    const directNodeId = eventNodeId(event);
+    if (directNodeId) {
+      activeNodes.set(event.branch, directNodeId);
+    }
+    const nodeId = directNodeId ?? activeNodes.get(event.branch);
+    const visitKey = nodeId ? `${event.branch}:${nodeId}` : undefined;
+    if (visitKey && startsVisit(event)) {
+      visits.set(visitKey, (visits.get(visitKey) ?? 0) + 1);
+    } else if (visitKey && !visits.has(visitKey)) {
+      visits.set(visitKey, 1);
+    }
+    const visit = visitKey ? visits.get(visitKey) : undefined;
+
+    if (isMajorJournalEvent(event)) {
+      entries.push({ kind: "event", event });
+      continue;
+    }
+
+    const previous = entries.at(-1);
+    if (
+      previous?.kind === "group" &&
+      previous.nodeId === nodeId &&
+      previous.visit === visit &&
+      previous.events.at(-1)?.branch === event.branch
+    ) {
+      previous.events.push(event);
+      continue;
+    }
+    entries.push({
+      kind: "group",
+      id: `support-${event.branch}-${event.seq}`,
+      events: [event],
+      nodeId,
+      visit,
+    });
+  }
+
+  return entries;
+}
+
+export function isMajorJournalEvent(event: RunEvent): boolean {
+  if (!event.knownSchema || !event.category) {
+    return true;
+  }
+  return (
+    event.category === "transition" ||
+    event.category === "decision" ||
+    event.category === "result" ||
+    event.category === "unknown"
+  );
+}
+
+export function evidenceDecision(
+  events: RunEvent[],
+  evidence: RunEvent,
+): RunEvent | undefined {
+  if (!isVerdictArtifact(evidence)) {
+    return undefined;
+  }
+  const nodeId = eventNodeId(evidence);
+  for (const event of orderRunEvents(events)) {
+    if (event.seq <= evidence.seq) {
+      continue;
+    }
+    if (event.type === "gate.evaluated" && (!nodeId || eventNodeId(event) === nodeId)) {
+      return event;
+    }
+    if (event.type === "gate.started" || event.type === "stage.started") {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function deriveNodeStates(
@@ -222,10 +322,17 @@ export function eventHeading(event: RunEvent): string {
   if (!event.knownSchema) {
     return "Unsupported event";
   }
+  if (isTranscriptEvent(event)) {
+    return "Transcript recorded";
+  }
+  if (isVerdictArtifact(event)) {
+    return "Structured verdict recorded";
+  }
   const headings: Record<string, string> = {
     "run.started": "Run started",
     "run.finished": "Run finished",
     "stage.started": "Stage started",
+    "stage.heartbeat": "Stage heartbeat",
     "stage.finished": "Stage finished",
     "gate.started": "Gate started",
     "gate.evaluated": "Gate evaluated",
@@ -241,7 +348,7 @@ export function eventHeading(event: RunEvent): string {
   return headings[event.type] ?? humanize(event.type);
 }
 
-export function eventSummary(event: RunEvent): string {
+export function eventSummary(event: RunEvent, associatedDecision?: RunEvent): string {
   if (!event.knownSchema) {
     return `Schema ${event.schema} is not supported; ${event.type} is retained with generic fields.`;
   }
@@ -262,15 +369,40 @@ export function eventSummary(event: RunEvent): string {
       const target = event.target ? ` and selected ${event.target}` : "";
       return `${humanize(node || "gate")} returned ${event.verdict || "a verdict"}${target}.`;
     }
-    case "artifact.recorded":
-      return `${event.artifact?.name || event.name || "An artifact"} was recorded.`;
+    case "artifact.recorded": {
+      const name = event.artifact?.name || event.name || "An artifact";
+      const stage = node ? ` for ${humanize(node)}` : "";
+      const access = event.artifact ? " Select this event to inspect the artifact." : "";
+      if (isVerdictArtifact(event) && associatedDecision?.type === "gate.evaluated") {
+        const gate = humanize(eventNodeId(associatedDecision) || node || "review");
+        const verdict = associatedDecision.verdict || "a verdict";
+        const target = associatedDecision.target
+          ? ` selecting ${associatedDecision.target}`
+          : "";
+        return `${name} captured the ${gate} decision: ${verdict}${target}.${access}`;
+      }
+      return `${name} was recorded${stage}.${access}`;
+    }
+    case "span.recorded": {
+      const stage = node ? ` for ${humanize(node)}` : "";
+      const kind = isTranscriptEvent(event) ? "Transcript" : "Trace evidence";
+      return `${kind}${stage} was recorded. Select this event to inspect the associated attempt.`;
+    }
+    case "stage.heartbeat": {
+      const attempt = event.attempt ? ` attempt ${event.attempt}` : "";
+      return `${humanize(node || "stage")}${attempt} reported liveness; workflow state did not change.`;
+    }
     case "ref.touched": {
       const reference = event.externalRef;
       if (!reference) {
         return "An external reference was recorded.";
       }
-      const kind = reference.kind === "pr" ? "Pull request" : humanize(reference.kind);
-      return `${kind} ${reference.id} was recorded on ${humanize(reference.provider)}.`;
+      const kind = externalRefKind(reference.kind);
+      const id = reference.kind === "pr" || reference.kind === "issue"
+        ? `#${reference.id}`
+        : reference.id;
+      const operation = externalRefOperation(event);
+      return `${providerName(reference.provider)} ${operation} ${kind} ${id}.`;
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
@@ -336,6 +468,58 @@ function stateFromGate(event: RunEvent): RunNodeState {
     return "aborted";
   }
   return stateFromStatus(event.status, "completed");
+}
+
+function startsVisit(event: RunEvent): boolean {
+  return (
+    (event.type === "stage.started" || event.type === "gate.started") &&
+    (event.attempt === undefined || event.attempt === 1) &&
+    (event.attemptClass === undefined || event.attemptClass === "initial")
+  );
+}
+
+function isTranscriptEvent(event: RunEvent): boolean {
+  const name = event.name?.toLowerCase() ?? "";
+  return event.type === "span.recorded" && (name === "transcript" || name.endsWith(".transcript"));
+}
+
+function isVerdictArtifact(event: RunEvent): boolean {
+  const name = (event.artifact?.name || event.name || "").toLowerCase();
+  return event.type === "artifact.recorded" && name.includes("verdict");
+}
+
+function externalRefKind(kind: string): string {
+  switch (kind.toLowerCase()) {
+    case "pr":
+      return "pull request";
+    case "issue":
+      return "issue";
+    default:
+      return kind.replace(/[._-]+/g, " ");
+  }
+}
+
+function externalRefOperation(event: RunEvent): string {
+  const operation = event.runner?.operation;
+  if (typeof operation !== "string") {
+    return "touched";
+  }
+  const operations: Record<string, string> = {
+    claim: "claimed",
+    close: "closed",
+    create: "created",
+    delete: "deleted",
+    merge: "merged",
+    open: "opened",
+    push: "pushed",
+    release: "released",
+    update: "updated",
+  };
+  return operations[operation.toLowerCase()] ?? operation.replace(/[._-]+/g, " ");
+}
+
+function providerName(provider: string): string {
+  return provider.toLowerCase() === "github" ? "GitHub" : humanize(provider);
 }
 
 function stateFromStatus(
