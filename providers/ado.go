@@ -410,6 +410,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		Body:           pr.Description,
 		ReviewDecision: adoReviewDecision(pr.Reviewers),
 		URL:            prURL,
+		Integrity:      apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {

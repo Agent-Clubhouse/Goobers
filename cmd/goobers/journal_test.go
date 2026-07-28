@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -118,6 +119,10 @@ func TestJournalRedactRemovesLeakedSecret(t *testing.T) {
 	}
 	if last.Redaction.Target != blobPath || last.Redaction.Reason != "token pasted into the issue body" {
 		t.Fatalf("redaction event details wrong: %+v", last.Redaction)
+	}
+	if last.Integrity != apiv1.IntegrityDerived || last.Ref == nil ||
+		last.Ref.Integrity != apiv1.IntegrityDerived {
+		t.Fatalf("redaction event integrity wrong: %+v", last)
 	}
 }
 

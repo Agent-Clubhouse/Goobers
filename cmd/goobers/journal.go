@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -122,6 +123,11 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	target := journal.Ref{Path: *blobPath, Digest: journal.Digest(cur), Size: int64(len(cur))}
+	target.Integrity, err = recordedBlobIntegrity(reader, identity, target)
+	if err != nil {
+		pf(stderr, "error: read target blob provenance in run %q: %v\n", resolvedRunID, err)
+		return 2
+	}
 
 	pf(stdout, "run:      %s\n", resolvedRunID)
 	pf(stdout, "workflow: %s\n", identity.Workflow)
@@ -153,6 +159,32 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "  new digest: %s\n", newRef.Digest)
 	pf(stdout, "  stored at:  %s\n", newRef.Path)
 	return 0
+}
+
+func recordedBlobIntegrity(reader *journal.Reader, identity journal.RunIdentity, target journal.Ref) (apiv1.Integrity, error) {
+	for _, input := range identity.Inputs {
+		if input.Ref.Path == target.Path && input.Ref.Digest == target.Digest {
+			if input.Ref.Integrity != "" {
+				return input.Ref.Integrity, nil
+			}
+			return input.Integrity, nil
+		}
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Ref == nil || event.Ref.Path != target.Path || event.Ref.Digest != target.Digest {
+			continue
+		}
+		if event.Ref.Integrity != "" {
+			return event.Ref.Integrity, nil
+		}
+		return event.Integrity, nil
+	}
+	return "", nil
 }
 
 // readSecret returns the exact secret bytes from file (if non-empty) or stdin.

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // leak is a plaintext secret shaped so the default pattern net does NOT catch it
@@ -20,7 +22,7 @@ func TestRedactRemediatesLeakedArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	oldRef, err := run.RecordArtifact("config.env", []byte("TOKEN="+leak+"\n"))
+	oldRef, err := run.RecordArtifactWithIntegrity("config.env", []byte("TOKEN="+leak+"\n"), apiv1.IntegrityMaintainer)
 	if err != nil {
 		t.Fatalf("RecordArtifact: %v", err)
 	}
@@ -37,6 +39,9 @@ func TestRedactRemediatesLeakedArtifact(t *testing.T) {
 	}
 	if newRef.Digest == oldRef.Digest {
 		t.Fatalf("redaction did not change the digest")
+	}
+	if newRef.Integrity != apiv1.IntegrityMaintainer {
+		t.Fatalf("redacted ref integrity = %q, want maintainer", newRef.Integrity)
 	}
 	_ = run.Close()
 
@@ -57,6 +62,10 @@ func TestRedactRemediatesLeakedArtifact(t *testing.T) {
 	}
 	if last.Redaction.OldDigest != oldRef.Digest || last.Redaction.NewDigest != newRef.Digest {
 		t.Fatalf("redaction event digests wrong: %+v", last.Redaction)
+	}
+	if last.Integrity != apiv1.IntegrityMaintainer || last.Ref == nil ||
+		last.Ref.Integrity != apiv1.IntegrityMaintainer {
+		t.Fatalf("redaction event integrity wrong: %+v", last)
 	}
 
 	// The redacted blob verifies and no longer holds the leak.

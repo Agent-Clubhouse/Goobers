@@ -59,6 +59,7 @@ func (r *Run) Redact(target Ref, reason string) (Ref, error) {
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: write redacted blob: %w", err)
 	}
+	newRef.Integrity = target.Integrity
 	// Fail closed: verify the bytes actually at rest hash to the scrubbed digest
 	// before we record success and delete the leaked original. Without this a
 	// skipped or torn write (the blob never changed on disk) would be reported as
@@ -75,9 +76,10 @@ func (r *Run) Redact(target Ref, reason string) (Ref, error) {
 	}
 
 	ev := Event{
-		Type: EventRedaction,
-		Name: target.Path,
-		Ref:  &newRef,
+		Type:      EventRedaction,
+		Name:      target.Path,
+		Ref:       &newRef,
+		Integrity: target.Integrity,
 		Redaction: &RedactionInfo{
 			Target:    target.Path,
 			OldDigest: target.Digest,
