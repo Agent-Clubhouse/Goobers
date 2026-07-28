@@ -340,9 +340,9 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // longer exists is void, not actionable). Managed PRs receive a SHA-pinned
 // native GitHub review plus the existing prose comment handoff consumed by
 // merge, cache, and remediation paths; non-pass verdicts additionally retain
-// their decision labels, except that an existing merge escalation suppresses
-// needs-remediation until the escalation is explicitly cleared. Advisory PRs
-// receive only the non-blocking comment.
+// their decision labels, except that an active merge escalation suppresses
+// needs-remediation until the escalation is cleared or self-heals. Advisory
+// PRs receive only the non-blocking comment.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -713,8 +713,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if oscillated {
 		update.RemoveLabels = []string{needsRemediationLabel}
 	}
-	escalationSuppressedRemediation := label == needsRemediationLabel &&
-		hasAnyLabel(current.Labels, []string{remediationEscalatedLabel})
+	escalationSuppressedRemediation := false
+	if label == needsRemediationLabel {
+		escalationSuppressedRemediation, err = escalationStillBlocks(ctx, provider, repo, current)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
+		}
+	}
 	if escalationSuppressedRemediation {
 		update.AddLabels = nil
 		update.RemoveLabels = []string{needsRemediationLabel}
@@ -739,7 +744,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if escalationSuppressedRemediation {
-		pf(stdout, "published %s verdict for PR #%d without re-applying %s because %s is present\n",
+		pf(stdout, "published %s verdict for PR #%d without re-applying %s because %s is still active\n",
 			posted.Decision, selectedNumber, needsRemediationLabel, remediationEscalatedLabel)
 	} else {
 		pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)

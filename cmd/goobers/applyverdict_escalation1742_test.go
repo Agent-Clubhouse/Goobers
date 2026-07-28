@@ -10,8 +10,10 @@ import (
 
 func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 	tests := []struct {
-		name   string
-		labels []string
+		name            string
+		labels          []string
+		escalationState *remediationState
+		wantRemediation bool
 	}{
 		{
 			name:   "does not reapply removed remediation label",
@@ -20,6 +22,16 @@ func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 		{
 			name:   "cleans conflicting remediation label",
 			labels: []string{remediationEscalatedLabel, needsRemediationLabel},
+		},
+		{
+			name:   "self-healed escalation resumes remediation",
+			labels: []string{remediationEscalatedLabel},
+			escalationState: &remediationState{
+				Escalated:        true,
+				EscalatedHeadSHA: "head-before-new-commits",
+				EscalatedBaseSHA: "escalated-base",
+			},
+			wantRemediation: true,
 		},
 	}
 
@@ -52,6 +64,13 @@ func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 			server.mu.Lock()
 			server.issues[prNumber].labels = append([]string(nil), tt.labels...)
 			server.mu.Unlock()
+			if tt.escalationState != nil {
+				comment, err := remediationStateComment(*tt.escalationState)
+				if err != nil {
+					t.Fatalf("remediationStateComment: %v", err)
+				}
+				server.addComment(prNumber, comment)
+			}
 			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
 			t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "1742")
@@ -75,7 +94,11 @@ func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("apply-verdict: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
-			if !strings.Contains(stdout, "without re-applying "+needsRemediationLabel) {
+			if tt.wantRemediation {
+				if strings.Contains(stdout, "without re-applying "+needsRemediationLabel) {
+					t.Fatalf("stdout=%q, self-healed escalation must not suppress remediation", stdout)
+				}
+			} else if !strings.Contains(stdout, "without re-applying "+needsRemediationLabel) {
 				t.Fatalf("stdout=%q, want suppressed remediation label message", stdout)
 			}
 			data, err := os.ReadFile("verdict-result.json")
@@ -93,13 +116,13 @@ func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 			if !hasAnyLabel(issue.labels, []string{remediationEscalatedLabel}) {
 				t.Fatalf("labels=%v, want %s retained", issue.labels, remediationEscalatedLabel)
 			}
-			if hasAnyLabel(issue.labels, []string{needsRemediationLabel}) {
-				t.Fatalf("labels=%v, want %s absent", issue.labels, needsRemediationLabel)
+			if got := hasAnyLabel(issue.labels, []string{needsRemediationLabel}); got != tt.wantRemediation {
+				t.Fatalf("labels=%v, has %s=%t, want %t", issue.labels, needsRemediationLabel, got, tt.wantRemediation)
 			}
 			if len(reviews) != 1 || reviews[0].state != "CHANGES_REQUESTED" {
 				t.Fatalf("reviews=%+v, want the fresh needs-changes review published", reviews)
 			}
-			if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "the defect remains") {
+			if len(issue.comments) == 0 || !strings.Contains(issue.comments[len(issue.comments)-1], "the defect remains") {
 				t.Fatalf("comments=%v, want the fresh verdict status published", issue.comments)
 			}
 		})
