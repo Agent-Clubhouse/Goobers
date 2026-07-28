@@ -77,4 +77,5 @@ payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-a
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/terminology.md
 payload/.goobers/agent-toolkit/skills/goobers-environment-resolver/SKILL.md
 payload/.goobers/agent-toolkit/skills/goobers-run-operator/SKILL.md
+payload/.goobers/agent-toolkit/skills/goobers-run-operator/references/question-corpus.json
 payload/.goobers/agent-toolkit/skills/goobers-workflow-upgrade/SKILL.md
