@@ -132,16 +132,6 @@ func skillPackagePaths(configDir, skill string) ([]string, bool, error) {
 	return paths, true, nil
 }
 
-func compiledMachinesWithGooberDigests(
-	configDir string,
-	set *instance.ConfigSet,
-	goobers map[string]apiv1.GooberSpec,
-	instructions map[string]string,
-) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, error) {
-	machines, digests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, nil)
-	return machines, digests, err
-}
-
 func compiledMachinesWithGooberDigestsAndWarnings(
 	configDir string,
 	set *instance.ConfigSet,

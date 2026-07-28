@@ -50,7 +50,9 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, firstDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, firstInstructions)
+	first, firstDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, firstInstructions, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,9 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, secondDigests, err := compiledMachinesWithGooberDigests(configDir, set, goobers, secondInstructions)
+	second, secondDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, secondInstructions, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +121,18 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, before, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions)
+	_, before, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(referencePath, []byte("updated cases"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, after, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions)
+	_, after, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
