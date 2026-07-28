@@ -764,6 +764,38 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 	}
 }
 
+func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "nominator", "goober.yaml"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read nominator definition: %v", err)
+			}
+			var nominator apiv1.Goober
+			if err := yaml.Unmarshal(raw, &nominator); err != nil {
+				t.Fatalf("unmarshal nominator definition: %v", err)
+			}
+			if want := []string{"github", "telemetry", "shell"}; !slices.Equal(nominator.Spec.Tools, want) {
+				t.Fatalf("nominator tools = %v, want %v", nominator.Spec.Tools, want)
+			}
+
+			available := copilotAvailableTools(RunRequest{Tools: nominator.Spec.Tools})
+			for _, required := range []string{
+				"github-mcp-server-issue_write",
+				"view",
+				"bash",
+			} {
+				if !slices.Contains(available, required) {
+					t.Errorf("nominator tool expansion missing %q: %v", required, available)
+				}
+			}
+		})
+	}
+}
+
 func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
 	run := func(tools []string) []string {
 		workspace := t.TempDir()
