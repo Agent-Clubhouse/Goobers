@@ -682,6 +682,17 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: digest,
 		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 	}
+	// Clear the label before replacing its escalation snapshot. Otherwise a
+	// failed label removal leaves a non-escalated state that fails closed.
+	if hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           strconv.Itoa(selectedNumber),
+			RemoveLabels: []string{remediationEscalatedLabel},
+		}); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", selectedNumber), err, "")
+		}
+	}
 	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}

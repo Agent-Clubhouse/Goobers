@@ -494,6 +494,65 @@ func TestRemediationCheckpointEscalatesExhaustedConflictCause(t *testing.T) {
 	}
 }
 
+func TestRemediationCheckpointClearsSelfHealedEscalationForIndependentCause(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 2, AttemptsByCause: remediationAttempts{Conflict: 2},
+		LastDiffDigest: "sha256:stale-digest-from-a-different-diff",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "conflict")
+
+	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
+		t.Fatalf("conflict escalation: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	runGitT(t, ".", "config", "user.name", "remediator")
+	runGitT(t, ".", "config", "user.email", "remediator@example.com")
+	if err := os.WriteFile("ci-fix.txt", []byte("repair failing CI\n"), 0o644); err != nil {
+		t.Fatalf("write CI fix: %v", err)
+	}
+	runGitT(t, ".", "add", "ci-fix.txt")
+	runGitT(t, ".", "commit", "-m", "repair failing CI")
+	runGitT(t, ".", "push", "origin", "HEAD")
+	advancedHeadSHA := strings.TrimSpace(runGitOutputT(t, ".", "rev-parse", "HEAD"))
+
+	st.mu.Lock()
+	st.headSHA = advancedHeadSHA
+	st.mu.Unlock()
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "failing-ci")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("failing-CI checkpoint: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "failing-ci=1") {
+		t.Fatalf("stdout = %q, want the independent failing-CI allowance recorded", stdout)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, label := range st.labels {
+		if label == remediationEscalatedLabel {
+			t.Fatalf("labels = %v, want stale merge-escalated cleared after the head advanced", st.labels)
+		}
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.HeadSHA != advancedHeadSHA ||
+		state.AttemptsByCause.Conflict != 2 || state.AttemptsByCause.FailingCI != 1 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want conflict=2 and failing-ci=1 on the advanced head", state, ok)
+	}
+}
+
 // TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded is #941/
 // PRR-6's checkpoint-side acceptance: rebase-pr's policyExcluded/
 // policyExcludedReason inputs escalate this cycle immediately, exactly like
