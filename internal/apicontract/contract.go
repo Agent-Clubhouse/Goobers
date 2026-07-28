@@ -30,6 +30,7 @@ const (
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
+	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
@@ -62,6 +63,7 @@ const (
 	RouteRunEvents                RouteID = "runEvents"
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
+	RouteRunTranscript            RouteID = "runTranscript"
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
@@ -94,6 +96,7 @@ var v1Routes = []Route{
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation},
+	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation},
