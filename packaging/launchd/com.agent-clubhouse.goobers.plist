@@ -59,8 +59,8 @@
 
     <!--
       launchd stops a job by sending SIGTERM (then SIGKILL after ExitTimeOut).
-      The stable host turns SIGTERM into the daemon drain request (drainGrace
-      30s + HTTP grace 5s); allow a margin before the hard kill.
+      The stable host requests the daemon drain on SIGTERM (drainGrace 30s + HTTP grace
+      5s in cmd/goobers/up.go); allow a margin beyond that before the hard kill.
     -->
     <key>ExitTimeOut</key>
     <integer>45</integer>

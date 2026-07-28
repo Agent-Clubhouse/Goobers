@@ -14,70 +14,32 @@ import (
 
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/proc"
 )
 
-const (
-	defaultDrainTimeout     = 40 * time.Second
-	escalationRetryInterval = 30 * time.Second
-)
+const defaultDrainTimeout = 40 * time.Second
 
-// Escalator files an operator-visible issue after an automatic rollback.
 type Escalator interface {
 	Escalate(context.Context, Request, string) error
 }
 
-func rejectInvalidRequest(opts SupervisorOptions, log *journal.InstanceLog, requestErr error) error {
-	if err := log.Append(journal.Event{
-		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "self_update_request_invalid", Message: requestErr.Error()},
-	}); err != nil {
-		return err
-	}
-	path := RequestPath(opts.Root)
-	rejected := fmt.Sprintf("%s.invalid.%d", path, opts.Now().UTC().UnixNano())
-	if err := os.Rename(path, rejected); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("quarantine invalid self-update request: %w", err)
-	}
-	return nil
-}
-
-func filesEqual(left, right string) (bool, error) {
-	leftData, err := os.ReadFile(left)
-	if err != nil {
-		return false, err
-	}
-	rightData, err := os.ReadFile(right)
-	if err != nil {
-		return false, err
-	}
-	return string(leftData) == string(rightData), nil
-}
-
-// Process is one supervised daemon child.
 type Process interface {
 	Done() <-chan error
 	Kill() error
 }
 
-// Launcher starts a daemon child from a selected binary.
 type Launcher interface {
 	Start(string, string, io.Writer, io.Writer) (Process, error)
 }
 
-// SupervisorOptions configure the stable service host.
 type SupervisorOptions struct {
 	Root           string
-	HostExecutable string
 	GOOS           string
 	Launcher       Launcher
 	Escalator      Escalator
-	Stdout         io.Writer
-	Stderr         io.Writer
+	Stdout, Stderr io.Writer
 	PollInterval   time.Duration
 	DrainTimeout   time.Duration
-	Now            func() time.Time
 }
 
 type execLauncher struct{}
@@ -89,9 +51,7 @@ type execProcess struct {
 
 func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (Process, error) {
 	command := exec.Command(binary, "up", root)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.Env = os.Environ()
+	command.Stdout, command.Stderr, command.Env = stdout, stderr, os.Environ()
 	tree, err := proc.Start(command)
 	if err != nil {
 		return nil, err
@@ -107,12 +67,11 @@ func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (Proces
 func (p *execProcess) Done() <-chan error { return p.done }
 func (p *execProcess) Kill() error        { return p.tree.Kill() }
 
-// RunSupervisor launches the mutable binary and owns drain, restart, health,
-// rollback, and escalation around durable update requests.
+// RunSupervisor owns the mutable daemon binary and its update state machine.
 func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 	opts = defaultSupervisorOptions(opts)
-	if opts.Root == "" || opts.HostExecutable == "" {
-		return errors.New("supervisor instance root and host executable are required")
+	if opts.Root == "" {
+		return errors.New("supervisor instance root is required")
 	}
 	if err := ensureCurrentBinary(opts); err != nil {
 		return err
@@ -121,347 +80,296 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("open supervisor journal: %w", err)
 	}
-	defer func() {
-		if err := log.Close(); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close supervisor journal: %w", err))
-		}
-	}()
+	defer func() { retErr = errors.Join(retErr, log.Close()) }()
 
 	request, pending, err := pendingRequest(opts.Root)
 	if err != nil {
-		if err := rejectInvalidRequest(opts, log, err); err != nil {
+		if err := rejectInvalidRequest(opts, err); err != nil {
 			return err
 		}
 		pending = false
 	}
 	if pending {
-		switch request.Status {
-		case "healthy":
-			if err := finalizeHealthyUpdate(opts, log, request); err != nil {
-				return err
-			}
-			pending = false
-		case "activating":
-			if err := recoverInterruptedActivation(opts, log, &request); err != nil {
-				return err
-			}
-		case "rollback":
-			if err := restorePrevious(opts); err != nil {
-				return err
-			}
-			if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
-				return err
-			}
-		case "monitoring":
-			if err := restorePrevious(opts); err != nil {
-				return err
-			}
-			request.Status = "rollback"
-			request.Reason = "stable supervisor restarted before the candidate completed its health window"
-			if err := WriteRequest(opts.Root, request); err != nil {
-				return err
-			}
-			if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
-				return err
-			}
+		pending, err = recoverRequest(opts, log, &request)
+		if err != nil {
+			return err
 		}
 	}
-
 	process, err := opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
 	if err != nil {
 		return fmt.Errorf("start supervised daemon: %w", err)
 	}
-	ownedProcess := process
-	defer func() {
-		if err := terminateOwnedProcess(ownedProcess, opts.DrainTimeout); err != nil {
-			retErr = errors.Join(retErr, err)
-		}
-	}()
-	ticker := time.NewTicker(opts.PollInterval)
-	defer ticker.Stop()
-
-	var (
-		monitorStarted time.Time
-		lastHeartbeat  time.Time
-		baselineSet    bool
-		cleanTicks     int
-		lastEscalation time.Time
-		lastCompletion time.Time
-		drainStarted   time.Time
-		drainForced    bool
-	)
-	if pending && request.Status == "draining" {
-		drainStarted = opts.Now()
-		if err := requestDaemonStop(opts.Root); err != nil {
+	defer func() { retErr = errors.Join(retErr, terminateProcess(process, opts.DrainTimeout)) }()
+	if pending && request.Status == "rollback" {
+		if err := escalateRollback(ctx, opts, log, request); err != nil {
 			return err
 		}
+		pending = false
 	}
-
+	ticker := time.NewTicker(opts.PollInterval)
+	defer ticker.Stop()
 	for {
+		if pending {
+			process, err = performUpdate(ctx, opts, log, process, &request)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return stopForService(process, opts)
+				}
+				return err
+			}
+			pending = false
+		}
 		select {
 		case <-ctx.Done():
 			return stopForService(process, opts)
 		case childErr := <-process.Done():
-			if pending && request.Status == "draining" {
-				_ = os.Remove(StopRequestPath(opts.Root))
-				if childErr != nil && !drainForced {
-					return fmt.Errorf("daemon failed while draining for self-update: %w", childErr)
-				}
-				request.Status = "activating"
-				if err := WriteRequest(opts.Root, request); err != nil {
-					return err
-				}
-				if err := activateCandidate(opts, request); err != nil {
-					return err
-				}
-				request.Status = "monitoring"
-				if err := WriteRequest(opts.Root, request); err != nil {
-					return err
-				}
-				lastHeartbeat, err = daemonstate.Read(filepath.Join(opts.Root, "scheduler", "up.lock"))
-				if errors.Is(err, os.ErrNotExist) {
-					lastHeartbeat = time.Time{}
-				} else if err != nil {
-					process, err = rollbackAndRestart(ctx, opts, log, &request, nil, "read pre-start candidate heartbeat baseline: "+err.Error())
-					if process != nil {
-						ownedProcess = process
-					}
-					if err != nil {
-						if process == nil {
-							return err
-						}
-						_ = appendSupervisorError(log, request, err)
-						request.Status = "rollback"
-						pending = true
-						continue
-					}
-					pending = false
-					continue
-				}
-				process, err = opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
-				if err != nil {
-					process, err = rollbackAndRestart(ctx, opts, log, &request, nil, "candidate binary failed to start: "+err.Error())
-					if process != nil {
-						ownedProcess = process
-					}
-					if err != nil {
-						if process == nil {
-							return err
-						}
-						_ = appendSupervisorError(log, request, err)
-						request.Status = "rollback"
-						pending = true
-						continue
-					}
-					pending = false
-					continue
-				}
-				ownedProcess = process
-				if err := appendUpdateEvent(log, journal.EventDaemonUpdateRestarted, request, "candidate binary started"); err != nil {
-					_ = process.Kill()
-					return err
-				}
-				monitorStarted = opts.Now()
-				baselineSet = false
-				cleanTicks = 0
-				continue
-			}
-			if pending && request.Status == "monitoring" {
-				reason := "candidate daemon exited before completing its health window"
-				if childErr != nil {
-					reason += ": " + childErr.Error()
-				}
-				process, err = rollbackAndRestart(ctx, opts, log, &request, nil, reason)
-				if process != nil {
-					ownedProcess = process
-				}
-				if err != nil {
-					if process == nil {
-						return err
-					}
-					_ = appendSupervisorError(log, request, err)
-					request.Status = "rollback"
-					pending = true
-					continue
-				}
-				pending = false
-				continue
-			}
 			if childErr == nil {
 				return errors.New("supervised daemon exited unexpectedly")
 			}
 			return fmt.Errorf("supervised daemon exited: %w", childErr)
 		case <-ticker.C:
-			if !pending {
-				var readErr error
-				request, pending, readErr = pendingRequest(opts.Root)
-				if readErr != nil {
-					if err := rejectInvalidRequest(opts, log, readErr); err != nil {
-						return err
-					}
-					pending = false
-					continue
-				}
-				if !pending {
-					continue
-				}
-			}
-			switch request.Status {
-			case "requested":
-				if err := appendUpdateEvent(log, journal.EventDaemonUpdateDrainStarted, request, "draining before binary handoff"); err != nil {
+			request, pending, err = pendingRequest(opts.Root)
+			if err != nil {
+				if err := rejectInvalidRequest(opts, err); err != nil {
 					return err
-				}
-				request.Status = "draining"
-				drainStarted = opts.Now()
-				drainForced = false
-				if err := WriteRequest(opts.Root, request); err != nil {
-					return err
-				}
-				if err := requestDaemonStop(opts.Root); err != nil {
-					return err
-				}
-			case "monitoring":
-				timeout, err := time.ParseDuration(request.HealthTimeout)
-				if err != nil || timeout <= 0 {
-					process, err = rollbackAndRestart(ctx, opts, log, &request, process, "candidate request has invalid health timeout")
-					if process != nil {
-						ownedProcess = process
-					}
-					if err != nil {
-						if process == nil {
-							return err
-						}
-						_ = appendSupervisorError(log, request, err)
-						request.Status = "rollback"
-						pending = true
-						continue
-					}
-					pending = false
-					continue
-				}
-				if monitorStarted.IsZero() {
-					monitorStarted = opts.Now()
-				}
-				if opts.Now().Sub(monitorStarted) > timeout {
-					process, err = rollbackAndRestart(ctx, opts, log, &request, process, "candidate did not complete its bounded health window")
-					if process != nil {
-						ownedProcess = process
-					}
-					if err != nil {
-						if process == nil {
-							return err
-						}
-						_ = appendSupervisorError(log, request, err)
-						request.Status = "rollback"
-						pending = true
-						continue
-					}
-					pending = false
-					continue
-				}
-				heartbeat, err := daemonstate.Read(filepath.Join(opts.Root, "scheduler", "up.lock"))
-				if err != nil {
-					if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
-						process, err = rollbackAndRestart(ctx, opts, log, &request, process, "read candidate heartbeat: "+err.Error())
-						if process != nil {
-							ownedProcess = process
-						}
-						if err != nil {
-							if process == nil {
-								return err
-							}
-							_ = appendSupervisorError(log, request, err)
-							request.Status = "rollback"
-							pending = true
-							continue
-						}
-						pending = false
-					}
-					continue
-				}
-				if !baselineSet {
-					if heartbeat.After(lastHeartbeat) {
-						lastHeartbeat = heartbeat
-						baselineSet = true
-					}
-					continue
-				}
-				if heartbeat.After(lastHeartbeat) {
-					lastHeartbeat = heartbeat
-					cleanTicks++
-				}
-				if cleanTicks >= request.HealthTicks {
-					request.Status = "healthy"
-					if err := WriteRequest(opts.Root, request); err != nil {
-						return err
-					}
-					lastCompletion = time.Time{}
-				}
-			case "healthy":
-				if !lastCompletion.IsZero() && opts.Now().Sub(lastCompletion) < escalationRetryInterval {
-					continue
-				}
-				lastCompletion = opts.Now()
-				if err := finalizeHealthyUpdate(opts, log, request); err != nil {
-					_ = appendCompletionError(log, request, err)
-					continue
 				}
 				pending = false
-			case "rollback":
-				if !lastEscalation.IsZero() && opts.Now().Sub(lastEscalation) < escalationRetryInterval {
-					continue
-				}
-				lastEscalation = opts.Now()
-				if err := escalateRollback(ctx, opts, log, request); err != nil {
-					_ = appendSupervisorError(log, request, err)
-					continue
-				}
-				pending = false
-			case "draining":
-				if drainStarted.IsZero() {
-					drainStarted = opts.Now()
-				}
-				if !drainForced && opts.Now().Sub(drainStarted) >= opts.DrainTimeout {
-					if err := process.Kill(); err != nil {
-						return fmt.Errorf("kill daemon after self-update drain timeout: %w", err)
-					}
-					drainForced = true
-				}
-			default:
-				return fmt.Errorf("unsupported self-update request status %q", request.Status)
 			}
 		}
 	}
 }
 
-func terminateOwnedProcess(process Process, timeout time.Duration) error {
-	if process == nil {
-		return nil
+func performUpdate(
+	ctx context.Context,
+	opts SupervisorOptions,
+	log *journal.InstanceLog,
+	process Process,
+	request *Request,
+) (Process, error) {
+	if request.Status == "requested" {
+		if err := ensureUpdateEvent(opts.Root, log, journal.EventDaemonUpdateDrainStarted, *request, "draining before binary handoff"); err != nil {
+			return process, err
+		}
+		if err := setStatus(opts.Root, request, "draining"); err != nil {
+			return process, err
+		}
 	}
-	select {
-	case <-process.Done():
-		return nil
-	default:
+	if err := requestDaemonStop(opts.Root); err != nil {
+		return process, err
 	}
-	killErr := process.Kill()
-	if killErr == nil {
-		<-process.Done()
-		return nil
+	if err := waitOrKill(process, opts.DrainTimeout); err != nil {
+		return process, fmt.Errorf("daemon failed while draining for self-update: %w", err)
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-process.Done():
-		return nil
-	case <-timer.C:
-		timeoutErr := errors.New("timed out waiting for supervised daemon to terminate")
-		return errors.Join(fmt.Errorf("terminate supervised daemon: %w", killErr), timeoutErr)
+	_ = os.Remove(StopRequestPath(opts.Root))
+
+	candidate, baseline, err := startCandidate(opts, log, request)
+	if err != nil {
+		if request.Status != "monitoring" {
+			return candidate, err
+		}
+		return rollbackAndRestart(ctx, opts, log, request, candidate, err.Error())
+	}
+	alive, reason, err := monitorCandidate(ctx, opts, log, candidate, baseline, request)
+	if err != nil {
+		return candidate, err
+	}
+	if reason == "" {
+		return candidate, nil
+	}
+	if !alive {
+		candidate = nil
+	}
+	return rollbackAndRestart(ctx, opts, log, request, candidate, reason)
+}
+
+func monitorCandidate(
+	ctx context.Context,
+	opts SupervisorOptions,
+	log *journal.InstanceLog,
+	process Process,
+	lastHeartbeat time.Time,
+	request *Request,
+) (bool, string, error) {
+	timeout, _ := time.ParseDuration(request.HealthTimeout)
+	started, baselineSet, cleanTicks := time.Now(), false, 0
+	ticker := time.NewTicker(opts.PollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return true, "", ctx.Err()
+		case processErr := <-process.Done():
+			reason := "candidate daemon exited before completing its health window"
+			if processErr != nil {
+				reason += ": " + processErr.Error()
+			}
+			return false, reason, nil
+		case <-ticker.C:
+			if time.Since(started) > timeout {
+				return true, "candidate did not complete its bounded health window", nil
+			}
+			heartbeat, err := readHeartbeat(opts.Root)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return true, "read candidate heartbeat: " + err.Error(), nil
+			}
+			if !heartbeat.After(lastHeartbeat) {
+				continue
+			}
+			lastHeartbeat = heartbeat
+			if baselineSet {
+				cleanTicks++
+			} else {
+				baselineSet = true
+			}
+			if cleanTicks < request.HealthTicks {
+				continue
+			}
+			if err := setStatus(opts.Root, request, "healthy"); err != nil {
+				return true, "", err
+			}
+			return true, "", finalizeHealthyUpdate(opts.Root, log, *request)
+		}
 	}
 }
 
+func startCandidate(opts SupervisorOptions, log *journal.InstanceLog, request *Request) (Process, time.Time, error) {
+	if err := setStatus(opts.Root, request, "activating"); err != nil {
+		return nil, time.Time{}, err
+	}
+	if err := activateCandidate(opts, *request); err != nil {
+		return nil, time.Time{}, fmt.Errorf("activate staged binary: %w", err)
+	}
+	if err := setStatus(opts.Root, request, "monitoring"); err != nil {
+		return nil, time.Time{}, err
+	}
+	baseline, err := readHeartbeat(opts.Root)
+	if errors.Is(err, os.ErrNotExist) {
+		baseline, err = time.Time{}, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("read candidate heartbeat baseline: %w", err)
+	}
+	process, err := opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("candidate binary failed to start: %w", err)
+	}
+	if err := appendUpdateEvent(log, journal.EventDaemonUpdateRestarted, *request, "candidate binary started"); err != nil {
+		return process, time.Time{}, err
+	}
+	return process, baseline, nil
+}
+
+func recoverRequest(opts SupervisorOptions, log *journal.InstanceLog, request *Request) (bool, error) {
+	switch request.Status {
+	case "healthy":
+		return false, finalizeHealthyUpdate(opts.Root, log, *request)
+	case "activating":
+		if _, err := os.Stat(PreviousBinary(opts.Root, opts.GOOS)); err == nil {
+			if err = restorePrevious(opts); err != nil {
+				return true, err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return true, err
+		}
+		return true, markRollback(opts.Root, log, request, "stable supervisor restarted during candidate activation")
+	case "monitoring":
+		if err := restorePrevious(opts); err != nil {
+			return true, err
+		}
+		return true, markRollback(opts.Root, log, request, "stable supervisor restarted before the candidate completed its health window")
+	case "rollback":
+		if err := restorePrevious(opts); err != nil {
+			return true, err
+		}
+		return true, ensureUpdateEvent(opts.Root, log, journal.EventDaemonUpdateRolledBack, *request, request.Reason)
+	default:
+		return true, nil
+	}
+}
+
+func rollbackAndRestart(
+	ctx context.Context,
+	opts SupervisorOptions,
+	log *journal.InstanceLog,
+	request *Request,
+	process Process,
+	reason string,
+) (Process, error) {
+	if process != nil {
+		if err := requestDaemonStop(opts.Root); err != nil {
+			return nil, err
+		}
+		if err := waitOrKill(process, opts.DrainTimeout); err != nil {
+			return nil, err
+		}
+		_ = os.Remove(StopRequestPath(opts.Root))
+	}
+	if err := restorePrevious(opts); err != nil {
+		return nil, err
+	}
+	if err := markRollback(opts.Root, log, request, reason); err != nil {
+		return nil, err
+	}
+	restored, err := opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("restart retained previous binary: %w", err)
+	}
+	return restored, escalateRollback(ctx, opts, log, *request)
+}
+
+func markRollback(root string, log *journal.InstanceLog, request *Request, reason string) error {
+	request.Reason = reason
+	if err := setStatus(root, request, "rollback"); err != nil {
+		return err
+	}
+	return ensureUpdateEvent(root, log, journal.EventDaemonUpdateRolledBack, *request, reason)
+}
+
+func setStatus(root string, request *Request, status string) error {
+	request.Status = status
+	return WriteRequest(root, *request)
+}
+
+func escalateRollback(ctx context.Context, opts SupervisorOptions, log *journal.InstanceLog, request Request) error {
+	if opts.Escalator == nil {
+		return errors.New("self-update rollback requires an escalation provider")
+	}
+	if err := opts.Escalator.Escalate(ctx, request, request.Reason); err != nil {
+		return fmt.Errorf("create self-update rollback escalation: %w", err)
+	}
+	if err := ensureUpdateEvent(opts.Root, log, journal.EventDaemonUpdateEscalated, request, "rollback escalation issue created"); err != nil {
+		return err
+	}
+	return completeRequest(opts.Root, request)
+}
+
+func finalizeHealthyUpdate(root string, log *journal.InstanceLog, request Request) error {
+	if err := ensureUpdateEvent(root, log, journal.EventDaemonUpdateHealthy, request, "candidate completed clean heartbeat window"); err != nil {
+		return err
+	}
+	return completeRequest(root, request)
+}
+
+func completeRequest(root string, request Request) error {
+	if err := removeCompletedStaging(root, request.StagedPath); err != nil {
+		return fmt.Errorf("clean self-update staging: %w", err)
+	}
+	if err := os.Remove(RequestPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("complete self-update request: %w", err)
+	}
+	return nil
+}
+
 func defaultSupervisorOptions(opts SupervisorOptions) SupervisorOptions {
-	if opts.GOOS == "" {
-		opts.GOOS = runtime.GOOS
+	opts.GOOS = valueOr(opts.GOOS, runtime.GOOS)
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = DefaultPollInterval
+	}
+	if opts.DrainTimeout <= 0 {
+		opts.DrainTimeout = defaultDrainTimeout
 	}
 	if opts.Launcher == nil {
 		opts.Launcher = execLauncher{}
@@ -472,15 +380,6 @@ func defaultSupervisorOptions(opts SupervisorOptions) SupervisorOptions {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
-	if opts.PollInterval <= 0 {
-		opts.PollInterval = DefaultPollInterval
-	}
-	if opts.DrainTimeout <= 0 {
-		opts.DrainTimeout = defaultDrainTimeout
-	}
-	if opts.Now == nil {
-		opts.Now = time.Now
-	}
 	return opts
 }
 
@@ -489,12 +388,13 @@ func ensureCurrentBinary(opts SupervisorOptions) error {
 	if _, err := os.Stat(current); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect supervised binary: %w", err)
+		return err
 	}
-	if err := copyExecutable(opts.HostExecutable, current); err != nil {
-		return fmt.Errorf("initialize supervised binary: %w", err)
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve supervisor executable: %w", err)
 	}
-	return nil
+	return copyExecutable(executable, current)
 }
 
 func pendingRequest(root string) (Request, bool, error) {
@@ -502,51 +402,32 @@ func pendingRequest(root string) (Request, bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return Request{}, false, nil
 	}
-	if err != nil {
-		return Request{}, false, err
+	if err == nil {
+		err = validateRequest(root, request)
 	}
-	if err := validateRequest(root, request); err != nil {
-		return Request{}, false, err
-	}
-	return request, true, nil
+	return request, err == nil, err
 }
 
 func validateRequest(root string, request Request) error {
-	if request.Owner == "" || request.Repository == "" || request.Target == "" {
-		return errors.New("self-update request is missing repository or target")
-	}
-	if request.HealthTicks < 1 {
-		return errors.New("self-update request health ticks must be positive")
+	if request.Owner == "" || request.Repository == "" || request.Target == "" || request.HealthTicks < 1 {
+		return errors.New("self-update request is missing required fields")
 	}
 	switch request.Status {
 	case "requested", "draining", "activating", "monitoring", "healthy", "rollback":
 	default:
 		return fmt.Errorf("unsupported self-update request status %q", request.Status)
 	}
-	timeout, err := time.ParseDuration(request.HealthTimeout)
-	if err != nil {
-		return fmt.Errorf("self-update request health timeout: %w", err)
-	}
-	if timeout <= 0 {
-		return errors.New("self-update request health timeout must be positive")
-	}
-	heartbeatInterval, err := time.ParseDuration(request.HeartbeatInterval)
-	if err != nil || heartbeatInterval <= 0 {
-		return errors.New("self-update request heartbeat interval must be positive")
-	}
-	if timeout < time.Duration(request.HealthTicks+1)*heartbeatInterval {
-		return errors.New("self-update request health timeout is shorter than its heartbeat window")
+	timeout, timeoutErr := time.ParseDuration(request.HealthTimeout)
+	if timeoutErr != nil || timeout <= 0 {
+		return errors.New("self-update request has an invalid health window")
 	}
 	staged, _, err := stagedLocation(root, request.StagedPath)
 	if err != nil {
 		return err
 	}
 	if request.Status == "requested" || request.Status == "draining" || request.Status == "activating" {
-		info, err := os.Stat(staged)
-		if err != nil {
-			return fmt.Errorf("inspect staged binary: %w", err)
-		}
-		if !info.Mode().IsRegular() {
+		info, err := os.Lstat(staged)
+		if err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("staged binary %q is not a regular file", staged)
 		}
 	}
@@ -563,7 +444,7 @@ func stagedLocation(root, stagedPath string) (string, string, error) {
 		return "", "", err
 	}
 	relative, err := filepath.Rel(stageRoot, staged)
-	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+	if err != nil || relative == "." || !filepath.IsLocal(relative) {
 		return "", "", fmt.Errorf("staged binary %q is outside %s", stagedPath, stageRoot)
 	}
 	return staged, relative, nil
@@ -574,310 +455,137 @@ func removeCompletedStaging(root, stagedPath string) error {
 	if err != nil {
 		return err
 	}
-	stageName := strings.SplitN(relative, string(filepath.Separator), 2)[0]
-	return os.RemoveAll(filepath.Join(StagingDir(root), stageName))
+	return os.RemoveAll(filepath.Join(StagingDir(root), strings.SplitN(relative, string(filepath.Separator), 2)[0]))
+}
+
+func rejectInvalidRequest(opts SupervisorOptions, requestErr error) error {
+	fmt.Fprintf(opts.Stderr, "ignoring invalid self-update request: %v\n", requestErr)
+	rejected := fmt.Sprintf("%s.invalid.%d", RequestPath(opts.Root), time.Now().UTC().UnixNano())
+	if err := os.Rename(RequestPath(opts.Root), rejected); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("quarantine invalid self-update request: %w", err)
+	}
+	return nil
 }
 
 func requestDaemonStop(root string) error {
 	if err := os.MkdirAll(UpdatesDir(root), 0o755); err != nil {
-		return fmt.Errorf("create update directory: %w", err)
+		return err
 	}
-	file, err := os.OpenFile(StopRequestPath(root), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return nil
-	}
-	if err != nil {
+	if err := os.WriteFile(StopRequestPath(root), nil, 0o600); err != nil {
 		return fmt.Errorf("request daemon drain: %w", err)
 	}
-	return file.Close()
+	return nil
 }
 
-// ConsumeStopRequest atomically acknowledges a supervisor drain request.
 func ConsumeStopRequest(root string) (bool, error) {
 	err := os.Remove(StopRequestPath(root))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("consume supervisor stop request: %w", err)
-	}
-	return true, nil
+	return err == nil, err
 }
 
 func stopForService(process Process, opts SupervisorOptions) error {
 	if err := requestDaemonStop(opts.Root); err != nil {
 		return err
 	}
-	timer := time.NewTimer(opts.DrainTimeout)
+	err := waitOrKill(process, opts.DrainTimeout)
+	_ = os.Remove(StopRequestPath(opts.Root))
+	return err
+}
+
+func waitOrKill(process Process, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case err := <-process.Done():
-		_ = os.Remove(StopRequestPath(opts.Root))
-		if err != nil {
-			return fmt.Errorf("daemon failed during service stop: %w", err)
-		}
-		return nil
+		return err
 	case <-timer.C:
 		if err := process.Kill(); err != nil {
-			return fmt.Errorf("kill daemon after drain timeout: %w", err)
+			return err
 		}
 		<-process.Done()
-		_ = os.Remove(StopRequestPath(opts.Root))
-		return errors.New("daemon drain timed out")
+		return nil
+	}
+}
+
+func terminateProcess(process Process, timeout time.Duration) error {
+	if process == nil {
+		return nil
+	}
+	select {
+	case <-process.Done():
+		return nil
+	default:
+	}
+	if err := process.Kill(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-process.Done():
+		return nil
+	case <-timer.C:
+		return errors.New("timed out waiting for supervised daemon to terminate")
 	}
 }
 
 func activateCandidate(opts SupervisorOptions, request Request) error {
-	return activateCandidateWithCopier(opts, request, copyExecutable)
-}
-
-func activateCandidateWithCopier(opts SupervisorOptions, request Request, copyFile func(string, string) error) error {
-	current := CurrentBinary(opts.Root, opts.GOOS)
-	previous := PreviousBinary(opts.Root, opts.GOOS)
-	same, err := filesEqual(current, request.StagedPath)
-	if err != nil {
-		return fmt.Errorf("compare active and staged binaries: %w", err)
-	}
-	if same {
-		if _, err := os.Stat(previous); err == nil {
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect retained previous binary: %w", err)
-		}
-	}
-	if err := copyFile(current, previous); err != nil {
+	current, previous := CurrentBinary(opts.Root, opts.GOOS), PreviousBinary(opts.Root, opts.GOOS)
+	if err := copyExecutable(current, previous); err != nil {
 		return fmt.Errorf("retain previous binary: %w", err)
 	}
-	if err := copyFile(request.StagedPath, current); err != nil {
-		return fmt.Errorf("activate staged binary: %w", err)
-	}
-	return nil
+	return copyExecutable(request.StagedPath, current)
 }
 
 func restorePrevious(opts SupervisorOptions) error {
-	previous := PreviousBinary(opts.Root, opts.GOOS)
-	if _, err := os.Stat(previous); err != nil {
-		return fmt.Errorf("inspect retained previous binary: %w", err)
-	}
-	if err := copyExecutable(previous, CurrentBinary(opts.Root, opts.GOOS)); err != nil {
+	if err := copyExecutable(PreviousBinary(opts.Root, opts.GOOS), CurrentBinary(opts.Root, opts.GOOS)); err != nil {
 		return fmt.Errorf("restore retained previous binary: %w", err)
 	}
 	return nil
 }
 
-func recoverInterruptedActivation(opts SupervisorOptions, log *journal.InstanceLog, request *Request) error {
-	currentIsCandidate, err := filesEqual(CurrentBinary(opts.Root, opts.GOOS), request.StagedPath)
+func copyExecutable(source, destination string) (retErr error) {
+	file, err := os.Open(source)
 	if err != nil {
-		return fmt.Errorf("inspect interrupted candidate activation: %w", err)
-	}
-	if currentIsCandidate {
-		if _, err := os.Stat(PreviousBinary(opts.Root, opts.GOOS)); err == nil {
-			if err := restorePrevious(opts); err != nil {
-				return err
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect retained previous binary: %w", err)
-		}
-	}
-	request.Status = "rollback"
-	request.Reason = "stable supervisor restarted during candidate activation"
-	if err := WriteRequest(opts.Root, *request); err != nil {
 		return err
 	}
-	return ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, *request, request.Reason)
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", source)
+	}
+	return writeExecutable(destination, file)
 }
 
-func rollbackAndRestart(ctx context.Context, opts SupervisorOptions, log *journal.InstanceLog, request *Request, process Process, reason string) (Process, error) {
-	if process != nil {
-		if err := requestDaemonStop(opts.Root); err != nil {
-			return nil, err
-		}
-		timer := time.NewTimer(opts.DrainTimeout)
-		select {
-		case <-process.Done():
-		case <-timer.C:
-			if err := process.Kill(); err != nil {
-				timer.Stop()
-				return nil, fmt.Errorf("kill unhealthy candidate: %w", err)
-			}
-			<-process.Done()
-		}
-		timer.Stop()
-		_ = os.Remove(StopRequestPath(opts.Root))
-	}
-	if err := restorePrevious(opts); err != nil {
-		return nil, err
-	}
-	request.Status = "rollback"
-	request.Reason = reason
-	if err := WriteRequest(opts.Root, *request); err != nil {
-		return nil, err
-	}
-	if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, *request, reason); err != nil {
-		return nil, err
-	}
-	restored, err := opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
-	if err != nil {
-		return nil, fmt.Errorf("restart retained previous binary: %w", err)
-	}
-	if err := escalateRollback(ctx, opts, log, *request); err != nil {
-		return restored, err
-	}
-	return restored, nil
+func readHeartbeat(root string) (time.Time, error) {
+	return daemonstate.Read(filepath.Join(root, "scheduler", "up.lock"))
 }
 
-func escalateRollback(ctx context.Context, opts SupervisorOptions, log *journal.InstanceLog, request Request) error {
-	if opts.Escalator == nil {
-		return errors.New("self-update rollback requires an escalation provider")
-	}
-	if err := opts.Escalator.Escalate(ctx, request, request.Reason); err != nil {
-		return fmt.Errorf("create self-update rollback escalation: %w", err)
-	}
-	if err := appendUpdateEvent(log, journal.EventDaemonUpdateEscalated, request, "rollback escalation issue created"); err != nil {
-		return err
-	}
-	if err := removeCompletedStaging(opts.Root, request.StagedPath); err != nil {
-		return fmt.Errorf("clean up rolled-back self-update staging: %w", err)
-	}
-	if err := os.Remove(RequestPath(opts.Root)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("complete rolled-back self-update request: %w", err)
-	}
-	return nil
-}
-
-func finalizeHealthyUpdate(opts SupervisorOptions, log *journal.InstanceLog, request Request) error {
-	if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateHealthy, request, "candidate completed clean heartbeat window"); err != nil {
-		return err
-	}
-	if err := removeCompletedStaging(opts.Root, request.StagedPath); err != nil {
-		return fmt.Errorf("clean up completed self-update staging: %w", err)
-	}
-	if err := os.Remove(RequestPath(opts.Root)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("complete self-update request: %w", err)
-	}
-	return nil
-}
-
-func ensureUpdateEvent(opts SupervisorOptions, log *journal.InstanceLog, eventType journal.EventType, request Request, reason string) error {
-	recorded, err := updateEventRecorded(opts.Root, eventType, request)
-	if err != nil {
-		return fmt.Errorf("inspect completed self-update journal: %w", err)
-	}
-	if !recorded {
-		if err := appendUpdateEvent(log, eventType, request, reason); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func updateEventRecorded(root string, eventType journal.EventType, request Request) (bool, error) {
+func ensureUpdateEvent(root string, log *journal.InstanceLog, eventType journal.EventType, request Request, reason string) error {
 	events, err := journal.ReadInstanceLog(filepath.Join(root, "scheduler"))
 	if err != nil {
-		return false, err
+		return err
 	}
 	requestedAt := request.RequestedAt.UTC().Format(time.RFC3339Nano)
 	for _, event := range events {
-		if event.Type != eventType || event.RunID != request.RunID {
-			continue
-		}
-		target, _ := event.Runner["target"].(string)
-		repository, _ := event.Runner["repository"].(string)
-		eventRequestedAt, _ := event.Runner["requestedAt"].(string)
-		if target == request.Target &&
-			repository == request.Owner+"/"+request.Repository &&
-			eventRequestedAt == requestedAt {
-			return true, nil
+		if event.Type == eventType && event.RunID == request.RunID &&
+			event.Runner["target"] == request.Target &&
+			event.Runner["requestedAt"] == requestedAt {
+			return nil
 		}
 	}
-	return false, nil
+	return appendUpdateEvent(log, eventType, request, reason)
 }
 
 func appendUpdateEvent(log *journal.InstanceLog, eventType journal.EventType, request Request, reason string) error {
 	return log.Append(journal.Event{
-		Type:   eventType,
-		Reason: reason,
-		RunID:  request.RunID,
+		Type: eventType, Reason: reason, RunID: request.RunID,
 		Runner: map[string]any{
-			"policy":      request.Policy,
-			"target":      request.Target,
+			"policy": request.Policy, "target": request.Target,
 			"repository":  request.Owner + "/" + request.Repository,
 			"requestedAt": request.RequestedAt.UTC().Format(time.RFC3339Nano),
 		},
 	})
-}
-
-func appendSupervisorError(log *journal.InstanceLog, request Request, err error) error {
-	return log.Append(journal.Event{
-		Type:  journal.EventError,
-		RunID: request.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    "self_update_escalation_failed",
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"target": request.Target},
-	})
-}
-
-func appendCompletionError(log *journal.InstanceLog, request Request, err error) error {
-	return log.Append(journal.Event{
-		Type:  journal.EventError,
-		RunID: request.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    "self_update_completion_failed",
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"target": request.Target},
-	})
-}
-
-func copyExecutable(source, destination string) (retErr error) {
-	sourceFile, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := sourceFile.Close(); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close source executable: %w", err))
-		}
-	}()
-	info, err := sourceFile.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", source)
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".binary-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer func() {
-		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			retErr = errors.Join(retErr, fmt.Errorf("remove temporary executable: %w", err))
-		}
-	}()
-	if _, err := io.Copy(temp, sourceFile); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Chmod(0o755); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := durability.ReplaceFile(tempPath, destination); err != nil {
-		return err
-	}
-	return durability.SyncDir(filepath.Dir(destination))
 }

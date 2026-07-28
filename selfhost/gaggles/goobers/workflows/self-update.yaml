@@ -5,7 +5,6 @@ metadata:
   name: self-update
 spec:
   gaggle: goobers
-  displayName: Self-update (validated binary handoff with rollback)
   triggers:
     - type: schedule
       schedule: "13 * * * *"
@@ -16,19 +15,14 @@ spec:
   tasks:
     - name: stage-update
       type: deterministic
-      goal: >-
-        Detect the configured Goobers binary target, stage and validate it, and
-        request a supervised drain-and-restart without changing config.
+      goal: Stage and validate a Goobers binary, then request supervised activation.
       run:
         command: ["goobers", "self-update"]
       inputs:
-        # Tagged releases are the conservative default. Changing this to
-        # on-main is an explicit opt-in; manual additionally requires target.
         policy: "on-release"
         owner: "Agent-Clubhouse"
         repository: "Goobers"
         branch: "main"
-        healthTicks: "3"
         resultFile: "self-update-result.json"
       capabilities:
         - contents:read

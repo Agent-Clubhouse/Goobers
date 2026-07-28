@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"io"
 	"os"
 
@@ -13,41 +12,25 @@ import (
 	"github.com/goobers/goobers/internal/winsvc"
 )
 
-const serviceSuperviseHelp = "Usage: goobers __service-supervise [path]\n\n" +
-	"Internal service entrypoint. Launches the mutable instance binary and owns\n" +
-	"graceful self-update handoff, health monitoring, rollback, and escalation.\n"
-
 func runServiceSupervise(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("__service-supervise", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { pf(stderr, "%s", serviceSuperviseHelp) }
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	if len(args) > 1 {
+		pf(stderr, "Usage: goobers __service-supervise [path]\n")
 		return 2
 	}
 	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
+	if len(args) == 1 {
+		root = args[0]
 	}
 	if _, err := os.Stat(instance.NewLayout(root).ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root)\n", instance.NewLayout(root).ConfigFile())
 		return 2
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		pf(stderr, "error: resolve supervisor executable: %v\n", err)
-		return 1
-	}
 	run := func(ctx context.Context) int {
 		err := selfupdate.RunSupervisor(ctx, selfupdate.SupervisorOptions{
-			Root:           root,
-			HostExecutable: executable,
-			Escalator:      selfUpdateEscalator{root: root},
-			Stdout:         stdout,
-			Stderr:         stderr,
+			Root:      root,
+			Escalator: selfUpdateEscalator{root: root},
+			Stdout:    stdout,
+			Stderr:    stderr,
 		})
 		if err != nil {
 			pf(stderr, "error: supervise daemon: %v\n", err)

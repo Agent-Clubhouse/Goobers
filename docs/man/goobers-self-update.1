@@ -8,14 +8,9 @@ goobers self-update \- stage and request a supervised binary update
 .nf
 Usage: goobers self-update [flags] [path]
 
-Detect, stage, and smoke-check a binary target, then hand it to the stable
-service supervisor. Policies are manual, on-release (default), and on-main.
-Manual requires --target with a release tag; on-main fetches and builds the
-configured branch at its resolved commit. This command never changes the
-config repository.
-
-Flags may also arrive as workflow inputs: policy, owner, repository, branch,
-target, healthTicks, healthTimeout, and resultFile.
+Stage and smoke-check a binary, then request supervised activation. Policies
+are manual, on-release (default), and on-main. Manual requires a release tag;
+on-main builds the configured branch. Config is never changed.
 .fi
 .SH EXAMPLES
 .nf

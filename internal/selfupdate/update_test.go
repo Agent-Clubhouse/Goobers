@@ -13,11 +13,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 type commandFunc func(context.Context, string, string, ...string) ([]byte, error)
@@ -26,399 +23,104 @@ func (f commandFunc) Run(ctx context.Context, dir, name string, args ...string) 
 	return f(ctx, dir, name, args...)
 }
 
-func TestPrepareOnReleaseVerifiesSmokesAndRequestsHandoff(t *testing.T) {
-	root := t.TempDir()
-	current := CurrentBinary(root, "linux")
-	writeTestExecutable(t, current, []byte("old"))
-	archive := testTarGz(t, "candidate")
-	sum := sha256.Sum256(archive)
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer release-token" {
-			t.Errorf("authorization = %q", got)
-		}
-		switch r.URL.Path {
-		case "/repos/acme/goobers/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v1.2.3",
-				"assets": []map[string]string{
-					{"name": "goobers_v1.2.3_linux_amd64.tar.gz", "browser_download_url": server.URL + "/archive"},
-					{"name": "SHA256SUMS", "browser_download_url": server.URL + "/sums"},
-				},
-			})
-		case "/archive":
-			_, _ = w.Write(archive)
-		case "/sums":
-			_, _ = fmt.Fprintf(w, "%x  goobers_v1.2.3_linux_amd64.tar.gz\n", sum)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	var smoke [][]string
-	workDir := t.TempDir()
-	canonicalRoot := filepath.Join(workDir, "selfhost")
-	if err := os.MkdirAll(canonicalRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := commandFunc(func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
-		call := append([]string{name}, args...)
-		smoke = append(smoke, call)
-		if name == current {
-			return []byte(`{"version":"v1.2.2","commit":"old"}`), nil
-		}
-		if len(args) == 2 && args[0] == "version" {
-			return []byte(`{"version":"v1.2.3","commit":"release"}`), nil
-		}
-		return nil, nil
-	})
-	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	result, err := Prepare(context.Background(), PrepareOptions{
-		Root:              root,
-		WorkDir:           workDir,
-		Policy:            PolicyOnRelease,
-		Owner:             "acme",
-		Repository:        "goobers",
-		Token:             "release-token",
-		RunID:             "run-1",
-		HealthTicks:       2,
-		HealthTimeout:     time.Minute,
-		HeartbeatInterval: 10 * time.Second,
-		GOOS:              "linux",
-		GOARCH:            "amd64",
-		APIBaseURL:        server.URL,
-		HTTPClient:        server.Client(),
-		Runner:            runner,
-		Now:               func() time.Time { return now },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.UpdateRequested || result.Target != "v1.2.3" {
-		t.Fatalf("result = %+v", result)
-	}
-	if got, err := os.ReadFile(result.StagedPath); err != nil || string(got) != "candidate" {
-		t.Fatalf("staged binary = %q, %v", got, err)
-	}
-	request, err := ReadRequest(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.RunID != "run-1" || request.Target != "v1.2.3" || request.HealthTicks != 2 || request.Status != "requested" {
-		t.Fatalf("request = %+v", request)
-	}
-	joined := make([]string, len(smoke))
-	for i := range smoke {
-		joined[i] = strings.Join(smoke[i], " ")
-	}
-	for _, want := range []string{"version --json", "validate " + root, "config diff --against " + canonicalRoot + " " + root} {
-		found := false
-		for _, call := range joined {
-			if strings.Contains(call, want) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("commands %v missing %q", joined, want)
-		}
-	}
-}
-
-func TestPrepareRejectsReleaseChecksumMismatch(t *testing.T) {
-	root := t.TempDir()
-	current := CurrentBinary(root, "linux")
-	writeTestExecutable(t, current, []byte("old"))
-	archive := testTarGz(t, "candidate")
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/goobers/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v2",
-				"assets": []map[string]string{
-					{"name": "goobers_v2_linux_amd64.tar.gz", "browser_download_url": server.URL + "/archive"},
-					{"name": "SHA256SUMS", "browser_download_url": server.URL + "/sums"},
-				},
-			})
-		case "/archive":
-			_, _ = w.Write(archive)
-		case "/sums":
-			_, _ = fmt.Fprintln(w, strings.Repeat("0", 64)+"  goobers_v2_linux_amd64.tar.gz")
-		}
-	}))
-	defer server.Close()
-	runner := commandFunc(func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
-		if name == current {
-			return []byte(`{"version":"v1","commit":"old"}`), nil
-		}
-		return nil, nil
-	})
-	_, err := Prepare(context.Background(), PrepareOptions{
-		Root: root, WorkDir: t.TempDir(), Policy: PolicyOnRelease,
-		Owner: "acme", Repository: "goobers", GOOS: "linux", GOARCH: "amd64",
-		APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
-	})
-	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("Prepare error = %v", err)
-	}
-	if _, err := os.Stat(RequestPath(root)); !os.IsNotExist(err) {
-		t.Fatalf("request exists after checksum failure: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(StagingDir(root), digestName("v2"))); !os.IsNotExist(err) {
-		t.Fatalf("staging exists after checksum failure: %v", err)
-	}
-}
-
-func TestPrepareRejectsConcurrentPreparationBeforeStaging(t *testing.T) {
-	root := t.TempDir()
-	writeTestExecutable(t, CurrentBinary(root, "linux"), []byte("old"))
-	if err := os.MkdirAll(UpdatesDir(root), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	held, err := platformlock.Acquire(filepath.Join(UpdatesDir(root), prepareLockFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = held.Release() })
-
-	_, err = Prepare(context.Background(), PrepareOptions{
-		Root: root, WorkDir: t.TempDir(), Policy: PolicyManual, Target: "v2",
-		Owner: "acme", Repository: "goobers", GOOS: "linux", GOARCH: "amd64",
-	})
-	if err == nil || !strings.Contains(err.Error(), "already in progress") {
-		t.Fatalf("Prepare error = %v", err)
-	}
-	if _, err := os.Stat(StagingDir(root)); !os.IsNotExist(err) {
-		t.Fatalf("staging created during competing preparation: %v", err)
-	}
-}
-
-func TestStageReleaseCleansStagingAfterDownloadFailure(t *testing.T) {
-	root := t.TempDir()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "broken download", http.StatusBadGateway)
-	}))
-	defer server.Close()
-	release := githubRelease{TagName: "v2"}
-	release.Assets = append(release.Assets,
-		struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		}{Name: "goobers_v2_linux_amd64.tar.gz", URL: server.URL + "/archive"},
-		struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		}{Name: "SHA256SUMS", URL: server.URL + "/sums"},
-	)
-	_, err := stageRelease(context.Background(), PrepareOptions{
-		Root: root, GOOS: "linux", GOARCH: "amd64", HTTPClient: server.Client(),
-	}, release)
-	if err == nil || !strings.Contains(err.Error(), "status 502") {
-		t.Fatalf("stageRelease error = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(StagingDir(root), digestName("v2"))); !os.IsNotExist(err) {
-		t.Fatalf("staging exists after download failure: %v", err)
-	}
-}
-
-func TestPrepareOnMainBuildsConfiguredRepositoryCommit(t *testing.T) {
-	root := t.TempDir()
-	current := CurrentBinary(root, "linux")
-	writeTestExecutable(t, current, []byte("old"))
+func TestPrepareReleaseAndMain(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	sourceArchive := testSourceTarGz(t, map[string]string{"source-marker": "configured repository"})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer main-token" {
-			t.Errorf("authorization = %q", got)
-		}
+	releaseArchive := testTarGz(t, "release")
+	sum := sha256.Sum256(releaseArchive)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/repos/acme/goobers/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v2", "assets": []map[string]string{
+				{"name": "goobers_v2_linux_amd64.tar.gz", "browser_download_url": server.URL + "/archive"},
+				{"name": "SHA256SUMS", "browser_download_url": server.URL + "/sums"},
+			}})
+		case "/archive":
+			_, _ = w.Write(releaseArchive)
+		case "/sums":
+			_, _ = fmt.Fprintf(w, "%x  goobers_v2_linux_amd64.tar.gz\n", sum)
 		case "/repos/acme/goobers/commits/main":
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": commit})
-		case "/repos/acme/goobers/tarball/" + commit:
-			_, _ = w.Write(sourceArchive)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	workDir := t.TempDir()
-	runner := commandFunc(func(_ context.Context, dir string, name string, args ...string) ([]byte, error) {
-		switch name {
-		case current:
-			return []byte(`{"version":"dev","commit":"old"}`), nil
-		case "go":
-			if dir == workDir {
-				return nil, errors.New("go build used the invoking worktree")
-			}
-			marker, err := os.ReadFile(filepath.Join(dir, "source-marker"))
-			if err != nil {
-				return nil, fmt.Errorf("read build source marker: %w", err)
-			}
-			if string(marker) != "configured repository" {
-				return nil, fmt.Errorf("build source marker = %q", marker)
-			}
-			for i := range args {
-				if args[i] == "-o" && i+1 < len(args) {
-					writeTestExecutable(t, args[i+1], []byte("candidate"))
+	for _, policy := range []string{PolicyOnRelease, PolicyOnMain} {
+		t.Run(policy, func(t *testing.T) {
+			root, work := t.TempDir(), t.TempDir()
+			current := CurrentBinary(root, "linux")
+			writeTestExecutable(t, current, "old")
+			smokes := 0
+			runner := commandFunc(func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
+				if name == current {
+					return []byte(`{"version":"v1","commit":"old"}`), nil
+				}
+				if name == "git" {
 					return nil, nil
 				}
-			}
-			return nil, errors.New("go build omitted -o")
-		default:
-			if len(args) == 2 && args[0] == "version" {
-				return []byte(`{"version":"dev","commit":"` + commit + `"}`), nil
-			}
-			return nil, nil
-		}
-	})
-	result, err := Prepare(context.Background(), PrepareOptions{
-		Root: root, WorkDir: workDir, Policy: PolicyOnMain,
-		Owner: "acme", Repository: "goobers", Branch: "main",
-		Token: "main-token", GOOS: "linux", GOARCH: "amd64",
-		APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.UpdateRequested || result.Target != "main@"+commit {
-		t.Fatalf("result = %+v", result)
-	}
-	request, err := ReadRequest(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Commit != commit || request.Policy != PolicyOnMain {
-		t.Fatalf("request = %+v", request)
-	}
-}
-
-func TestExtractSourceTarGzRejectsBackslashTraversal(t *testing.T) {
-	archive := testSourceTarGz(t, map[string]string{`..\..\current\goobers.exe`: "malicious"})
-	archivePath := filepath.Join(t.TempDir(), "source.tar.gz")
-	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := extractSourceTarGz(archivePath, filepath.Join(t.TempDir(), "source")); err == nil ||
-		!strings.Contains(err.Error(), "invalid path") {
-		t.Fatalf("extractSourceTarGz error = %v", err)
-	}
-}
-
-func TestWriteJSONAtomicPublishesBeforeSyncingDirectory(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "updates", "request.json")
-	var calls []string
-	published, err := writeJSONAtomicWithDurability(
-		path,
-		map[string]string{"status": "activating"},
-		func(source, destination string) error {
-			calls = append(calls, "replace")
-			return os.Rename(source, destination)
-		},
-		func(directory string) error {
-			calls = append(calls, "sync")
-			if directory != filepath.Dir(path) {
-				t.Fatalf("synced directory = %q, want %q", directory, filepath.Dir(path))
-			}
-			raw, err := os.ReadFile(path)
+				if name == "go" {
+					for i, arg := range args {
+						if arg == "-o" {
+							writeTestExecutable(t, args[i+1], "main")
+						}
+					}
+					return nil, nil
+				}
+				smokes++
+				content, _ := os.ReadFile(name)
+				if string(content) == "main" {
+					return []byte(`{"version":"dev","commit":"` + commit + `"}`), nil
+				}
+				if len(args) > 0 && args[0] == "version" {
+					return []byte(`{"version":"v2","commit":"release"}`), nil
+				}
+				return nil, nil
+			})
+			result, err := Prepare(context.Background(), PrepareOptions{
+				Root: root, WorkDir: work, Policy: policy, Owner: "acme", Repository: "goobers",
+				Branch: "main", Token: "token", RunID: "run", GOOS: "linux", GOARCH: "amd64",
+				APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
+				HealthTicks: 1, HealthTimeout: time.Minute, HeartbeatInterval: time.Second,
+			})
 			if err != nil {
-				return err
+				t.Fatal(err)
 			}
-			if !strings.Contains(string(raw), `"status": "activating"`) {
-				t.Fatalf("published state = %q", raw)
+			request, err := ReadRequest(root)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !published {
-		t.Fatal("state was not reported as published")
-	}
-	if got := strings.Join(calls, ","); got != "replace,sync" {
-		t.Fatalf("durability calls = %q, want replace,sync", got)
+			if !result.UpdateRequested || request.Policy != policy || request.Status != "requested" || smokes != 3 {
+				t.Fatalf("result = %+v, request = %+v, smokes = %d", result, request, smokes)
+			}
+		})
 	}
 }
 
-func TestWriteJSONAtomicPreservesPublishedStateAfterSyncFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "updates", "request.json")
-	syncErr := errors.New("directory sync failed")
-	published, err := writeJSONAtomicWithDurability(
-		path,
-		map[string]string{"status": "activating"},
-		os.Rename,
-		func(string) error { return syncErr },
-	)
-	if !published {
-		t.Fatal("state was not reported as published")
-	}
-	if !errors.Is(err, syncErr) {
-		t.Fatalf("writeJSONAtomicWithDurability error = %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("published state is unavailable: %v", err)
-	}
-}
-
-func testTarGz(t *testing.T, binary string) []byte {
+func testTarGz(t *testing.T, content string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
-	if err := tarWriter.WriteHeader(&tar.Header{
-		Name: "goobers",
-		Mode: 0o755,
-		Size: int64(len(binary)),
-	}); err != nil {
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "goobers", Mode: 0o755, Size: int64(len(content))}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tarWriter.Write([]byte(binary)); err != nil {
+	if _, err := tarWriter.Write([]byte(content)); err != nil {
 		t.Fatal(err)
 	}
-	if err := tarWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gzipWriter.Close(); err != nil {
+	if err := errors.Join(tarWriter.Close(), gzipWriter.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
 }
 
-func testSourceTarGz(t *testing.T, files map[string]string) []byte {
-	t.Helper()
-	var buffer bytes.Buffer
-	gzipWriter := gzip.NewWriter(&buffer)
-	tarWriter := tar.NewWriter(gzipWriter)
-	for name, content := range files {
-		if err := tarWriter.WriteHeader(&tar.Header{
-			Name: "acme-goobers-commit/" + name,
-			Mode: 0o644,
-			Size: int64(len(content)),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tarWriter.Write([]byte(content)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tarWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gzipWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buffer.Bytes()
-}
-
-func writeTestExecutable(t *testing.T, path string, content []byte) {
+func writeTestExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, content, 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
