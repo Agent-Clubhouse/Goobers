@@ -227,9 +227,10 @@ func TestRunOperatorEvidenceInspectionRejectsMissingCausalEvent(t *testing.T) {
 		"trace": {
 			"phase": "completed",
 			"outcome": {"causalEventSeq": 11},
+			"terminalCause": {"code": "failed", "causalEventSeq": 12},
 			"events": [
 				{"seq": 9, "type": "stage.finished"},
-				{"seq": 10, "type": "ref.touched"},
+				{"seq": 10, "type": "error", "error": {"code": "failed"}},
 				{"seq": 12, "type": "run.finished"}
 			]
 		}
@@ -238,6 +239,7 @@ func TestRunOperatorEvidenceInspectionRejectsMissingCausalEvent(t *testing.T) {
 	for _, want := range []string{
 		"event sequence gap between 10 and 12",
 		"causal event sequence 11 is absent",
+		"terminal cause sequence 12 does not match derived sequence 10",
 	} {
 		if !containsRunOperatorString(evidence.Issues, want) {
 			t.Errorf("evidence issues = %q, want %q", evidence.Issues, want)
@@ -430,6 +432,7 @@ func inspectRunOperatorFixtureEvidence(
 	trace, _ := root["trace"].(map[string]any)
 	events, _ := trace["events"].([]any)
 	var previous uint64
+	var derivedTerminalCauseSeq uint64
 	hasRunFinished := false
 	for _, rawEvent := range events {
 		event, _ := rawEvent.(map[string]any)
@@ -450,6 +453,9 @@ func inspectRunOperatorFixtureEvidence(
 		if known, ok := event["knownSchema"].(bool); ok && !known {
 			evidence.Issues = append(evidence.Issues,
 				fmt.Sprintf("event sequence %d has an unknown schema", seq))
+		} else if _, ok := event["error"].(map[string]any); ok &&
+			(event["type"] == "error" || event["type"] == "run.finished") {
+			derivedTerminalCauseSeq = seq
 		}
 	}
 	switch trace["phase"] {
@@ -463,6 +469,14 @@ func inspectRunOperatorFixtureEvidence(
 		if _, ok := evidence.EventSeqs[seq]; !ok {
 			evidence.Issues = append(evidence.Issues,
 				fmt.Sprintf("causal event sequence %d is absent", seq))
+		}
+	}
+	if cause, ok := trace["terminalCause"].(map[string]any); ok && cause["code"] != nil {
+		declared := uint64(runOperatorJSONNumber(cause["causalEventSeq"]))
+		if declared != derivedTerminalCauseSeq {
+			evidence.Issues = append(evidence.Issues, fmt.Sprintf(
+				"terminal cause sequence %d does not match derived sequence %d",
+				declared, derivedTerminalCauseSeq))
 		}
 	}
 	return evidence

@@ -93,7 +93,7 @@
             "stage": "local-ci",
             "code": "exit_status_1",
             "message": "targeted tests failed",
-            "causalEventSeq": 7
+            "causalEventSeq": 6
           },
           "events": [
             {
@@ -117,7 +117,7 @@
       },
       "expected": {
         "classification": "failed",
-        "facts": ["Execution failed in local-ci with stable code exit_status_1.", "The terminal cause points to event sequence 7."],
+        "facts": ["Execution failed in local-ci with stable code exit_status_1.", "The terminal cause points to event sequence 6."],
         "citations": [
           {
             "source": "trace",
