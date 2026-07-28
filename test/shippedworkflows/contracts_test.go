@@ -525,6 +525,57 @@ func TestScenarioScriptShapesConsecutiveAutomatedGateOutputs(t *testing.T) {
 	}
 }
 
+func TestScenarioScriptFailureEmitsOnlyErrorEnvelope(t *testing.T) {
+	t.Parallel()
+	definition := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Tasks: []apiv1.Task{{
+				Name:            "local-ci",
+				ExpectedOutputs: []string{"report"},
+				Next:            "local-gate",
+			}},
+			Gates: []apiv1.Gate{{
+				Name:      "local-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			}},
+		},
+	}
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{"local-gate": {gate.OutcomeFail}},
+	})
+
+	got, err := script.deterministic("local-ci", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", got.exitCode)
+	}
+	want := map[string]any{
+		executor.OutputErrorCode:      "CONTRACT_FAILURE",
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+	}
+	if !reflect.DeepEqual(got.outputs, want) {
+		t.Fatalf("outputs = %v, want production-shaped failure envelope %v", got.outputs, want)
+	}
+}
+
+func TestFailedStageIncludesExplicitClassifierExtras(t *testing.T) {
+	t.Parallel()
+	got := failedStage("RATE_LIMITED", map[string]any{"rateLimitReset": "contract-reset"})
+	want := map[string]any{
+		executor.OutputErrorCode:      "RATE_LIMITED",
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+		"rateLimitReset":              "contract-reset",
+	}
+	if !reflect.DeepEqual(got.outputs, want) {
+		t.Fatalf("outputs = %v, want explicit classifier extras in failure envelope %v", got.outputs, want)
+	}
+}
+
 func TestTerminalScenariosDiscoverInsertedLinearStages(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1058,14 +1109,14 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (sta
 		return stageScript{}, err
 	}
 	if stage == s.scenario.escalationTask {
-		return failedStage(outputs, "ISSUE_OVER_SCOPE"), nil
+		return failedStage("ISSUE_OVER_SCOPE", nil), nil
 	}
 	failed, err := s.shapeAutomatedGateChain(task, outputs)
 	if err != nil {
 		return stageScript{}, err
 	}
 	if failed {
-		return failedStage(outputs, "CONTRACT_FAILURE"), nil
+		return failedStage("CONTRACT_FAILURE", nil), nil
 	}
 	return stageScript{outputs: outputs}, nil
 }
@@ -1131,10 +1182,15 @@ func contractOutputValue(key string) any {
 	}
 }
 
-func failedStage(outputs map[string]any, code string) stageScript {
-	outputs[executor.OutputErrorCode] = code
-	outputs[executor.OutputErrorMessage] = "scripted wired-workflow contract outcome"
-	outputs[executor.OutputErrorRetryable] = false
+func failedStage(code string, classifierExtras map[string]any) stageScript {
+	outputs := map[string]any{
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+	}
+	for key, value := range classifierExtras {
+		outputs[key] = value
+	}
 	return stageScript{
 		outputs:  outputs,
 		exitCode: 1,
