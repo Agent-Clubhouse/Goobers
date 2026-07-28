@@ -199,6 +199,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   are entirely cross-PR (PRL-024); `fail` → `goobers:merge-escalated` (a
   wrong approach is a human's call, never burned on remediation budget — D2).
   An empty-findings `needs-changes` routes to remediation, not to parking.
+  While `goobers:merge-escalated` is present, a `needs-changes` verdict that
+  would route to remediation MUST still be published, but
+  `goobers:needs-remediation` MUST be suppressed and any conflicting existing
+  label removed. This precedence ends when the escalation is explicitly
+  cleared or self-heals under PRL-062.
 - **PRL-032 (MUST, Shipped):** The loop MAY **autonomously close** a PR only
   under one of three predicates (#923/#987/#1211, PR #1256), each established
   by a **deterministic, independently-verifiable repository fact** — never the
