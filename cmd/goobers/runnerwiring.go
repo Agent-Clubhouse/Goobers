@@ -391,7 +391,8 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	for i, c := range runtimeCredentialedCapabilities {
 		caps[i] = string(c)
 	}
-	overrides := make([]credentials.Grant, 0, len(cfg.Credentials)+1)
+	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
+	providerPROverridden := false
 	providerPRRef := ""
 	legacyGitHubPRRef := ""
 	for _, cg := range cfg.Credentials {
@@ -399,24 +400,24 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: ref})
 		switch capability.Capability(cg.Capability) {
 		case capability.ProviderPRWrite:
+			providerPROverridden = true
 			providerPRRef = ref
 		case capability.GitHubPRWrite:
 			legacyGitHubPRRef = ref
 		}
 	}
-	if selectedRepoProvider(cfg, gaggleOwner, gaggleName) == string(apiv1.ProviderGitHub) {
-		switch {
-		case providerPRRef == "" && legacyGitHubPRRef != "":
-			overrides = append(overrides, credentials.Grant{
-				Capability: string(capability.ProviderPRWrite),
-				Ref:        legacyGitHubPRRef,
-			})
-		case legacyGitHubPRRef == "" && providerPRRef != "":
-			overrides = append(overrides, credentials.Grant{
-				Capability: string(capability.GitHubPRWrite),
-				Ref:        providerPRRef,
-			})
-		}
+	githubSelected := selectedRepoProvider(cfg, gaggleOwner, gaggleName) == string(apiv1.ProviderGitHub)
+	if githubSelected && !providerPROverridden && legacyGitHubPRRef != "" {
+		overrides = append(overrides, credentials.Grant{
+			Capability: string(capability.ProviderPRWrite),
+			Ref:        legacyGitHubPRRef,
+		})
+	}
+	if githubSelected && legacyGitHubPRRef == "" && providerPRRef != "" {
+		overrides = append(overrides, credentials.Grant{
+			Capability: string(capability.GitHubPRWrite),
+			Ref:        providerPRRef,
+		})
 	}
 	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
