@@ -1977,7 +1977,7 @@ func (s *graphQLStub) server() *httptest.Server {
 		decodeJSON(s.t, r, &body)
 		s.bodies = append(s.bodies, body)
 		query, _ := body["query"].(string)
-		if strings.Contains(query, "enqueuePullRequest(input:") {
+		if strings.Contains(query, "enqueuePullRequest(input:") || strings.Contains(query, "dequeuePullRequest(input:") {
 			writeJSON(s.t, w, map[string]interface{}{"data": s.mutation})
 			return
 		}
@@ -2244,8 +2244,9 @@ func TestGitHubProviderPollMergeQueueEntryStates(t *testing.T) {
 // legible in logs (position 3, awaiting checks) rather than opaque.
 func TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress(t *testing.T) {
 	stub := &graphQLStub{t: t, lookup: lookupResponse(map[string]interface{}{
-		"state": "OPEN", "merged": false, "mergeCommit": nil,
+		"id": "PR_node9", "state": "OPEN", "merged": false, "mergeCommit": nil,
 		"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 3},
+		"labels":          map[string]interface{}{"nodes": []map[string]string{{"name": "goobers:no-merge-review"}}},
 	})}
 	server := stub.server()
 	defer server.Close()
@@ -2259,6 +2260,29 @@ func TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress(t *testing.T) {
 	}
 	if result.QueueState != "AWAITING_CHECKS" || result.QueuePosition != 3 {
 		t.Fatalf("queue progress = %q/%d, want AWAITING_CHECKS/3", result.QueueState, result.QueuePosition)
+	}
+	if result.PullRequestNodeID != "PR_node9" || !reflect.DeepEqual(result.Labels, []string{"goobers:no-merge-review"}) {
+		t.Fatalf("live queue identity/labels = %q/%v, want PR_node9 and opt-out label", result.PullRequestNodeID, result.Labels)
+	}
+}
+
+func TestGitHubProviderDequeuePullRequestUsesGraphQLMutation(t *testing.T) {
+	stub := &graphQLStub{
+		t:        t,
+		mutation: map[string]interface{}{"dequeuePullRequest": map[string]interface{}{"clientMutationId": nil}},
+	}
+	server := stub.server()
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	err := provider.DequeuePullRequest(context.Background(), DequeuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", PullRequestNodeID: "PR_node9",
+	})
+	if err != nil {
+		t.Fatalf("DequeuePullRequest returned error: %v", err)
+	}
+	if got := stub.variables(0)["pullRequestId"]; got != "PR_node9" {
+		t.Fatalf("pullRequestId = %v, want PR_node9", got)
 	}
 }
 

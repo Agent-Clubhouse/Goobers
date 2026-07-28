@@ -293,7 +293,7 @@ spec:
         - merge-pr
         - delete-branch
       expectedOutputs:
-        # landOutcome ("merged"/"enqueued", issue #758) is deliberately NOT
+        # landOutcome ("merged"/"enqueued"/"skipped") is deliberately NOT
         # listed here — like gather-sibling-context's cachedVerdictJson, it
         # is conditional (absent on the refusal path), and listing a key
         # that legitimately isn't always present would misstate this
@@ -301,17 +301,20 @@ spec:
         # reads it straight from this stage's own Outputs regardless.
         - selectedNumber
         - merged
+        # Always present so the terminal opt-out gate does not depend on the
+        # conditional landOutcome output.
+        - optedOut
         # reason is always emitted (empty on a merge/enqueue) so
         # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
         # selectedHeadSha (the echoed SHA-pin) keys the demotion by the head the
         # refusal happened at.
         - reason
         - selectedHeadSha
-      next: merge-gate
+      next: merge-opt-out-gate
 
     - name: queue-watch
       type: deterministic
-      goal: Watch a merge-queue-enqueued PR until it merges, is evicted, or needs timeout remediation.
+      goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
       run:
         command: ["goobers", "merge-queue-poll"]
       inputsFrom:
@@ -351,13 +354,13 @@ spec:
         - delete-branch
       expectedOutputs:
         - selectedNumber
-        # queueOutcome ("merged"/"evicted"/"timeout") is always present —
-        # this stage always determines one of the three before returning
+        # queueOutcome ("merged"/"evicted"/"timeout"/"skipped") is always
+        # present — this stage always determines one of the four before returning
         # (mirroring ci-poll's own "always succeeds at determining an
         # outcome" philosophy) — unlike merge-pr's conditional landOutcome,
         # there is no refusal path here to omit it for.
         - queueOutcome
-      next: queue-gate
+      next: queue-opt-out-gate
 
     - name: post-merge
       type: deterministic
@@ -533,6 +536,20 @@ spec:
         pass: ""
         fail: published-verdict
 
+    # A late goobers:no-merge-review label is a distinct terminal no-op.
+    # Check it before the ordinary land-outcome gate so "skipped" can never
+    # reach record-merge-refusal's mutation path.
+    - name: merge-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: optedOut
+          equals: "true"
+      branches:
+        pass: ""
+        fail: merge-gate
+
     - name: merge-gate
       # Issue #758: distinguishes an actual GitHub merge from a
       # merge-queue-enqueue — a plain output-equals(merged==true) can only
@@ -554,6 +571,20 @@ spec:
         # eventually demoted, letting its cluster drain around it — the stage
         # is a no-op for a transient/first refusal and terminal either way.
         fail: record-merge-refusal
+
+    # queue-watch emits skipped only after dequeuing a PR that opted out.
+    # Terminate before queue-outcome so it cannot be mistaken for eviction
+    # or timeout remediation.
+    - name: queue-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: queueOutcome
+          equals: skipped
+      branches:
+        pass: ""
+        fail: queue-gate
 
     - name: queue-gate
       # Issue #758: the merge queue's own eventual verdict on an already-

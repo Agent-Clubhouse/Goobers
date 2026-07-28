@@ -271,8 +271,23 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if mergePR.Inputs["verdict"] != "pass" || mergePR.Inputs["advisoryMode"] != "false" {
 				t.Errorf("merge-pr safety inputs = %v, want verdict=pass advisoryMode=false", mergePR.Inputs)
 			}
-			if mergePR.Next != "merge-gate" {
-				t.Errorf("merge-pr.next = %q, want merge-gate", mergePR.Next)
+			if mergePR.Next != "merge-opt-out-gate" {
+				t.Errorf("merge-pr.next = %q, want merge-opt-out-gate", mergePR.Next)
+			}
+
+			mergeOptOutGate, ok := m.Gate("merge-opt-out-gate")
+			if !ok {
+				t.Fatal("merge-opt-out-gate not found")
+			}
+			if mergeOptOutGate.Automated == nil ||
+				mergeOptOutGate.Automated.Check != "output-equals" ||
+				mergeOptOutGate.Automated.Params["key"] != "optedOut" ||
+				mergeOptOutGate.Automated.Params["equals"] != "true" {
+				t.Errorf("merge-opt-out-gate check = %+v, want optedOut == true", mergeOptOutGate.Automated)
+			}
+			wantMergeOptOutBranches := map[string]string{"pass": TerminalComplete, "fail": "merge-gate"}
+			if !reflect.DeepEqual(mergeOptOutGate.Branches, wantMergeOptOutBranches) {
+				t.Errorf("merge-opt-out-gate branches = %v, want %v", mergeOptOutGate.Branches, wantMergeOptOutBranches)
 			}
 
 			mergeGate, ok := m.Gate("merge-gate")
@@ -332,10 +347,24 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(queueWatch.Capabilities, wantQueueWatchCapabilities) {
 				t.Errorf("queue-watch capabilities = %v, want %v", queueWatch.Capabilities, wantQueueWatchCapabilities)
 			}
-			if queueWatch.Next != "queue-gate" {
-				t.Errorf("queue-watch.next = %q, want queue-gate", queueWatch.Next)
+			if queueWatch.Next != "queue-opt-out-gate" {
+				t.Errorf("queue-watch.next = %q, want queue-opt-out-gate", queueWatch.Next)
 			}
 
+			queueOptOutGate, ok := m.Gate("queue-opt-out-gate")
+			if !ok {
+				t.Fatal("queue-opt-out-gate not found")
+			}
+			if queueOptOutGate.Automated == nil ||
+				queueOptOutGate.Automated.Check != "output-equals" ||
+				queueOptOutGate.Automated.Params["key"] != "queueOutcome" ||
+				queueOptOutGate.Automated.Params["equals"] != "skipped" {
+				t.Errorf("queue-opt-out-gate check = %+v, want queueOutcome == skipped", queueOptOutGate.Automated)
+			}
+			wantQueueOptOutBranches := map[string]string{"pass": TerminalComplete, "fail": "queue-gate"}
+			if !reflect.DeepEqual(queueOptOutGate.Branches, wantQueueOptOutBranches) {
+				t.Errorf("queue-opt-out-gate branches = %v, want %v", queueOptOutGate.Branches, wantQueueOptOutBranches)
+			}
 			queueGate, ok := m.Gate("queue-gate")
 			if !ok {
 				t.Fatal("queue-gate not found")

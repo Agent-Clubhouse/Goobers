@@ -201,16 +201,17 @@ spec:
       expectedOutputs:
         - selectedNumber
         - merged
+        - optedOut
         # reason is always emitted (empty on a merge/enqueue) so
         # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
         # selectedHeadSha (the echoed SHA-pin) keys the demotion by head.
         - reason
         - selectedHeadSha
-      next: merge-gate
+      next: merge-opt-out-gate
 
     - name: queue-watch
       type: deterministic
-      goal: Watch a merge-queue-enqueued PR until it merges, is evicted, or needs timeout remediation.
+      goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
       run:
         command: ["goobers", "merge-queue-poll"]
       inputsFrom:
@@ -244,7 +245,7 @@ spec:
       expectedOutputs:
         - selectedNumber
         - queueOutcome
-      next: queue-gate
+      next: queue-opt-out-gate
 
     - name: post-merge
       type: deterministic
@@ -370,6 +371,17 @@ spec:
         pass: ""
         fail: published-verdict
 
+    - name: merge-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: optedOut
+          equals: "true"
+      branches:
+        pass: ""
+        fail: merge-gate
+
     - name: merge-gate
       # Distinguishes an actual merge from a merge-queue enqueue (issue
       # #758) — a plain output-equals(merged==true) would conflate
@@ -385,6 +397,17 @@ spec:
         # so a lander that repeatedly cannot merge at an unchanged head is
         # counted and eventually demoted, letting its cluster drain around it.
         fail: record-merge-refusal
+
+    - name: queue-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: queueOutcome
+          equals: skipped
+      branches:
+        pass: ""
+        fail: queue-gate
 
     - name: queue-gate
       # queue-watch already labels and comments on both evicted and timed-out

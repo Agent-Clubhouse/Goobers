@@ -1238,6 +1238,12 @@ func TestMergePROptOutAddedAfterVerdictNeverMerges(t *testing.T) {
 	if merged, _ := result["merged"].(bool); merged {
 		t.Fatalf("result = %+v, want merged=false after opt-out", result)
 	}
+	if result["landOutcome"] != mergeReviewOptOutOutcome {
+		t.Fatalf("result = %+v, want landOutcome=%s so routing terminates before refusal recording", result, mergeReviewOptOutOutcome)
+	}
+	if optedOut, _ := result["optedOut"].(bool); !optedOut {
+		t.Fatalf("result = %+v, want optedOut=true for the terminal routing gate", result)
+	}
 	if reason, _ := result["reason"].(string); !strings.Contains(reason, noMergeReviewLabel) {
 		t.Fatalf("reason = %q, want it to mention %s", reason, noMergeReviewLabel)
 	}

@@ -85,7 +85,7 @@ Usage:
                                 assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
-  goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
+  goobers merge-queue-poll               watch an enqueued pull request until merged, evicted, timed out, or opted out; dequeue opt-outs and route failures (a workflow stage)
   goobers reconcile-post-merge [--max N] [--lookback D]
                                 reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
@@ -216,7 +216,7 @@ Usage:
                                 assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
-  goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
+  goobers merge-queue-poll               watch an enqueued pull request until merged, evicted, timed out, or opted out; dequeue opt-outs and route failures (a workflow stage)
   goobers reconcile-post-merge [--max N] [--lookback D]
                                 reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
@@ -917,8 +917,10 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
-or still-pending-timeout — see the result file's queueOutcome field),
+not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
+the pull request and reports skipped without remediation. Exit codes:
+0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
+see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 

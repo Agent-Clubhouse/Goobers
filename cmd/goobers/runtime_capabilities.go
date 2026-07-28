@@ -478,7 +478,7 @@ func init() {
 			withExamples("goobers record-merge-refusal"),
 		command("merge-queue-poll", apicontract.ActionWorkflowExecution, runMergeQueuePoll).
 			withSynopsis(synopsisByID["merge-queue-poll"]).
-			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
+			withHelp("watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
 			withSynopsis(synopsisByID["reconcile-post-merge"]).

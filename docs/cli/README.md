@@ -57,7 +57,7 @@
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
-| [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged or evicted (a workflow stage) |
+| [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage) |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
@@ -1285,7 +1285,7 @@ $ goobers merge-pr
 
 ## `goobers merge-queue-poll`
 
-watch an enqueued PR until merged or evicted (a workflow stage)
+watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 
 ~~~text
 Usage: goobers merge-queue-poll [path]
@@ -1299,8 +1299,10 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
-or still-pending-timeout — see the result file's queueOutcome field),
+not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
+the pull request and reports skipped without remediation. Exit codes:
+0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
+see the result file's queueOutcome field),
 1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 ~~~

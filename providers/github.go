@@ -1158,6 +1158,12 @@ const enqueuePullRequestMutation = `mutation($pullRequestId:ID!,$expectedHeadOid
   }
 }`
 
+const dequeuePullRequestMutation = `mutation($pullRequestId:ID!){
+  dequeuePullRequest(input:{pullRequestId:$pullRequestId}){
+    clientMutationId
+  }
+}`
+
 // EnqueuePullRequest adds a GitHub pull request to its repo's merge queue
 // (issue #758) via the GraphQL enqueuePullRequest mutation.
 //
@@ -1287,6 +1293,36 @@ func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, 
 	})
 }
 
+// DequeuePullRequest removes a pull request from GitHub's merge queue.
+func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePullRequestRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.PullID == "" {
+		return fmt.Errorf("pull id is required")
+	}
+	if req.PullRequestNodeID == "" {
+		return fmt.Errorf("pull request node id is required")
+	}
+	var mutation struct {
+		DequeuePullRequest struct {
+			ClientMutationID string `json:"clientMutationId"`
+		} `json:"dequeuePullRequest"`
+	}
+	if err := p.graphql(ctx, dequeuePullRequestMutation, map[string]interface{}{
+		"pullRequestId": req.PullRequestNodeID,
+	}, &mutation); err != nil {
+		return err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: "dequeue",
+		Fields:    map[string]FieldDigest{"state": {Before: digestString("enqueued"), After: digestString("dequeued")}},
+	})
+	return nil
+}
+
 // pollMergeQueueEntryQuery reads the pull request's own state and its live
 // merge queue entry in one round trip. The entry is the only surface that
 // distinguishes "still queued" from "no longer queued" — REST exposes
@@ -1294,10 +1330,12 @@ func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, 
 const pollMergeQueueEntryQuery = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
+      id
       state
       merged
       mergeCommit{ oid }
       mergeQueueEntry{ state position }
+      labels(first:100){ nodes{ name } }
     }
   }
 }`
@@ -1346,6 +1384,7 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 	var out struct {
 		Repository struct {
 			PullRequest *struct {
+				ID          string `json:"id"`
 				State       string `json:"state"`
 				Merged      bool   `json:"merged"`
 				MergeCommit *struct {
@@ -1355,6 +1394,11 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 					State    string `json:"state"`
 					Position int    `json:"position"`
 				} `json:"mergeQueueEntry"`
+				Labels struct {
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
@@ -1369,20 +1413,29 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 	if pr == nil {
 		return PollMergeQueueEntryResult{}, fmt.Errorf("pull request %s/%s#%d not found", req.Repository.Owner, req.Repository.Name, number)
 	}
+	result := PollMergeQueueEntryResult{PullRequestNodeID: pr.ID}
+	for _, label := range pr.Labels.Nodes {
+		result.Labels = append(result.Labels, label.Name)
+	}
 	if pr.Merged {
-		mergeSHA := ""
 		if pr.MergeCommit != nil {
-			mergeSHA = pr.MergeCommit.OID
+			result.MergeSHA = pr.MergeCommit.OID
 		}
-		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: mergeSHA}, nil
+		result.State = MergeQueueEntryMerged
+		return result, nil
 	}
 	if strings.EqualFold(pr.State, "closed") {
-		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted}, nil
+		result.State = MergeQueueEntryEvicted
+		return result, nil
 	}
 	if pr.MergeQueueEntry == nil {
-		return PollMergeQueueEntryResult{State: MergeQueueEntryAbsent}, nil
+		result.State = MergeQueueEntryAbsent
+		return result, nil
 	}
-	return PollMergeQueueEntryResult{State: MergeQueueEntryPending, QueueState: pr.MergeQueueEntry.State, QueuePosition: pr.MergeQueueEntry.Position}, nil
+	result.State = MergeQueueEntryPending
+	result.QueueState = pr.MergeQueueEntry.State
+	result.QueuePosition = pr.MergeQueueEntry.Position
+	return result, nil
 }
 
 // ListPullRequests lists open pull requests targeting req.Base, filtered

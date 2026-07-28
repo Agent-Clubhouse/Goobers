@@ -40,6 +40,11 @@ import (
 // verbatim.
 const mergeConflictReason = "merge-conflict"
 
+const (
+	mergeReviewOptOutOutcome = "skipped"
+	mergeReviewOptOutReason  = "pull request is labeled " + noMergeReviewLabel
+)
+
 const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"Merge a pull request, but only when every independent conjunct holds:\n" +
 	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
@@ -169,6 +174,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var mergeErr error
 	var commitErr error
 	var policyErr error
+	var optedOut bool
 	lockErr := withFileLock(lockPath, func() error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -177,6 +183,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// same lock.
 		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 		if pollErr != nil {
+			return nil
+		}
+		if hasAnyLabel(poll.Labels, []string{noMergeReviewLabel}) {
+			optedOut = true
 			return nil
 		}
 
@@ -188,9 +198,6 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		if poll.Draft {
 			reasons = append(reasons, "pull request is a draft")
-		}
-		if hasAnyLabel(poll.Labels, []string{noMergeReviewLabel}) {
-			reasons = append(reasons, fmt.Sprintf("pull request is labeled %s", noMergeReviewLabel))
 		}
 		if poll.HeadSHA != expectedHeadSHA {
 			reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
@@ -294,6 +301,14 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	if pollErr != nil {
 		return failProviderStage(stderr, "poll pull request", pollErr, "merge-result.json")
+	}
+	if optedOut {
+		if err := writeSkippedMergeResult(resultFile, pullNumber, expectedHeadSHA); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		pf(stdout, "skipped pr #%s: %s\n", pullNumber, mergeReviewOptOutReason)
+		return 0
 	}
 	if len(reasons) > 0 {
 		if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, mergepolicy.Result{}, reasons, nil); err != nil {
@@ -494,11 +509,10 @@ func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvid
 // writeMergeResult writes the declared result file's flat JSON —
 // selectedNumber (string, always present), merged (bool, always present —
 // true iff land.Outcome is mergepolicy.OutcomeMerged, i.e. GitHub reports
-// this pull request actually merged; false for both the enqueued and
-// refusal cases), landOutcome (string "merged"/"enqueued", present only when
-// a landing was actually attempted — the #758 writeback distinct-state
-// requirement: merge-gate's "land-outcome" check reads this, not merged, so
-// enqueued is never conflated with merged), mergeSha (when merged),
+// this pull request actually merged; false for enqueued, skipped, and
+// refusal cases), optedOut (bool, always present), landOutcome (string
+// "merged"/"enqueued" when landing was attempted, or "skipped" for a
+// terminal opt-out), mergeSha (when merged),
 // reason (a semicolon-joined list of unmet conjuncts, on refusal), and
 // headBranch/branchCleanup/branchCleanupError (after an actual merge; a
 // merely-enqueued pull request has nothing to clean up yet) — matching
@@ -508,16 +522,31 @@ func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvid
 // existing callers/tests reading only that boolean still see correct
 // behavior for both the direct-merge and refusal cases.
 func writeMergeResult(path, selectedNumber, selectedHeadSha string, land mergepolicy.Result, reasons []string, cleanup *mergeBranchCleanup) error {
-	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": land.Outcome == mergepolicy.OutcomeMerged}
+	return writeMergeResultFields(path, selectedNumber, selectedHeadSha, string(land.Outcome), land.MergeSHA, reasons, cleanup)
+}
+
+func writeSkippedMergeResult(path, selectedNumber, selectedHeadSha string) error {
+	return writeMergeResultFields(
+		path, selectedNumber, selectedHeadSha, mergeReviewOptOutOutcome, "",
+		[]string{mergeReviewOptOutReason}, nil,
+	)
+}
+
+func writeMergeResultFields(path, selectedNumber, selectedHeadSha, landOutcome, mergeSHA string, reasons []string, cleanup *mergeBranchCleanup) error {
+	out := map[string]interface{}{
+		"selectedNumber": selectedNumber,
+		"merged":         landOutcome == string(mergepolicy.OutcomeMerged),
+		"optedOut":       landOutcome == mergeReviewOptOutOutcome,
+	}
 	// Echo the SHA-pin so record-merge-refusal (#950) can key a demotion by the
 	// head the refusal happened at (threaded via inputsFrom on the fail branch);
 	// a refusal at a new head is a fresh attempt, not a continuation.
 	out["selectedHeadSha"] = selectedHeadSha
-	if land.Outcome != "" {
-		out["landOutcome"] = string(land.Outcome)
+	if landOutcome != "" {
+		out["landOutcome"] = landOutcome
 	}
-	if land.MergeSHA != "" {
-		out["mergeSha"] = land.MergeSHA
+	if mergeSHA != "" {
+		out["mergeSha"] = mergeSHA
 	}
 	// Always emit reason (empty on a successful merge/enqueue) so it is a
 	// declarable output record-merge-refusal (#950) can thread via inputsFrom
