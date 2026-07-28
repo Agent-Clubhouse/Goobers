@@ -142,12 +142,6 @@ func (f *fakeScheduleClient) DeleteSchedule(ctx context.Context, id string, gene
 	return f.GetHandle(ctx, id).Delete(ctx)
 }
 
-func (f *fakeScheduleClient) maxConcurrentApplies() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.maxActiveApplies
-}
-
 func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) client.ScheduleHandle {
 	return fakeScheduleHandle{client: f, id: id}
 }
