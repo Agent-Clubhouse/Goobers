@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -1143,6 +1144,66 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
 	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err == nil {
 		t.Fatal("origin's branch was rebased/pushed, want it untouched on the conflict path")
+	}
+}
+
+func TestRebasePRConflictInspectionFailurePreservesCause(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to inject a conflict-inspection failure")
+	}
+	const prBranch = "goobers/impl/run-conflict-inspection-failure"
+	origin := initConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	rebaseBaseSHA := strings.TrimSpace(runGitOutputT(t, filepath.Dir(origin), "--git-dir="+origin, "rev-parse", "refs/heads/main"))
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "diff" ] && [ "$2" = "--name-only" ] && [ "$3" = "--diff-filter=U" ] && [ "$4" = "-z" ]; then
+	echo "conflict inspection rejected by test" >&2
+	exit 1
+fi
+exec "$GOOBERS_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("GOOBERS_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 71)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "71",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, _, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want conflict-inspection failure", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	want := map[string]interface{}{
+		"conflict":          "true",
+		"remediationCauses": "conflict",
+		"rebaseBaseSha":     rebaseBaseSHA,
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Errorf("%s = %v, want %v", key, result[key], value)
+		}
+	}
+	if !strings.Contains(fmt.Sprint(result[executor.OutputErrorMessage]), "inspect rebase conflict") {
+		t.Errorf("error.message = %q, want conflict inspection context", result[executor.OutputErrorMessage])
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want the failed rebase aborted", unmerged)
 	}
 }
 

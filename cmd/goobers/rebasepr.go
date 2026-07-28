@@ -133,11 +133,10 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 	if err != nil {
 		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
 	}
-
-	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap)
 
 	if !policy.needsAgent {
 		// Nothing detected at all — the liberal-default behavior this
@@ -479,22 +478,25 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 		return false, nil, rebaseBaseSHA, nil
 	}
 
+	observedConflict := false
 	for {
 		status, resolveErr := resolveAdjacentLineConflicts(dir)
+		observedConflict = observedConflict || status != rebaseConflictAbsent
 		if resolveErr != nil {
-			return false, nil, "", abortRebaseAfterError(dir, resolveErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, resolveErr)
 		}
 		if status != rebaseConflictResolved {
 			if status == rebaseConflictAbsent {
 				rebaseErr := fmt.Errorf("git rebase FETCH_HEAD: %w: %s", rerr, strings.TrimSpace(string(out)))
-				return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
+				return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, rebaseErr)
 			}
-			locations, inspectErr := currentRebaseConflictLocations(dir)
+			var inspectErr error
+			locations, inspectErr = currentRebaseConflictLocations(dir)
 			if inspectErr != nil {
-				return false, nil, "", abortRebaseAfterError(dir, fmt.Errorf("inspect rebase conflict: %w", inspectErr))
+				return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, fmt.Errorf("inspect rebase conflict: %w", inspectErr))
 			}
 			if err := abortRebase(dir); err != nil {
-				return false, nil, "", fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
+				return observedConflict, locations, rebaseBaseSHA, fmt.Errorf("git rebase FETCH_HEAD: %w: %s; %w", rerr, strings.TrimSpace(string(out)), err)
 			}
 			return true, locations, rebaseBaseSHA, nil
 		}
@@ -508,12 +510,13 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 		}
 
 		nextStatus, statusErr := unmergedConflictStatus(dir)
+		observedConflict = observedConflict || nextStatus != rebaseConflictAbsent
 		if statusErr != nil {
-			return false, nil, "", abortRebaseAfterError(dir, statusErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, statusErr)
 		}
 		if nextStatus == rebaseConflictAbsent {
 			rebaseErr := fmt.Errorf("git rebase --continue: %w: %s", continueErr, strings.TrimSpace(string(continueOut)))
-			return false, nil, "", abortRebaseAfterError(dir, rebaseErr)
+			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, rebaseErr)
 		}
 		out, rerr = continueOut, continueErr
 	}
@@ -566,7 +569,7 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 		}
 		standardText, err := hasStandardTextMergeAttributes(dir, file.path)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("check merge attributes for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("check merge attributes for %q: %w", file.path, err)
 		}
 		if !standardText {
 			return rebaseConflictUnsafe, nil
@@ -574,15 +577,15 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 
 		ancestorData, err := readGitBlob(dir, ancestor.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read ancestor for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read ancestor for %q: %w", file.path, err)
 		}
 		upstreamData, err := readGitBlob(dir, upstream.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read base branch version for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read base branch version for %q: %w", file.path, err)
 		}
 		incomingData, err := readGitBlob(dir, incoming.oid)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("read PR version for %q: %w", file.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("read PR version for %q: %w", file.path, err)
 		}
 		merged, ok := mergeAdjacentLineInsertions(file.path, ancestorData, upstreamData, incomingData)
 		if !ok {
@@ -594,32 +597,32 @@ func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
 	for _, resolution := range resolutions {
 		path, err := worktreeConflictPath(dir, resolution.path)
 		if err != nil {
-			return rebaseConflictAbsent, err
+			return rebaseConflictUnsafe, err
 		}
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 		if err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("open conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("open conflict path %q: %w", resolution.path, err)
 		}
 		if _, err := file.Write(resolution.data); err != nil {
 			_ = file.Close()
-			return rebaseConflictAbsent, fmt.Errorf("write conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("write conflict path %q: %w", resolution.path, err)
 		}
 		if err := file.Close(); err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
+			return rebaseConflictUnsafe, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
 		}
 
 		add := exec.Command("git", "--literal-pathspecs", "add", "--", resolution.path)
 		add.Dir = dir
 		if addOut, err := add.CombinedOutput(); err != nil {
-			return rebaseConflictAbsent, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
+			return rebaseConflictUnsafe, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
 		}
 	}
 	remaining, err := unmergedConflictFiles(dir)
 	if err != nil {
-		return rebaseConflictAbsent, err
+		return rebaseConflictUnsafe, err
 	}
 	if len(remaining) != 0 {
-		return rebaseConflictAbsent, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
+		return rebaseConflictUnsafe, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
 	}
 	return rebaseConflictResolved, nil
 }
