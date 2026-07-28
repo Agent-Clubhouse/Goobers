@@ -803,15 +803,17 @@ describe("live page integration", () => {
     const inventoryGaggleReads = listGaggles.mock.calls.length;
     const inventoryWorkflowReads = listWorkflows.mock.calls.length;
 
-    for (let sequence = 1; sequence <= 8; sequence += 1) {
-      client.stream.push(
-        update(`fixture:${sequence}`, ["instance", "run", "workflow"], {
-          runIds: ["01JZ441DAEMONAPI"],
-          workflows: [{ gaggle: "core", name: "implementation" }],
-        }),
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await act(async () => {
+      for (let sequence = 1; sequence <= 8; sequence += 1) {
+        client.stream.push(
+          update(`fixture:${sequence}`, ["instance", "run", "workflow"], {
+            runIds: ["01JZ441DAEMONAPI"],
+            workflows: [{ gaggle: "core", name: "implementation" }],
+          }),
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
 
     // Run-only invalidations rebuild the bounded run groups but never re-page
     // the gaggle/workflow inventory.
@@ -870,7 +872,7 @@ describe("live page integration", () => {
     expect(listWorkflows).toHaveBeenCalledTimes(populatedInventoryReads.workflows);
 
     client.addWorkflow();
-    client.stream.push(update("fixture:1", ["instance", "workflow"]));
+    act(() => client.stream.push(update("fixture:1", ["instance", "workflow"])));
 
     expect(await screen.findByText("Inventory refresh")).toBeInTheDocument();
     expect(listGaggles.mock.calls.length).toBeGreaterThan(populatedInventoryReads.gaggles);
