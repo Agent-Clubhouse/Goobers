@@ -1303,6 +1303,130 @@ func TestBuildCredentialsOverride(t *testing.T) {
 	}
 }
 
+func TestBuildCredentialsGuidedProviderPRCredentialBacksLegacyGitHubStages(t *testing.T) {
+	t.Setenv("GUIDED_REPO_TOKEN", "contents-read-token")
+	t.Setenv("GUIDED_ISSUES_TOKEN", "issues-token")
+	t.Setenv("GUIDED_PR_TOKEN", "dedicated-pr-token")
+	t.Setenv("GUIDED_PUSH_TOKEN", "push-token")
+	t.Setenv("GUIDED_COPILOT_TOKEN", "copilot-token")
+
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "config-source")
+	opts := instance.GuidedOptions{
+		GaggleName:           "widget-service",
+		DisplayName:          "Widget Service",
+		RepoOwner:            "acme",
+		RepoName:             "widget-service",
+		RepoBranch:           "main",
+		RepoTokenEnv:         "GUIDED_REPO_TOKEN",
+		WorkTrackingTokenEnv: "GUIDED_ISSUES_TOKEN",
+		PullRequestTokenEnv:  "GUIDED_PR_TOKEN",
+		RepoPushTokenEnv:     "GUIDED_PUSH_TOKEN",
+		CopilotTokenEnv:      "GUIDED_COPILOT_TOKEN",
+		Workflows:            []string{instance.GuidedWorkflowImplementation},
+		CICommand:            []string{"go", "test", "./..."},
+	}
+	if _, err := instance.SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
+	}
+	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("LoadGuidedSourceConfig: %v", err)
+	}
+	instanceRoot := filepath.Join(base, "instance")
+	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
+		t.Fatalf("InitGuidedFromSource: %v", err)
+	}
+
+	layout := instance.NewLayout(instanceRoot)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	definitions, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	var implementation *apiv1.Workflow
+	for i := range definitions.Workflows {
+		if definitions.Workflows[i].Name == instance.GuidedWorkflowImplementation {
+			implementation = &definitions.Workflows[i]
+			break
+		}
+	}
+	if implementation == nil {
+		t.Fatal("guided implementation workflow was not materialized")
+	}
+
+	resolver, grants, err := buildCredentials(cfg, nil, "acme", "widget-service", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	for _, stageName := range []string{"query-backlog", "gather-implement-context"} {
+		var declared []string
+		for _, task := range implementation.Spec.Tasks {
+			if task.Name == stageName {
+				declared = task.Capabilities
+				break
+			}
+		}
+		if declared == nil {
+			t.Fatalf("guided implementation workflow lacks stage %q", stageName)
+		}
+		set, err := injector.Materialize(context.Background(), declared)
+		if err != nil {
+			t.Fatalf("materialize %s credentials: %v", stageName, err)
+		}
+		token, err := set.Token(context.Background(), string(capability.GitHubPRWrite))
+		if err != nil {
+			t.Fatalf("%s github:pr:write token: %v", stageName, err)
+		}
+		if token != "dedicated-pr-token" {
+			t.Fatalf("%s github:pr:write token = %q, want dedicated-pr-token", stageName, token)
+		}
+	}
+}
+
+func TestBuildCredentialsPreservesExplicitGitHubPRCredential(t *testing.T) {
+	t.Setenv("GITHUB_REPO_TOKEN", "repo-token")
+	t.Setenv("PROVIDER_PR_TOKEN", "provider-pr-token")
+	t.Setenv("GITHUB_PR_TOKEN", "github-pr-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "web",
+			Token:    instance.TokenRef{Env: "GITHUB_REPO_TOKEN"},
+		}},
+		Credentials: []instance.CredentialGrant{
+			{
+				Capability: string(capability.ProviderPRWrite),
+				Token:      instance.TokenRef{Env: "PROVIDER_PR_TOKEN"},
+			},
+			{
+				Capability: string(capability.GitHubPRWrite),
+				Token:      instance.TokenRef{Env: "GITHUB_PR_TOKEN"},
+			},
+		},
+	}
+
+	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got[string(capability.ProviderPRWrite)] != "provider-pr-token" {
+		t.Fatalf("provider:pr:write = %q, want provider-pr-token", got[string(capability.ProviderPRWrite)])
+	}
+	if got[string(capability.GitHubPRWrite)] != "github-pr-token" {
+		t.Fatalf("github:pr:write = %q, want github-pr-token", got[string(capability.GitHubPRWrite)])
+	}
+}
+
 func TestBuildCredentialsApprovalOverride(t *testing.T) {
 	t.Setenv("GH_TOKEN_A", "tokenA")
 	t.Setenv("APPROVAL_TOKEN_B", "tokenB")
