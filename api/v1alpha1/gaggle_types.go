@@ -10,6 +10,11 @@ type GaggleSpec struct {
 	// DisplayName is the human-facing name shown on the portal dashboard.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
+	// SelfIdentity is this gaggle's provider login for assignment-aware backlog
+	// operations. Empty inherits the instance-wide selfIdentity default.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
 	// Project is the codebase this gaggle works on.
 	// +kubebuilder:validation:Required
 	Project RepoRef `json:"project" yaml:"project"`
