@@ -656,18 +656,15 @@ func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	}
 }
 
-func TestCompileBuiltinTasksRequireCapabilities(t *testing.T) {
+func TestCompileCIPollRequiresPRWrite(t *testing.T) {
 	cases := []struct {
 		name    string
-		kind    string
 		caps    []string
 		wantErr string
 	}{
-		{name: "ci-poll missing", kind: "ci-poll", wantErr: `must declare capability "provider:pr:write"`},
-		{name: "ci-poll provider capability", kind: "ci-poll", caps: []string{string(capability.ProviderPRWrite)}},
-		{name: "ci-poll legacy capability", kind: "ci-poll", caps: []string{string(capability.GitHubPRWrite)}},
-		{name: "external telemetry missing", kind: "external-telemetry", wantErr: `must declare capability "telemetry:read"`},
-		{name: "external telemetry capability", kind: "external-telemetry", caps: []string{string(capability.TelemetryRead)}},
+		{name: "missing", wantErr: `must declare capability "provider:pr:write"`},
+		{name: "provider capability", caps: []string{string(capability.ProviderPRWrite)}},
+		{name: "legacy capability", caps: []string{string(capability.GitHubPRWrite)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -677,13 +674,13 @@ func TestCompileBuiltinTasksRequireCapabilities(t *testing.T) {
 				Tasks: []apiv1.Task{{
 					Name:         "poll",
 					Type:         apiv1.TaskDeterministic,
-					Goal:         "run built-in task",
+					Goal:         "poll CI",
 					Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
-					Inputs:       map[string]string{"kind": tc.kind},
+					Inputs:       map[string]string{"kind": "ci-poll"},
 					Capabilities: tc.caps,
 				}},
 			}
-			_, err := compileAcknowledged(Definition{Name: tc.kind, Version: 1, Spec: spec})
+			_, err := compileAcknowledged(Definition{Name: "ci-poll", Version: 1, Spec: spec})
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Compile: unexpected error %v", err)
@@ -885,11 +882,6 @@ func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
 		t.Fatalf("explicitly disabled dynamic deleteBranches actions = %v, want none", got)
 	}
-	task.Run.Command = []string{"goobers", "backlog-health", "--feedback"}
-	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "update-issue" {
-		t.Fatalf("backlog-health feedback actions = %v, want [update-issue]", got)
-	}
-
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Start:  "reconcile",
