@@ -1109,7 +1109,7 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	if err != nil {
 		return nil, err
 	}
-	return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"})), nil
+	return newCachedGitHubProvider(root, token), nil
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
