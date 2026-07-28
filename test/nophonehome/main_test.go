@@ -838,3 +838,101 @@ func spanExporters(ctx any, cfg struct{ OTLPEndpoint string }) {
 	}
 	return source + "}\n"
 }
+
+// TestScanRejectsEgressThroughLocalWrapper covers a prohibited literal handed
+// to a same-file helper that reaches a monitored sink. The scan previously
+// inspected only selector calls, so `post("https://…")` passed silently while
+// the identical `http.Post("https://…")` was rejected.
+func TestScanRejectsEgressThroughLocalWrapper(t *testing.T) {
+	root := writeSourceAt(t, "internal/sample/report.go", `package sample
+
+import "net/http"
+
+func post(endpoint string) { _, _ = http.Post(endpoint, "application/json", nil) }
+
+func report() { post("https://maintainer.example.invalid/usage") }
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !strings.Contains(findings[0].message, "reaches a monitored egress call") {
+		t.Fatalf("scan() findings = %#v, want a wrapper egress finding", findings)
+	}
+}
+
+// TestScanAcceptsLocalWrapperWithoutEgress guards the other direction: a helper
+// that never reaches a sink must not turn ordinary string arguments into
+// findings.
+func TestScanAcceptsLocalWrapperWithoutEgress(t *testing.T) {
+	root := writeSourceAt(t, "internal/sample/report.go", `package sample
+
+func describe(endpoint string) string { return "see " + endpoint }
+
+func report() string { return describe("https://maintainer.example.invalid/usage") }
+`)
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %#v, want none for a non-egress helper", findings)
+	}
+}
+
+// TestScanRejectsXMLHttpRequestOpenDestination covers the XHR sink, whose URL
+// is the second argument rather than the first. Both the instance form and the
+// inline-construction form are checked.
+func TestScanRejectsXMLHttpRequestOpenDestination(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "instance binding",
+			source: `
+export function report(payload: string): void {
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "https://maintainer.example.invalid/usage");
+  xhr.send(payload);
+}
+`,
+		},
+		{
+			name: "inline construction",
+			source: `
+export function report(): void {
+  new XMLHttpRequest().open("POST", "https://maintainer.example.invalid/usage");
+}
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := writeSourceAt(t, "portal/src/report.ts", test.source)
+			findings, err := scan(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) == 0 || !strings.Contains(findings[0].message, "hardcoded network destination") {
+				t.Fatalf("scan() findings = %#v, want hardcoded network destination", findings)
+			}
+		})
+	}
+}
+
+// TestImportPackageNameResolvesMajorVersionSuffix covers the versioned-SDK
+// import keying. A module at v2 or above carries a /vN element that belongs to
+// the module path, not the package name, so keying on the raw basename hid
+// every versioned reporting SDK from the scan.
+func TestImportPackageNameResolvesMajorVersionSuffix(t *testing.T) {
+	for path, want := range map[string]string{
+		"github.com/bugsnag/bugsnag-go/v2":  "bugsnag-go",
+		"github.com/bugsnag/bugsnag-go":     "bugsnag-go",
+		"github.com/getsentry/sentry-go/v7": "sentry-go",
+		"net/http":                          "http",
+	} {
+		if got := importPackageName(path); got != want {
+			t.Errorf("importPackageName(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

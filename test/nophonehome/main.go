@@ -282,6 +282,59 @@ func scanGoFile(root, path string) ([]finding, error) {
 	return findings, nil
 }
 
+// localEgressWrappers names same-file functions whose bodies reach a monitored
+// egress, process or reporting-SDK call. Callers pass literals to these exactly
+// as they would to the sink itself, so a scan that only inspects selector calls
+// misses `post("https://maintainer.invalid/usage")` whenever post's body calls
+// http.Post.
+//
+// The closure is deliberately shallow — one level of "does this body contain a
+// monitored call" — rather than a full call graph. For a guard that is the safe
+// direction: a wrapper that merely forwards to another wrapper is not matched
+// here, but nothing that is matched can be a false negative.
+func localEgressWrappers(parsed *ast.File, imports map[string]string) map[string]bool {
+	wrappers := map[string]bool{}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Body == nil || function.Recv != nil {
+			continue
+		}
+		reaches := false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if reaches {
+				return false
+			}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if _, _, monitored := monitoredProcessCall(selector, imports); monitored {
+				reaches = true
+				return false
+			}
+			if _, monitored := monitoredReportingSDKCall(selector, imports); monitored {
+				reaches = true
+				return false
+			}
+			if pkg, isIdent := selector.X.(*ast.Ident); isIdent {
+				if _, monitored := egressAPIs[imports[pkg.Name]][selector.Sel.Name]; monitored {
+					reaches = true
+					return false
+				}
+			}
+			return true
+		})
+		if reaches {
+			wrappers[function.Name.Name] = true
+		}
+	}
+	return wrappers
+}
+
 func scanGoCallScope(
 	files *token.FileSet,
 	parsed *ast.File,
@@ -293,6 +346,7 @@ func scanGoCallScope(
 ) []finding {
 	var findings []finding
 	implicitCalls := make(map[string][]*ast.CallExpr)
+	wrappers := localEgressWrappers(parsed, imports)
 	ast.Inspect(scope, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -300,6 +354,27 @@ func scanGoCallScope(
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
+			// A call through a bare identifier is not a monitored sink itself,
+			// but it may be a local wrapper that reaches one. Handing a
+			// prohibited literal to such a wrapper is the same egress as
+			// calling the sink directly, so reject it here rather than
+			// requiring the scan to model the wrapper's body.
+			if callee, isIdent := call.Fun.(*ast.Ident); isIdent && wrappers[callee.Name] {
+				bindings := bindingsAtScope(scope, function, call, fileBindings)
+				position := files.Position(call.Pos())
+				for _, argument := range call.Args {
+					destination, found := processURLDestination(argument, bindings, true)
+					if !found {
+						continue
+					}
+					findings = append(findings, finding{
+						path: rel, line: position.Line, column: position.Column,
+						message: fmt.Sprintf(
+							"hardcoded network destination %q passed to %s, which reaches a monitored egress call",
+							destination, callee.Name),
+					})
+				}
+			}
 			return true
 		}
 		bindings := bindingsAtScope(scope, function, call, fileBindings)
@@ -1348,7 +1423,7 @@ func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[s
 			})
 			continue
 		}
-		name := filepath.Base(importPath)
+		name := importPackageName(importPath)
 		if spec.Name != nil {
 			name = spec.Name.Name
 		} else if reportingSDKImport(importPath) {
@@ -1357,6 +1432,39 @@ func monitoredImports(files *token.FileSet, parsed *ast.File, rel string) (map[s
 		imports[name] = importPath
 	}
 	return imports, findings
+}
+
+// isMajorVersionElement reports whether element is the /vN suffix Go modules
+// append for major versions 2 and above.
+func isMajorVersionElement(element string) bool {
+	if len(element) < 2 || element[0] != 'v' {
+		return false
+	}
+	for _, digit := range element[1:] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// importPackageName is the identifier an unaliased import binds, which is not
+// always the last path element. A module at major version 2 or above carries a
+// /vN suffix that is part of the module path and not part of the package name:
+// "github.com/bugsnag/bugsnag-go/v2" binds "bugsnag", not "v2". Keying the
+// import table on the raw basename therefore hid every versioned reporting SDK
+// from the scan, because the recorded name never matched the identifier the
+// call site actually used.
+func importPackageName(importPath string) string {
+	name := filepath.Base(importPath)
+	if !isMajorVersionElement(name) {
+		return name
+	}
+	trimmed := filepath.Base(strings.TrimSuffix(importPath, "/"+name))
+	if trimmed == "" || trimmed == "." || trimmed == string(filepath.Separator) {
+		return name
+	}
+	return trimmed
 }
 
 func staticBindings(parsed *ast.File) map[string]ast.Expr {
@@ -2573,6 +2681,7 @@ func scanScriptFile(root, path string) ([]finding, error) {
 	}
 	rel = filepath.ToSlash(rel)
 	tokens := tokenizeScript(source)
+	xhrInstances := xmlHTTPRequestInstances(tokens)
 	scopes := []*scriptScope{newScriptScope(true)}
 	pendingFunction := -1
 	var findings []finding
@@ -2635,7 +2744,7 @@ func scanScriptFile(root, path string) ([]finding, error) {
 			)
 		}
 		bindings, urlBindings := visibleScriptBindings(scopes)
-		destinationArgument, monitored := scriptEgressCall(tokens, index)
+		destinationArgument, monitored := scriptEgressCall(tokens, index, xhrInstances)
 		if !monitored {
 			continue
 		}
@@ -2987,7 +3096,7 @@ func scriptAssignment(tokens []scriptToken, identifier int) (int, bool) {
 	return identifier + 2, true
 }
 
-func scriptEgressCall(tokens []scriptToken, index int) (int, bool) {
+func scriptEgressCall(tokens []scriptToken, index int, xhrInstances map[string]bool) (int, bool) {
 	if index+1 >= len(tokens) || tokens[index].kind != scriptIdentifier || tokens[index+1].text != "(" {
 		return 0, false
 	}
@@ -2998,9 +3107,70 @@ func scriptEgressCall(tokens []scriptToken, index int) (int, bool) {
 		return 0, index >= 2 && tokens[index-1].text == "." && tokens[index-2].text == "navigator"
 	case "get", "head", "post", "put", "patch", "delete", "request":
 		return 0, index >= 2 && tokens[index-1].text == "." && tokens[index-2].text == "axios"
+	case "open":
+		// XMLHttpRequest.open(method, url): the destination is the SECOND
+		// argument, unlike every other monitored sink here.
+		return 1, xmlHTTPRequestReceiver(tokens, index, xhrInstances)
 	default:
 		return 0, false
 	}
+}
+
+// xmlHTTPRequestReceiver reports whether the `.open(` at index is called on an
+// XMLHttpRequest, either constructed inline (`new XMLHttpRequest().open(...)`)
+// or through an identifier previously bound to one.
+func xmlHTTPRequestReceiver(tokens []scriptToken, index int, xhrInstances map[string]bool) bool {
+	if index < 2 || tokens[index-1].text != "." {
+		return false
+	}
+	switch receiver := tokens[index-2]; {
+	case receiver.kind == scriptIdentifier && xhrInstances[receiver.text]:
+		// xhr.open(...) where xhr was bound to a construction.
+		return true
+	case receiver.text == ")":
+		// new XMLHttpRequest().open(...) — walk back over the empty or
+		// argument-bearing constructor call to its constructor identifier.
+		depth := 0
+		for cursor := index - 2; cursor >= 0; cursor-- {
+			switch tokens[cursor].text {
+			case ")":
+				depth++
+			case "(":
+				depth--
+				if depth == 0 {
+					return cursor >= 1 && tokens[cursor-1].text == "XMLHttpRequest"
+				}
+			}
+		}
+	}
+	return false
+}
+
+// xmlHTTPRequestInstances collects identifiers bound to an XMLHttpRequest
+// construction anywhere in the file. It deliberately over-approximates by
+// ignoring scope: for a guard, mistaking an unrelated identifier for an XHR
+// can only cause a hardcoded maintainer URL to be reported, whereas missing a
+// binding lets one through.
+func xmlHTTPRequestInstances(tokens []scriptToken) map[string]bool {
+	instances := map[string]bool{}
+	for index := 0; index+2 < len(tokens); index++ {
+		if tokens[index].text != "=" || tokens[index+1].text != "new" {
+			continue
+		}
+		if tokens[index+2].text != "XMLHttpRequest" {
+			continue
+		}
+		for cursor := index - 1; cursor >= 0; cursor-- {
+			if tokens[cursor].kind == scriptIdentifier {
+				instances[tokens[cursor].text] = true
+				break
+			}
+			if tokens[cursor].text != ":" && tokens[cursor].text != "." {
+				break
+			}
+		}
+	}
+	return instances
 }
 
 func scriptCallArgument(tokens []scriptToken, openParenthesis, destination int) int {
