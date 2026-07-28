@@ -873,3 +873,47 @@ func TestMergeQueuePollRefusesWithoutCapability(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q, want a github:pr:merge capability error", code, stderr)
 	}
 }
+
+// TestMergeQueuePollRecordsOptOutDequeueTimeoutForReconciliation covers the
+// opt-out path that runs out of time without ever confirming removal.
+//
+// The watcher fails, correctly — removal was not confirmed. But the entry may
+// still be queued and may still merge after the watcher exits, and a merge that
+// lands then gets none of the follow-up the normal path performs: branch
+// cleanup, issue close-out, sibling fan-out, unparking. Recording the pull
+// request for post-merge reconciliation is what lets a later merge still be
+// picked up, so the record must be written before the failure is reported.
+func TestMergeQueuePollRecordsOptOutDequeueTimeoutForReconciliation(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		graphqlScript:           []string{"pending"},
+		pendingCalls:            1_000_000,
+		terminalState:           "open",
+		labels:                  []string{noMergeReviewLabel},
+		optOutAfterGraphQLPolls: 1,
+		// Every dequeue attempt fails, so removal is never confirmed and the
+		// poll runs to its deadline still believing the entry may be queued.
+		dequeueFailures: 1_000_000,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, _ := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "200ms",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 — an unconfirmed opt-out dequeue is a failure", code)
+	}
+	if !strings.Contains(stderr, "could not be confirmed before timeout") {
+		t.Fatalf("stderr = %q, want the unconfirmed-removal error", stderr)
+	}
+
+	entry := loadPostMergeReconcileEntry(t, root, postMergeTestRepo(), "9")
+	if entry.State != postMergeReconcilePending {
+		t.Fatalf("post-merge reconcile entry state = %q, want %q — a pull request whose "+
+			"dequeue was never confirmed must stay recoverable if it merges later",
+			entry.State, postMergeReconcilePending)
+	}
+	if entry.TimedOutAt.IsZero() {
+		t.Fatal("post-merge reconcile entry has no TimedOutAt stamp")
+	}
+}

@@ -208,6 +208,19 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		}
 		if time.Now().After(deadline) {
 			if optedOut {
+				// Removal was never confirmed, so the entry may still be queued
+				// and may still merge after this watcher exits. Record it for
+				// post-merge reconciliation before reporting the failure:
+				// otherwise a late merge lands with none of the follow-up the
+				// normal path performs — branch cleanup, issue close-out,
+				// sibling fan-out, unparking — and nothing is left pointing at
+				// the PR to notice. Recording an entry that turns out never to
+				// merge is harmless; reconciliation is keyed on the merge
+				// actually happening.
+				if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
+					pf(stderr, "error: record unconfirmed opt-out dequeue for reconciliation: %v\n", err)
+					return 1
+				}
 				pf(stderr, "error: pull request #%s opted out, but its merge queue removal could not be confirmed before timeout\n", pullNumber)
 				return 1
 			}
