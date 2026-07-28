@@ -50,6 +50,13 @@ whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
 
+backlog-curation may opt into a bounded ready-item re-sweep with
+resweepMaxItems. Forward candidates always consume maxItems first; a
+re-sweep uses only leftover capacity, no more often than resweepInterval
+(default 24h), and rotates within selectionPriority tiers. Ready items
+already in implementation/review are emitted as read-only context and are
+never claimed.
+
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
 trustLabel with --claim, config/credential/provider error), 2 =

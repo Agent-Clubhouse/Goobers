@@ -68,7 +68,7 @@ spec:
     # issue/child state; a clean backlog produces no mutations.
     - name: query-backlog
       type: deterministic
-      goal: Query the backlog for trust-labeled, uncurated items and claim them.
+      goal: Claim trust-labeled forward work first, then fill leftover capacity with a bounded ready-item re-sweep.
       run:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
@@ -85,6 +85,14 @@ spec:
         # now honors maxItems (it was a dead input) and, for a batch, writes a
         # claimed-items.json array.
         maxItems: "20"
+        # Continuous re-curation (CURE-1): only leftover batch capacity may be
+        # used for ready-item re-sweeps, capped at five items and no more than
+        # once per day. Persisted selection state rotates within the same
+        # selectionPriority tiers used by forward curation. In-flight ready
+        # items are included as read-only context and are never claimed.
+        resweepMaxItems: "5"
+        resweepInterval: "24h"
+        resweepReadyLabel: "goobers:ready"
         # Serves two purposes, both requiring the file be declared:
         # (#236) lifts the claimed-items array into a journal artifact so it
         # reaches the curator as a context pointer — without this input the file
@@ -142,8 +150,9 @@ spec:
       type: agentic
       goober: curator
       goal: >-
-        Curate the claimed backlog items using each item's deterministic
-        staleness signal and the ranked duplicate candidates as evidence.
+        Curate forward items and re-check selected ready items for drift using
+        each item's deterministic staleness signal and the ranked duplicate
+        candidates as evidence. Treat in-flight re-sweep items as read-only.
         Unclaimed candidate members are read-only except for narrowly scoped
         roadmap maintenance on directly linked tracking parents.
         Dedupe, handle staleness, tag, split oversized items, maintain milestone
