@@ -19,7 +19,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/goobers/goobers/internal/app"
-	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -150,12 +150,12 @@ func newTemporalWorkerRunner(cfg config, goober invoke.Goober) (runtimeWorker, e
 		return nil, err
 	}
 	w := worker.New(c, cfg.taskQueue, worker.Options{})
-	registerEngine(w, goober)
+	registerEngine(w, c, goober)
 	return &temporalWorkerRunner{client: c, worker: w}, nil
 }
 
-func registerEngine(w worker.Worker, goober invoke.Goober) {
-	engine.RegisterWith(w, &engine.Activities{Goober: goober})
+func registerEngine(w worker.Worker, temporalClient client.Client, goober invoke.Goober) {
+	bootstrap.RegisterEngine(w, temporalClient, bootstrap.EngineDeps{Goober: goober})
 }
 
 func (r *temporalWorkerRunner) Start() error {
