@@ -1,0 +1,296 @@
+// Package providerstage describes the capabilities used by built-in
+// provider-chain commands.
+package providerstage
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/goobers/goobers/internal/capability"
+)
+
+// CapabilityUse describes one capability a built-in command can use.
+type CapabilityUse struct {
+	Capability  capability.Capability
+	Consequence string
+
+	optional  bool
+	flag      string
+	flagValue string
+}
+
+// Command describes one built-in provider-chain command.
+type Command struct {
+	ResultFile   string
+	Capabilities []CapabilityUse
+}
+
+func required(cap capability.Capability, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence}
+}
+
+func optional(cap capability.Capability, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, optional: true}
+}
+
+func requiredWhenFlagEquals(cap capability.Capability, flag, value, consequence string) CapabilityUse {
+	return CapabilityUse{
+		Capability:  cap,
+		Consequence: consequence,
+		flag:        flag,
+		flagValue:   value,
+	}
+}
+
+func requiredWhenFlagPresent(cap capability.Capability, flag, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, flag: flag}
+}
+
+var commands = map[string]Command{
+	"apply-verdict": {
+		ResultFile: "verdict-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request routing fails at runtime"),
+			required(capability.GitHubPRReview, "the capability-scoped credential is not injected, so native review publication fails at runtime"),
+		},
+	},
+	"backlog-dedupe": {
+		ResultFile: "dedupe-candidates.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+		},
+	},
+	"backlog-health": {
+		ResultFile: "backlog-health.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
+		},
+	},
+	"backlog-query": {
+		ResultFile: "claimed-item.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog query and claim operations fail at runtime"),
+			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
+		},
+	},
+	"elect-lander": {
+		ResultFile: "election.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so landing-candidate inspection fails at runtime"),
+		},
+	},
+	"gather-ci-failures": {
+		ResultFile: "remediation-brief.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so CI failure collection fails at runtime"),
+		},
+	},
+	"gather-implement-context": {
+		ResultFile: "implementation-context.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so implementation context collection fails at runtime"),
+		},
+	},
+	"gather-issue-context": {
+		ResultFile: "remediation-brief.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
+		},
+	},
+	"gather-pr-context": {
+		ResultFile: "remediation-brief.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation issue routing fails at runtime"),
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediation branch preparation fails at runtime"),
+		},
+	},
+	"gather-review-threads": {
+		ResultFile: "remediation-brief.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so review-thread collection fails at runtime"),
+		},
+	},
+	"gather-sibling-context": {
+		ResultFile: "sibling-context.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so sibling pull-request collection fails at runtime"),
+		},
+	},
+	"issue-close-out": {
+		ResultFile: "issue-close-out-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so issue close-out fails at runtime"),
+		},
+	},
+	"merge-pr": {
+		ResultFile: "merge-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so pull-request merge fails at runtime"),
+			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so merged-branch cleanup fails at runtime"),
+		},
+	},
+	"merge-queue-poll": {
+		ResultFile: "queue-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so merge-queue polling fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so eviction remediation fails at runtime"),
+			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so queue-merged branch cleanup fails at runtime"),
+		},
+	},
+	"open-pr": {
+		ResultFile: "pr-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request creation fails at runtime"),
+		},
+	},
+	"post-merge": {
+		ResultFile: "post-merge-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"),
+		},
+	},
+	"pr-select": {
+		ResultFile: "selected-pr.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+		},
+	},
+	"push-remediated": {
+		ResultFile: "push-remediated-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediated branch publication fails at runtime"),
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediated pull-request refresh fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation label cleanup fails at runtime"),
+		},
+	},
+	"rebase-pr": {
+		ResultFile: "rebase-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so rebased branch publication fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so rebase outcome routing fails at runtime"),
+		},
+	},
+	"reconcile-post-merge": {
+		ResultFile: "reconcile-post-merge-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so late merge inspection fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so late merge issue reconciliation fails at runtime"),
+			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so late merge branch cleanup fails at runtime"),
+		},
+	},
+	"remediation-checkpoint": {
+		ResultFile: "checkpoint-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation checkpoint inspection fails at runtime"),
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediation checkpoint branch inspection fails at runtime"),
+		},
+	},
+	"respond-to-findings": {
+		ResultFile: "remediation-response.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+		},
+	},
+	"set-milestone": {
+		ResultFile: "milestone-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubMilestonesWrite, "the capability-scoped credential is not injected, so milestone assignment fails at runtime"),
+		},
+	},
+	"update-behind-pr": {
+		ResultFile: "update-behind-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so behind-base pull-request update fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so behind-base remediation routing fails at runtime"),
+		},
+	},
+	"push-branch": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+		},
+	},
+	"reconcile-branches": {
+		Capabilities: []CapabilityUse{
+			requiredWhenFlagPresent(capability.GitHubBranchDelete, "--delete", "the capability-scoped credential is not injected, so stale branch deletion fails at runtime"),
+		},
+	},
+	"record-merge-refusal": {
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so merge-refusal recording fails at runtime"),
+		},
+	},
+	"telemetry-query": {
+		Capabilities: []CapabilityUse{
+			required(capability.TelemetryRead, "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"),
+			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
+		},
+	},
+}
+
+// Lookup returns the manifest entry for command.
+func Lookup(command string) (Command, bool) {
+	entry, ok := commands[command]
+	if !ok {
+		return Command{}, false
+	}
+	entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
+	return entry, true
+}
+
+// Names returns all manifest command names in deterministic order.
+func Names() []string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RequiredCapabilities returns the capabilities command must declare for args.
+func RequiredCapabilities(command string, args []string) []CapabilityUse {
+	entry, ok := commands[command]
+	if !ok {
+		return nil
+	}
+	var required []CapabilityUse
+	for _, use := range entry.Capabilities {
+		if use.required(args) {
+			required = append(required, use)
+		}
+	}
+	return required
+}
+
+// ResultFile returns the default result file for a guarded provider stage.
+func ResultFile(command string) (string, bool) {
+	entry, ok := commands[command]
+	if !ok || entry.ResultFile == "" {
+		return "", false
+	}
+	return entry.ResultFile, true
+}
+
+func (u CapabilityUse) required(args []string) bool {
+	if u.optional {
+		return false
+	}
+	if u.flag == "" {
+		return true
+	}
+	for i, arg := range args {
+		if u.flagValue == "" && (arg == u.flag || strings.HasPrefix(arg, u.flag+"=")) {
+			return true
+		}
+		if arg == u.flag && i+1 < len(args) && args[i+1] == u.flagValue {
+			return true
+		}
+		if value, ok := strings.CutPrefix(arg, u.flag+"="); ok && value == u.flagValue {
+			return true
+		}
+	}
+	return false
+}

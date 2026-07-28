@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
@@ -358,7 +359,19 @@ func reachabilityProblems(m *Machine) []string {
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	for _, t := range def.Spec.Tasks {
-		if t.Inputs["kind"] == "ci-poll" && !toSet(t.Capabilities)[string(capability.GitHubPRWrite)] {
+		declared := toSet(t.Capabilities)
+		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {
+			subcommand := t.Run.Command[1]
+			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
+				if !declared[string(use.Capability)] {
+					problems = append(problems, fmt.Sprintf(
+						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
+						t.Name, subcommand, use.Capability, use.Consequence,
+					))
+				}
+			}
+		}
+		if t.Inputs["kind"] == "ci-poll" && !declared[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
 		}
 		for _, c := range t.Capabilities {

@@ -203,7 +203,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 		{name: "empty result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "  "}, wantWarn: true},
 		{name: "configured result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "claimed-item.json"}},
 		{name: "read only query", command: []string{"goobers", "backlog-query"}},
-		{name: "unrelated claim flag", command: []string{"goobers", "pr-select", "--claim"}},
+		{name: "unrelated claim flag", command: []string{"goobers", "status", "--claim"}},
 		{name: "shell command", command: []string{"sh", "-c", "goobers backlog-query --claim"}, wantWarn: true},
 	}
 	for _, tc := range cases {
@@ -696,6 +696,54 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
+	queueTask := apiv1.Task{
+		Name: "queue-watch",
+		Type: apiv1.TaskDeterministic,
+		Goal: "watch the merge queue",
+		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "merge-queue-poll"}},
+		Capabilities: []string{
+			string(capability.GitHubPRMerge),
+			string(capability.GitHubBranchDelete),
+		},
+		PolicyActions: []string{"watch-merge-queue", "route-queue-outcome", "delete-branch"},
+	}
+	definition := func(name string, task apiv1.Task) Definition {
+		return Definition{Name: name, Version: 1, Spec: apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  task.Name,
+			Tasks:  []apiv1.Task{task},
+		}}
+	}
+
+	_, err := compileAcknowledged(definition("missing-eviction-capability", queueTask))
+	want := `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+
+	queueTask.Capabilities = append(queueTask.Capabilities, string(capability.GitHubIssuesWrite))
+	if _, err := compileAcknowledged(definition("complete-queue-capabilities", queueTask)); err != nil {
+		t.Fatalf("merge-queue-poll with complete capabilities should compile: %v", err)
+	}
+
+	telemetryTask := apiv1.Task{
+		Name:         "gather-signals",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "query telemetry",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}},
+		Capabilities: []string{string(capability.TelemetryRead)},
+	}
+	if _, err := compileAcknowledged(definition("ordinary-telemetry-query", telemetryTask)); err != nil {
+		t.Fatalf("ordinary telemetry-query should not require Tutor's PR capability: %v", err)
+	}
+	telemetryTask.Run.Command = []string{"goobers", "telemetry-query", "--format", "tutor-live-verification"}
+	_, err = compileAcknowledged(definition("tutor-holdout-query", telemetryTask))
+	if err == nil || !strings.Contains(err.Error(), `subcommand "telemetry-query" but does not declare capability "github:pr:write"`) {
+		t.Fatalf("Tutor telemetry-query error = %v, want conditional PR capability diagnostic", err)
 	}
 }
 
