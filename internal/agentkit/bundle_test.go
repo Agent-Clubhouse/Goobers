@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,6 +76,18 @@ func TestBundleAdapterMapsGenericConsumer(t *testing.T) {
 	}
 	if _, ok := bundle.Adapter("unknown"); ok {
 		t.Fatal("unknown harness unexpectedly resolved")
+	}
+}
+
+func TestBundleDeclaresRepositoryAuthoringCommands(t *testing.T) {
+	bundle := testBundle(t, "dev", "none")
+	for _, command := range []string{"versions", "features", "examples list", "examples show", "validate"} {
+		if !slices.Contains(bundle.Manifest.CLICapabilities.Required, command) {
+			t.Errorf("repository authoring command %q is not required", command)
+		}
+		if slices.Contains(bundle.Manifest.CLICapabilities.Optional, command) {
+			t.Errorf("repository authoring command %q is still optional", command)
+		}
 	}
 }
 
