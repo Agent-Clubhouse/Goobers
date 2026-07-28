@@ -27,6 +27,7 @@ import (
 
 const (
 	onboardingActionVersion       = 1
+	seedConfigSourceAction        = "seed-config-source"
 	stubAgentInstructionsAction   = "stub-agent-instructions"
 	stubSampleAction              = "stub-sample"
 	stubSampleRoot                = "getting-started-task-api"
@@ -81,6 +82,37 @@ type onboardingActionResult struct {
 	Skipped     []string `json:"skipped"`
 	Path        string   `json:"path"`
 	NextCommand string   `json:"nextCommand"`
+}
+
+func executeSeedConfigSourceAction(
+	root string,
+	guided *instance.GuidedOptions,
+	goos string,
+) (onboardingActionResult, error) {
+	var (
+		seeded *instance.ConfigSourceSeedResult
+		err    error
+	)
+	if guided == nil {
+		seeded, err = instance.SeedQuickstartConfigSource(root)
+	} else {
+		if err := instance.CheckGuidedSourceTarget(root); err != nil {
+			return onboardingActionResult{}, err
+		}
+		seeded, err = instance.SeedGuidedConfigSource(root, *guided)
+	}
+	if err != nil {
+		return onboardingActionResult{}, err
+	}
+	absolute := absolutePath(seeded.Root)
+	return onboardingActionResult{
+		Action:      seedConfigSourceAction,
+		Version:     onboardingActionVersion,
+		Created:     seeded.Created,
+		Skipped:     seeded.Skipped,
+		Path:        absolute,
+		NextCommand: "goobers validate --source-tree --json " + quoteShellArg(absolute, goos),
+	}, nil
 }
 
 type onboardingSeedCatalog struct {
@@ -191,8 +223,8 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 	}
 
 	if *jsonOutput {
-		if err := encodeSchemaJSON(stdout, schemas.ConfigSourceAction, result); err != nil {
-			pf(stderr, "error: encode config-source result: %v\n", err)
+		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, result); err != nil {
+			pf(stderr, "error: encode onboarding action result: %v\n", err)
 			return 1
 		}
 		return 0
@@ -262,9 +294,7 @@ func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *jsonOutput {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(result); err != nil {
+		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, result); err != nil {
 			pf(stderr, "error: encode action result: %v\n", err)
 			return 1
 		}

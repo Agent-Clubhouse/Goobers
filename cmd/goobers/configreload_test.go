@@ -103,6 +103,12 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
+	// The journal event says a reload happened; it does not say the scheduler
+	// has swapped in the new definitions, and `run` resolves the workflow name
+	// through the scheduler. Waiting on definitionsLoadedAt closes that gap —
+	// without it this test fails on loaded runners with
+	// `localscheduler: unknown workflow "reloaded-implement"`.
+	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
 
 	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
 	if code != 0 {

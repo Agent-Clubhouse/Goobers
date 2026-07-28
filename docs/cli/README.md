@@ -71,7 +71,7 @@
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
-| [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
+| [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
@@ -329,6 +329,13 @@ a priority tier. An item carrying more than one listed label ranks by
 whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
+
+backlog-curation may opt into a bounded ready-item re-sweep with
+resweepMaxItems. Forward candidates always consume maxItems first; a
+re-sweep uses only leftover capacity, no more often than resweepInterval
+(default 24h), and rotates within selectionPriority tiers. Ready items
+already in implementation/review are emitted as read-only context and are
+never claimed.
 
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
@@ -1549,8 +1556,8 @@ outputs) and hasSubstantiveFindings/hasFailingCI.
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
 sibling-overlap") is a comma-separated policy naming which detected
 causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base and sibling-overlap are accepted vocabulary but
-cannot fire yet (no detection reaches this stage's decision today).
+liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -1632,19 +1639,22 @@ $ goobers record-merge-refusal
 
 ## `goobers remediation-checkpoint`
 
-durable per-PR repass budget + same-diff escalation (a workflow stage)
+durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 
 ~~~text
 Usage: goobers remediation-checkpoint [--budget N] [path]
 
 Re-checkout the PR's own branch (this stage gets its own fresh
-worktree), read pr-remediation's durable per-PR cycle counter + last
+worktree), read pr-remediation's durable per-cause attempt counters + last
 diff digest back from a sticky PR comment, compare this cycle's
 actual diff (git diff base...HEAD) against it, and either
-escalate (goobers:merge-escalated, clearing needs-remediation) on
-budget exhaustion or a byte-identical repeat, or record the advanced
+escalate (goobers:merge-escalated, clearing needs-remediation) when
+the active cause exhausts its DSL-declared budget or on a byte-identical
+repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
-gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint
+gather-pr-context's selectedNumber output), remediationCauses, and the
+four per-cause budget inputs. --budget overrides every declared cause
+for standalone diagnostics. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business
 error, 2 = usage/IO error.
 ~~~
@@ -1652,7 +1662,7 @@ error, 2 = usage/IO error.
 **Examples**
 
 ~~~console
-$ goobers remediation-checkpoint --budget 3
+$ goobers remediation-checkpoint
 ~~~
 
 ## `goobers report-pr-status`

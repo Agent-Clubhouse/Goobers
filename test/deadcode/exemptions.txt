@@ -79,7 +79,6 @@ github.com/goobers/goobers/internal/httpapi.withEventSweepInterval # Event-strea
 github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/instance.InitGuided # Direct guided scaffold seam retained for focused generated-config and validation tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 
@@ -139,3 +138,6 @@ github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Name # Schedule tr
 github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Watch # Schedule trigger adapter retained for alternate scheduler composition.
 github.com/goobers/goobers/internal/scheduler.EventTrigger.Name # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
 github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
+
+# Test-support constructors: reachable only from _test.go, so unreachable from any main.
+github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.

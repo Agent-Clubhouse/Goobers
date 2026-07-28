@@ -212,21 +212,29 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
 			artifactMediaType: "application/json",
 		},
+		runID + ":gather-sibling-context": {
+			status: apiv1.ResultSuccess,
+			outputs: map[string]interface{}{
+				"selectedNumber":         "77",
+				"head":                   rebindBranch,
+				"base":                   "main",
+				"hasSubstantiveFindings": "true",
+				"hasFailingCI":           "false",
+				"hasSiblingOverlap":      "false",
+			},
+			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
+			artifactMediaType: "application/json",
+		},
 		runID + ":rebase-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"selectedNumber": "77", "head": rebindBranch, "needsAgent": "true",
-			"conflict": "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
+			"remediationCauses": "substantive",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
 		}},
-		runID + ":gather-sibling-context": {
-			status:       apiv1.ResultSuccess,
-			outputs:      map[string]interface{}{"selectedNumber": "77"},
-			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
-			artifactMediaType: "application/json",
-		},
 		runID + ":gather-review-threads": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
@@ -290,8 +298,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 //
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
-// gather-pr-context → gather-ci-failures → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → gather-sibling-context → gather-review-threads →
+// gather-pr-context → gather-ci-failures → gather-sibling-context → rebase-pr →
+// [needs agent] → remediation-checkpoint → [continue] → gather-review-threads →
 // gather-issue-context → implement → validate-finding-responses
 // → [response validation pass] → [review pass] → local-ci → [ci pass] →
 // push-remediated → respond-to-findings, and complete. Before #392 this run
@@ -307,9 +315,9 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"update-behind-pr",
 		"gather-pr-context",
 		"gather-ci-failures",
+		"gather-sibling-context",
 		"rebase-pr",
 		"remediation-checkpoint",
-		"gather-sibling-context",
 		"gather-review-threads",
 		"gather-issue-context",
 		"implement",

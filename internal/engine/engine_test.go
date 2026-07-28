@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -84,7 +85,7 @@ func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: successInvoker(), Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
@@ -95,7 +96,7 @@ func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
 // TestLinearFlowCompletes: a single agentic task runs to a terminal state.
 func TestLinearFlowCompletes(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: successInvoker(), Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, runInput("linear", linearSpec()))
@@ -122,7 +123,7 @@ func TestLinearFlowCompletes(t *testing.T) {
 // to @abort, so the run ends blocked.
 func TestGateBlocksRun(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	inv := successInvoker()
 	inv.review = func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 		return apiv1.Verdict{Decision: apiv1.VerdictFail, Summary: "rejected"}, nil
@@ -153,7 +154,7 @@ func TestGateBlocksRun(t *testing.T) {
 // TestGatePassContinues: an agentic gate returning "pass" completes the run.
 func TestGatePassContinues(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	inv := successInvoker()
 	var gotLimits apiv1.Limits
 	inv.review = func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -180,7 +181,7 @@ func TestGatePassContinues(t *testing.T) {
 // passes on the second review — exercising a cycle without runaway.
 func TestGateLoopThenPass(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	reviews := 0
 	inv := successInvoker()
 	inv.review = func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -220,7 +221,7 @@ func TestDeterministicTask(t *testing.T) {
 		},
 	}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	var gotCmd []string
 	var gotEnv map[string]string
 	var gotLimits apiv1.Limits
@@ -275,7 +276,7 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 		}},
 	}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	var gotInterval interface{}
 	env.RegisterActivity(&Activities{
 		Det: &fakeRunner{run: func(_ context.Context, invocation apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -311,7 +312,7 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 		},
 	}
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.ExecuteWorkflow(Run, runInput("human", spec))
 
 	err := env.GetWorkflowError()
@@ -342,7 +343,7 @@ func TestBuildInvocationKeepsCheckoutOffTheWire(t *testing.T) {
 // surfaces a clear error rather than panicking.
 func TestAgenticTaskNotConfiguredErrors(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{}) // no Goober
 
 	env.ExecuteWorkflow(Run, runInput("linear", linearSpec()))

@@ -75,7 +75,7 @@ _goobers_completion()
             'gather-issue-context:add originating issue bodies to a remediation brief (a workflow stage)'
             'gather-ci-failures:add failing CI diagnostics to a remediation brief (a workflow stage)'
             'rebase-pr:rebase-first, finding-driven remediation routing (a workflow stage)'
-            'remediation-checkpoint:durable per-PR repass budget + same-diff escalation (a workflow stage)'
+            'remediation-checkpoint:durable per-cause attempt budgets + same-diff escalation (a workflow stage)'
             'push-remediated:force-push the remediated branch and clear needs-remediation (a workflow stage)'
             'respond-to-findings:post a validated per-finding remediation response to the claimed PR (a workflow stage)'
             'help'

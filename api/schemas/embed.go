@@ -31,8 +31,11 @@ const Diagnostics = "diagnostics.schema.json"
 // Features is the workflow-DSL feature discovery envelope.
 const Features = "features.schema.json"
 
-// ConfigSourceAction is the versioned config-source onboarding result envelope.
-const ConfigSourceAction = "config-source-action.schema.json"
+// OnboardingAction is the shared versioned onboarding result envelope.
+const OnboardingAction = "config-source-action.schema.json"
+
+// ConfigSourceAction is retained as the original name of OnboardingAction.
+const ConfigSourceAction = OnboardingAction
 
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
@@ -81,6 +84,6 @@ func Files() []string {
 		AgentToolkitManifest,
 		Diagnostics,
 		Features,
-		ConfigSourceAction,
+		OnboardingAction,
 	}
 }

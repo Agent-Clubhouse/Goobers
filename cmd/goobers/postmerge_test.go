@@ -367,6 +367,9 @@ func postMergeEnv(t *testing.T, serverURL string, withoutCapability bool, inputs
 
 	t.Setenv("GOOBERS_RUN_ID", "run-postmerge-1")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_REPO_PROVIDER", "github")
+	t.Setenv("GOOBERS_REPO_OWNER", "your-org")
+	t.Setenv("GOOBERS_REPO_NAME", "your-repo")
 	if !withoutCapability {
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 		t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
@@ -442,16 +445,20 @@ func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 		t.Fatalf("PR #21 comments = %v, want one persisted conflict handoff", conflictComments)
 	}
 	conflict, ok := parsePostMergeRemediationHandoff(conflictComments[0])
-	if !ok || conflict.DisplacingPullNumber != 20 || conflict.Reason != "conflicted" {
-		t.Fatalf("PR #21 handoff = %+v, ok=%v; want displacing PR #20 and conflicted reason", conflict, ok)
+	if !ok || conflict.Version != postMergeRemediationHandoffVersion ||
+		conflict.DisplacingPullNumber != 20 || conflict.TargetHeadSHA != "sha21" ||
+		conflict.Reason != "conflicted" {
+		t.Fatalf("PR #21 handoff = %+v, ok=%v; want displacing PR #20, target head sha21, and conflicted reason", conflict, ok)
 	}
 	if len(overlapComments) != 1 {
 		t.Fatalf("PR #22 comments = %v, want one persisted overlap handoff", overlapComments)
 	}
 	overlap, ok := parsePostMergeRemediationHandoff(overlapComments[0])
-	if !ok || overlap.DisplacingPullNumber != 20 ||
+	if !ok || overlap.Version != postMergeRemediationHandoffVersion ||
+		overlap.DisplacingPullNumber != 20 ||
+		overlap.TargetHeadSHA != "sha22" ||
 		strings.Join(overlap.OverlappingFiles, ",") != "portal/src/App.tsx,shared/pkg.go" {
-		t.Fatalf("PR #22 handoff = %+v, ok=%v; want displacing PR #20 and both overlapping paths", overlap, ok)
+		t.Fatalf("PR #22 handoff = %+v, ok=%v; want displacing PR #20, target head sha22, and both overlapping paths", overlap, ok)
 	}
 }
 
@@ -525,7 +532,7 @@ func TestPostMergeHandoffIsIdempotentPerDisplacingPR(t *testing.T) {
 	provider := mergePRTestServer{url: server.URL}.newGitHubProvider("test-token")
 	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
 
-	handoff := postMergeRemediationHandoff{DisplacingPullNumber: 20, Reason: "conflicted"}
+	handoff := postMergeRemediationHandoff{DisplacingPullNumber: 20, TargetHeadSHA: "sha21", Reason: "conflicted"}
 	if err := persistPostMergeRemediationHandoff(context.Background(), provider, repo, 21, "goobers", handoff); err != nil {
 		t.Fatalf("persist first handoff: %v", err)
 	}
@@ -542,7 +549,9 @@ func TestPostMergeHandoffIsIdempotentPerDisplacingPR(t *testing.T) {
 		t.Fatalf("PR #21 comments = %v, want one handoff updated in place", comments)
 	}
 	got, ok := parsePostMergeRemediationHandoff(comments[0])
-	if !ok || got.Reason != handoff.Reason || strings.Join(got.OverlappingFiles, ",") != "portal/src/App.tsx" {
+	if !ok || got.Version != postMergeRemediationHandoffVersion ||
+		got.Reason != handoff.Reason ||
+		strings.Join(got.OverlappingFiles, ",") != "portal/src/App.tsx" {
 		t.Fatalf("updated handoff = %+v, ok=%v; want latest overlap diagnosis", got, ok)
 	}
 }

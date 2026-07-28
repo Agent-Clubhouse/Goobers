@@ -18,6 +18,11 @@ type fakeGuidedGitHubOperations struct {
 	createCalls []string
 }
 
+func seedGuidedSourceForTest(root string, opts instance.GuidedOptions) error {
+	_, err := instance.SeedGuidedConfigSource(root, opts)
+	return err
+}
+
 func (f *fakeGuidedGitHubOperations) Clone(_ context.Context, owner, name, destination string) error {
 	f.cloneCalls = append(f.cloneCalls, owner+"/"+name+" -> "+destination)
 	if f.clone != nil {
@@ -33,8 +38,8 @@ func (f *fakeGuidedGitHubOperations) Create(_ context.Context, owner, name, visi
 
 func TestGuidedInitUsesExistingLocalSourceNonDestructively(t *testing.T) {
 	sourceRoot := filepath.Join(t.TempDir(), "config-source")
-	if err := instance.InitGuidedSource(sourceRoot, guidedSourceTestOptions()); err != nil {
-		t.Fatalf("InitGuidedSource: %v", err)
+	if err := seedGuidedSourceForTest(sourceRoot, guidedSourceTestOptions()); err != nil {
+		t.Fatalf("SeedGuidedConfigSource: %v", err)
 	}
 	sentinel := filepath.Join(sourceRoot, "README.md")
 	if err := os.WriteFile(sentinel, []byte("keep me\n"), 0o644); err != nil {
@@ -76,7 +81,7 @@ func TestGuidedInitClonesExistingGitHubSourceDistinctFromTarget(t *testing.T) {
 	checkout := filepath.Join(t.TempDir(), "fleet-config")
 	remote := &fakeGuidedGitHubOperations{
 		clone: func(_, _ string, destination string) error {
-			return instance.InitGuidedSource(destination, guidedSourceTestOptions())
+			return seedGuidedSourceForTest(destination, guidedSourceTestOptions())
 		},
 	}
 	input := strings.NewReader(strings.Join([]string{
@@ -153,7 +158,7 @@ func TestGuidedInitDeclinedGitHubExistingLeavesDestinationUntouched(t *testing.T
 			}
 			remote := &fakeGuidedGitHubOperations{
 				clone: func(_, _ string, destination string) error {
-					return instance.InitGuidedSource(destination, guidedSourceTestOptions())
+					return seedGuidedSourceForTest(destination, guidedSourceTestOptions())
 				},
 			}
 			input := strings.NewReader(strings.Join([]string{

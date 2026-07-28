@@ -550,8 +550,8 @@ func init() {
 			withExamples("goobers rebase-pr"),
 		command("remediation-checkpoint", apicontract.ActionWorkflowExecution, runRemediationCheckpoint).
 			withSynopsis(synopsisByID["remediation-checkpoint"]).
-			withHelp("durable per-PR repass budget + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
-			withExamples("goobers remediation-checkpoint --budget 3"),
+			withHelp("durable per-cause attempt budgets + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
+			withExamples("goobers remediation-checkpoint"),
 		command("push-remediated", apicontract.ActionWorkflowExecution, runPushRemediated).
 			withSynopsis(synopsisByID["push-remediated"]).
 			withHelp("force-push the remediated branch and clear needs-remediation (a workflow stage)", pushRemediatedHelp).

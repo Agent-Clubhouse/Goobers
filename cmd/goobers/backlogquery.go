@@ -114,6 +114,12 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
 	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
 	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
+	"backlog-curation may opt into a bounded ready-item re-sweep with\n" +
+	"resweepMaxItems. Forward candidates always consume maxItems first; a\n" +
+	"re-sweep uses only leftover capacity, no more often than resweepInterval\n" +
+	"(default 24h), and rotates within selectionPriority tiers. Ready items\n" +
+	"already in implementation/review are emitted as read-only context and are\n" +
+	"never claimed.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -238,6 +244,15 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		maxItems = n
 	}
+	resweepPolicy, resweepEnabled, err := readBacklogResweepPolicy(maxItems)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if resweepEnabled && !curationRun {
+		pln(stderr, "error: re-sweep inputs are only valid for backlog-curation --claim runs")
+		return 1
+	}
 	// How many candidates to SCAN is deliberately decoupled from how many to
 	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
 	// maxItems reached 20 (curation's batch size) the two were the same
@@ -266,6 +281,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if (*claim || *reconcile) && trustLabel == "" {
 		pln(stderr, "error: trustLabel is required to claim or reconcile (SEC-047: backlog content is untrusted input on a public repo) — declare inputs.trustLabel")
 		return 1
+	}
+	var runID, workflow string
+	if *claim {
+		runID, workflow, err = providerRunContext()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 
 	ctx, cancel := providerCommandContext()
@@ -462,6 +485,107 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stderr, "error: apply fieldOrder: %v\n", err)
 		return 1
 	}
+	forwardEligibleCount := len(eligible)
+
+	var (
+		readOnlyResweep      []providers.WorkItem
+		resweepModeByID      map[string]string
+		resweepState         backlogResweepState
+		resweepStatePath     string
+		resweepStateObserved uint64
+		resweepStateDirty    bool
+		selectedResweepItems []providers.WorkItem
+	)
+	if resweepEnabled && len(eligible) < maxItems {
+		resweepStatePath = backlogResweepStatePath(
+			l.SchedulerDir(), repo, providerGaggle(), trustLabel, resweepPolicy.readyLabel,
+		)
+		resweepState, err = readBacklogResweepState(lockPath, resweepStatePath)
+		if err != nil {
+			pf(stderr, "error: read backlog re-sweep state: %v\n", err)
+			return 1
+		}
+		resweepStateObserved = resweepState.Generation
+		if backlogResweepDue(resweepState, observedAt, resweepPolicy.interval) {
+			resweepCandidates, nextResweepCursor, listErr := listBacklogScanWindow(
+				ctx,
+				issueProvider,
+				repo,
+				compactLabels(trustLabel, resweepPolicy.readyLabel),
+				fieldFilter,
+				backlogScanCeiling,
+				backlogScanCursor{Cursor: resweepState.Cursor},
+				false,
+			)
+			if listErr != nil {
+				return failProviderStage(stderr, "list ready items for re-sweep", listErr, "claimed-items.json")
+			}
+			filtered := resweepCandidates[:0]
+			for _, item := range resweepCandidates {
+				if !item.HasLabel(trustLabel) ||
+					!item.HasLabel(resweepPolicy.readyLabel) ||
+					item.HasLabel(providers.LabelNeedsHuman) ||
+					(item.State != "" && !strings.EqualFold(item.State, "open")) {
+					continue
+				}
+				matched, matchErr := fieldFilter.Matches(item.Fields)
+				if matchErr != nil {
+					pf(stderr, "error: evaluate fieldPredicate for re-sweep item %s: %v\n", item.ID, matchErr)
+					return 1
+				}
+				if matched {
+					filtered = append(filtered, item)
+				}
+			}
+			resweepCandidates = filtered
+			if err := sortBacklogResweepCandidates(
+				resweepCandidates,
+				selectionPriority,
+				fieldOrder,
+				resweepState.LastSweptAt,
+			); err != nil {
+				pf(stderr, "error: order backlog re-sweep: %v\n", err)
+				return 1
+			}
+			resweepBudget := min(resweepPolicy.maxItems, maxItems-len(eligible))
+			if len(resweepCandidates) > resweepBudget {
+				resweepCandidates = resweepCandidates[:resweepBudget]
+			}
+			selectedResweepItems = append(selectedResweepItems, resweepCandidates...)
+			resweepModeByID = make(map[string]string, len(resweepCandidates))
+			for _, item := range resweepCandidates {
+				if item.HasLabel(inReviewStatusLabel) ||
+					item.HasLabel(providers.LabelClaimed) ||
+					openIssues[item.ID] {
+					readOnlyResweep = append(readOnlyResweep, item)
+					resweepModeByID[item.ID] = "read-only"
+					continue
+				}
+				eligible = append(eligible, item)
+				resweepModeByID[item.ID] = "resweep"
+			}
+			resweepState = recordBacklogResweep(
+				resweepState,
+				selectedResweepItems,
+				observedAt,
+				resweepPolicy.interval,
+			)
+			resweepState.Cursor = nextResweepCursor.Cursor
+			resweepStateDirty = true
+		}
+	}
+
+	persistResweepState := func() error {
+		if !resweepStateDirty {
+			return nil
+		}
+		return advanceBacklogResweepState(
+			lockPath,
+			resweepStatePath,
+			resweepStateObserved,
+			resweepState,
+		)
+	}
 
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
@@ -518,17 +642,19 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			if touches, terr := openPRTouches(ctx, prProvider, repo, ""); terr != nil {
 				pf(stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", terr)
 			} else {
-				reordered, deprioritized := partitionByContention(eligible, touches, minPRs)
+				forwardEligible := eligible[:forwardEligibleCount]
+				resweepEligible := eligible[forwardEligibleCount:]
+				reordered, deprioritized := partitionByContention(forwardEligible, touches, minPRs)
 				if n := len(deprioritized); n > 0 && n < len(reordered) {
 					pf(stderr, "contested-file dispatch: deprioritized %d contested issue(s) [%s] behind %d disjoint one(s)\n",
 						n, strings.Join(deprioritized, ","), len(reordered)-n)
 				}
-				eligible = reordered
+				eligible = append(reordered, resweepEligible...)
 			}
 		}
 	}
 
-	if len(eligible) == 0 {
+	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			_, _, rerr := reconcileBlockedEligibilityLocked(
 				blockedRecordsPath(l),
@@ -548,12 +674,11 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
+		if err := persistResweepState(); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
-	}
-	runID, workflow, err := providerRunContext()
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
 	}
 	leaseDuration := DefaultClaimLease
 	if s := providerInput("leaseDuration", ""); s != "" {
@@ -750,9 +875,13 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			i++
 		}
 	}
-	if len(eligible) == 0 {
+	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
 		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
+		if err := persistResweepState(); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
@@ -761,13 +890,21 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// tick (#233), not an error: exit 0 with the structured noWork result the
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
-	if len(claimed) == 0 {
+	if len(claimed) == 0 && len(readOnlyResweep) == 0 {
 		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
 		if malformedReadyItems > 0 {
+			if err := persistResweepState(); err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
 			return writeNoWorkResult(stdout, stderr, "no well-formed eligible item could be claimed")
+		}
+		if err := persistResweepState(); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
 		}
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
@@ -780,6 +917,25 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		if err != nil {
 			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
 		}
+		for i := range curationItems {
+			curationItems[i].CurationMode = resweepModeByID[curationItems[i].ID]
+		}
+		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
+			ctx,
+			issueProvider,
+			repo,
+			readOnlyResweep,
+			observedAt,
+			stalenessPolicy,
+		)
+		if enrichErr != nil {
+			return failProviderStage(stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
+		}
+		for i := range readOnlyItems {
+			readOnlyItems[i].CurationMode = "read-only"
+			readOnlyItems[i].ReadOnly = true
+		}
+		curationItems = append(curationItems, readOnlyItems...)
 	}
 
 	// Result-file shape follows the workflow's cardinality: a single-item run
@@ -808,6 +964,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
+	if err := persistResweepState(); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	// Provider-visible marker per claimed item: best-effort mirror of the
 	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
@@ -819,10 +979,14 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 	}
 
-	if len(claimed) == 1 {
+	if len(claimed) == 0 {
+		pf(stdout, "selected %d read-only in-flight item(s) for re-sweep\n", len(readOnlyResweep))
+	} else if len(readOnlyResweep) == 0 && len(claimed) == 1 {
 		pf(stdout, "claimed %s: %s\n", claimed[0].ID, claimed[0].Title)
-	} else {
+	} else if len(readOnlyResweep) == 0 {
 		pf(stdout, "claimed %d items\n", len(claimed))
+	} else {
+		pf(stdout, "claimed %d item(s), selected %d read-only in-flight item(s)\n", len(claimed), len(readOnlyResweep))
 	}
 	claimResultCommitted = true
 	return 0
