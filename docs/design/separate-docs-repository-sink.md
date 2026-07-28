@@ -56,7 +56,9 @@ spec:
   # triggers, tasks, and gates omitted
 ```
 
-`docsSink` has exactly two forms:
+This contract defines the two repository-backed `docsSink` forms below. The
+union also reserves `kind: github-wiki` with the distinct direct-publication
+contract in [`github-wiki-docs-sink.md`](github-wiki-docs-sink.md):
 
 | Form | Meaning |
 |---|---|
@@ -214,8 +216,9 @@ No owner substitution, first-repository default, ambient `GH_TOKEN`, or source
 credential fallback is allowed.
 
 GitHub wiki and Azure DevOps wiki identities are not accepted as `docs-repo`
-targets. Their URL, branch, provider, and review semantics remain decisions for
-#1020 and #1021.
+targets. GitHub wiki URL, branch, ownership, and review semantics are defined
+by [`github-wiki-docs-sink.md`](github-wiki-docs-sink.md); Azure DevOps wiki
+semantics remain a decision for #1021.
 
 ## Two-grant capability flow
 
@@ -362,4 +365,5 @@ non-App Manifest connections remain byte-for-byte compatible.
 
 This decision does not provision a repository or credential, change
 `AdditionalRepos` into writable repositories, add merge authority, or define
-GitHub/Azure DevOps wiki behavior.
+Azure DevOps wiki behavior. The GitHub wiki extension is a separate contract
+in [`github-wiki-docs-sink.md`](github-wiki-docs-sink.md).
